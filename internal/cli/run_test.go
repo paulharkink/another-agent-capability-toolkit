@@ -1,0 +1,74 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func cliFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	pkg := filepath.Join(root, "demo")
+	os.MkdirAll(pkg, 0755)
+	os.WriteFile(filepath.Join(pkg, "SKILL.md.mustache"), []byte("Hello {{{inputs.label}}}"), 0644)
+	os.WriteFile(filepath.Join(pkg, "package.toml"), []byte("schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n[skill]\nname = \"demo\"\n[[inputs]]\nname = \"label\"\ntype = \"string\"\nrequired = true\n[[templates]]\nsource = \"SKILL.md.mustache\"\ndestination = \"SKILL.md\"\n"), 0644)
+	cfg := filepath.Join(root, "aact.toml")
+	os.WriteFile(cfg, []byte("schema_version = 1\nsource_id = \"fixture\"\n[[catalog]]\nid = \"demo\"\nsource = \"./demo\"\n"), 0644)
+	return cfg, filepath.Join(root, "state"), filepath.Join(root, "home")
+}
+func TestCLIInstallRenderRemove(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	var out, errout bytes.Buffer
+	args := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "codex", "--agent-home", home, "--set", "label=world", "--json"}
+	if code := Run(context.Background(), args, strings.NewReader(""), &out, &errout); code != 0 {
+		t.Fatal(code, errout.String())
+	}
+	b, e := os.ReadFile(filepath.Join(home, ".agents", "skills", "demo", "SKILL.md"))
+	if e != nil || string(b) != "Hello world" {
+		t.Fatal(string(b), e)
+	}
+	out.Reset()
+	errout.Reset()
+	if code := Run(context.Background(), []string{"uninstall", "demo", "--config", cfg, "--state-dir", st, "--agent", "codex", "--agent-home", home}, nil, &out, &errout); code != 0 {
+		t.Fatal(code, errout.String())
+	}
+	if _, e = os.Lstat(filepath.Join(home, ".agents", "skills", "demo")); !os.IsNotExist(e) {
+		t.Fatal(e)
+	}
+}
+func TestMissingInputExitTwo(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	var out, errout bytes.Buffer
+	code := Run(context.Background(), []string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "codex", "--agent-home", home}, nil, &out, &errout)
+	if code != 2 || !strings.Contains(errout.String(), "--interactive") {
+		t.Fatal(code, errout.String())
+	}
+}
+func TestCatalogJSONOutput(t *testing.T) {
+	cfg, st, _ := cliFixture(t)
+	var out, errout bytes.Buffer
+	code := Run(context.Background(), []string{"catalog", "--config", cfg, "--state-dir", st, "--json"}, nil, &out, &errout)
+	if code != 0 {
+		t.Fatal(code, errout.String())
+	}
+	var entries []map[string]any
+	if e := json.Unmarshal(out.Bytes(), &entries); e != nil || len(entries) != 1 || entries[0]["id"] != "demo" {
+		t.Fatal(out.String(), e)
+	}
+}
+func TestFlagsRejectUnknownAndRepeatedScalar(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	for _, tail := range [][]string{{"--surprise"}, {"--set", "label=a", "--set", "label=b"}} {
+		var out, errout bytes.Buffer
+		a := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "codex", "--agent-home", home}
+		a = append(a, tail...)
+		if code := Run(context.Background(), a, nil, &out, &errout); code != 2 {
+			t.Fatal(code, errout.String())
+		}
+	}
+}

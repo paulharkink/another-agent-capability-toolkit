@@ -1,0 +1,7 @@
+ARG RUNTIME_IMAGE=aact/cluster-inspector:test-runtime
+FROM ${RUNTIME_IMAGE}
+USER root
+RUN pip install --no-cache-dir pytest==8.4.2
+WORKDIR /port
+ENTRYPOINT ["python", "-m", "pytest"]
+CMD ["tests", "-q"]

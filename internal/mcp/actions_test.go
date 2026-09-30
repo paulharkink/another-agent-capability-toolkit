@@ -1,0 +1,88 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"strings"
+	"testing"
+)
+
+type actionExec struct {
+	request ActionRequest
+	output  string
+	calls   int
+}
+
+func (f *actionExec) Run(_ context.Context, _ []string, _ string, b []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	f.calls++
+	json.Unmarshal(b, &f.request)
+	if stderr != nil {
+		stderr([]byte("progress private-secret"))
+	}
+	return []byte(f.output), nil
+}
+func actionPackage() catalog.Package {
+	return catalog.Package{ID: "p", Dir: "/tmp/pkg", Inputs: []catalog.Input{{Name: "token", Type: "secret"}, {Name: "connections", Type: "string", Multiple: true}}, MCP: &catalog.MCP{Actions: map[string]catalog.Command{"prepare": {Argv: []string{"bin/helper", "prepare"}}, "authenticate": {Argv: []string{"bin/helper", "authenticate"}}}}}
+}
+func TestActionJSONContract(t *testing.T) {
+	b, e := json.Marshal(ActionRequest{ProtocolVersion: 1, Action: "prepare", Target: config.Target{Name: "target", Path: "file"}, PackageDir: "p", StateDir: "s", Inputs: map[string]any{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, v := range []string{`"protocol_version"`, `"package_dir"`, `"state_dir"`, `"name":"target"`} {
+		if !strings.Contains(string(b), v) {
+			t.Fatal(string(b))
+		}
+	}
+	f := &actionExec{output: `{"auth_required":true}`}
+	r := ActionRunner{Executor: f}
+	out, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"})
+	if e != nil || !out.AuthRequired || f.request.ProtocolVersion != 1 {
+		t.Fatalf("%+v %v", out, e)
+	}
+}
+func TestNoninteractiveAuthRequiredDoesNotLogin(t *testing.T) {
+	f := &actionExec{output: `{"auth_required":true}`}
+	r := ActionRunner{Executor: f}
+	_, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"})
+	if e != nil || f.calls != 1 {
+		t.Fatal(e, f.calls)
+	}
+	_, e = r.Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate"})
+	if e == nil || f.calls != 1 {
+		t.Fatal("noninteractive login executed")
+	}
+}
+func TestInteractiveAuthIsExplicit(t *testing.T) {
+	f := &actionExec{output: `{}`}
+	r := ActionRunner{Executor: f}
+	_, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate", Interactive: true})
+	if e != nil || f.calls != 1 {
+		t.Fatal(e)
+	}
+}
+func TestPrepareOptionsOnlyForDeclaredInputs(t *testing.T) {
+	f := &actionExec{output: `{"choices":{"surprise":[{"value":"x"}]}}`}
+	r := ActionRunner{Executor: f}
+	if _, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"}); e == nil {
+		t.Fatal("undeclared dynamic question accepted")
+	}
+	f.output = `{"choices":{"connections":[{"value":"x","label":"X"}]}}`
+	if _, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"}); e != nil {
+		t.Fatal(e)
+	}
+}
+func TestActionRejectsTrailingOutputAndRedactsProgress(t *testing.T) {
+	f := &actionExec{output: `{} {}`}
+	var progress string
+	r := ActionRunner{Executor: f, OnStderr: func(b []byte) { progress += string(b) }}
+	_, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", Inputs: map[string]any{"token": "private-secret"}})
+	if e == nil {
+		t.Fatal("extra output accepted")
+	}
+	if strings.Contains(progress, "private-secret") {
+		t.Fatal(progress)
+	}
+}

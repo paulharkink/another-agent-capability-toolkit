@@ -1,0 +1,7 @@
+{
+  "repositories": [
+    {"host": "code.example:2222", "name": "team/widget", "path": "/home/alex/projects/widget"},
+    {"host": "git.example", "name": "team/widget", "path": "/home/alex/projects/widget-main"},
+    {"host": "git.example", "name": "team/widget", "path": "/home/alex/worktrees/widget-review"}
+  ]
+}

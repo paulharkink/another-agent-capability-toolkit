@@ -1,0 +1,6 @@
+{
+  "source_image": "mcp/azure:latest",
+  "digest": "sha256:91452a19f4eb5e2797a1fd5fe0a99cdda48d480f1981c4515165e4a26ace77a1",
+  "resolved_at": "2026-09-30",
+  "license": "MIT"
+}

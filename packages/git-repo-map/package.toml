@@ -1,0 +1,34 @@
+schema_version = 1
+id = "git-repo-map"
+name = "Local Git Repository Map"
+
+[skill]
+name = "git-repo-map"
+files = []
+
+[[inputs]]
+name = "scan_roots"
+config_key = "scan_roots"
+type = "directory"
+label = "Directories to scan for local Git checkouts"
+required = true
+multiple = true
+min_items = 1
+
+[[inputs]]
+name = "hosts"
+config_key = "hosts"
+type = "string"
+label = "Git hosts to include (empty includes all hosts)"
+multiple = true
+
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+
+[generator]
+command = ["bin/repo-map"]
+timeout_seconds = 300
+
+[generator.windows]
+command = ["bin/repo-map.exe"]

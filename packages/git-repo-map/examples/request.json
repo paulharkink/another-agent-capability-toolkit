@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "inputs": {
+    "scan_roots": ["/home/alex/projects", "/home/alex/worktrees"],
+    "hosts": ["git.example", "code.example:2222"]
+  }
+}

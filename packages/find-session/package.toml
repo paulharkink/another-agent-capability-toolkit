@@ -1,0 +1,6 @@
+schema_version = 1
+id = "find-session"
+name = "Find Session"
+
+[skill]
+name = "find-session"

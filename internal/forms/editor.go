@@ -1,0 +1,167 @@
+package forms
+
+import (
+	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
+	"os"
+	"path/filepath"
+	"reflect"
+)
+
+type Editor struct {
+	defs             []catalog.Input
+	values, original map[string]any
+	initialErrors    map[string]error
+	cancelled        bool
+}
+
+func NewEditor(defs []catalog.Input, prefill map[string]any) *Editor {
+	e := &Editor{defs: append([]catalog.Input{}, defs...), values: map[string]any{}, initialErrors: map[string]error{}}
+	for _, def := range defs {
+		values, err := ResolvePartial([]catalog.Input{def}, prefill)
+		if err != nil {
+			e.initialErrors[def.Name] = err
+			continue
+		}
+		if v, ok := values[def.Name]; ok {
+			e.values[def.Name] = v
+		}
+	}
+	e.original = copyAnswers(e.values)
+	return e
+}
+func (e *Editor) Values() map[string]any { return copyAnswers(e.values) }
+func (e *Editor) Apply(name string, value any) error {
+	if e.cancelled {
+		return picker.ErrCancelled
+	}
+	def, err := e.definition(name)
+	if err != nil {
+		return err
+	}
+	if def.Type == "file" || def.Type == "directory" {
+		cwd, e := os.Getwd()
+		if e != nil {
+			return e
+		}
+		resolved, e := config.ResolveInputPaths([]catalog.Input{def}, map[string]any{name: value}, filepath.Join(cwd, "interactive"))
+		if e != nil {
+			return e
+		}
+		value = resolved[name]
+	}
+	normalized, err := normalize(def, value)
+	if err != nil {
+		return fmt.Errorf("input %s: %w", name, err)
+	}
+	editable := def
+	editable.Required = false
+	editable.MinItems = nil
+	if err = Validate([]catalog.Input{editable}, map[string]any{name: normalized}); err != nil {
+		return err
+	}
+	e.values[name] = normalized
+	delete(e.initialErrors, name)
+	return nil
+}
+func (e *Editor) Cancel() { e.cancelled = true; e.values = copyAnswers(e.original) }
+func (e *Editor) Commit() (map[string]any, error) {
+	if e.cancelled {
+		return nil, picker.ErrCancelled
+	}
+	for _, def := range e.defs {
+		if err := e.initialErrors[def.Name]; err != nil {
+			return nil, err
+		}
+	}
+	if err := Validate(e.defs, e.values); err != nil {
+		return nil, err
+	}
+	return e.Values(), nil
+}
+func (e *Editor) definition(name string) (catalog.Input, error) {
+	for _, def := range e.defs {
+		if def.Name == name {
+			return def, nil
+		}
+	}
+	return catalog.Input{}, fmt.Errorf("undeclared input %s", name)
+}
+func (e *Editor) collection(name string) (*Collection, error) {
+	def, err := e.definition(name)
+	if err != nil {
+		return nil, err
+	}
+	if !def.Multiple || (def.Type != "directory" && def.Type != "file") {
+		return nil, fmt.Errorf("input %s is not a path collection", name)
+	}
+	c := NewCollection(def)
+	if value, ok := e.values[name]; ok {
+		paths, ok := value.([]string)
+		if !ok {
+			return nil, fmt.Errorf("input %s has invalid collection values", name)
+		}
+		for _, path := range paths {
+			if err = c.Add(path); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return c, nil
+}
+func (e *Editor) AddPath(name, path string) error {
+	if e.cancelled {
+		return picker.ErrCancelled
+	}
+	c, err := e.collection(name)
+	if err != nil {
+		return err
+	}
+	if err = c.Add(path); err != nil {
+		return err
+	}
+	return e.Apply(name, c.Values())
+}
+func (e *Editor) EditPath(name string, index int, path string) error {
+	if e.cancelled {
+		return picker.ErrCancelled
+	}
+	c, err := e.collection(name)
+	if err != nil {
+		return err
+	}
+	if err = c.Edit(index, path); err != nil {
+		return err
+	}
+	return e.Apply(name, c.Values())
+}
+func (e *Editor) RemovePath(name string, index int) error {
+	if e.cancelled {
+		return picker.ErrCancelled
+	}
+	c, err := e.collection(name)
+	if err != nil {
+		return err
+	}
+	if err = c.Remove(index); err != nil {
+		return err
+	}
+	return e.Apply(name, c.Values())
+}
+func copyAnswers(values map[string]any) map[string]any {
+	out := make(map[string]any, len(values))
+	for name, value := range values {
+		if value != nil {
+			rv := reflect.ValueOf(value)
+			if rv.Kind() == reflect.Slice {
+				copy := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+				reflect.Copy(copy, rv)
+				value = copy.Interface()
+			}
+		}
+		out[name] = value
+	}
+	return out
+}

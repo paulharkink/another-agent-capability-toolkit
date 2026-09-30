@@ -1,0 +1,121 @@
+schema_version = 1
+id = "cluster-inspector"
+name = "Cluster Inspector"
+
+[skill]
+name = "cluster-inspector"
+files = ["scripts"]
+
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "Local port"
+config_key = "mcp.local_port"
+default = 8765
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Host"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "api_server"
+type = "string"
+label = "Api server"
+config_key = "cluster.api_server"
+required = true
+
+[[inputs]]
+name = "token"
+type = "secret"
+label = "Token"
+
+[[inputs]]
+name = "kubeconfig"
+type = "file"
+label = "Kubeconfig"
+
+[[inputs]]
+name = "connections"
+type = "string"
+label = "Connections"
+multiple = true
+
+[[inputs]]
+name = "ca_file"
+type = "file"
+label = "Ca file"
+config_key = "cluster.ca_file"
+
+[[inputs]]
+name = "ca_data"
+type = "string"
+label = "Ca data"
+config_key = "cluster.ca_data"
+
+[[inputs]]
+name = "insecure_skip_tls_verify"
+type = "boolean"
+label = "Insecure skip tls verify"
+config_key = "cluster.insecure_skip_tls_verify"
+
+[[inputs]]
+name = "verify_x509_strict"
+type = "boolean"
+label = "Verify x509 strict"
+config_key = "cluster.verify_x509_strict"
+default = true
+
+[[inputs]]
+name = "tekton_default_namespace"
+type = "string"
+label = "Tekton default namespace"
+config_key = "tekton.default_namespace"
+
+[[inputs]]
+name = "tekton_branch_selector_key"
+type = "string"
+label = "Tekton branch selector key"
+config_key = "tekton.branch_selector_key"
+
+[[inputs]]
+name = "tekton_repository_selector_key"
+type = "string"
+label = "Tekton repository selector key"
+config_key = "tekton.repository_selector_key"
+
+[[inputs]]
+name = "tekton_repository_context_hook"
+type = "file"
+label = "Tekton repository context hook"
+config_key = "tekton.repository_context_hook"
+
+[mcp]
+name = "cluster-inspector"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "local_port"
+build_context = "./mcp"
+
+[mcp.actions.prepare]
+command = ["bin/inspector-helper", "cluster-inspector", "prepare"]
+timeout_seconds = 300
+
+[mcp.actions.prepare.windows]
+command = ["bin/inspector-helper.exe", "cluster-inspector", "prepare"]
+
+[mcp.actions.authenticate]
+command = ["bin/inspector-helper", "cluster-inspector", "authenticate"]
+timeout_seconds = 300
+
+[mcp.actions.authenticate.windows]
+command = ["bin/inspector-helper.exe", "cluster-inspector", "authenticate"]
