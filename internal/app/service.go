@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -29,11 +27,13 @@ type MCPRuntime interface {
 	Logs(context.Context, state.Key) (io.ReadCloser, error)
 }
 type Options struct {
-	Runner      process.Executor
-	Editor      Editor
-	Runtime     MCPRuntime
-	OnStderr    func([]byte)
-	BundledRoot string
+	Runner             process.Executor
+	Editor             Editor
+	Runtime            MCPRuntime
+	OnStderr           func([]byte)
+	BundledRoot        string
+	RecordInstallation func(state.Installation) error
+	RemoveInstallation func(state.Installation) error
 }
 type Service struct {
 	Source  config.Source
@@ -60,6 +60,7 @@ type InstallRequest struct {
 	Inputs                       map[string]any
 	Interactive                  bool
 	ExternalURL                  string
+	UpdateSource                 bool
 }
 type MCPRequest struct {
 	Action, Package, Environment, Target string
@@ -98,7 +99,10 @@ func (s *Service) key(p, env, target string) state.Key {
 	}
 	return state.Key{Source: s.Source.ID, Package: p, Environment: env, Target: target}
 }
-func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target string, cli map[string]any, interactive bool) (map[string]any, config.Target, state.Key, error) {
+func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target string, cli map[string]any, interactive, prepare bool) (map[string]any, config.Target, state.Key, error) {
+	if env == "" && target == "default" {
+		target = ""
+	}
 	k := s.key(p.ID, env, target)
 	t := config.Target{Environment: env, Name: k.Target, Raw: map[string]any{}}
 	if env != "" || target != "" {
@@ -151,13 +155,54 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 		if s.Options.Editor == nil {
 			return nil, t, k, invalid(errors.New("interactive editor is unavailable"))
 		}
-		values, e = s.Options.Editor(ctx, p.Inputs, values)
+		seedDefs := append([]catalog.Input{}, p.Inputs...)
+		if prepare && p.MCP != nil {
+			if _, ok := p.MCP.Actions["prepare"]; ok {
+				for n, d := range seedDefs {
+					if (d.Type == "choice" || d.Type == "multichoice" || d.Type == "multiple-choice") && len(d.Options) == 0 {
+						seedDefs[n].Required = false
+						seedDefs[n].MinItems = nil
+					}
+				}
+			}
+		}
+		values, e = s.Options.Editor(ctx, seedDefs, values)
 		if e != nil {
 			return nil, t, k, e
 		}
 		values, e = config.ResolveInputPaths(p.Inputs, values, filepath.Join(cwd, ".aact-inputs"))
 		if e != nil {
 			return nil, t, k, invalid(e)
+		}
+		if prepare && p.MCP != nil {
+			if _, ok := p.MCP.Actions["prepare"]; ok {
+				if e = forms.Validate(seedDefs, values); e != nil {
+					return nil, t, k, invalid(e)
+				}
+				var result mcp.ActionResult
+				e = s.Store.WithLock(ctx, func() error {
+					var err error
+					result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, p, mcp.ActionRequest{Action: "prepare", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: false})
+					return err
+				})
+				if e != nil {
+					return nil, t, k, e
+				}
+				if len(result.Choices) > 0 {
+					defs := withChoices(p.Inputs, result.Choices)
+					values, e = s.Options.Editor(ctx, defs, values)
+					if e != nil {
+						return nil, t, k, e
+					}
+					values, e = config.ResolveInputPaths(defs, values, filepath.Join(cwd, ".aact-inputs"))
+					if e != nil {
+						return nil, t, k, invalid(e)
+					}
+					if e = forms.Validate(defs, values); e != nil {
+						return nil, t, k, invalid(e)
+					}
+				}
+			}
 		}
 	}
 	values, e = forms.Resolve(p.Inputs, values)
@@ -185,8 +230,7 @@ func registrationName(k state.Key) string {
 	if k.Target != "default" {
 		parts = append(parts, k.Target)
 	}
-	h := sha256.Sum256([]byte(k.Source))
-	return strings.Join(parts, "-") + "-" + hex.EncodeToString(h[:4])
+	return strings.Join(parts, "-") + "-" + k.ID()[:16]
 }
 func (s *Service) ownedEnvironment(e agents.Environment, rows []state.Installation) agents.Environment {
 	e.Owned = map[string]agents.Registration{}
@@ -207,7 +251,18 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e != nil {
 		return out, e
 	}
-	values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive)
+	refs, e := s.sourceRefs()
+	if e != nil {
+		return out, e
+	}
+	if !q.UpdateSource {
+		for _, ref := range refs {
+			if ref.ID == s.Source.ID && !sameSourceLocation(ref.Root, s.Source.Root) {
+				return out, invalid(fmt.Errorf("source %s is registered at %s; use --update-source to select this checkout", s.Source.ID, ref.Root))
+			}
+		}
+	}
+	values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.ExternalURL == "")
 	if e != nil {
 		return out, e
 	}
@@ -234,18 +289,18 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		}()
 	}
 	err = s.Store.WithLock(ctx, func() error {
-		if e := s.rememberSource(); e != nil {
-			return e
-		}
+		applied := false
 		url := q.ExternalURL
 		if p.MCP != nil && url == "" {
 			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
 			if e != nil {
 				return e
 			}
+			applied = true
 			url = instance.URL
 		}
 		skills := install.NewSkills(s.Store)
+		skills.AllowSourceUpdate = q.UpdateSource
 		for _, env := range q.Agents {
 			if e = ctx.Err(); e != nil {
 				return e
@@ -253,10 +308,13 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			agentErr := error(nil)
 			if p.Skill != nil {
 				agentErr = skills.Install(ctx, p, env, k, generated)
+				if agentErr == nil {
+					applied = true
+				}
 			}
 			if agentErr == nil && p.MCP != nil {
 				if env.ConfigPath == "" && agents.IsManual(env.Kind) {
-					env.ConfigPath = filepath.Join(s.Store.Root(), "manual", env.ID, "mcp.json")
+					env.ConfigPath = s.manualConfigPath(env)
 				}
 				rows, e := s.Store.Installations()
 				if e != nil {
@@ -268,19 +326,33 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 					agentErr = e
 				} else {
 					reg := agents.Registration{Name: registrationName(k), URL: url, Transport: p.MCP.Transport, TimeoutMS: 30000}
-					agentErr = adapter.Register(ctx, env, reg)
+					files, snapshotErr := snapshotRegistration(env)
+					agentErr = snapshotErr
 					if agentErr == nil {
-						row := state.Installation{Key: k, AgentID: env.ID, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS}
+						agentErr = adapter.Register(ctx, env, reg)
+					}
+					if agentErr == nil {
+						row := state.Installation{Key: k, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS}
 						if agents.IsManual(env.Kind) {
 							row.Mode = "manual"
 							out.Message = "Manual MCP configuration: " + env.ConfigPath
 						}
-						agentErr = s.Store.Record(row)
+						agentErr = s.recordRegistration(row)
+						if agentErr != nil {
+							agentErr = errors.Join(agentErr, restoreRegistration(files))
+						} else {
+							applied = true
+						}
 					}
 				}
 			}
 			if agentErr != nil {
 				out.Errors = append(out.Errors, env.ID+": "+agentErr.Error())
+			}
+		}
+		if applied {
+			if e := s.rememberSource(); e != nil {
+				return e
 			}
 		}
 		rows, e := s.Store.Installations()
@@ -317,7 +389,7 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 		skills := install.NewSkills(s.Store)
 		for _, env := range q.Agents {
 			if agents.IsManual(env.Kind) && env.ConfigPath == "" {
-				env.ConfigPath = filepath.Join(s.Store.Root(), "manual", env.ID, "mcp.json")
+				env.ConfigPath = s.manualConfigPath(env)
 			}
 			rows, e := s.Store.Installations()
 			if e != nil {
@@ -326,15 +398,22 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 			env = s.ownedEnvironment(env, rows)
 			failed := false
 			for _, r := range rows {
-				if r.Key != k || r.AgentID != env.ID || r.Component != "mcp" {
+				if r.Key != k || r.AgentID != env.ID || r.Component != "mcp" || r.Destination != env.ConfigPath {
 					continue
 				}
 				adapter, e := agents.For(env.Kind, s.Options.Runner)
+				files, snapshotErr := snapshotRegistration(env)
+				if e == nil {
+					e = snapshotErr
+				}
 				if e == nil {
 					e = adapter.Unregister(ctx, env, r.RegistrationName)
 				}
 				if e == nil {
-					e = s.Store.Remove(r)
+					e = s.removeRegistration(r)
+					if e != nil {
+						e = errors.Join(e, restoreRegistration(files))
+					}
 				}
 				if e != nil {
 					out.Errors = append(out.Errors, env.ID+": "+e.Error())
@@ -382,6 +461,9 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 		if result.AuthRequired {
 			return mcp.Instance{}, fmt.Errorf("%s authentication required; run aact mcp authenticate %s with credentials or --interactive", p.ID, p.ID)
 		}
+		if e = forms.Validate(withChoices(p.Inputs, result.Choices), values); e != nil {
+			return mcp.Instance{}, invalid(e)
+		}
 		if result.Runtime == nil {
 			return mcp.Instance{}, errors.New("prepare action did not return runtime settings")
 		}
@@ -414,7 +496,7 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 		out.Logs = string(b)
 		return out, e
 	case "start", "authenticate", "prepare":
-		values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive)
+		values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.Action == "start" || q.Action == "prepare")
 		if e != nil {
 			return out, e
 		}

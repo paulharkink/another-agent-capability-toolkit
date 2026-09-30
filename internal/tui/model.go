@@ -120,7 +120,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if op.action == "set-environment-root" {
 			op.target, _ = values["root"].(string)
 		} else {
-			op.agent, _ = values["agent"].(string)
+			if agents, ok := values["agent"].([]string); ok {
+				op.agent = strings.Join(agents, ",")
+			}
 			op.environment, _ = values["environment"].(string)
 			op.target, _ = values["target"].(string)
 		}
@@ -252,6 +254,20 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 	switch m.view {
 	case "Catalog":
 		if m.selected < len(m.catalog) {
+			if stroke == "a" || stroke == "s" {
+				p := m.catalog[m.selected]
+				if p.MCP == nil {
+					m.output = "This package has no MCP server to authenticate or start."
+					return nil
+				}
+				action := "authenticate"
+				if stroke == "s" {
+					action = "start"
+				}
+				m.pending = operation{action: action, source: m.sourceLabels[p.Dir], packageID: p.ID}
+				m.contextForm()
+				return nil
+			}
 			if stroke == "enter" || stroke == "i" {
 				p := m.catalog[m.selected]
 				m.pending = operation{action: "install", source: m.sourceLabels[p.Dir], packageID: p.ID}
@@ -276,7 +292,17 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 			inst := m.mcps[m.selected]
 			actions := map[string]string{"enter": "status", "s": "start", "x": "stop", "a": "authenticate", "l": "logs", "u": "uninstall"}
 			if action := actions[stroke]; action != "" {
-				return m.run(operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target})
+				if inst.Status == "external" && action != "status" && action != "uninstall" {
+					m.output = "External registrations support status and unregister actions."
+					return nil
+				}
+				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target}
+				if action == "uninstall" {
+					m.pending = op
+					m.contextForm()
+					return nil
+				}
+				return m.run(op)
 			}
 		}
 	case "Agents":
@@ -297,14 +323,42 @@ func (m *Model) contextForm() {
 	for _, agent := range m.agents {
 		choices = append(choices, catalog.Choice{Value: agent, Label: agent})
 	}
-	agent := ""
-	if len(m.agents) > 0 {
-		agent = m.agents[0]
+	selected := []string{}
+	for _, configured := range strings.Split(m.settings["default_agents"], ",") {
+		candidate := strings.TrimSpace(configured)
+		for _, agent := range m.agents {
+			if candidate == agent {
+				present := false
+				for _, old := range selected {
+					if old == agent {
+						present = true
+					}
+				}
+				if !present {
+					selected = append(selected, agent)
+				}
+				break
+			}
+		}
 	}
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agent", Label: "Agent", Type: "choice", Options: choices, Required: true}, {Name: "environment", Label: "Environment (optional)", Type: "string"}, {Name: "target", Label: "Target (optional)", Type: "string"}}, map[string]any{"agent": agent, "environment": "", "target": ""})
+	if len(selected) == 0 && len(m.agents) > 0 {
+		selected = append(selected, m.agents[0])
+	}
+	target := m.pending.target
+	if m.pending.environment == "" && target == "default" {
+		target = ""
+	}
+	defs := []catalog.Input{{Name: "environment", Label: "Environment (optional)", Type: "string"}, {Name: "target", Label: "Target (optional)", Type: "string"}}
+	prefill := map[string]any{"environment": m.pending.environment, "target": target}
+	if m.pending.action == "install" || m.pending.action == "uninstall" {
+		defs = append([]catalog.Input{{Name: "agent", Label: "Agents", Type: "multichoice", Options: choices, Required: true}}, defs...)
+		prefill["agent"] = selected
+	}
+	m.form = forms.NewForm(m.ctx, defs, prefill)
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 }
 func (m *Model) run(op operation) tea.Cmd {
+	m.pending = op
 	m.busy = true
 	m.action = op.action
 	origin := m.view
@@ -372,9 +426,13 @@ func (m *Model) View() tea.View {
 	footer := "↑↓ select · Tab switch · R refresh · q quit"
 	switch m.view {
 	case "Catalog":
-		footer += "\nEnter install · u uninstall installed skill"
+		footer += "\nEnter install · a authenticate MCP · s start MCP · u uninstall installed skill"
 	case "MCPs":
-		footer += "\nEnter status · s start · x stop · a authenticate · l logs · u uninstall"
+		if m.selected < len(m.mcps) && m.mcps[m.selected].Status == "external" {
+			footer += "\nEnter status · u unregister"
+		} else {
+			footer += "\nEnter status · s start · x stop · a authenticate · l logs · u uninstall"
+		}
 	case "Agents":
 		footer += "\nEnter agent details"
 	case "Settings":

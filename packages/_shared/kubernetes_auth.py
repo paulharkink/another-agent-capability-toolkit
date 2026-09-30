@@ -252,16 +252,25 @@ def copy_kubeconfig(source: Path, destination: Path, expected_api_server: str) -
             raise ValueError("Selected kubeconfig contains an unflattened external credential file")
         if not any(key in user for key in ("token", "tokenFile", "client-certificate-data")):
             raise ValueError("Selected kubeconfig has no supported credentials")
-        _private_write(destination, json.dumps(config, sort_keys=True).encode())
-        who = subprocess.run(["kubectl", "auth", "whoami", "--kubeconfig", str(destination), "-o", "json"], check=True, capture_output=True, text=True, timeout=15)
-        data = json.loads(who.stdout)
-        username = data.get("status", {}).get("userInfo", {}).get("username")
-        if not isinstance(username, str) or not username:
-            # kubectl versions may emit the username directly in a table.
-            username = who.stdout.strip()
-        if not username:
-            raise ValueError("Could not determine authenticated username")
-        return username
+        # Validate a private candidate before replacing an existing target cache.
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, name = tempfile.mkstemp(prefix=".kubeconfig-validation-", dir=destination.parent)
+        os.close(fd)
+        candidate = Path(name)
+        try:
+            _private_write(candidate, json.dumps(config, sort_keys=True).encode())
+            who = subprocess.run(["kubectl", "auth", "whoami", "--kubeconfig", str(candidate), "-o", "json"], check=True, capture_output=True, text=True, timeout=15)
+            data = json.loads(who.stdout)
+            username = data.get("status", {}).get("userInfo", {}).get("username")
+            if not isinstance(username, str) or not username:
+                # Older kubectl versions may emit a direct username/table.
+                username = who.stdout.strip()
+            if not username:
+                raise ValueError("Could not determine authenticated username")
+            _private_write(destination, json.dumps(config, sort_keys=True).encode())
+            return username
+        finally:
+            candidate.unlink(missing_ok=True)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         raise ValueError("Could not validate selected kubeconfig") from error
 

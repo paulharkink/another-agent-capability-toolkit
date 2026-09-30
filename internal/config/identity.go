@@ -11,9 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-func sourceIdentity(manifest, explicit, stateRoot string) (string, error) {
+func sourceIdentity(manifest, explicit, stateRoot string, preview bool) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
@@ -70,37 +71,87 @@ func sourceIdentity(manifest, explicit, stateRoot string) (string, error) {
 	if id := ids[canonical]; id != "" {
 		return id, nil
 	}
-	var nonce [16]byte
-	if _, e = rand.Read(nonce[:]); e != nil {
+	hash := sha256.Sum256([]byte(canonical))
+	recordPath := filepath.Join(stateRoot, "manager", "source-identities", hex.EncodeToString(hash[:])+".json")
+	if id, err := readIdentityRecord(recordPath, canonical); err == nil {
+		return id, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if preview {
+		sum := sha256.Sum256([]byte(canonical))
+		return "preview-local-" + hex.EncodeToString(sum[:16]), nil
+	}
+	if e = os.MkdirAll(filepath.Dir(recordPath), 0700); e != nil {
 		return "", e
 	}
-	id := "local-" + hex.EncodeToString(nonce[:])
-	ids[canonical] = id
-	if e = os.MkdirAll(filepath.Dir(path), 0700); e != nil {
-		return "", e
+	for attempt := 0; attempt < 3; attempt++ {
+		f, err := os.OpenFile(recordPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if os.IsExist(err) {
+			id, readErr := readIdentityRecord(recordPath, canonical)
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			return id, readErr
+		}
+		if err != nil {
+			return "", err
+		}
+		var nonce [16]byte
+		_, err = rand.Read(nonce[:])
+		id := "local-" + hex.EncodeToString(nonce[:])
+		if err == nil {
+			err = json.NewEncoder(f).Encode(identityRecord{Path: canonical, ID: id})
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			os.Remove(recordPath)
+			return "", err
+		}
+		return id, nil
 	}
-	data, e = json.MarshalIndent(ids, "", "  ")
-	if e != nil {
-		return "", e
-	}
-	tmp, e := os.CreateTemp(filepath.Dir(path), "source-identities-*")
-	if e != nil {
-		return "", e
-	}
-	defer os.Remove(tmp.Name())
-	if _, e = tmp.Write(data); e != nil {
-		tmp.Close()
-		return "", e
-	}
-	if e = tmp.Close(); e != nil {
-		return "", e
-	}
-	if e = os.Rename(tmp.Name(), path); e != nil {
-		return "", e
-	}
-	return id, nil
+	return "", fmt.Errorf("source identity record disappeared while being created: %s", recordPath)
 }
+
+type identityRecord struct {
+	Path string `json:"path"`
+	ID   string `json:"id"`
+}
+
+func readIdentityRecord(path, canonical string) (string, error) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		var record identityRecord
+		err = json.Unmarshal(data, &record)
+		if err == nil && record.Path == canonical && safeID.MatchString(record.ID) {
+			return record.ID, nil
+		}
+		if time.Now().After(deadline) {
+			if err == nil {
+				err = fmt.Errorf("invalid path or source id")
+			}
+			return "", fmt.Errorf("%s: incomplete or invalid source identity record: %w", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func readOrigin(gitDir string) string {
+	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		common := strings.TrimSpace(string(data))
+		if common != "" {
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitDir, common)
+			}
+			gitDir = filepath.Clean(common)
+		}
+	}
 	f, e := os.Open(filepath.Join(gitDir, "config"))
 	if e != nil {
 		return ""

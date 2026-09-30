@@ -109,3 +109,28 @@ source="./plain"`} {
 		}
 	}
 }
+
+func TestDiscoverPreviewDoesNotCreateLocalIdentity(t *testing.T) {
+	root := checkout(t)
+	put(t, filepath.Join(root, "aact.toml"), "schema_version=1\n")
+	state := filepath.Join(t.TempDir(), "absent-state")
+	first, e := DiscoverPreview(root, "", "", state)
+	if e != nil {
+		t.Fatal(e)
+	}
+	second, e := DiscoverPreview(root, "", "", state)
+	if e != nil || first.ID != second.ID {
+		t.Fatalf("%#v %#v %v", first, second, e)
+	}
+	if _, e = os.Stat(state); !os.IsNotExist(e) {
+		t.Fatalf("preview wrote state: %v", e)
+	}
+	saved, e := Discover(root, "", "", state)
+	if e != nil {
+		t.Fatal(e)
+	}
+	preview, e := DiscoverPreview(root, "", "", state)
+	if e != nil || preview.ID != saved.ID {
+		t.Fatalf("%#v %#v %v", saved, preview, e)
+	}
+}

@@ -1,0 +1,48 @@
+name: Native and container checks
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./... -count=1
+      - run: go vet ./...
+      - name: Race checks
+        if: runner.os != 'Windows'
+        run: go test -race ./... -count=1
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -tags integration ./tests/integration -run TestDockerMCP -count=1
+      - run: go test -tags docker_integration ./internal/mcp ./internal/packagehelpers ./internal/sessionsearch ./tests/packages -count=1
+      - run: sh tools/test-containers.sh
+  archives:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run ./tools/release --version 0.1.0-dev --out dist
+      - run: go run ./tools/release --version 0.1.0-dev --out dist --verify-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aact-development-archives
+          path: dist/*

@@ -193,22 +193,26 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 		}
 		edits = append(edits, fileEdit{file, original, updated, existed, mode})
 	}
+	restore := func(n int, cause error) error {
+		var restoration []error
+		for j := n - 1; j >= 0; j-- {
+			prior := edits[j]
+			if prior.existed {
+				restoration = append(restoration, state.WriteAtomic(prior.path, prior.original, prior.mode))
+			} else {
+				restoration = append(restoration, os.Remove(prior.path))
+			}
+		}
+		return errors.Join(append([]error{cause}, restoration...)...)
+	}
 	for n, edit := range edits {
 		if err := ctx.Err(); err != nil {
-			return err
+			return restore(n, err)
 		}
 		if err := state.WriteAtomic(edit.path, edit.updated, edit.mode); err != nil {
-			var restoration []error
-			for j := n - 1; j >= 0; j-- {
-				prior := edits[j]
-				if prior.existed {
-					restoration = append(restoration, state.WriteAtomic(prior.path, prior.original, prior.mode))
-				} else {
-					restoration = append(restoration, os.Remove(prior.path))
-				}
-			}
-			return errors.Join(append([]error{err}, restoration...)...)
+			return restore(n, err)
 		}
 	}
+
 	return nil
 }

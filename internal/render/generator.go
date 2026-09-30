@@ -41,7 +41,7 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 		return nil, errors.New("empty generator command")
 	}
 	argv := append([]string{}, c.Argv...)
-	if !filepath.IsAbs(argv[0]) {
+	if !filepath.IsAbs(argv[0]) && strings.ContainsAny(argv[0], "/\\") {
 		path, err := contained(p.Dir, argv[0], false)
 		if err != nil {
 			return nil, err
@@ -60,7 +60,7 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
 	defer cancel()
-	request := map[string]any{"protocol_version": 1, "inputs": inputs, "context": map[string]any{"target": target, "package_dir": p.Dir, "staging_dir": staging}}
+	request := map[string]any{"protocol_version": 1, "inputs": inputs, "context": map[string]any{"target": target, "environment": target.Environment, "package_dir": p.Dir, "staging_dir": staging}}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode generator inputs: %w", err)
@@ -70,41 +70,24 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 		runner = process.OSExecutor{}
 	}
 	secrets := secretValues(inputs)
-	var pending bytes.Buffer
-	emit := func(line []byte) {
-		if g.OnStderr == nil {
-			return
-		}
-		s := string(line)
-		for _, secret := range secrets {
-			if secret != "" {
-				s = strings.ReplaceAll(s, secret, "[REDACTED]")
+	for _, input := range p.Inputs {
+		if input.Type == "secret" {
+			if v, ok := inputs[input.Name].(string); ok {
+				secrets = append(secrets, v)
 			}
 		}
-		g.OnStderr([]byte(s))
 	}
-	callback := func(chunk []byte) {
-		if g.OnStderr == nil {
-			return
-		}
-		pending.Write(chunk)
-		for {
-			all := pending.Bytes()
-			n := bytes.IndexByte(all, '\n')
-			if n < 0 {
-				break
-			}
-			line := append([]byte{}, all[:n+1]...)
-			pending.Next(n + 1)
-			emit(line)
-		}
-	}
-	output, err := runner.Run(ctx, argv, p.Dir, body, nil, callback)
-	if pending.Len() > 0 {
-		emit(pending.Bytes())
-	}
+	redactor := process.NewRedactor(secrets, g.OnStderr)
+	output, err := runner.Run(ctx, argv, p.Dir, body, nil, redactor.Write)
+	redactor.Flush()
 	if err != nil {
-		return nil, err
+		message := err.Error()
+		for _, value := range secrets {
+			if value != "" {
+				message = strings.ReplaceAll(message, value, "[redacted]")
+			}
+		}
+		return nil, redactedError{err, message}
 	}
 	if len(output) > process.MaxStdout {
 		return nil, process.ErrOutputLimit
@@ -138,3 +121,11 @@ func secretValues(inputs map[string]any) []string {
 	}
 	return out
 }
+
+type redactedError struct {
+	underlying error
+	message    string
+}
+
+func (e redactedError) Error() string { return e.message }
+func (e redactedError) Unwrap() error { return e.underlying }

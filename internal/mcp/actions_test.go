@@ -13,15 +13,35 @@ type actionExec struct {
 	request ActionRequest
 	output  string
 	calls   int
+	chunks  []string
 }
 
 func (f *actionExec) Run(_ context.Context, _ []string, _ string, b []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
 	f.calls++
 	json.Unmarshal(b, &f.request)
 	if stderr != nil {
-		stderr([]byte("progress private-secret"))
+		if len(f.chunks) == 0 {
+			stderr([]byte("progress private-secret"))
+		} else {
+			for _, s := range f.chunks {
+				stderr([]byte(s))
+			}
+		}
 	}
 	return []byte(f.output), nil
+}
+
+func TestActionRejectsNullAndRedactsSplitSecret(t *testing.T) {
+	f := &actionExec{output: `null`, chunks: []string{"private-", "secret"}}
+	var p string
+	r := ActionRunner{Executor: f, OnStderr: func(b []byte) { p += string(b) }}
+	_, e := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", Inputs: map[string]any{"token": "private-secret"}})
+	if e == nil {
+		t.Fatal("null accepted")
+	}
+	if strings.Contains(p, "private-secret") {
+		t.Fatal(p)
+	}
 }
 func actionPackage() catalog.Package {
 	return catalog.Package{ID: "p", Dir: "/tmp/pkg", Inputs: []catalog.Input{{Name: "token", Type: "secret"}, {Name: "connections", Type: "string", Multiple: true}}, MCP: &catalog.MCP{Actions: map[string]catalog.Command{"prepare": {Argv: []string{"bin/helper", "prepare"}}, "authenticate": {Argv: []string{"bin/helper", "authenticate"}}}}}

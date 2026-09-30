@@ -13,6 +13,26 @@ import (
 func sampleKey(source string) Key {
 	return Key{Source: source, Package: "cluster-inspector", Environment: "company", Target: "prod"}
 }
+
+func TestReadOnlyOpenHasNoWrites(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent")
+	s, e := OpenReadOnly(root)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Stat(root); !os.IsNotExist(e) {
+		t.Fatal("read-only open created state")
+	}
+	if _, e = s.Answers(Key{Source: "x"}); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.SaveAnswers(Key{}, map[string]any{}); !errors.Is(e, ErrReadOnly) {
+		t.Fatal(e)
+	}
+	if e = s.WithLock(context.Background(), func() error { t.Fatal("read-only lock callback invoked"); return nil }); !errors.Is(e, ErrReadOnly) {
+		t.Fatal(e)
+	}
+}
 func TestSourceScopedAnswers(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 type sourceRef struct {
@@ -22,6 +23,16 @@ type sourceRef struct {
 	EnvironmentRoot string   `json:"environment_root"`
 	BundledRoot     string   `json:"bundled_root"`
 	PackageDirs     []string `json:"package_dirs"`
+}
+
+// Manual artifacts are scoped to the agent profile and home using a portable name.
+func (s *Service) manualConfigPath(env agents.Environment) string {
+	home, err := filepath.Abs(env.Home)
+	if err != nil {
+		home = env.Home
+	}
+	id := state.Key{Source: env.Kind, Package: env.ID, Target: filepath.Clean(home)}.ID()
+	return filepath.Join(s.Store.Root(), "manual", id, "mcp.json")
 }
 
 func (s *Service) sourceRefs() ([]sourceRef, error) {
@@ -35,6 +46,14 @@ func (s *Service) sourceRefs() ([]sourceRef, error) {
 	var refs []sourceRef
 	e = json.Unmarshal(b, &refs)
 	return refs, e
+}
+func sameSourceLocation(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, ae := os.Stat(a)
+	bi, be := os.Stat(b)
+	return ae == nil && be == nil && os.SameFile(ai, bi)
 }
 func (s *Service) rememberSource() error {
 	refs, e := s.sourceRefs()
@@ -106,10 +125,40 @@ func (s *Service) UIMCPs(ctx context.Context) ([]mcp.Instance, error) {
 	return s.Options.Runtime.List(ctx)
 }
 func (s *Service) UIAgents(context.Context) ([]string, error) {
-	return []string{"codex", "opencode", "copilot-cli", "intellij", "copilot-intellij", "generic"}, nil
+	out := []string{"codex", "opencode", "copilot-cli", "intellij", "copilot-intellij", "generic"}
+	seen := map[string]bool{}
+	for _, id := range out {
+		seen[id] = true
+	}
+	rows, e := s.Store.Installations()
+	if e != nil {
+		return nil, e
+	}
+	for _, r := range rows {
+		if r.Component != "runtime" && !seen[r.AgentID] {
+			out = append(out, r.AgentID)
+			seen[r.AgentID] = true
+		}
+	}
+	return out, nil
 }
 func (s *Service) UISettings(context.Context) (map[string]string, error) {
-	return map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "environment-root": s.Source.EnvironmentRoot, "state-dir": s.Store.Root()}, nil
+	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "environment-root": s.Source.EnvironmentRoot, "environment_root": s.Source.EnvironmentRoot, "state-dir": s.Store.Root()}
+	b, e := os.ReadFile(filepath.Join(s.Store.Root(), "manager", "settings.json"))
+	if os.IsNotExist(e) {
+		return out, nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	var settings struct {
+		Agents []string `json:"agents"`
+	}
+	if e = json.Unmarshal(b, &settings); e != nil {
+		return nil, e
+	}
+	out["default_agents"] = strings.Join(settings.Agents, ",")
+	return out, nil
 }
 func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	labels := map[string]string{s.Source.ID: s.Source.ID}
@@ -156,7 +205,8 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 		if e != nil {
 			return "", e
 		}
-		a, e := agents.ResolveEnvironment(agentID, agentID, home)
+		kind, _, _ := strings.Cut(agentID, ":")
+		a, e := agents.ResolveEnvironment(agentID, kind, home)
 		if e != nil {
 			return "", e
 		}
@@ -165,15 +215,19 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 	}
 	var out Result
 	if action == "install" || action == "uninstall" {
-		home, e := os.UserHomeDir()
-		if e != nil {
-			return "", e
+		envs := []agents.Environment{}
+		for _, id := range strings.Split(agentID, ",") {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return "", invalid(errors.New("select an agent"))
+			}
+			a, e := svc.uiEnvironment(id, svc.key(packageID, environment, target))
+			if e != nil {
+				return "", e
+			}
+			envs = append(envs, a)
 		}
-		a, e := agents.ResolveEnvironment(agentID, agentID, home)
-		if e != nil {
-			return "", e
-		}
-		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: []agents.Environment{a}, Interactive: action == "install"}
+		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: action == "install"}
 		if action == "install" {
 			out, e = svc.Install(ctx, q)
 		} else {
@@ -187,6 +241,52 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), e
+}
+
+func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, error) {
+	home, e := os.UserHomeDir()
+	if e != nil {
+		return agents.Environment{}, e
+	}
+	kind, _, _ := strings.Cut(id, ":")
+	rows, e := s.Store.Installations()
+	if e != nil {
+		return agents.Environment{}, e
+	}
+	matching := []state.Installation{}
+	for _, r := range rows {
+		if r.AgentID == id && r.Key == k && r.Component != "runtime" {
+			matching = append(matching, r)
+		}
+	}
+	homes := map[string]bool{}
+	for _, r := range matching {
+		if r.AgentHome != "" {
+			homes[r.AgentHome] = true
+		}
+		if r.AgentKind != "" {
+			kind = r.AgentKind
+		}
+	}
+	if len(homes) > 1 {
+		return agents.Environment{}, fmt.Errorf("agent %s has multiple homes; use the CLI with --agent-home", id)
+	}
+	for h := range homes {
+		home = h
+	}
+	env, e := agents.ResolveEnvironment(id, kind, home)
+	if e != nil {
+		return env, e
+	}
+	for _, r := range matching {
+		switch r.Component {
+		case "skill":
+			env.SkillsDir = filepath.Dir(r.Destination)
+		case "mcp":
+			env.ConfigPath = r.Destination
+		}
+	}
+	return env, nil
 }
 func (s *Service) Sources() ([]string, error) {
 	refs, e := s.sourceRefs()

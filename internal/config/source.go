@@ -38,6 +38,14 @@ type sourceManifest struct {
 var safeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 func Discover(cwd, explicitConfig, bundledRoot, stateRoot string) (Source, error) {
+	return discover(cwd, explicitConfig, bundledRoot, stateRoot, false)
+}
+
+// DiscoverPreview does not create a saved local source identity or any other state.
+func DiscoverPreview(cwd, explicitConfig, bundledRoot, stateRoot string) (Source, error) {
+	return discover(cwd, explicitConfig, bundledRoot, stateRoot, true)
+}
+func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) (Source, error) {
 	cwd, err := filepath.Abs(cwd)
 	if err != nil {
 		return Source{}, err
@@ -86,7 +94,7 @@ func Discover(cwd, explicitConfig, bundledRoot, stateRoot string) (Source, error
 		return Source{}, fmt.Errorf("invalid source_id %q", m.SourceID)
 	}
 	root := filepath.Dir(manifest)
-	id, err := sourceIdentity(manifest, m.SourceID, stateRoot)
+	id, err := sourceIdentity(manifest, m.SourceID, stateRoot, preview)
 	if err != nil {
 		return Source{}, err
 	}

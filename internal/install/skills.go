@@ -14,8 +14,9 @@ import (
 )
 
 type Skills struct {
-	Store *state.Store
-	Link  func(string, string) error
+	Store             *state.Store
+	Link              func(string, string) error
+	AllowSourceUpdate bool
 }
 
 func NewSkills(s *state.Store) *Skills { return &Skills{Store: s, Link: os.Symlink} }
@@ -72,6 +73,9 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 				}
 			}
 		}
+		if previous != nil && generatedDir == "" && previous.SourcePath != source && !s.AllowSourceUpdate {
+			return fmt.Errorf("skill source moved from %s to %s; use --update-source to update the owned link", previous.SourcePath, source)
+		}
 		_, statErr := os.Lstat(destination)
 		exists := statErr == nil
 		if statErr != nil && !os.IsNotExist(statErr) {
@@ -96,6 +100,8 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 			row := shared[0]
 			row.Key = k
 			row.AgentID = e.ID
+			row.AgentHome = e.Home
+			row.AgentKind = e.Kind
 			return s.Store.Record(row)
 		}
 		if len(shared) > 1 || (len(shared) == 1 && previous == nil) {
@@ -149,7 +155,7 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 			}
 			return err
 		}
-		row := state.Installation{Key: k, AgentID: e.ID, Component: "skill", Destination: destination, SourcePath: source, Mode: mode, Digest: digest}
+		row := state.Installation{Key: k, AgentID: e.ID, AgentHome: e.Home, AgentKind: e.Kind, Component: "skill", Destination: destination, SourcePath: source, Mode: mode, Digest: digest}
 		if err = s.Store.Record(row); err != nil {
 			if rollback := restore(); rollback != nil {
 				return fmt.Errorf("ledger write: %v; rollback: %w", err, rollback)
@@ -169,13 +175,20 @@ func (s *Skills) Uninstall(ctx context.Context, k state.Key, e agents.Environmen
 	if s.Store == nil {
 		return errors.New("state store required")
 	}
+	selectedDir, err := filepath.Abs(e.SkillsDir)
+	if err != nil {
+		return err
+	}
+	if e.SkillsDir == "" {
+		return errors.New("explicit agent skills directory required")
+	}
 	return func() error {
 		rows, err := s.Store.Installations()
 		if err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if row.Component != "skill" || row.Key != k || row.AgentID != e.ID {
+			if row.Component != "skill" || row.Key != k || row.AgentID != e.ID || filepath.Dir(row.Destination) != selectedDir {
 				continue
 			}
 			if err = verifyOwned(ctx, row); err != nil {

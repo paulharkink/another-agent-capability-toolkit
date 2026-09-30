@@ -178,7 +178,11 @@ def test_copy_kubeconfig_embeds_referenced_files_and_returns_certificate_usernam
         if "view" in args:
             assert all(flag in args for flag in ("--raw", "--flatten", "--minify"))
             return type("R", (), {"stdout": json.dumps(views[0])})()
-        assert str(dest) in args
+        candidate = Path(args[args.index("--kubeconfig") + 1])
+        assert candidate.parent == dest.parent
+        assert json.loads(candidate.read_text()) == views[0]
+        assert candidate.stat().st_mode & 0o777 == 0o600
+        assert not dest.exists()
         return type("R", (), {"stdout": json.dumps({"status": {"userInfo": {"username": "certificate-user"}}})})()
     with patch("subprocess.run", run):
         assert copy_kubeconfig(source, dest, "https://cluster.invalid") == "certificate-user"
@@ -354,3 +358,16 @@ def test_copy_kubeconfig_rejects_unflattened_external_file_references(tmp_path):
     data = {"clusters":[{"name":"c","cluster":{"server":"https://cluster.invalid","certificate-authority":"/outside/ca.crt"}}], "users":[{"name":"u","user":{"client-key":"/outside/key.pem"}}], "contexts":[{"name":"x","context":{"cluster":"c","user":"u"}}], "current-context":"x"}
     with patch("subprocess.run", return_value=type("R", (), {"stdout":json.dumps(data)})()):
         with pytest.raises(ValueError): copy_kubeconfig(source, dest, "https://cluster.invalid")
+
+def test_rejected_explicit_kubeconfig_preserves_previous_target_credential(tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+    source=tmp_path/"selected";source.write_text("explicit fixture")
+    destination=tmp_path/"state/kubeconfig";destination.parent.mkdir();destination.write_text("previous private credential")
+    document={"clusters":[{"cluster":{"server":"https://cluster.invalid"}}],"users":[{"user":{"token":"rejected-fixture-token"}}]}
+    def run(args,**kwargs):
+        if args[1:3]==["config","view"]:return SimpleNamespace(stdout=json.dumps(document))
+        raise subprocess.CalledProcessError(1,args)
+    with patch("kubernetes_auth.subprocess.run",side_effect=run):
+        with pytest.raises(ValueError):copy_kubeconfig(source,destination,"https://cluster.invalid")
+    assert destination.read_text()=="previous private credential"

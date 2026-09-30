@@ -141,7 +141,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choiceIndex[def.Name] = (m.choiceIndex[def.Name] + len(def.Options) + delta) % len(def.Options)
 			}
 		case "[", "]":
-			if paths, ok := value.([]string); ok && len(paths) > 0 {
+			if paths := collectionRows(value); len(paths) > 0 {
 				delta := 1
 				if stroke == "[" {
 					delta = -1
@@ -149,16 +149,18 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rowIndex[def.Name] = (m.rowIndex[def.Name] + len(paths) + delta) % len(paths)
 			}
 		case "r":
-			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
-				m.setError(m.editor.RemovePath(def.Name, m.rowIndex[def.Name]))
+			if scalarDefinition(def).Multiple {
+				m.setError(m.editor.RemoveValue(def.Name, m.rowIndex[def.Name]))
 				m.rowIndex[def.Name] = 0
 			}
 		case "a":
 			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
 				return m, m.pick(def, "add", "")
+			} else if def.Multiple && len(def.Options) == 0 {
+				m.beginEdit("add", "")
 			}
 		case "A":
-			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
+			if def.Multiple && len(def.Options) == 0 {
 				m.beginEdit("add", "")
 			}
 		case "e":
@@ -166,6 +168,10 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if paths, ok := value.([]string); ok && len(paths) > 0 {
 					index := m.rowIndex[def.Name] % len(paths)
 					return m, m.pick(def, "edit", paths[index])
+				}
+			} else if def.Multiple && len(def.Options) == 0 {
+				if rows := collectionRows(value); len(rows) > 0 {
+					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]%len(rows)]))
 				}
 			}
 		case "m":
@@ -182,7 +188,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "enter", "space", " ":
-			if def.Type == "boolean" {
+			if def.Type == "boolean" && !def.Multiple {
 				current, _ := value.(bool)
 				m.setError(m.editor.Apply(def.Name, !current))
 			} else if len(def.Options) > 0 {
@@ -192,6 +198,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.pick(def, "add", "")
 				}
 				return m, m.pick(def, "apply", textValue(value))
+			} else if def.Multiple {
+				m.beginEdit("add", "")
 			} else {
 				m.beginEdit("apply", textValue(value))
 			}
@@ -210,9 +218,9 @@ func (m *FormModel) commitBuffer() {
 	var e error
 	switch m.editAction {
 	case "add":
-		e = m.editor.AddPath(def.Name, m.buffer)
+		e = m.editor.AddValue(def.Name, m.buffer)
 	case "edit":
-		e = m.editor.EditPath(def.Name, m.rowIndex[def.Name], m.buffer)
+		e = m.editor.EditValue(def.Name, m.rowIndex[def.Name], m.buffer)
 	default:
 		e = m.editor.Apply(def.Name, m.buffer)
 	}
@@ -301,14 +309,18 @@ func (m *FormModel) View() tea.View {
 		if def.Type == "secret" && display != "" {
 			display = "••••••••"
 		}
-		if paths, ok := value.([]string); ok && (def.Type == "directory" || def.Type == "file") {
-			display = fmt.Sprintf("%d paths", len(paths))
+		if paths := collectionRows(value); scalarDefinition(def).Multiple && len(def.Options) == 0 {
+			display = fmt.Sprintf("%d items", len(paths))
 			for index, path := range paths {
 				mark := " "
 				if i == m.selected && index == m.rowIndex[def.Name] {
 					mark = ">"
 				}
-				display += "\n    " + mark + " " + path
+				row := textValue(path)
+				if def.Type == "secret" {
+					row = "••••••••"
+				}
+				display += "\n    " + mark + " " + row
 			}
 		}
 		if i == m.selected && len(def.Options) > 0 {
@@ -335,6 +347,9 @@ func (m *FormModel) View() tea.View {
 	footer := "Tab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
 	if len(m.defs) > 0 {
 		def := m.defs[m.selected]
+		if def.Multiple && len(def.Options) == 0 && def.Type != "directory" && def.Type != "file" {
+			footer += "\na Add · e Edit · r Remove · [/] row"
+		}
 		if def.Type == "directory" || def.Type == "file" {
 			if def.Multiple {
 				footer += "\na Add · e Edit · r Remove · [/] row · A manual Add · m manual Edit"

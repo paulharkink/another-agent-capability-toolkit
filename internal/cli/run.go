@@ -36,7 +36,7 @@ aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 Flags: --config PATH --state-dir PATH --environment-root PATH
        --environment NAME --target NAME --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
-       --external-url URL --json --help --version
+       --external-url URL --update-source --json --help --version
 
 Docker is required for container capabilities. Plain skills need no host runtime.
 `
@@ -87,18 +87,37 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		fmt.Fprintln(out, Version)
 		return 0
 	}
+	migrating := len(f.args) > 0 && f.args[0] == "migrate"
+	if (f.dryrun || f.apply) && !migrating {
+		fmt.Fprintln(errOut, "--dry-run/--apply are only supported by migrate")
+		return 2
+	}
+	if migrating && (len(f.args) != 1 || f.dryrun == f.apply) {
+		fmt.Fprintln(errOut, "usage: aact migrate --dry-run | --apply")
+		return 2
+	}
 	cwd, e := os.Getwd()
 	if e != nil {
 		fmt.Fprintln(errOut, e)
 		return 1
 	}
-	store, e := state.Open(f.state)
+	var store *state.Store
+	if migrating && f.dryrun {
+		store, e = state.OpenReadOnly(f.state)
+	} else {
+		store, e = state.Open(f.state)
+	}
 	if e != nil {
 		fmt.Fprintln(errOut, e)
 		return 1
 	}
 	bundle := bundledRoot()
-	src, e := config.Discover(cwd, f.config, bundle, store.Root())
+	var src config.Source
+	if migrating && f.dryrun {
+		src, e = config.DiscoverPreview(cwd, f.config, bundle, store.Root())
+	} else {
+		src, e = config.Discover(cwd, f.config, bundle, store.Root())
+	}
 	if e != nil {
 		fmt.Fprintln(errOut, e)
 		return 2
@@ -114,6 +133,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, e)
 			return 2
 		}
+	}
+	if migrating {
+		return runMigration(ctx, src, store, f.apply, f.json, out, errOut)
 	}
 	svc := app.New(src, store, app.Options{Editor: forms.RunEditor, BundledRoot: bundle, OnStderr: func(b []byte) { errOut.Write(b) }})
 	if len(f.args) == 0 {
@@ -228,7 +250,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, ExternalURL: f.url}
+		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, ExternalURL: f.url, UpdateSource: f.updateSource}
 		var r app.Result
 		if f.args[0] == "install" {
 			r, e = svc.Install(ctx, q)

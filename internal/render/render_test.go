@@ -262,3 +262,57 @@ func TestGeneratorResourceEscapeRejected(t *testing.T) {
 		t.Fatal("outside resource changed")
 	}
 }
+
+func TestBareGeneratorCommandUsesPATH(t *testing.T) {
+	f := &fixtureExecutor{out: []byte(`{}`)}
+	g := Generator{Executor: f}
+	p := catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{"language-runtime", "script.ext"}}}
+	if _, err := g.Generate(context.Background(), p, nil, config.Target{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.args) == 0 || f.args[0] != "language-runtime" {
+		t.Fatalf("bare program rewritten: %v", f.args)
+	}
+}
+func TestGeneratorContextIncludesEnvironment(t *testing.T) {
+	f := &fixtureExecutor{out: []byte(`{}`)}
+	g := Generator{Executor: f}
+	_, err := g.Generate(context.Background(), catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{"helper"}}}, nil, config.Target{Environment: "personal", Name: "laptop"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req map[string]any
+	json.Unmarshal(f.input, &req)
+	if req["context"].(map[string]any)["environment"] != "personal" {
+		t.Fatalf("missing environment: %s", f.input)
+	}
+}
+
+type fragmentExecutor struct{}
+
+func (fragmentExecutor) Run(ctx context.Context, args []string, cwd string, in []byte, env map[string]string, cb func([]byte)) ([]byte, error) {
+	cb([]byte("token prefix-value"))
+	cb([]byte("-suffix end\n"))
+	return []byte(`{}`), nil
+}
+func TestTypedSecretRedactedAcrossChunks(t *testing.T) {
+	var stderr bytes.Buffer
+	g := Generator{Executor: fragmentExecutor{}, OnStderr: func(p []byte) { stderr.Write(p) }}
+	p := catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{"helper"}}, Inputs: []catalog.Input{{Name: "grafana_session", Type: "secret"}}}
+	_, err := g.Generate(context.Background(), p, map[string]any{"grafana_session": "prefix-value-suffix"}, config.Target{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr.String(), "prefix-value") || !strings.Contains(strings.ToLower(stderr.String()), "[redacted]") {
+		t.Fatalf("secret leaked: %q", stderr.String())
+	}
+}
+
+func TestGeneratorErrorRedactsTypedSecret(t *testing.T) {
+	g := Generator{Executor: &fixtureExecutor{err: errors.New("failed with prefix-value-suffix")}}
+	p := catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{"helper"}}, Inputs: []catalog.Input{{Name: "grafana_session", Type: "secret"}}}
+	_, err := g.Generate(context.Background(), p, map[string]any{"grafana_session": "prefix-value-suffix"}, config.Target{}, "")
+	if err == nil || strings.Contains(err.Error(), "prefix-value-suffix") {
+		t.Fatalf("unredacted error %v", err)
+	}
+}

@@ -150,6 +150,89 @@ func (e *Editor) RemovePath(name string, index int) error {
 	}
 	return e.Apply(name, c.Values())
 }
+
+// Collection edits use Apply for normalization and validation before replacing any rows.
+func (e *Editor) AddValue(name string, value any) error {
+	def, err := e.definition(name)
+	if err != nil {
+		return err
+	}
+	if def.Type == "file" || def.Type == "directory" {
+		path, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("expected path string")
+		}
+		return e.AddPath(name, path)
+	}
+	rows, err := e.valueRows(name)
+	if err != nil {
+		return err
+	}
+	return e.Apply(name, append(rows, value))
+}
+func (e *Editor) EditValue(name string, index int, value any) error {
+	def, err := e.definition(name)
+	if err != nil {
+		return err
+	}
+	if def.Type == "file" || def.Type == "directory" {
+		path, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("expected path string")
+		}
+		return e.EditPath(name, index, path)
+	}
+	rows, err := e.valueRows(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(rows) {
+		return fmt.Errorf("collection row out of range")
+	}
+	rows[index] = value
+	return e.Apply(name, rows)
+}
+func (e *Editor) RemoveValue(name string, index int) error {
+	def, err := e.definition(name)
+	if err != nil {
+		return err
+	}
+	if def.Type == "file" || def.Type == "directory" {
+		return e.RemovePath(name, index)
+	}
+	rows, err := e.valueRows(name)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(rows) {
+		return fmt.Errorf("collection row out of range")
+	}
+	return e.Apply(name, append(rows[:index], rows[index+1:]...))
+}
+func (e *Editor) valueRows(name string) ([]any, error) {
+	def, err := e.definition(name)
+	if err != nil {
+		return nil, err
+	}
+	if !scalarDefinition(def).Multiple {
+		return nil, fmt.Errorf("input %s is not a collection", name)
+	}
+	return collectionRows(e.values[name]), nil
+}
+func collectionRows(value any) []any {
+	rows := []any{}
+	if value == nil {
+		return rows
+	}
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return rows
+	}
+	for i := 0; i < rv.Len(); i++ {
+		rows = append(rows, rv.Index(i).Interface())
+	}
+	return rows
+}
 func copyAnswers(values map[string]any) map[string]any {
 	out := make(map[string]any, len(values))
 	for name, value := range values {

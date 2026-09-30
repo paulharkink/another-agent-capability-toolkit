@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import urllib.request
+from config import load_target
 
 
 def _persist(path: Path, auth: dict) -> None:
@@ -28,6 +29,9 @@ def _persist(path: Path, auth: dict) -> None:
 def prepare_auth(request: dict) -> dict:
     if request.get("protocol_version") != 1:
         raise ValueError("Unsupported action protocol version.")
+    target = request.get("target", {})
+    if target.get("path"):
+        load_target(Path(target["path"]), target.get("environment", "lab"), target.get("name", "target"), Path(request.get("state_dir", "/state")))
     cfg = request.get("target", {}).get("raw", {}).get("grafana", {})
     inputs = request.get("inputs", {})
     path = Path(request.get("state_dir", "/state")) / "auth.json"
@@ -89,6 +93,6 @@ if __name__ == "__main__":
         if len(sys.argv) != 2 or sys.argv[1] not in {"prepare", "authenticate"}:
             raise ValueError("Expected prepare or authenticate action.")
         print(json.dumps(prepare_auth(json.load(sys.stdin))))
-    except (ValueError, TypeError, KeyError) as error:
+    except (ValueError, TypeError, KeyError, OSError) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

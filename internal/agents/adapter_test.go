@@ -31,7 +31,7 @@ func (r *captureRunner) Run(_ context.Context, args []string, _ string, _ []byte
 	return nil, nil
 }
 func TestCodexArgsAndExplicitHome(t *testing.T) {
-	r := &captureRunner{getErr: errors.New("not found")}
+	r := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
 	a, err := For("codex", r)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestCodexArgsAndExplicitHome(t *testing.T) {
 	}
 }
 func TestCopilotCLIArgs(t *testing.T) {
-	r := &captureRunner{getErr: errors.New("not found")}
+	r := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
 	a, _ := For("copilot-cli", r)
 	e, _ := ResolveEnvironment("copilot", "copilot-cli", t.TempDir())
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "http", TimeoutMS: 30000}
@@ -254,5 +254,59 @@ func TestCopilotHumanGetUsesConfigForOwnership(t *testing.T) {
 	}
 	if len(r.calls) != 1 {
 		t.Fatalf("matching owned registration mutated: %v", r.calls)
+	}
+}
+
+func TestCLIQueryFailurePreservesOwnedRegistration(t *testing.T) {
+	r := &captureRunner{getErr: errors.New("authentication service unavailable")}
+	a, _ := For("codex", r)
+	e, _ := ResolveEnvironment("agent", "codex", t.TempDir())
+	reg := Registration{Name: "local", URL: "http://original"}
+	e.Owned = map[string]Registration{"local": reg}
+	if err := a.Unregister(context.Background(), e, "local"); err == nil {
+		t.Fatal("query failure treated as absent")
+	}
+	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://replacement"}); err == nil {
+		t.Fatal("query failure allowed overwrite")
+	}
+	for _, call := range r.calls {
+		for _, arg := range call.args {
+			if arg == "add" || arg == "remove" {
+				t.Fatalf("mutation after failed query: %v", r.calls)
+			}
+		}
+	}
+}
+
+type cancelBetweenWritesContext struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelBetweenWritesContext) Err() error {
+	c.checks++
+	if c.checks > 2 {
+		return context.Canceled
+	}
+	return nil
+}
+func TestOpenCodeCancellationRestoresWrittenSibling(t *testing.T) {
+	first := `{"theme":"first","mcp":{}}`
+	second := "{ // preserve\n \"theme\":\"second\",\"mcp\":{} }"
+	a, e := configFixture(t, "opencode", first)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte(second), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelBetweenWritesContext{Context: context.Background()}
+	err := a.Register(ctx, e, Registration{Name: "local", URL: "http://localhost:1/mcp"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation got %v", err)
+	}
+	for path, want := range map[string]string{e.ConfigPath: first, jsonc: second} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Errorf("changed sibling %s: %s %v", path, got, err)
+		}
 	}
 }

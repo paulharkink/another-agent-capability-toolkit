@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -43,24 +44,41 @@ func Health(ctx context.Context, url, transport string) error {
 		}
 		return nil
 	}
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 4096), 1<<20)
+		var data []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				if initializeResponse([]byte(strings.Join(data, "\n"))) {
+					return nil
+				}
+				data = nil
+			} else if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+		return errors.New("MCP initialize returned invalid response")
+	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if e != nil {
 		return e
 	}
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		for _, line := range strings.Split(string(b), "\n") {
-			if strings.HasPrefix(line, "data:") {
-				b = []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-				break
-			}
-		}
-	}
-	var v struct {
-		Result map[string]any `json:"result"`
-		Error  any            `json:"error"`
-	}
-	if e = json.Unmarshal(b, &v); e != nil || v.Result == nil || v.Result["protocolVersion"] == nil {
+	if !initializeResponse(b) {
 		return errors.New("MCP initialize returned invalid response")
 	}
 	return nil
+}
+
+func initializeResponse(b []byte) bool {
+	var v struct {
+		ID     json.RawMessage `json:"id"`
+		Result map[string]any  `json:"result"`
+		Error  any             `json:"error"`
+	}
+	return json.Unmarshal(b, &v) == nil && string(v.ID) == "1" && v.Error == nil && v.Result != nil && v.Result["protocolVersion"] != nil
 }

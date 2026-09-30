@@ -115,7 +115,7 @@ func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) 
 func owned(d dockerInfo, k state.Key) bool {
 	return d.Config.Labels["aact.managed"] == "1" && d.Config.Labels["aact.key"] == k.ID() && d.Config.Labels["aact.source"] == k.Source
 }
-func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (Instance, error) {
+func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
 	secretValues := []string{}
 	for _, v := range s.SecretEnv {
 		if v != "" {
@@ -139,6 +139,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (Instance, 
 	}
 	name := containerName(k)
 	expected := labels(k, s)
+	var previous *dockerInfo
 	if old, e := r.inspect(ctx, name); e == nil {
 		if !owned(old, k) {
 			return Instance{}, errors.New("container name belongs to an unmanaged container")
@@ -147,11 +148,13 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (Instance, 
 			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
 				return Instance{}, errors.New("MCP is running with different settings; stop it before starting again")
 			}
-			return instance(old), nil
+			out := instance(old)
+			if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+				return out, fmt.Errorf("existing MCP health check failed: %w", e)
+			}
+			return out, nil
 		}
-		if _, e = r.run(ctx, []string{"rm", old.ID}); e != nil {
-			return Instance{}, e
-		}
+		previous = &old
 	}
 	image := s.Image
 	if s.BuildContext != "" {
@@ -222,28 +225,78 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (Instance, 
 	}
 	a = append(a, image)
 	a = append(a, s.Args...)
+	committed, renamed := false, false
+	createdID := ""
+	defer func() {
+		if committed {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var cleanupErr error
+		if createdID == "" {
+			if candidate, err := r.inspect(cleanupCtx, name); err == nil && owned(candidate, k) && candidate.Config.Labels["aact.spec"] == expected["aact.spec"] && (previous == nil || candidate.ID != previous.ID) {
+				createdID = candidate.ID
+			}
+		}
+		if createdID != "" {
+			_, cleanupErr = r.run(cleanupCtx, []string{"rm", "--force", createdID})
+		}
+		if renamed {
+			_, restoreErr := r.run(cleanupCtx, []string{"rename", previous.ID, name})
+			cleanupErr = errors.Join(cleanupErr, restoreErr)
+		}
+		if cleanupErr != nil {
+			startErr = errors.Join(startErr, fmt.Errorf("MCP startup cleanup failed: %w", cleanupErr))
+		}
+	}()
+	if previous != nil {
+		backupName := name + "-previous-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		if _, e := r.run(ctx, []string{"rename", previous.ID, backupName}); e != nil {
+			return Instance{}, e
+		}
+		renamed = true
+	}
 	b, e := r.run(ctx, a)
 	if e != nil {
 		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.Host, s.HostPort, e)
 	}
-	out := Instance{Key: k, ID: strings.TrimSpace(string(b)), Name: name, Status: "running", URL: specURL(s)}
-	if !r.SkipHealth {
-		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	createdID = strings.TrimSpace(string(b))
+	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s)}
+	if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+		return out, fmt.Errorf("MCP health check failed: %w", e)
+	}
+	if e = r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: name, SourcePath: out.ID, Mode: "docker", URL: out.URL}); e != nil {
+		return out, fmt.Errorf("MCP state recording failed: %w", e)
+	}
+	committed = true
+	if renamed {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		var healthErr error
-		for {
-			healthErr = Health(deadline, out.URL, s.Transport)
-			if healthErr == nil {
-				break
-			}
-			select {
-			case <-deadline.Done():
-				return out, fmt.Errorf("MCP started but health check failed: %w", healthErr)
-			case <-time.After(250 * time.Millisecond):
-			}
+		if _, e = r.run(cleanupCtx, []string{"rm", previous.ID}); e != nil {
+			return out, fmt.Errorf("MCP started but prior stopped container cleanup failed: %w", e)
 		}
 	}
 	return out, nil
+}
+
+func (r *Runtime) checkHealth(ctx context.Context, url, transport string) error {
+	if r.SkipHealth {
+		return nil
+	}
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		err := Health(deadline, url, transport)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-deadline.Done():
+			return err
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 type redactingExecutor struct {
@@ -258,11 +311,9 @@ func (e redactingExecutor) Run(ctx context.Context, a []string, cwd string, in [
 		}
 		return s
 	}
-	out, err := e.base.Run(ctx, a, cwd, in, env, func(b []byte) {
-		if cb != nil {
-			cb([]byte(scrub(string(b))))
-		}
-	})
+	redactor := process.NewRedactor(e.values, cb)
+	out, err := e.base.Run(ctx, a, cwd, in, env, redactor.Write)
+	redactor.Flush()
 	if err != nil {
 		err = errors.New(scrub(err.Error()))
 	}
@@ -285,6 +336,19 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 		return errors.New("refusing to stop an unmanaged container")
 	}
 	_, e = r.run(ctx, []string{"rm", "--force", d.ID})
+	if e == nil {
+		rows, err := r.Store.Installations()
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Key == k && row.Component == "runtime" {
+				if err = r.Store.Remove(row); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return e
 }
 func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
@@ -308,6 +372,36 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 		}
 		out = append(out, i)
 	}
+	rows, e := r.Store.Installations()
+	if e != nil {
+		return nil, e
+	}
+	present := map[state.Key]bool{}
+	for _, i := range out {
+		present[i.Key] = true
+	}
+	for _, row := range rows {
+		if row.Component == "runtime" && !present[row.Key] {
+			out = append(out, Instance{Key: row.Key, ID: row.SourcePath, Name: row.Destination, Status: "missing", URL: row.URL})
+		}
+	}
+	type registration struct {
+		Key state.Key
+		URL string
+	}
+	seen := map[registration]bool{}
+	for _, item := range out {
+		if item.Status != "missing" {
+			seen[registration{item.Key, item.URL}] = true
+		}
+	}
+	for _, row := range rows {
+		identity := registration{row.Key, row.URL}
+		if row.Component == "mcp" && row.URL != "" && !seen[identity] {
+			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL})
+			seen[identity] = true
+		}
+	}
 	return out, nil
 }
 func (r *Runtime) Logs(ctx context.Context, k state.Key) (io.ReadCloser, error) {
@@ -318,6 +412,8 @@ func (r *Runtime) Logs(ctx context.Context, k state.Key) (io.ReadCloser, error) 
 	if !owned(d, k) {
 		return nil, errors.New("refusing unmanaged container logs")
 	}
-	b, e := r.run(ctx, []string{"logs", "--tail", "200", d.ID})
+	var errlog bytes.Buffer
+	b, e := r.Executor.Run(ctx, []string{"docker", "logs", "--tail", "200", d.ID}, "", nil, nil, func(p []byte) { errlog.Write(p) })
+	b = append(b, errlog.Bytes()...)
 	return io.NopCloser(bytes.NewReader(b)), e
 }

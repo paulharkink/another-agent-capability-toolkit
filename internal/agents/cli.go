@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type cliAdapter struct {
@@ -45,12 +46,29 @@ func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*R
 	if a.kind == "codex" {
 		args = append(args, "--json")
 	}
-	output, err := a.runner.Run(ctx, args, e.Home, nil, env, nil)
+	var diagnostic []byte
+	output, err := a.runner.Run(ctx, args, e.Home, nil, env, func(chunk []byte) {
+		space := (64 << 10) - len(diagnostic)
+		if space > 0 {
+			if len(chunk) > space {
+				chunk = chunk[:space]
+			}
+			diagnostic = append(diagnostic, chunk...)
+		}
+	})
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, nil
+		if a.kind == "copilot-cli" {
+			if existing, lookupErr := copilotConfigRegistration(e, name); lookupErr == nil {
+				return existing, nil
+			}
+		}
+		if knownMissingRegistration(name, string(diagnostic)+"\n"+string(output)+"\n"+err.Error()) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cannot verify existing %s registration %q: %w", a.program(), name, err)
 	}
 	var value map[string]any
 	if err = json.Unmarshal(output, &value); err != nil {
@@ -193,5 +211,24 @@ func copilotConfigRegistration(e Environment, name string) (*Registration, error
 		}
 		return &reg, nil
 	}
-	return nil, errors.New("Copilot config does not contain queried registration")
+	if _, ok := document["mcpServers"].(map[string]any); ok {
+		return nil, nil
+	}
+	if _, ok := document["servers"].(map[string]any); ok {
+		return nil, nil
+	}
+	return nil, errors.New("Copilot config does not contain a servers object")
+}
+
+func knownMissingRegistration(name, diagnostic string) bool {
+	lower := strings.ToLower(diagnostic)
+	n := strings.ToLower(name)
+	for _, quoted := range []string{"'" + n + "'", "\"" + n + "\"", n} {
+		for _, signal := range []string{"no mcp server named " + quoted + " found", "mcp server " + quoted + " not found", "mcp server " + quoted + " does not exist"} {
+			if strings.Contains(lower, signal) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -72,3 +72,35 @@ func TestFlagsRejectUnknownAndRepeatedScalar(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationDryRunHasNoWrites(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	b, _ := os.ReadFile(cfg)
+	b = []byte(strings.ReplaceAll(string(b), "source_id = \"fixture\"\n", ""))
+	os.WriteFile(cfg, b, 0644)
+	t.Setenv("AACT_LEGACY_SETTINGS", filepath.Join(home, "absent-settings"))
+	t.Setenv("AACT_LEGACY_SKILLS_DIR", filepath.Join(home, "absent-skills"))
+	var out, errout bytes.Buffer
+	code := Run(context.Background(), []string{"migrate", "--dry-run", "--json", "--config", cfg, "--state-dir", st}, nil, &out, &errout)
+	if code != 0 {
+		t.Fatal(code, errout.String())
+	}
+	if _, e := os.Stat(st); !os.IsNotExist(e) {
+		t.Fatal("dry run created state", e)
+	}
+	var result map[string]any
+	if e := json.Unmarshal(out.Bytes(), &result); e != nil {
+		t.Fatal(out.String(), e)
+	}
+}
+func TestDryRunCannotSilentlyInstall(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	var out, errout bytes.Buffer
+	code := Run(context.Background(), []string{"install", "demo", "--dry-run", "--config", cfg, "--state-dir", st, "--agent", "codex", "--agent-home", home, "--set", "label=no"}, nil, &out, &errout)
+	if code != 2 {
+		t.Fatal(code, errout.String())
+	}
+	if _, e := os.Stat(home); !os.IsNotExist(e) {
+		t.Fatal("ignored --dry-run and installed")
+	}
+}

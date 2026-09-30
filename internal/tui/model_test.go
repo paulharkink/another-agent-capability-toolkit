@@ -108,3 +108,91 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 		t.Fatalf("%s", m.View().Content)
 	}
 }
+
+func TestCatalogContextSupportsDefaultMultipleAgents(t *testing.T) {
+	m := fixtureModel(t)
+	m.settings["default_agents"] = "claude,codex"
+	press(m, tea.KeyEnter, "")
+	if !strings.Contains(m.View().Content, "[claude codex]") {
+		t.Fatalf("multiple agent prefill missing: %s", m.View().Content)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil || !m.busy || m.pending.agent != "claude,codex" {
+		t.Fatalf("operation lacks agents: %#v", m.pending)
+	}
+}
+func TestCatalogRequiresAtLeastOneAgent(t *testing.T) {
+	m := fixtureModel(t)
+	press(m, tea.KeyEnter, "")
+	press(m, tea.KeySpace, " ")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.busy || m.form == nil {
+		t.Fatal("empty agent selection accepted")
+	}
+}
+func TestMCPUninstallPromptsPrefilledContext(t *testing.T) {
+	for _, tc := range []struct{ environment, target, wantTarget string }{{"dev", "production", "production"}, {"", "default", ""}} {
+		t.Run(tc.target, func(t *testing.T) {
+			m := fixtureModel(t)
+			m.mcps[0].Key.Environment = tc.environment
+			m.mcps[0].Key.Target = tc.target
+			press(m, '2', "2")
+			press(m, 'u', "u")
+			if m.form == nil || m.busy {
+				t.Fatal("uninstall skipped agent context")
+			}
+			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if cmd == nil || m.pending.action != "uninstall" || m.pending.agent != "codex" || m.pending.environment != tc.environment || m.pending.target != tc.wantTarget {
+				t.Fatalf("wrong context %#v", m.pending)
+			}
+		})
+	}
+}
+func TestExternalMCPRejectsDockerActionsAllowsUnregister(t *testing.T) {
+	for _, stroke := range []string{"s", "x", "a", "l"} {
+		m := fixtureModel(t)
+		m.mcps[0].Status = "external"
+		press(m, '2', "2")
+		_, cmd := m.Update(tea.KeyPressMsg{Code: rune(stroke[0]), Text: stroke})
+		if cmd != nil || m.busy {
+			t.Fatalf("external action %s dispatched", stroke)
+		}
+	}
+	m := fixtureModel(t)
+	m.mcps[0].Status = "external"
+	press(m, '2', "2")
+	press(m, 'u', "u")
+	if m.form == nil {
+		t.Fatal("external unregister unavailable")
+	}
+}
+
+func TestCatalogMCPAuthAndStartBeforeInventory(t *testing.T) {
+	for _, action := range []struct{ key, action string }{{"a", "authenticate"}, {"s", "start"}} {
+		t.Run(action.action, func(t *testing.T) {
+			m := fixtureModel(t)
+			m.catalog[0].MCP = &catalog.MCP{}
+			m.mcps = nil
+			press(m, rune(action.key[0]), action.key)
+			if m.form == nil || m.busy || m.pending.action != action.action {
+				t.Fatalf("catalog MCP action unavailable: %#v", m.pending)
+			}
+			if strings.Contains(m.View().Content, "Agents *") {
+				t.Fatal("runtime action requests agents")
+			}
+			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if cmd == nil || !m.busy || m.pending.agent != "" {
+				t.Fatalf("runtime action not dispatched: %#v", m.pending)
+			}
+		})
+	}
+}
+func TestCatalogMCPActionsRejectSkillOnlyPackage(t *testing.T) {
+	for _, key := range []string{"a", "s"} {
+		m := fixtureModel(t)
+		press(m, rune(key[0]), key)
+		if m.form != nil || m.busy || m.output == "" {
+			t.Fatal("skill-only package did not explain missing MCP action")
+		}
+	}
+}

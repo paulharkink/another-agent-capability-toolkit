@@ -1,0 +1,28 @@
+name: Development archives
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'packages/**'
+      - 'tools/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/artifacts.yml'
+jobs:
+  archives:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./internal/release ./tests/integration -count=1
+      - run: go run ./tools/release --version 0.1.0-dev --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aact-development-archives
+          path: dist/*
+          if-no-files-found: error

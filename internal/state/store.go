@@ -32,6 +32,8 @@ func (k Key) ID() string {
 type Installation struct {
 	Key              Key    `json:"key"`
 	AgentID          string `json:"agent_id"`
+	AgentHome        string `json:"agent_home,omitempty"`
+	AgentKind        string `json:"agent_kind,omitempty"`
 	Component        string `json:"component"`
 	Destination      string `json:"destination"`
 	SourcePath       string `json:"source_path,omitempty"`
@@ -44,9 +46,13 @@ type Installation struct {
 	TimeoutMS        int    `json:"timeout_ms,omitempty"`
 }
 type Store struct {
-	root string
-	mu   sync.Mutex
+	root     string
+	mu       sync.Mutex
+	readonly bool
 }
+
+var ErrReadOnly = errors.New("state store is read-only")
+
 type ledger struct {
 	Version       int            `json:"version"`
 	Installations []Installation `json:"installations"`
@@ -74,6 +80,10 @@ func DefaultRoot(goos, home string, getenv func(string) string) string {
 	return filepath.Join(base, "agent-skills")
 }
 func Open(root string) (*Store, error) {
+	return open(root, false)
+}
+func OpenReadOnly(root string) (*Store, error) { return open(root, true) }
+func open(root string, readonly bool) (*Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -90,10 +100,12 @@ func Open(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = os.MkdirAll(filepath.Join(root, "manager"), 0700); err != nil {
-		return nil, err
+	if !readonly {
+		if err = os.MkdirAll(filepath.Join(root, "manager"), 0700); err != nil {
+			return nil, err
+		}
 	}
-	return &Store{root: root}, nil
+	return &Store{root: root, readonly: readonly}, nil
 }
 func (s *Store) Root() string              { return s.root }
 func (s *Store) KeyDir(k Key) string       { return filepath.Join(s.root, "instances", k.ID()) }
@@ -118,6 +130,9 @@ func (s *Store) Answers(k Key) (map[string]any, error) {
 	return rec.Values, nil
 }
 func (s *Store) SaveAnswers(k Key, v map[string]any) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return WriteJSON(filepath.Join(s.root, "answers", k.ID()+".json"), answerRecord{1, v})
@@ -149,6 +164,9 @@ func sameInstallation(a, b Installation) bool {
 // Record/Remove serialize writes within this Store. Multi-operation callers use
 // WithLock to coordinate read-modify-write workflows across manager processes.
 func (s *Store) Record(i Installation) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, err := s.loadLedger()
@@ -169,6 +187,9 @@ func (s *Store) Record(i Installation) error {
 	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)
 }
 func (s *Store) Remove(i Installation) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, err := s.loadLedger()
@@ -196,6 +217,9 @@ func (s *Store) AuthDir(k Key) string {
 	return filepath.Join(s.KeyDir(k), "auth")
 }
 func (s *Store) AdoptAuth(k Key, path string) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := filepath.Abs(path)
@@ -220,6 +244,9 @@ func (s *Store) AdoptAuth(k Key, path string) error {
 	return WriteJSON(filepath.Join(s.root, "manager", "auth-aliases.json"), aliases)
 }
 func (s *Store) WithLock(ctx context.Context, fn func() error) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
 	f, err := os.OpenFile(filepath.Join(s.root, "manager", ".lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err

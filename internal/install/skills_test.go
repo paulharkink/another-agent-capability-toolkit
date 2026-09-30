@@ -201,17 +201,61 @@ func TestEditedManagedCopyPreserved(t *testing.T) {
 	}
 }
 func TestChangedSourceLocationRequiresUpdate(t *testing.T) {
+	i, s, p, e, k := setup(t)
+	if err := i.Install(context.Background(), p, e, k, ""); err != nil {
+		t.Fatal(err)
+	}
+	original := p.Dir
+	p.Dir = t.TempDir()
+	os.WriteFile(filepath.Join(p.Dir, "SKILL.md"), []byte("moved"), 0644)
+	if err := i.Install(context.Background(), p, e, k, ""); err == nil {
+		t.Fatal("changed source accepted without explicit update")
+	}
+	got, _ := os.Readlink(filepath.Join(e.SkillsDir, "sample"))
+	if got != original {
+		t.Fatal("prior source changed")
+	}
+	rows, _ := s.Installations()
+	if len(rows) != 1 || rows[0].SourcePath != original {
+		t.Fatal("ledger changed")
+	}
+}
+
+func TestUninstallSelectedHomePreservesOtherHome(t *testing.T) {
+	i, s, p, a, k := setup(t)
+	b := a
+	b.SkillsDir = t.TempDir()
+	if err := i.Install(context.Background(), p, a, k, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Install(context.Background(), p, b, k, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Uninstall(context.Background(), k, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(b.SkillsDir, "sample", "SKILL.md")); err != nil {
+		t.Fatal("other home removed")
+	}
+	rows, _ := s.Installations()
+	if len(rows) != 1 || rows[0].Destination != filepath.Join(b.SkillsDir, "sample") {
+		t.Fatalf("wrong retained ledger: %v", rows)
+	}
+}
+
+func TestExplicitSourceUpdateRepointsOwnedSkill(t *testing.T) {
 	i, _, p, e, k := setup(t)
 	if err := i.Install(context.Background(), p, e, k, ""); err != nil {
 		t.Fatal(err)
 	}
 	p.Dir = t.TempDir()
-	os.WriteFile(filepath.Join(p.Dir, "SKILL.md"), []byte("moved"), 0644)
+	os.WriteFile(filepath.Join(p.Dir, "SKILL.md"), []byte("skill"), 0644)
+	i.AllowSourceUpdate = true
 	if err := i.Install(context.Background(), p, e, k, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.Readlink(filepath.Join(e.SkillsDir, "sample"))
 	if got != p.Dir {
-		t.Fatal("source not updated")
+		t.Fatal("explicit update did not repoint source")
 	}
 }

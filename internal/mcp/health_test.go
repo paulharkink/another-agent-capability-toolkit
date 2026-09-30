@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthUsesConfiguredHostAndTransport(t *testing.T) {
@@ -39,5 +40,22 @@ func TestHealthRejectsNonMCP(t *testing.T) {
 	e := Health(context.Background(), s.URL, "streamable-http")
 	if e == nil || !strings.Contains(e.Error(), "MCP") {
 		t.Fatal(e)
+	}
+}
+
+func TestStreamableHealthAcceptsInitializeWithoutWaitingForSSEClose(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n"))
+		w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"other\"}}\n\n"))
+		w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\ndata: \"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{}}}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer s.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := Health(ctx, s.URL, "streamable-http"); err != nil {
+		t.Fatalf("valid open SSE response rejected: %v", err)
 	}
 }

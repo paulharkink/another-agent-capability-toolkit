@@ -5,18 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeExec struct {
-	calls  [][]string
-	f      func([]string) ([]byte, error)
-	stderr string
+	calls         [][]string
+	f             func([]string) ([]byte, error)
+	stderr        string
+	contextErrors []error
 }
 
-func (f *fakeExec) Run(_ context.Context, a []string, _ string, _ []byte, _ map[string]string, cb func([]byte)) ([]byte, error) {
+func (f *fakeExec) Run(ctx context.Context, a []string, _ string, _ []byte, _ map[string]string, cb func([]byte)) ([]byte, error) {
 	f.calls = append(f.calls, append([]string{}, a...))
+	f.contextErrors = append(f.contextErrors, ctx.Err())
 	if cb != nil && f.stderr != "" {
 		cb([]byte(f.stderr))
 	}
@@ -122,6 +129,18 @@ func TestInventoryReconcilesMissingStoppedRunning(t *testing.T) {
 		t.Fatalf("%+v %v", v, e)
 	}
 }
+
+func TestInventoryIncludesMissingOwnedRuntime(t *testing.T) {
+	r, f, k := testRuntime(t)
+	if e := r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: containerName(k), URL: "http://127.0.0.1:8765/mcp", SourcePath: "lost-id", Mode: "docker"}); e != nil {
+		t.Fatal(e)
+	}
+	f.f = func([]string) ([]byte, error) { return nil, nil }
+	items, e := r.List(context.Background())
+	if e != nil || len(items) != 1 || items[0].Status != "missing" {
+		t.Fatal(items, e)
+	}
+}
 func TestOnlyLoopbackPublication(t *testing.T) {
 	r, _, k := testRuntime(t)
 	_, e := r.Start(context.Background(), k, RunSpec{Image: "x", Host: "0.0.0.0", HostPort: 1, ContainerPort: 1})
@@ -147,5 +166,155 @@ func TestRuntimeUserIsExplicit(t *testing.T) {
 	}
 	if !found {
 		t.Fatal(f.calls)
+	}
+}
+
+func unhealthySpec(t *testing.T) RunSpec {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) }))
+	t.Cleanup(server.Close)
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	return RunSpec{Image: "fixture", Host: u.Hostname(), HostPort: port, ContainerPort: 80, Transport: "streamable-http", EndpointPath: "/mcp"}
+}
+
+func TestFailedNewRuntimeHealthCleansWithIndependentContextAndPreservesLedger(t *testing.T) {
+	r, f, k := testRuntime(t)
+	r.SkipHealth = false
+	f.f = absent
+	prior := state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: containerName(k), SourcePath: "prior-id", URL: "http://127.0.0.1:18765/mcp", Mode: "docker"}
+	if err := r.Store.Record(prior); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := r.Start(ctx, k, unhealthySpec(t)); err == nil {
+		t.Fatal("unhealthy runtime accepted")
+	}
+	removed := false
+	for n, args := range f.calls {
+		if len(args) > 2 && args[1] == "rm" && args[len(args)-1] == "cid" {
+			removed = true
+			if f.contextErrors[n] != nil {
+				t.Fatal("cleanup inherited cancelled startup context")
+			}
+		}
+	}
+	if !removed {
+		t.Fatalf("unhealthy new container leaked: %v", f.calls)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != prior.SourcePath {
+		t.Fatalf("prior ledger replaced after failure: %+v %v", rows, err)
+	}
+}
+
+func TestExistingRunningRuntimeHealthFailureNeverBecomesSuccess(t *testing.T) {
+	r, f, k := testRuntime(t)
+	r.SkipHealth = false
+	spec := unhealthySpec(t)
+	f.f = func(args []string) ([]byte, error) {
+		return json.Marshal([]dockerInfo{{ID: "existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: labels(k, spec)}, State: dockerState{Running: true, Status: "running"}}})
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err := r.Start(ctx, k, spec)
+		cancel()
+		if err == nil {
+			t.Fatalf("attempt %d falsely accepted unhealthy existing runtime", attempt)
+		}
+	}
+	for _, args := range f.calls {
+		if args[1] == "rm" {
+			t.Fatal("prior existing container removed", f.calls)
+		}
+	}
+}
+
+func TestInventoryIncludesAndDeduplicatesExternalMCPRegistrations(t *testing.T) {
+	r, f, k := testRuntime(t)
+	f.f = func([]string) ([]byte, error) { return nil, nil }
+	for _, agent := range []string{"claude", "codex"} {
+		for _, endpoint := range []string{"https://one.example.test/mcp", "https://two.example.test/mcp"} {
+			if err := r.Store.Record(state.Installation{Key: k, AgentID: agent, Component: "mcp", Destination: agent + endpoint, URL: endpoint}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	items, err := r.List(context.Background())
+	if err != nil || len(items) != 2 {
+		t.Fatalf("external inventory missing or duplicated: %+v %v", items, err)
+	}
+	for _, item := range items {
+		if item.Status != "external" || item.Key != k {
+			t.Fatal(item)
+		}
+	}
+}
+
+func TestInventoryExternalDedupeRequiresActualContainerAndMatchingURL(t *testing.T) {
+	r, f, k := testRuntime(t)
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	for _, endpoint := range []string{specURL(spec), "https://remote.example.test/mcp"} {
+		if err := r.Store.Record(state.Installation{Key: k, AgentID: "codex", Component: "mcp", Destination: endpoint, URL: endpoint}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "ps" {
+			return []byte("cid"), nil
+		}
+		return json.Marshal([]dockerInfo{{ID: "cid", Config: dockerConfig{Labels: labels(k, spec)}, State: dockerState{Running: true}}})
+	}
+	items, err := r.List(context.Background())
+	if err != nil || len(items) != 2 {
+		t.Fatalf("container/remote URLs incorrectly merged: %+v %v", items, err)
+	}
+	if items[1].Status != "external" || items[1].URL != "https://remote.example.test/mcp" {
+		t.Fatal(items)
+	}
+}
+
+func TestStoppedOwnedRuntimeSurvivesFailedReplacement(t *testing.T) {
+	for _, failure := range []string{"docker run", "health"} {
+		t.Run(failure, func(t *testing.T) {
+			r, f, k := testRuntime(t)
+			spec := unhealthySpec(t)
+			r.SkipHealth = failure != "health"
+			old := dockerInfo{ID: "old-id", Name: "/" + containerName(k), Config: dockerConfig{Labels: labels(k, spec)}, State: dockerState{Running: false, Status: "exited"}}
+			currentName := containerName(k)
+			oldRemoved := false
+			f.f = func(args []string) ([]byte, error) {
+				switch args[1] {
+				case "inspect":
+					if args[2] == currentName {
+						return json.Marshal([]dockerInfo{old})
+					}
+					return nil, errors.New("absent")
+				case "rename":
+					if args[2] == "old-id" {
+						currentName = args[3]
+					}
+				case "rm":
+					if args[len(args)-1] == "old-id" {
+						oldRemoved = true
+					}
+				case "run":
+					if failure == "docker run" {
+						return nil, errors.New("fixture startup failed")
+					}
+					return []byte("new-id"), nil
+				}
+				return nil, nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			if _, err := r.Start(ctx, k, spec); err == nil {
+				t.Fatal("failed replacement accepted")
+			}
+			if oldRemoved || currentName != containerName(k) {
+				t.Fatalf("stopped prior runtime lost: removed=%v name=%s calls=%v", oldRemoved, currentName, f.calls)
+			}
+		})
 	}
 }

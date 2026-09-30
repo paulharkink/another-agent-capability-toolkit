@@ -104,8 +104,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		return s
 	}
 	var diagnostics bytes.Buffer
-	out, e := executor.Run(ctx, argv, p.Dir, b, nil, func(b []byte) {
-		b = []byte(scrub(string(b)))
+	redactor := process.NewRedactor(secrets, func(b []byte) {
 		if diagnostics.Len() < 8192 {
 			diagnostics.Write(b)
 		}
@@ -113,10 +112,19 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 			r.OnStderr(b)
 		}
 	})
+	out, e := executor.Run(ctx, argv, p.Dir, b, nil, redactor.Write)
+	redactor.Flush()
 	if e != nil {
 		return ActionResult{}, fmt.Errorf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(diagnostics.String()))
 	}
 	var result ActionResult
+	if len(out) > process.MaxStdout {
+		return result, process.ErrOutputLimit
+	}
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return result, errors.New("action must return a JSON object")
+	}
 	d := json.NewDecoder(bytes.NewReader(out))
 	d.UseNumber()
 	d.DisallowUnknownFields()

@@ -64,3 +64,13 @@ def test_vault_fallback_uses_local_http_fixture(tmp_path, monkeypatch):
         assert json.loads((tmp_path/"auth.json").read_text())["api_token"] == "synthetic-grafana-token"
     finally:
         server.shutdown(); server.server_close(); thread.join(2)
+
+def test_invalid_staged_target_rejected_without_changing_cached_auth(tmp_path):
+    auth=tmp_path/"auth.json";auth.write_text(json.dumps({"auth_mode":"api_token","api_token":"old-fixture"}))
+    before=auth.read_bytes()
+    target=tmp_path/"target.toml";target.write_text('[mcp]\nlocal_port=8765\n[grafana]\nurl="http://invalid.example.test"\nauth_mode="api_token"\n')
+    request=action(tmp_path);request["target"].update({"path":str(target),"environment":"lab","name":"fixture"})
+    result=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/"auth.py"),"prepare"],input=json.dumps(request),text=True,capture_output=True)
+    assert result.returncode != 0
+    assert "HTTPS" in result.stderr
+    assert auth.read_bytes()==before
