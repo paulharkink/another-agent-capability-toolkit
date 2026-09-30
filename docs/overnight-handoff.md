@@ -50,5 +50,6 @@ credential migration or vendor login was performed.
 
 Native GUI picker visual checks and real-account inspector authentication are
 manual follow-up. Marketplace readers/installers remain deferred as agreed.
-Windows CI initially exposed platform assumptions and a worktree file-handle
-leak; repairs and final rerun results are recorded in the verification evidence.
+Native Linux, macOS and Windows test/vet CI passed after repairing the initial
+Windows failures. Linux/macOS race checks and real Docker CI also passed.
+See the verification evidence for exact runs and regression details.

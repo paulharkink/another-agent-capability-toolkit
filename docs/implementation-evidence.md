@@ -99,3 +99,58 @@ Windows CI initially failed a Unix-permission assertion, a quoted Windows-path
 diagnostic assertion, and worktree cleanup because pinned go-git leaked its
 `commondir` handle. Native Linux/macOS test/vet/race, actual Docker CI, and the
 six-target CI artifact job passed. Final Windows repair/rerun evidence follows.
+
+## Native CI closure
+
+Code commit `586110685231181e719f2ced7fd62f30b8a4c19a` passed
+[native/container CI](https://github.com/paulharkink/another-agent-capability-toolkit/actions/runs/36780447912):
+
+- Windows: full Go tests and vet, including native PowerShell installer fixtures.
+- Linux and macOS: full Go tests, vet and race checks.
+- Linux Docker: actual lifecycle and package/helper tests plus all retained container suites.
+
+The mapper repair has a regression that failed with 24 retained worktree
+metadata descriptors before the fix and passed afterward; Windows additionally
+asserts that metadata can be deleted immediately after scanning. The credential
+content test runs on every OS; Unix mode assertions are restricted to Unix
+because Windows Go chmod only controls the read-only attribute.
+
+Final six-target [archive CI](https://github.com/paulharkink/another-agent-capability-toolkit/actions/runs/36780447882)
+also passed build, verification and artifact upload on code commit `5861106`.
+After that repair, the local six archives were rebuilt and independently
+verified again. Native empty-PATH smoke included both a main Git checkout and
+a linked worktree in generator output and generated skill install/uninstall.
+
+### Local archive SHA256
+
+Archives and sidecars are under `dist/`; native extracted resources are under
+`dist/native/`. These development builds are retained locally and are not a
+published version tag.
+
+| Archive | SHA256 |
+| --- | --- |
+| `aact_0.1.0-dev_darwin_amd64.tar.gz` | `b4e08077f7c6edcf784e4e4c69b832886afabfa8a37e74f3f1310653601625dc` |
+| `aact_0.1.0-dev_darwin_arm64.tar.gz` | `87c240b605a1117a74c51bc33ac8f10c3a59c0a46289e91e118af598029271d8` |
+| `aact_0.1.0-dev_linux_amd64.tar.gz` | `52d53790a9f44b15570bc06120471a7e83616fb599883a7aaf48c9485b37b075` |
+| `aact_0.1.0-dev_linux_arm64.tar.gz` | `5c1f6ee6639d6cc454a8f7d09d858ddcaf849d41a6f060e21bb8dc9a8ff14a0a` |
+| `aact_0.1.0-dev_windows_amd64.zip` | `fcd4976405e5aff8bbbd98d306d965bdd0ef52d46fff82a1718d6263411c2423` |
+| `aact_0.1.0-dev_windows_arm64.zip` | `644979e721e608813ab32c9a8e0c53bae5e680225731c06238880b647b525cdb` |
+
+### Acceptance coverage
+
+| Approved criterion | Evidence |
+| --- | --- |
+| Native portable installation/runtime | Six real archive builds; native OS installer CI; empty-PATH packaged runtime smoke |
+| Mixed private/public checkout | Actual packaged catalog returned 15 entries; consumer fixture tests |
+| Questions, editable prefill and noninteractive CLI | Forms/app/CLI tests, dynamic prepare-choice regressions |
+| Direct and computed Mustache | Rendering/generator fixtures, failure-preservation tests, native mapper smoke |
+| One-at-a-time directory collections | Picker/form typed collection and fallback tests; GUI visual check pending |
+| Global selected-agent installation and ownership | Native temporary-home round trips; cross-home, copy, shared content and foreign-resource tests |
+| Inspector extraction and MCP inventory | 94 preservation tests, actual Docker/host transport fixtures, external inventory and runtime rollback tests |
+| Migration with state preservation | Migration/integration fixtures; dry-run zero-write tests; no live apply |
+| Portable mapper | Multi-root/host/worktree/duplicate checkout tests, leaked-handle regression and native empty-PATH generator |
+| Shared CLI/TUI operations and independent menu | App/CLI/TUI models and native four-view PTY smoke |
+
+All implementation tasks were delivered. The only deliberately unperformed
+checks are real-account/vendor sign-in and native GUI visual testing. Marketplace
+support remains the agreed future scope.
