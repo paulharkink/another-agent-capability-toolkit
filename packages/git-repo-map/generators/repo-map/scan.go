@@ -97,7 +97,7 @@ func Scan(ctx context.Context, roots []string, hosts []string) ([]Repository, er
 				}
 				return nil
 			}
-			repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{EnableDotGitCommonDir: true})
+			repo, err := openCheckout(path)
 			if err != nil {
 				problems = append(problems, fmt.Errorf("open checkout %q: %w", path, err))
 				return nil

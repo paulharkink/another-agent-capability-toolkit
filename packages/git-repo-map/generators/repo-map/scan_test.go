@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,8 +61,8 @@ func TestSameCoordinatesDifferentHosts(t *testing.T) {
 }
 
 // Real worktrees keep origin in the common directory, not the .git file target.
-func TestWorktreeGitFile(t *testing.T) {
-	root := t.TempDir()
+func fixtureWorktree(t *testing.T, root string) (string, string, string) {
+	t.Helper()
 	a := fixtureRepo(t, filepath.Join(root, "main"), "https://git.example/team/app.git")
 	worktree := filepath.Join(root, "linked")
 	gitdir := filepath.Join(a, ".git", "worktrees", "linked")
@@ -76,8 +77,18 @@ func TestWorktreeGitFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", a}})
+	return a, worktree, gitdir
 }
+func TestWorktreeGitFile(t *testing.T) {
+	root := t.TempDir()
+	a, worktree, gitdir := fixtureWorktree(t, root)
+	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", a}})
+	// Scanning must release metadata handles so Windows can remove the checkout.
+	if err := os.Remove(filepath.Join(gitdir, "commondir")); err != nil {
+		t.Fatalf("scan retained commondir handle: %v", err)
+	}
+}
+
 func TestPrunedDependencies(t *testing.T) {
 	root := t.TempDir()
 	visible := fixtureRepo(t, filepath.Join(root, "app"), "https://git.example/team/app.git")
@@ -134,18 +145,23 @@ func TestPermissionDeniedRootVisible(t *testing.T) {
 	}
 }
 func TestMalformedGitMetadataVisible(t *testing.T) {
-	root := t.TempDir()
-	repo := filepath.Join(root, "broken")
-	if err := os.Mkdir(repo, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("invalid git file\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Scan(context.Background(), []string{root}, nil); err == nil || !strings.Contains(err.Error(), repo) {
-		t.Fatalf("missing metadata diagnostic: %v", err)
+	for _, name := range []string{"broken", "broken\\checkout"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			repo := filepath.Join(root, name)
+			if err := os.MkdirAll(repo, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("invalid git file\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if rows, err := Scan(context.Background(), []string{root}, nil); err == nil || !strings.Contains(err.Error(), strconv.Quote(repo)) || len(rows) != 0 {
+				t.Fatalf("missing metadata diagnostic: %v rows=%v", err, rows)
+			}
+		})
 	}
 }
+
 func TestMultipleOriginURLs(t *testing.T) {
 	root := t.TempDir()
 	p := fixtureRepo(t, filepath.Join(root, "checkout"), "")

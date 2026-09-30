@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -224,8 +225,13 @@ func TestForgejoValidExplicitTokenStoredPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&0777 != 0600 {
+	// Windows reports writability, not Unix owner/group permission bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatal(info.Mode())
+	}
+	data, err := os.ReadFile(filepath.Join(q.StateDir, "access-token"))
+	if err != nil || string(data) != "valid-fixture" {
+		t.Fatalf("credential content: %q, %v", data, err)
 	}
 }
 func TestAzureExplicitDeviceFlowStreamsOnlyInteractiveAction(t *testing.T) {

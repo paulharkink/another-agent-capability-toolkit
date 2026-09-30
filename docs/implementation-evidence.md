@@ -86,3 +86,16 @@ Kubernetes/Grafana/Forgejo/Azure sign-in remains a user follow-up. Native Window
 runtime evidence comes from CI, not from cross-compilation alone. Releases are
 development archives; no version tag, release publication or main merge is part
 of this delivery.
+
+## Final archives and consumer integration
+
+All six actual CGO-free archives built and passed `--verify-only` after final
+notice normalization. The native darwin/arm64 release passed empty-PATH static
+and generated Git-mapper install/uninstall checks. The coordinator independently
+verified version `0.1.0-dev`, all six archive validations, and the actual consumer
+checkout catalog containing 7 public plus 8 local entries.
+
+Windows CI initially failed a Unix-permission assertion, a quoted Windows-path
+diagnostic assertion, and worktree cleanup because pinned go-git leaked its
+`commondir` handle. Native Linux/macOS test/vet/race, actual Docker CI, and the
+six-target CI artifact job passed. Final Windows repair/rerun evidence follows.
