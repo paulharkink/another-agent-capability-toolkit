@@ -1,0 +1,6 @@
+schema_version = 1
+id = "non-interactive-ready-planning"
+name = "Non Interactive Ready Planning"
+
+[skill]
+name = "non-interactive-ready-planning"

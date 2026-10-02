@@ -1,0 +1,36 @@
+---
+name: cluster-inspector
+description: Use when read-only Kubernetes or Tekton inspection is needed and the configured Cluster Inspector MCP tools are available in the current session.
+version: 1.0.0
+---
+
+# Cluster Inspector
+
+Use Cluster Inspector MCP for read-only Kubernetes inspection and, when enabled by the selected cluster profile, Tekton PipelineRun, TaskRun, pod, and log inspection.
+
+## Rules
+
+- First check whether Cluster Inspector MCP tools and a target are available in this session. If the MCP is absent, say “Cluster Inspector MCP is not available in this session” and continue with another permitted read-only method, such as `kubectl` or `oc`, when available and authorized. If a required tool is absent, check the tools exposed by the selected target; Tekton tools exist only when that cluster profile includes `[tekton]`. If no permitted method is available, state that and ask for the required access. Do not treat a missing MCP or optional capability as a reason to stop when another permitted method is available.
+- When using Cluster Inspector, discover its targets registered in the current client at runtime. Match an explicitly named target; otherwise select the sole applicable target automatically. If several targets could apply, ask which one to inspect. Do not use a saved list of target names.
+- For namespaced MCP inspection, require the user to name a namespace; never derive it from the repository. For a CLI fallback, follow that tool's configured context and ask only if the namespace remains ambiguous.
+- Use `api_resources`, `get_resource`, `list_resources`, `describe_resource`, `get_logs`, `get_events`, metrics, and explain tools as needed. Kubernetes RBAC determines what succeeds.
+- Do not suggest or invoke mutations, arbitrary commands, exec, attach, proxying, or port-forwarding.
+- If the MCP authentication fails or the server is disconnected, report that it is unavailable and use another permitted read-only method if one is available; otherwise ask for the required access.
+- Tekton tools use the same selected cluster target and authentication as the Kubernetes tools. Use the configured Tekton default namespace unless the user names another namespace. Do not look for a separate Tekton Inspector registration or ask the user to authenticate a second time.
+
+## Workflow
+
+1. Resolve the registered target and namespace.
+2. Discover the resource type first when the API group or CRD is unclear.
+3. Call the raw read tool required for the investigation on the matching MCP server.
+4. Treat a Kubernetes `Forbidden` response as authoritative RBAC denial and report it directly.
+
+## Tekton workflow
+
+Use this workflow only if Tekton tools are present on the selected Cluster Inspector target. If they are absent, the profile does not configure Tekton; use an authorized read-only `kubectl` or `oc` fallback when available.
+
+1. For current-branch searches, run `scripts/git-context.sh <repository-path>` or `scripts/git-context.ps1 -RepositoryPath <repository-path>` locally. Pass its `branch` and `repository` values to `branch_pipeline_runs`. If the profile has a repository-context hook, pass `repository_path` so its configured overrides apply.
+2. For `main` or other branch searches, run `scripts/git-context.sh --repository-only <repository-path>` or `scripts/git-context.ps1 -RepositoryOnly -RepositoryPath <repository-path>` locally and pass the repository to the relevant search. Use `search_named_resources` with literal fragments for naming conventions that do not fit branch or repository selectors.
+3. If there are no PipelineRun candidates, report that and offer an unusual/custom resource search. Select a sole candidate automatically and state its exact name; present multiple candidates as numbered choices and accept a number or exact name.
+4. Call `pipeline_taskruns` with the selected exact PipelineRun. Select a sole TaskRun automatically; when there are several, present numbered choices and accept a number or exact name. Then call `taskrun_pod`; its `status.podName` is authoritative, so never guess a pod name.
+5. Call `pod_status`, then `pod_logs` for a container name reported by the pod. Report the TaskRun result, relevant pod status, and supporting log lines.

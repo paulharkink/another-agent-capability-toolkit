@@ -1,0 +1,58 @@
+schema_version = 1
+id = "azure-inspector"
+name = "Azure Inspector"
+
+[skill]
+name = "azure-inspector"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "Local port"
+config_key = "mcp.local_port"
+default = 8084
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Host"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "tenant_id"
+type = "string"
+label = "Tenant id"
+config_key = "azure.tenant_id"
+required = true
+
+[[inputs]]
+name = "subscription_id"
+type = "string"
+label = "Subscription id"
+config_key = "azure.subscription_id"
+required = true
+
+[mcp]
+name = "azure-inspector"
+runtime = "docker"
+transport = "sse"
+container_port = 8084
+endpoint_path = "/sse"
+host_port_input = "local_port"
+build_context = "./mcp"
+
+[mcp.actions.prepare]
+command = ["bin/inspector-helper", "azure-inspector", "prepare"]
+timeout_seconds = 300
+
+[mcp.actions.prepare.windows]
+command = ["bin/inspector-helper.exe", "azure-inspector", "prepare"]
+
+[mcp.actions.authenticate]
+command = ["bin/inspector-helper", "azure-inspector", "authenticate"]
+timeout_seconds = 300
+
+[mcp.actions.authenticate.windows]
+command = ["bin/inspector-helper.exe", "azure-inspector", "authenticate"]

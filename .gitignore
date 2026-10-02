@@ -1,0 +1,7 @@
+/dist/
+/.tools/
+/.superpowers/
+*.test
+!**/Dockerfile.test
+__pycache__/
+.pytest_cache/

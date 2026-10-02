@@ -1,0 +1,65 @@
+package state
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+)
+
+// ProfileRecord keeps a configured profile visible even before its MCP has
+// been started or registered with an agent.
+type ProfileRecord struct {
+	Key  Key    `json:"key"`
+	Name string `json:"name,omitempty"`
+}
+
+type profileLedger struct {
+	Version  int             `json:"version"`
+	Profiles []ProfileRecord `json:"profiles"`
+}
+
+func (s *Store) profilesPath() string {
+	return filepath.Join(s.root, "manager", "profiles.json")
+}
+
+func (s *Store) loadProfiles() (profileLedger, error) {
+	var saved profileLedger
+	err := readJSON(s.profilesPath(), &saved)
+	if errors.Is(err, os.ErrNotExist) {
+		return profileLedger{Version: 1}, nil
+	}
+	if err != nil {
+		return saved, err
+	}
+	if saved.Version != 1 {
+		return saved, errors.New("unsupported profile state version")
+	}
+	return saved, nil
+}
+
+func (s *Store) Profiles() ([]ProfileRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	saved, err := s.loadProfiles()
+	return saved.Profiles, err
+}
+
+func (s *Store) RecordProfile(profile ProfileRecord) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	saved, err := s.loadProfiles()
+	if err != nil {
+		return err
+	}
+	for i, current := range saved.Profiles {
+		if current.Key == profile.Key {
+			saved.Profiles[i] = profile
+			return WriteJSON(s.profilesPath(), saved)
+		}
+	}
+	saved.Profiles = append(saved.Profiles, profile)
+	return WriteJSON(s.profilesPath(), saved)
+}

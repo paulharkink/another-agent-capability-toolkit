@@ -1,0 +1,21 @@
+schema_version = 1
+id = "plain"
+name = "Plain"
+
+[skill]
+name = "plain"
+
+[[inputs]]
+name = "port"
+type = "integer"
+default = 8765
+min = 1024
+max = 65535
+
+[mcp]
+name = "plain"
+runtime = "docker"
+container_port = 8765
+
+[generator]
+command = ["./bin/generate"]

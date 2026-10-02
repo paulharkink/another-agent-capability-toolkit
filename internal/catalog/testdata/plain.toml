@@ -1,0 +1,6 @@
+schema_version = 1
+id = "plain"
+name = "Plain"
+
+[skill]
+name = "plain"

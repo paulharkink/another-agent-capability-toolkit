@@ -1,0 +1,130 @@
+schema_version = 1
+id = "grafana-inspector"
+name = "Grafana Inspector"
+
+[skill]
+name = "grafana-inspector"
+
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "Local port"
+config_key = "mcp.local_port"
+default = 8765
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Host"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "url"
+type = "string"
+label = "Url"
+config_key = "grafana.url"
+required = true
+
+[[inputs]]
+name = "auth_mode"
+type = "choice"
+label = "Auth mode"
+config_key = "grafana.auth_mode"
+required = true
+[[inputs.options]]
+value = "api_token"
+label = "api_token"
+[[inputs.options]]
+value = "session_cookie"
+label = "session_cookie"
+
+[[inputs]]
+name = "datasource_uid"
+type = "string"
+label = "Datasource uid"
+config_key = "grafana.datasource_uid"
+
+[[inputs]]
+name = "token"
+type = "secret"
+label = "Token"
+
+[[inputs]]
+name = "grafana_session"
+type = "secret"
+label = "Grafana session"
+
+[[inputs]]
+name = "oauth_refresh"
+type = "secret"
+label = "Oauth refresh"
+
+[[inputs]]
+name = "session_expiry"
+type = "secret"
+label = "Session expiry"
+
+[[inputs]]
+name = "refresh_cookie_name"
+type = "string"
+label = "Refresh cookie name"
+config_key = "grafana.refresh_cookie_name"
+
+[[inputs]]
+name = "ca_file"
+type = "file"
+label = "Ca file"
+config_key = "grafana.ca_file"
+
+[[inputs]]
+name = "verify_x509_strict"
+type = "boolean"
+label = "Verify x509 strict"
+config_key = "grafana.verify_x509_strict"
+
+[[inputs]]
+name = "vault_addr"
+type = "string"
+label = "Vault addr"
+config_key = "grafana.vault_addr"
+
+[[inputs]]
+name = "vault_path"
+type = "string"
+label = "Vault path"
+config_key = "grafana.vault_path"
+
+[[inputs]]
+name = "vault_key"
+type = "string"
+label = "Vault key"
+config_key = "grafana.vault_key"
+
+[mcp]
+name = "grafana-inspector"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "local_port"
+build_context = "./mcp"
+
+[mcp.actions.prepare]
+command = ["bin/inspector-helper", "grafana-inspector", "prepare"]
+timeout_seconds = 300
+
+[mcp.actions.prepare.windows]
+command = ["bin/inspector-helper.exe", "grafana-inspector", "prepare"]
+
+[mcp.actions.authenticate]
+command = ["bin/inspector-helper", "grafana-inspector", "authenticate"]
+timeout_seconds = 300
+
+[mcp.actions.authenticate.windows]
+command = ["bin/inspector-helper.exe", "grafana-inspector", "authenticate"]
