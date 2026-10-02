@@ -44,6 +44,8 @@ Profile rows represent configured and saved profiles, including never-started on
 | --- | --- | --- |
 | Home | `Tab`, `←`, `→` | Switch between the two panes; attempting an empty MCP pane leaves focus on Capabilities with an explanation. |
 | Focused list | `↑`, `↓`, `PgUp`, `PgDn`, `Home`, `End` | Move its selection and scroll its own viewport. |
+| Home and management lists | Left click on a visible row | Focus its pane and select that row. |
+| Scrollable pane or popup | Mouse wheel over its content | Scroll that content without changing an unrelated pane's selection. |
 | Capability list | `Space` | Toggle that capability's pending batch mark. |
 | Any selected row | `Enter`, `F2`, visible Actions control | Open that row's item-specific Actions menu. |
 | Home | `F9`, visible Main menu control | Open Agents, Environments, Settings, Help. This does not switch home panes. |
@@ -53,6 +55,8 @@ Profile rows represent configured and saved profiles, including never-started on
 | Home | `F10`, visible Quit control | Exit. Input forms do not have a global letter-key quit shortcut. |
 
 Menus show unavailable actions in place with concise reasons. They do not silently omit a command because the selected profile is stopped, attached, unauthenticated, or read-only. The action menu is a centered overlay; its first enabled item receives focus. Closing it restores the selected row and pane. All popup controls have visible focus, and modal focus remains within the popup until it closes.
+
+Where the terminal reports mouse events, the visible Main menu, Actions control, footer commands, menu entries, form fields, checkboxes, selectors, and buttons respond to left clicks. Clicking a capability's mark box toggles its pending mark; clicking the rest of its row selects it. A click on a disabled action leaves it disabled and shows its reason. Mouse interaction uses the same commands and validation as keyboard interaction; it is not a separate behavior path. No hover or drag gesture is required. A terminal that does not report mouse events retains the complete keyboard flow.
 
 The Main menu has exactly the management destinations `Agents`, `Environments`, `Settings`, and `Help` for this design. They are management screens, not additional Tab destinations. `F1` opens contextual Help; Main menu → Help opens the help index. Function-key labels remain visible, and every command has a clickable/keyboard menu path.
 
@@ -95,9 +99,9 @@ Mutating operations show a foreground progress dialog with steps, output, and pe
 
 Bubble Tea v2 owns events and asynchronous commands; Lip Gloss v2 renders the terminal layout. Replace the current global `view`/`selected` state with typed home-pane states, management-screen state, a modal stack, and operation state. The TUI receives typed profile/capability view models and typed operation requests from application services. It must not interpret Docker labels, edit agent JSON/JSONC, or overload a string argument with unrelated meanings. Service results carry action availability and disabled reasons.
 
-The UI runs with native Windows, macOS, and Linux builds; WSL is a Linux runtime scope. No mouse is required. A minimum terminal size may be specified after layout review; below it, show the required/current dimensions and allow exit. At and above the minimum, resizing must preserve focused controls and scroll positions.
+The UI runs with native Windows, macOS, and Linux builds; WSL is a Linux runtime scope. Bubble Tea v2 mouse click and wheel events are enabled for supporting terminals. The renderer maintains hit regions from its current layout so scrolling, resize, truncation, and Unicode character widths do not make clicks target the wrong row or button. Mouse support is additive; no mouse is required. A minimum terminal size may be specified after layout review; below it, show the required/current dimensions and allow exit. At and above the minimum, resizing must preserve focused controls and scroll positions.
 
-Implementation follows the user's TDD requirement. Model tests cover pane filtering, keyboard paths, modal focus restoration, long-list scrolling, small terminals, conditional forms, fixed/default values, disabled reasons, refresh failure, and partial operation results. Adapter tests remain separate from TUI tests. A manual terminal review compares the implemented flows against this mockup before claiming a match; tests alone cannot establish the visual result.
+Implementation follows the user's TDD requirement. Model tests cover pane filtering, keyboard paths, mouse hit regions and wheel routing, modal focus restoration, long-list scrolling, small terminals, conditional forms, fixed/default values, disabled reasons, refresh failure, and partial operation results. Adapter tests remain separate from TUI tests. A manual terminal review compares the implemented flows against this mockup before claiming a match; tests alone cannot establish the visual result.
 
 ## Public interactive demonstration
 
