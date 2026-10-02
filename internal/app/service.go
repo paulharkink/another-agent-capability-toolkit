@@ -182,9 +182,11 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 			}
 		}
 		visibleDefs, editableValues := withoutFixed(seedDefs, values, fixed)
-		values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
-		if e != nil {
-			return nil, t, k, e
+		if len(visibleDefs) > 0 {
+			values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
+			if e != nil {
+				return nil, t, k, e
+			}
 		}
 		values = withFixed(values, fixed)
 		values, e = config.ResolveInputPaths(p.Inputs, values, filepath.Join(cwd, ".aact-inputs"))
@@ -208,9 +210,11 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 				if len(result.Choices) > 0 {
 					defs := withChoices(p.Inputs, result.Choices)
 					visibleDefs, editableValues := withoutFixed(defs, values, fixed)
-					values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
-					if e != nil {
-						return nil, t, k, e
+					if len(visibleDefs) > 0 {
+						values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
+						if e != nil {
+							return nil, t, k, e
+						}
 					}
 					values = withFixed(values, fixed)
 					values, e = config.ResolveInputPaths(defs, values, filepath.Join(cwd, ".aact-inputs"))

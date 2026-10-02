@@ -169,6 +169,26 @@ func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
 		t.Fatalf("interactive fixed values: %+v %v", values, err)
 	}
 }
+func TestInteractiveResolveSkipsEmptyFormWhenEveryInputFixed(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("api_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.Editor = func(context.Context, []catalog.Input, map[string]any) (map[string]any, error) {
+		t.Fatal("empty interactive form opened")
+		return nil, nil
+	}
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false)
+	if err != nil || values["api_server"] != "https://fixed.example" {
+		t.Fatalf("fixed-only resolve: %+v %v", values, err)
+	}
+}
 
 func TestUISetupPreviewDoesNotWriteStateOrRequireCompletedAnswers(t *testing.T) {
 	svc, _, store := fixture(t)
