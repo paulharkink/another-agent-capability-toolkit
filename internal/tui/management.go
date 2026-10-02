@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sort"
@@ -26,11 +27,24 @@ type managementState struct {
 	ViewerContent    string
 	ViewerOffset     int
 	ViewerHorizontal int
+	ViewerReturn     string
 }
 
 type environmentEntry struct {
 	Name    string
 	Targets []string
+	Paths   []string
+	Errors  []string
+}
+
+type environmentBrowserBackend interface {
+	UIEnvironmentSnapshot(context.Context) (viewmodel.EnvironmentSnapshot, error)
+	UIEnvironmentTarget(context.Context, string) (string, error)
+}
+
+type environmentTargetMsg struct {
+	path, content string
+	err           error
 }
 
 func isManagementView(view string) bool {
@@ -97,10 +111,40 @@ func (m *Model) agentRegistrations(id string) []string {
 	return rows
 }
 
-// Saved profiles are shown separately from environment files because the
-// current service does not expose a directory scan or exact TOML contents.
+// Actual target files and saved profiles have separate rows. A saved profile
+// never counts as evidence that its target TOML still exists.
 func (m *Model) environmentEntries() []environmentEntry {
 	entries := []environmentEntry{{Name: "No environment file"}}
+	actual := map[string]*environmentEntry{}
+	if m.environmentSnapshot != nil {
+		for _, name := range m.environmentSnapshot.Environments {
+			key := m.environmentSnapshot.SourceID + " / " + name
+			actual[key] = &environmentEntry{Name: key + " · TOML files"}
+		}
+		for _, target := range m.environmentSnapshot.Targets {
+			key := target.SourceID + " / " + target.Environment
+			entry := actual[key]
+			if entry == nil {
+				entry = &environmentEntry{Name: key + " · TOML files"}
+				actual[key] = entry
+			}
+			label := target.PackageID + " / " + target.Name
+			if target.Error != "" {
+				label += " · Invalid TOML"
+			}
+			entry.Targets = append(entry.Targets, label)
+			entry.Paths = append(entry.Paths, target.Path)
+			entry.Errors = append(entry.Errors, target.Error)
+		}
+	}
+	actualNames := make([]string, 0, len(actual))
+	for name := range actual {
+		actualNames = append(actualNames, name)
+	}
+	sort.Strings(actualNames)
+	for _, name := range actualNames {
+		entries = append(entries, *actual[name])
+	}
 	byName := map[string]map[string]bool{}
 	if m.profileSnapshot != nil {
 		for _, p := range m.profileSnapshot.Profiles {
@@ -266,7 +310,15 @@ func (m *Model) managementMenuEntries() []string {
 		}
 		return []string{viewer, "Configure location — disabled: service support pending", refresh, "Back"}
 	case "Environments":
-		return []string{"Use for new setups — disabled: target service unavailable", "View target — disabled: exact TOML unavailable from service", "Environment root", "Close"}
+		viewer := "View target — disabled: select an actual TOML target"
+		entries := m.environmentEntries()
+		selected := entries[min(max(0, m.management.EnvironmentIndex), len(entries)-1)]
+		if m.management.TargetIndex < len(selected.Paths) && selected.Paths[m.management.TargetIndex] != "" {
+			if _, ok := m.backend.(environmentBrowserBackend); ok {
+				viewer = "View target"
+			}
+		}
+		return []string{"Use for new setups — disabled: target selection for setup pending", viewer, "Environment root", "Close"}
 	case "Settings":
 		return []string{"Edit environment root", "Default named agents — disabled: service support pending", "Docker backend — disabled: service support pending", "Back"}
 	}
@@ -276,7 +328,7 @@ func (m *Model) managementMenuEntries() []string {
 func (m *Model) managementModalKey(stroke string) tea.Cmd {
 	if m.management.Modal == "viewer" {
 		if stroke == "esc" {
-			m.management.Modal = "files"
+			m.management.Modal = m.management.ViewerReturn
 			return nil
 		}
 		lines := strings.Split(m.management.ViewerContent, "\n")
@@ -342,6 +394,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				m.output = "Exact configuration viewer unavailable from service"
 				return nil
 			}
+			m.management.ViewerReturn = "files"
 			return func() tea.Msg {
 				content, err := backend.UIAgentConfig(m.ctx, row.ID, file.Path)
 				return agentConfigMsg{path: file.Path, content: content, err: err}
@@ -356,6 +409,20 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 			case 2:
 				m.management.Modal = ""
 				return m.load()
+			}
+		}
+		if m.view == "Environments" && i == 1 {
+			selected := m.environmentEntries()[m.management.EnvironmentIndex]
+			path := selected.Paths[m.management.TargetIndex]
+			backend, ok := m.backend.(environmentBrowserBackend)
+			if !ok {
+				m.output = "Exact target viewer unavailable from service"
+				return nil
+			}
+			m.management.ViewerReturn = "actions"
+			return func() tea.Msg {
+				content, err := backend.UIEnvironmentTarget(m.ctx, path)
+				return environmentTargetMsg{path: path, content: content, err: err}
 			}
 		}
 		if entries[i] == "Environment root" || entries[i] == "Edit environment root" {
@@ -532,7 +599,11 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 func (m *Model) agentConfigView() tea.View {
 	width, height := m.width, m.height
 	lines := make([]string, height)
-	lines[0] = "╔" + fit(" Agent configuration · "+m.management.ViewerPath, width-2) + "╗"
+	title := "Agent configuration"
+	if m.view == "Environments" {
+		title = "Environment target"
+	}
+	lines[0] = "╔" + fit(" "+title+" · "+m.management.ViewerPath, width-2) + "╗"
 	lines[1] = "║" + fit(" Exact file contents · ←→ Horizontal · ↑↓/PgUp/PgDn Scroll · Esc Back", width-2) + "║"
 	lines[2] = "╠" + strings.Repeat("═", width-2) + "╣"
 	content := strings.Split(m.management.ViewerContent, "\n")
@@ -590,11 +661,14 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 			r = prefix + selected.Targets[i]
 			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 4, Width: right, Height: 1, Pane: ProfilesPane, Index: i, Control: "row"})
 		} else if y == 0 && len(selected.Targets) == 0 {
-			r = "No configured targets exposed by service"
+			r = "No targets in this selection"
 		}
 		lines[y+4] = "║" + fit(l, left) + "║" + fit(r, right) + "║"
 	}
-	lines[m.height-7] = "║" + fit(" Environment root: "+m.settings["environment_root"]+" · saved profiles do not prove TOML files exist", m.width-2) + "║"
+	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
+		lines[m.height-8] = "║" + fit(" Invalid TOML: "+selected.Errors[m.management.TargetIndex], m.width-2) + "║"
+	}
+	lines[m.height-7] = "║" + fit(" Environment root: "+m.settings["environment_root"]+" · saved profiles are separate from TOML files", m.width-2) + "║"
 }
 
 func (m *Model) renderManagementModal(lines []string) {

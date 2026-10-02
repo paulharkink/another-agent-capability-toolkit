@@ -17,6 +17,80 @@ type typedAgentBackend struct {
 	content string
 }
 
+type typedEnvironmentBackend struct {
+	fixtureBackend
+	snapshot viewmodel.EnvironmentSnapshot
+	contents map[string]string
+}
+
+func (b *typedEnvironmentBackend) UIEnvironmentSnapshot(context.Context) (viewmodel.EnvironmentSnapshot, error) {
+	return b.snapshot, nil
+}
+
+func (b *typedEnvironmentBackend) UIEnvironmentTarget(_ context.Context, path string) (string, error) {
+	content, ok := b.contents[path]
+	if !ok {
+		return "", fmt.Errorf("unknown target %s", path)
+	}
+	return content, nil
+}
+
+func TestEnvironmentBrowserShowsActualTOMLAndExactViewer(t *testing.T) {
+	b := &typedEnvironmentBackend{snapshot: viewmodel.EnvironmentSnapshot{SourceID: "team", Root: "/environments", Targets: []viewmodel.EnvironmentTarget{
+		{SourceID: "team", Environment: "dev", PackageID: "inspect", Name: "broken", Path: "/environments/dev/inspect/broken.toml", Error: "invalid TOML"},
+		{SourceID: "team", Environment: "dev", PackageID: "inspect", Name: "production", Path: "/environments/dev/inspect/production.toml"},
+	}}, contents: map[string]string{"/environments/dev/inspect/broken.toml": "[invalid\n", "/environments/dev/inspect/production.toml": "token = 'visible-secret'\n"}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Environments")
+	view := m.View().Content
+	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "team / dev") {
+		t.Fatalf("actual environment targets missing: %s", view)
+	}
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyRight, "")
+	view = m.View().Content
+	if !strings.Contains(view, "broken") || !strings.Contains(view, "Invalid TOML") || !strings.Contains(view, "production") {
+		t.Fatalf("selected target list missing: %s", view)
+	}
+	press(m, tea.KeyEnter, "")
+	if !strings.Contains(m.View().Content, "View target") || strings.Contains(m.View().Content, "View target — disabled") {
+		t.Fatal("exact target view unavailable")
+	}
+	press(m, tea.KeyDown, "")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("view target did not request TOML")
+	}
+	m.Update(cmd())
+	view = m.View().Content
+	if !strings.Contains(view, "[invalid") || !strings.Contains(view, "broken.toml") {
+		t.Fatalf("exact invalid TOML not shown: %s", view)
+	}
+	press(m, tea.KeyEscape, "")
+	if m.view != "Environments" {
+		t.Fatal("target viewer lost browser")
+	}
+}
+
+func TestEnvironmentBrowserShowsEmptyDirectoryWithoutInventingTarget(t *testing.T) {
+	b := &typedEnvironmentBackend{snapshot: viewmodel.EnvironmentSnapshot{SourceID: "team", Root: "/environments", Environments: []string{"empty"}}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Environments")
+	press(m, tea.KeyDown, "")
+	view := m.View().Content
+	if !strings.Contains(view, "team / empty") || !strings.Contains(view, "No targets") {
+		t.Fatalf("empty environment missing: %s", view)
+	}
+	press(m, tea.KeyEnter, "")
+	if !strings.Contains(m.View().Content, "View target — disabled") {
+		t.Fatal("empty environment offered exact target")
+	}
+}
+
 func (b *typedAgentBackend) UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error) {
 	return b.rows, nil
 }

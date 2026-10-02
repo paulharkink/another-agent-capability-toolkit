@@ -40,6 +40,10 @@ type paneState struct {
 type modalState struct {
 	Kind     string
 	Selected int
+	Label    string
+	Rows     []string
+	Offset   int
+	Column   int
 }
 type hitRegion struct {
 	X, Y, Width, Height int
@@ -309,6 +313,9 @@ func (m *Model) menuEntries() []string {
 	return []string{install, "Details", "Refresh", "Back"}
 }
 func (m *Model) modalKey(stroke string) tea.Cmd {
+	if m.home.Modal.Kind == "logs" {
+		return m.logKey(stroke)
+	}
 	if stroke == "esc" {
 		m.home.Modal = nil
 		return nil
@@ -383,6 +390,9 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			m.registrationForm(p)
 			return nil
 		}
+		if action == "l" {
+			return m.openProfileLogs(p)
+		}
 		if action == "parameters" {
 			m.output = "This action awaits the typed service operation."
 			return nil
@@ -419,6 +429,9 @@ func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 	mouse := msg.Mouse()
 	m.homeView() // Rebuild geometry after resize/refresh, not stale rendered coordinates.
 	if m.home.Modal != nil {
+		if m.home.Modal.Kind == "logs" {
+			return m.logMouse(msg)
+		}
 		if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft {
 			for _, h := range m.home.Hits {
 				if h.contains(mouse.X, mouse.Y) && h.Control == "menu" {
@@ -619,6 +632,9 @@ func (m *Model) homeView() tea.View {
 	return v
 }
 func (m *Model) overlay(lines []string) []string {
+	if m.home.Modal.Kind == "logs" {
+		return m.logsOverlay(lines)
+	}
 	title := "Actions"
 	if m.home.Modal.Kind == "main" {
 		title = "Main menu"

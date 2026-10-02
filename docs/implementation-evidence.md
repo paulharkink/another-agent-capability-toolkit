@@ -173,8 +173,12 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
   with all declared inputs, provenance, and destination selection. Save passes
   its complete answers to the noninteractive install service. The Agents screen
   distinguishes client detection from config-file presence and can show exact
-  config bytes without masking; the Environments screen presently shows saved
-  profile targets rather than pretending to read target TOML.
+  config bytes without masking. The Environments screen reads actual target TOML,
+  displays malformed target files as error rows, and views exact contents while
+  keeping saved profiles visibly separate from files on disk.
+- Owned MCP logs open in a bounded, scrollable snapshot viewer. Keyboard and
+  mouse wheel move through the last 200 Docker log lines; closing it leaves the
+  runtime running. Live follow/pause awaits a streaming backend.
 - Skill-only installation supports the global `all` destination under
   `~/.agents/skills`; MCP packages reject it before any runtime mutation.
 - Claude Code user-scope MCP JSON was verified with a temporary
@@ -196,8 +200,9 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
 
 The redesign is not yet at full mockup parity. Existing-profile parameter
 Save/apply and its failed-apply recovery, environment TOML fixed/default and
-conditional input policies, environment browsing/authoring, full agent detection,
-and a scrollable operation result/log viewer still need implementation or
-review. Stop currently removes its Docker container while retaining last-action
-state; the browser mock's retain-container choice was not yet accepted as a
-terminal runtime contract. The public GitHub Pages mock remains unpublished.
+conditional input policies, Use-for-new-setup and TOML authoring, full agent
+detection, a scrollable operation result viewer, and live log follow/pause still
+need implementation or review. Stop currently removes its Docker container
+while retaining last-action state; the browser mock's retain-container choice
+was not yet accepted as a terminal runtime contract. The public GitHub Pages
+mock remains unpublished.

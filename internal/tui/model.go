@@ -45,6 +45,8 @@ type Model struct {
 	mcps                       []mcp.Instance
 	profileSnapshot            *viewmodel.ProfileSnapshot
 	profileError               error
+	environmentSnapshot        *viewmodel.EnvironmentSnapshot
+	environmentError           error
 	pendingRegistration        *viewmodel.RegistrationRequest
 	pendingRegistrationRemoval bool
 	pendingSetup               *viewmodel.SetupPreview
@@ -60,15 +62,17 @@ type Model struct {
 }
 type operation struct{ action, source, packageID, agent, environment, target string }
 type loadedMsg struct {
-	catalog          []catalog.Package
-	inventory        []state.Installation
-	mcps             []mcp.Instance
-	profileSnapshot  *viewmodel.ProfileSnapshot
-	profileError     error
-	agents           []string
-	agentManagement  []viewmodel.AgentManagementRow
-	settings, labels map[string]string
-	err              error
+	catalog             []catalog.Package
+	inventory           []state.Installation
+	mcps                []mcp.Instance
+	profileSnapshot     *viewmodel.ProfileSnapshot
+	profileError        error
+	environmentSnapshot *viewmodel.EnvironmentSnapshot
+	environmentError    error
+	agents              []string
+	agentManagement     []viewmodel.AgentManagementRow
+	settings, labels    map[string]string
+	err                 error
 }
 type agentConfigMsg struct {
 	path, content string
@@ -118,6 +122,15 @@ func (m *Model) load() tea.Cmd {
 			msg.agentManagement, e = backend.UIAgentManagement(m.ctx)
 			if e != nil {
 				errs = append(errs, e)
+			}
+		}
+		if backend, ok := m.backend.(environmentBrowserBackend); ok {
+			snapshot, err := backend.UIEnvironmentSnapshot(m.ctx)
+			msg.environmentError = err
+			if err == nil {
+				msg.environmentSnapshot = &snapshot
+			} else {
+				errs = append(errs, err)
 			}
 		}
 		msg.settings, e = m.backend.UISettings(m.ctx)
@@ -205,6 +218,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.run(op)
 	}
 	switch msg := msg.(type) {
+	case logsMsg:
+		m.showLogs(msg)
 	case setupPreviewMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -217,6 +232,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inventory = msg.inventory
 		m.mcps = msg.mcps
 		m.profileError = msg.profileError
+		m.environmentError = msg.environmentError
+		m.environmentSnapshot = msg.environmentSnapshot
 		if msg.profileSnapshot != nil {
 			m.profileSnapshot = msg.profileSnapshot
 		}
@@ -229,6 +246,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reconcileHome()
 	case agentConfigMsg:
+		if msg.err != nil {
+			m.output = m.cleanOutput(msg.err.Error())
+			return m, nil
+		}
+		m.management.ViewerPath = msg.path
+		m.management.ViewerContent = msg.content
+		m.management.ViewerOffset = 0
+		m.management.ViewerHorizontal = 0
+		m.management.Modal = "viewer"
+	case environmentTargetMsg:
 		if msg.err != nil {
 			m.output = m.cleanOutput(msg.err.Error())
 			return m, nil
