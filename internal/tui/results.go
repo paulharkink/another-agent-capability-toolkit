@@ -18,10 +18,12 @@ type resultState struct {
 func (m *Model) showOperationResult(msg operationMsg) {
 	m.output = m.cleanOutput(msg.output)
 	if msg.err != nil {
-		if m.output != "" {
-			m.output += "\n"
+		cause := "Failed: " + m.cleanOutput(msg.err.Error())
+		if m.output == "" {
+			m.output = cause
+		} else {
+			m.output = cause + "\n" + m.output
 		}
-		m.output += m.cleanOutput(msg.err.Error())
 	}
 	rows := []string{"Completed"}
 	if m.output != "" {

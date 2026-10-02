@@ -67,3 +67,15 @@ func TestDirectoryCollectionRejectsEmptyItems(t *testing.T) {
 		t.Fatal("accepted blank directory item")
 	}
 }
+
+func TestExclusiveGroupRejectsTwoCredentialMethods(t *testing.T) {
+	defs := []catalog.Input{{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"}, {Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"}}
+	if err := Validate(defs, map[string]any{"token": "private", "kubeconfig": "/tmp/config"}); err == nil || !strings.Contains(err.Error(), "token") || !strings.Contains(err.Error(), "kubeconfig") {
+		t.Fatalf("simultaneous credentials accepted or error unclear: %v", err)
+	}
+	for _, values := range []map[string]any{{"token": "private", "kubeconfig": ""}, {"token": "", "kubeconfig": "/tmp/config"}} {
+		if err := Validate(defs, values); err != nil {
+			t.Fatalf("single credential method rejected: %v", err)
+		}
+	}
+}

@@ -57,6 +57,20 @@ func TestLoadBundle(t *testing.T) {
 		t.Fatalf("bad bundle: %#v", p)
 	}
 }
+func TestLoadExclusiveInputGroup(t *testing.T) {
+	p, err := Load(writeManifest(t, plainManifest+`[[inputs]]
+name = "token"
+type = "secret"
+exclusive_group = "cluster_credentials"
+[[inputs]]
+name = "kubeconfig"
+type = "file"
+exclusive_group = "cluster_credentials"
+`))
+	if err != nil || len(p.Inputs) != 2 || p.Inputs[0].ExclusiveGroup != "cluster_credentials" || p.Inputs[1].ExclusiveGroup != "cluster_credentials" {
+		t.Fatalf("exclusive input metadata lost: %#v, %v", p.Inputs, err)
+	}
+}
 func TestRejectUnsupportedVersion(t *testing.T) {
 	_, e := Load(writeManifest(t, fixture(t, "invalid.toml")))
 	if e == nil || !strings.Contains(e.Error(), "schema") {

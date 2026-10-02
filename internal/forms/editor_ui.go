@@ -438,6 +438,22 @@ func (m *FormModel) layout() formLayout {
 	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
 	if len(m.defs) > 0 {
 		def := m.defs[m.selected]
+		if def.ExclusiveGroup != "" {
+			others := []string{}
+			for _, other := range m.defs {
+				if other.Name == def.Name || other.ExclusiveGroup != def.ExclusiveGroup {
+					continue
+				}
+				name := other.Label
+				if name == "" {
+					name = other.Name
+				}
+				others = append(others, name)
+			}
+			if len(others) > 0 {
+				footer = "Mutually exclusive with " + strings.Join(others, ", ") + "; entering a value clears those inputs\n" + footer
+			}
+		}
 		if hint := m.hints[def.Name]; hint != "" {
 			footer = "Source: " + hint + "\n" + footer
 		}

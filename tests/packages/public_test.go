@@ -2,6 +2,7 @@ package packages_test
 
 import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/pelletier/go-toml/v2"
 	"os"
 	"path/filepath"
@@ -49,6 +50,17 @@ func TestClusterKubeconfigInputIdentifiesImportSource(t *testing.T) {
 		}
 	}
 	t.Fatal("kubeconfig input missing")
+}
+
+func TestClusterInspectorRejectsBothCredentialMethods(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "cluster-inspector"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]any{"api_server": "https://cluster.example", "token": "private", "kubeconfig": "/tmp/config"}
+	if err := forms.Validate(p.Inputs, values); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("public package accepted incompatible credentials: %v", err)
+	}
 }
 
 func loadPublic(t *testing.T, name string) (publicManifest, string) {

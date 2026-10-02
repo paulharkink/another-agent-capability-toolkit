@@ -113,3 +113,26 @@ func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
 		t.Fatalf("provenance hid the field's value: %s", view)
 	}
 }
+
+func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
+	b := &setupEnvironmentBackend{}
+	m := NewContext(context.Background(), b)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.Update(m.Init()())
+	m.catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
+	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "company", Target: "production"}, RuntimeStatus: "never-started", Ownership: "local"}}}
+	m.reconcileHome()
+	m.focusPane(ProfilesPane)
+	m.home.Modal = &modalState{Kind: "actions"}
+	if !strings.Contains(m.menuEntries()[4], "Parameters") || strings.Contains(m.menuEntries()[4], "disabled") {
+		t.Fatalf("managed profile parameters unavailable: %s", m.menuEntries()[4])
+	}
+	cmd := m.homeOperation("parameters")
+	if cmd == nil || !m.busy {
+		t.Fatal("Parameters did not request the setup form")
+	}
+	m.Update(cmd())
+	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "company", Target: "production"}) || m.form == nil {
+		t.Fatalf("wrong profile target or missing form: %+v form=%v", b.previewRequest, m.form)
+	}
+}

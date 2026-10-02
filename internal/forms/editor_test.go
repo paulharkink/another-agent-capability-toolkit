@@ -77,6 +77,17 @@ func TestPrefilledValuesEditable(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestSelectingOtherCredentialClearsInactiveValue(t *testing.T) {
+	defs := []catalog.Input{{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"}, {Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"}}
+	editor := NewEditor(defs, map[string]any{"kubeconfig": "/tmp/config"})
+	if err := editor.Apply("token", "new-token"); err != nil {
+		t.Fatal(err)
+	}
+	values, err := editor.Commit()
+	if err != nil || values["token"] != "new-token" || values["kubeconfig"] != "" {
+		t.Fatalf("inactive kubeconfig was not cleared for target override: %#v, %v", values, err)
+	}
+}
 func TestPartialResolutionAllowsIncompletePrefill(t *testing.T) {
 	defs := []catalog.Input{{Name: "required", Type: "string", Required: true}}
 	if _, e := ResolvePartial(defs, nil); e != nil {

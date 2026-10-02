@@ -89,6 +89,9 @@ func Validate(p Package) error {
 			return fmt.Errorf("duplicate input %q", in.Name)
 		}
 		seen[in.Name] = true
+		if in.ExclusiveGroup != "" && !identifier.MatchString(in.ExclusiveGroup) {
+			return fmt.Errorf("input %s: invalid exclusive_group %q", in.Name, in.ExclusiveGroup)
+		}
 		switch in.Type {
 		case "string", "secret", "integer", "number", "float", "boolean", "choice", "multichoice", "multiple-choice", "file", "directory":
 		default:

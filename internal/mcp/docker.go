@@ -56,6 +56,8 @@ type Runtime struct {
 	SkipHealth bool
 }
 
+var ErrRunningWithDifferentSettings = errors.New("MCP is running with different settings")
+
 func NewDockerRuntime(s *state.Store) *Runtime {
 	return &Runtime{Store: s, Executor: process.OSExecutor{}}
 }
@@ -199,7 +201,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		}
 		if old.State.Running {
 			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
-				return Instance{}, errors.New("MCP is running with different settings; stop it before starting again")
+				return Instance{}, ErrRunningWithDifferentSettings
 			}
 			out := instance(old)
 			out.Ownership = "local"

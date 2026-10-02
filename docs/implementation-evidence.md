@@ -214,10 +214,30 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
   unverified by these cross-builds.
 
 The redesign is not yet at full mockup parity. Existing-profile parameter
-Save/apply and its failed-apply recovery, environment TOML fixed/default and
-conditional input policies, TOML authoring, complete native agent/plugin
-detection, and live log follow/pause still need implementation or review.
-Stop currently removes its Docker container
-while retaining last-action state; the browser mock's retain-container choice
-was not yet accepted as a terminal runtime contract. The public GitHub Pages
-mock remains unpublished.
+Save/apply now retains valid answers on generator, skill, registration, and MCP
+startup failure. Changed running MCP settings invoke Stop and a new Start,
+without restoring the old runtime on failure. Existing-profile Parameters opens
+its exact target, and an attempted setup preselects only fully installed
+destinations. TDD regressions first failed for discarded inputs, default
+checkboxes on uninstalled profiles, disabled Parameters, stale success rows,
+and error details below the first result page. Focused tests then passed.
+Fresh `go test ./... -count=1`, `go test -race ./... -count=1`, `go vet
+./...`, and the real Docker `TestDockerMCP` integration fixture passed after
+this change. The real Docker fixture covers ordinary start/stop and health;
+the changed-settings restart path is covered with a controlled runtime test.
+The `exclusive_group` manifest field now validates mutually exclusive inputs
+in the form and backend. Explicitly entering Token clears Source kubeconfig
+and vice versa; a prefill alone clears neither. The public Cluster Inspector
+manifest declares this group. A regression caught target prefills resurrecting
+a cleared credential on reopening; saved local edits now take precedence over
+editable source and target defaults. Fixed environment values still await the
+separate policy decision and implementation.
+After the credential and precedence changes, full tests, race tests, vet, the
+real Docker fixture, and CGO-free builds for darwin/arm64, linux/amd64,
+linux/arm64, windows/amd64, and windows/arm64 passed.
+
+Environment TOML fixed input policy, TOML authoring, complete native
+agent/plugin detection, and live log follow/pause still need implementation or
+review. Stop currently removes its Docker container while retaining last-action
+state; the browser mock's retain-container choice was not yet accepted as a
+terminal runtime contract. The public GitHub Pages mock remains unpublished.

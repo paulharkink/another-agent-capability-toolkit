@@ -73,7 +73,7 @@ Keyboard behavior in forms:
 - `Space` toggles a checkbox; `Enter` activates the focused button or selected menu entry; `Esc` closes or initiates dirty-form discard handling.
 - Form errors stay in the same form, focus the first invalid input, and preserve the draft and scroll position. Loading dynamic choices updates the same form instead of reopening it.
 
-Parameters for an existing managed profile use the same field model. The user decided that there is one `Save` action: it persists the edited values and applies them immediately, restarting a running MCP when its runtime parameters change. A stopped MCP uses the saved values on its next Start. A failed apply must be surfaced; the precise recovery behavior still needs to be specified. An attached profile displays owner-controlled server fields read-only and permits only applicable local connection/registration fields.
+Parameters for an existing managed profile use the same field model. The user decided that there is one `Save` action: it persists the edited values and applies them immediately, restarting a running MCP when its runtime parameters change. A stopped MCP uses the saved values on its next Start. A failed apply keeps the new values and shows the exact error as specified below. An attached profile displays owner-controlled server fields read-only and permits only applicable local connection/registration fields.
 
 ## MCP profile actions and dialogs
 
@@ -113,12 +113,14 @@ Before public release, include a standalone static version of the approved inter
 
 The current browser prototype illustrates several choices that still require the user's architecture decision before their real operations are implemented: whether Stop retains a container; whether environment TOML is edited inside AACT; environment-root precedence; and whether a new attachment requires a successful connection check. Current registration reports a failed connection check as a warning and does not block saving. The user chose one Save action that persists and immediately applies changes; this decision is separate from approval of the mockup's menu interaction.
 
-### Input policy proposal awaiting architecture decision
+### Environment input policy
 
-The current manifest declares input types and defaults, and target TOML supplies
-values, but neither format declares fixed fields or mutually exclusive inputs.
-The form currently shows every field as editable. This proposal is recorded for
-review; it is not implemented or approved by the interaction mockup alone.
+The manifest declares input types, defaults, and mutually exclusive groups;
+target TOML supplies editable prefill values but does not yet declare fixed
+fields. The form currently shows every field as editable. The user decided that fixed
+environment values may be omitted from both initial setup and later Parameters
+forms. They remain authoritative during apply, including noninteractive runs.
+The concrete TOML schema below remains a proposal pending review.
 
 ```toml
 # environments/company/cluster-inspector/production.toml
@@ -131,32 +133,32 @@ local_port = "default" # editable prefill
 ```
 
 A generic `exclusive_group = "cluster_credentials"` field on the manifest's
-`token` and `kubeconfig` inputs would reject simultaneous nonempty values in
-both the form and noninteractive CLI. The form would keep both fields visible,
-disable the opposite branch after a choice, and explain why. The backend must
-enforce fixed values after all input layers are merged so `--set` cannot bypass
-the UI. Relative file paths continue resolving against the file that supplied
-them.
+`token` and `kubeconfig` inputs rejects simultaneous nonempty values in both
+the form and noninteractive CLI. Both fields remain visible; explicitly entering
+one clears the other. Loading a prefill does not silently clear either field.
+The backend must enforce future fixed values after all input layers are merged
+so `--set` cannot bypass the UI. Relative file paths continue resolving against
+the file that supplied them.
 
-Two choices remain: whether fixed policy may also appear in source-wide
-defaults, and whether explicitly choosing the other credential branch clears
-the previous branch automatically or asks the user to clear it first. The
-smallest scope is target-file fixed policy with clearing only after an explicit
-branch change; no preview should discard a prefilled credential silently.
+Whether fixed policy may also appear in source-wide defaults remains unresolved.
 
-### Existing-profile Save/apply recovery proposal awaiting decision
+### Existing-profile Save/apply failure contract
 
-For a running MCP, one Save should persist edited answers and restart/apply
-immediately. The current service has separate answer persistence and runtime
-operations, so a failed restart needs a defined observable state. Two possible
-contracts are:
+The user chose one Save that persists valid edited answers and attempts to
+apply them immediately. On apply failure, AACT keeps those answers so the user
+can correct an external problem, edit them again, or retry Save. It does not
+restore prior answers or restart an old MCP configuration. A changed running
+MCP is stopped before starting the requested configuration; if startup fails,
+the requested configuration remains saved and the observed runtime shows its
+actual state. A failed generator, skill install, or agent registration likewise
+retains valid answers. The operation result leads with the concrete underlying
+error, including the affected agent when applicable.
 
-| Contract | On failed apply | Consequence |
-| --- | --- | --- |
-| Restore prior state | Restore prior answers and attempt to restore the prior running MCP; report each recovery step and any incomplete restoration. | Save either applies or explicitly reports degraded recovery, but compensation must cover both state and Docker. |
-| Keep new desired state | Retain new answers, report that the MCP is still running with old settings or is down, and offer Retry. | Desired configuration and observed runtime intentionally diverge until retry succeeds. |
-
-Neither contract has been selected. The current TUI keeps existing-profile
-Parameters disabled rather than presenting a Save action with unspecified
-failure behavior. New capability installation uses the existing noninteractive
-Install transaction and reports its partial results separately.
+Each agent destination checkbox represents a successfully applied component,
+as recorded in local installation state. A failed or unattempted destination
+is not checked merely because it was selected in the form or saved as a future
+default. For a combined skill and MCP package, both components must be present
+for its destination to appear fully checked. Partial successes and failures
+remain distinct in the operation result. Adapter writes preserve file integrity
+if a single write fails, but AACT does not reverse earlier successful targets
+as a response to a later failure.

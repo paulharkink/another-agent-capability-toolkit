@@ -63,6 +63,20 @@ func (e *Editor) Apply(name string, value any) error {
 		return err
 	}
 	e.values[name] = normalized
+	if def.ExclusiveGroup != "" && filled(normalized) {
+		for _, other := range e.defs {
+			if other.Name == name || other.ExclusiveGroup != def.ExclusiveGroup {
+				continue
+			}
+			if other.Multiple || other.Type == "multichoice" || other.Type == "multiple-choice" {
+				e.values[other.Name] = []string{}
+			} else if other.Type == "string" || other.Type == "secret" || other.Type == "file" || other.Type == "directory" || other.Type == "choice" {
+				e.values[other.Name] = ""
+			} else {
+				e.values[other.Name] = nil
+			}
+		}
+	}
 	delete(e.initialErrors, name)
 	return nil
 }

@@ -209,15 +209,17 @@ reject the ambiguous value rather than silently choosing one.
 Resolution order, lowest to highest priority:
 
 1. Public package defaults.
-2. Previously saved local answers for this source/package/environment/target.
-3. Consumer defaults, followed by its selected environment/target TOML.
+2. Consumer defaults, followed by its selected environment/target TOML.
+3. Previously saved local answers for this source/package/environment/target.
 4. Explicit CLI arguments.
 5. Edits made in an interactive form for this operation.
 
-Consumer-wide defaults use `[packages.<package-id>.inputs]` in
-`agent-manager.toml`. Repository configuration consequently overrides older
-local answers. The form shows the effective values. A successful installation
-persists its local answers without rewriting the consuming repository.
+Consumer-wide defaults use `[packages.<package-id>.inputs]` in the consumer
+manifest. Editable repository values prefill the form; a local edit remains
+effective on subsequent runs until changed again. The form shows the effective
+values. Save persists valid local answers without rewriting the consuming
+repository, including when applying those answers fails. A separate fixed
+policy, when implemented, overrides saved answers and is not editable.
 Required fields and cross-field constraints are validated after resolution.
 
 All package inputs retain their JSON types: booleans, numbers and collections

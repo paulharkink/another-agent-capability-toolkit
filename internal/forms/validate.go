@@ -11,6 +11,7 @@ import (
 )
 
 func Validate(defs []catalog.Input, values map[string]any) error {
+	activeGroup := map[string]string{}
 	for _, def := range defs {
 		def = scalarDefinition(def)
 		value, present := values[def.Name]
@@ -52,8 +53,30 @@ func Validate(defs []catalog.Input, values map[string]any) error {
 				return fmt.Errorf("input %s: %w", def.Name, e)
 			}
 		}
+		if def.ExclusiveGroup != "" && filled(value) {
+			if previous := activeGroup[def.ExclusiveGroup]; previous != "" {
+				return fmt.Errorf("inputs %s and %s are mutually exclusive", previous, def.Name)
+			}
+			activeGroup[def.ExclusiveGroup] = def.Name
+		}
 	}
 	return nil
+}
+func filled(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case bool:
+		return v
+	}
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array || rv.Kind() == reflect.Map {
+		return rv.Len() > 0
+	}
+	return true
 }
 func required(name string) error {
 	return fmt.Errorf("input %s is required; supply an answer or use --interactive", name)

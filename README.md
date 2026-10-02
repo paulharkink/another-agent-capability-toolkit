@@ -68,6 +68,9 @@ In terminal forms, collections use Enter/a to add, e to edit, r to remove,
 and brackets to select a row; path pickers select one path at a time. Install
 and unregister forms allow multiple agents. Catalog a/s actions authenticate or
 start an MCP before it appears in runtime inventory; they ask for its context.
+Inputs sharing `exclusive_group` in `package.toml` cannot both be set. Entering
+one in a form clears the other; noninteractive commands reject conflicting
+values. Cluster Inspector uses this for Token and Source kubeconfig.
 
 ```sh
 aact install git-repo-map --agent codex \
@@ -141,8 +144,9 @@ A local catalog entry needs a `package.toml` or a plain `SKILL.md`; the entry ID
 must match its package ID. Relative paths resolve against the file that declares
 them. Target files are `ENVIRONMENT_ROOT/ENVIRONMENT/PACKAGE/TARGET.toml`.
 Set a default environment root with `aact config set-environment-root PATH`, or
-supply `--environment-root PATH`. CLI input values override target, project,
-saved, and package defaults. `--environment` and `--target` are used together.
+supply `--environment-root PATH`. CLI input values override saved local edits,
+which override editable target, project, and package defaults. `--environment`
+and `--target` are used together.
 Without a checkout manifest, AACT exposes the bundled catalog.
 
 Existing configuration can be previewed with `aact migrate --dry-run --json` and

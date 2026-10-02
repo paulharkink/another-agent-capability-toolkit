@@ -45,6 +45,35 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
+	attempted, err := s.Store.HasAnswers(key)
+	if err != nil {
+		return viewmodel.SetupPreview{}, err
+	}
+	profiles, err := s.Store.Profiles()
+	if err != nil {
+		return viewmodel.SetupPreview{}, err
+	}
+	for _, profile := range profiles {
+		if profile.Key == key {
+			attempted = true
+			break
+		}
+	}
+	installations, err := s.Store.Installations()
+	if err != nil {
+		return viewmodel.SetupPreview{}, err
+	}
+	installed := map[string]map[string]bool{}
+	for _, row := range installations {
+		if row.Key != key {
+			continue
+		}
+		attempted = true
+		if installed[row.AgentID] == nil {
+			installed[row.AgentID] = map[string]bool{}
+		}
+		installed[row.AgentID][row.Component] = true
+	}
 	defaultValues := map[string]any{}
 	for _, def := range p.Inputs {
 		if def.Default != nil {
@@ -53,14 +82,14 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	}
 	paths := []string{
 		filepath.Join(p.Dir, "package.toml"),
-		filepath.Join(s.Store.Root(), "answers", key.ID()+".json"),
 		s.Source.ManifestPath,
 		target.Path,
+		filepath.Join(s.Store.Root(), "answers", key.ID()+".json"),
 	}
-	if paths[2] == "" {
-		paths[2] = filepath.Join(s.Source.Root, "aact.toml")
+	if paths[1] == "" {
+		paths[1] = filepath.Join(s.Source.Root, "aact.toml")
 	}
-	layers := []map[string]any{defaultValues, saved, s.Source.PackageDefaults[p.ID], target.Raw}
+	layers := []map[string]any{defaultValues, s.Source.PackageDefaults[p.ID], target.Raw, saved}
 	for i := range layers {
 		layers[i], err = config.ResolveInputPaths(p.Inputs, layers[i], paths[i])
 		if err != nil {
@@ -75,7 +104,7 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	}
 	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path}
 	values := map[string]any{}
-	origins := []string{"package", "saved", "source", "target"}
+	origins := []string{"package", "source", "target", "saved"}
 	provenance := map[string]string{}
 	provenancePaths := map[string]string{}
 	for i, layer := range layers {
@@ -131,7 +160,11 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		if p.MCP != nil {
 			path = env.ConfigPath
 		}
-		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{ID: id, Path: path, Selected: id == "all" || defaultAgents[id]})
+		selected := id == "all" || defaultAgents[id]
+		if attempted {
+			selected = (p.Skill == nil || installed[id]["skill"]) && (p.MCP == nil || installed[id]["mcp"])
+		}
+		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{ID: id, Path: path, Selected: selected})
 	}
 	return preview, nil
 }

@@ -179,6 +179,21 @@ func (s *Store) Answers(k Key) (map[string]any, error) {
 	}
 	return rec.Values, nil
 }
+func (s *Store) HasAnswers(k Key) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := os.Stat(filepath.Join(s.root, "answers", k.ID()+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("answers path for %s is not a regular file", k.ID())
+	}
+	return true, nil
+}
 func (s *Store) SaveAnswers(k Key, v map[string]any) error {
 	if s.readonly {
 		return ErrReadOnly

@@ -16,7 +16,7 @@
 - The user owns architecture. Save persists and immediately applies edits; there is no separate Apply. Windows and WSL have separate native agent configs and state. A foreign observed MCP can be registered with agents in the current environment, but its runtime cannot be stopped there.
 - Do not use Computer Use, modify live agent configuration or running MCPs, or require host-wide Go/Python/Node dependencies. All tests use temporary state, fake agents, and fake Docker or isolated Docker fixtures.
 - Every product change starts with a failing test, then a minimal implementation and green verification. The coordinator owns commits and PR updates during parallel work.
-- Unresolved choices remain explicit: failed Save/apply recovery, environment TOML authoring/root precedence, and whether a stopped container is retained. Do not silently choose these in the TUI. Backend work may implement a reversible Stop in a separately reviewed task if current behavior demands it.
+- The user chose to keep valid edited answers on failed Save/apply, show the concrete error, and leave achieved agent destinations distinct from requested ones. Environment TOML authoring/root precedence and whether a stopped container is retained remain unresolved. Do not silently choose those in the TUI.
 - A foreign endpoint is useful only when it is reachable from the current environment; registration reports connection failures and never claims runtime ownership.
 
 ## Review Focus

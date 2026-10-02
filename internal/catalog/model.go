@@ -17,18 +17,19 @@ type Skill struct {
 	Files []string `toml:"files" json:"files"`
 }
 type Input struct {
-	Name      string   `toml:"name" json:"name"`
-	ConfigKey string   `toml:"config_key" json:"config_key"`
-	Type      string   `toml:"type" json:"type"`
-	Label     string   `toml:"label" json:"label"`
-	Required  bool     `toml:"required" json:"required"`
-	Multiple  bool     `toml:"multiple" json:"multiple"`
-	Default   any      `toml:"default" json:"default"`
-	Min       *float64 `toml:"min" json:"min"`
-	Max       *float64 `toml:"max" json:"max"`
-	MinItems  *int     `toml:"min_items" json:"min_items"`
-	MaxItems  *int     `toml:"max_items" json:"max_items"`
-	Options   []Choice `toml:"options" json:"options"`
+	Name           string   `toml:"name" json:"name"`
+	ConfigKey      string   `toml:"config_key" json:"config_key"`
+	ExclusiveGroup string   `toml:"exclusive_group" json:"exclusive_group"`
+	Type           string   `toml:"type" json:"type"`
+	Label          string   `toml:"label" json:"label"`
+	Required       bool     `toml:"required" json:"required"`
+	Multiple       bool     `toml:"multiple" json:"multiple"`
+	Default        any      `toml:"default" json:"default"`
+	Min            *float64 `toml:"min" json:"min"`
+	Max            *float64 `toml:"max" json:"max"`
+	MinItems       *int     `toml:"min_items" json:"min_items"`
+	MaxItems       *int     `toml:"max_items" json:"max_items"`
+	Options        []Choice `toml:"options" json:"options"`
 }
 type Choice struct {
 	Value string `toml:"value" json:"value"`

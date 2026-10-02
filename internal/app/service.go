@@ -141,11 +141,11 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 	if e != nil {
 		return nil, t, k, e
 	}
-	files := []string{filepath.Join(p.Dir, "package.toml"), filepath.Join(s.Store.Root(), "answers", "values.json"), s.Source.ManifestPath, t.Path, filepath.Join(cwd, ".aact-inputs")}
-	if files[2] == "" {
-		files[2] = filepath.Join(s.Source.Root, "aact.toml")
+	files := []string{filepath.Join(p.Dir, "package.toml"), s.Source.ManifestPath, t.Path, filepath.Join(s.Store.Root(), "answers", k.ID()+".json"), filepath.Join(cwd, ".aact-inputs")}
+	if files[1] == "" {
+		files[1] = filepath.Join(s.Source.Root, "aact.toml")
 	}
-	layers := []map[string]any{defaults, saved, s.Source.PackageDefaults[p.ID], t.Raw, cli}
+	layers := []map[string]any{defaults, s.Source.PackageDefaults[p.ID], t.Raw, saved, cli}
 	for n := range layers {
 		layers[n], e = config.ResolveInputPaths(p.Inputs, layers[n], files[n])
 		if e != nil {
@@ -287,6 +287,12 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e != nil {
 		return out, e
 	}
+	// Save the requested configuration before applying it. An apply failure
+	// leaves these answers available for correction and retry; installation
+	// records below still describe only effects that actually succeeded.
+	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswers(k, p, values) }); e != nil {
+		return out, e
+	}
 	generated := ""
 	if p.Skill != nil && (len(p.Templates) > 0 || p.Generator != nil) {
 		r := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
@@ -311,6 +317,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	}
 	err = s.Store.WithLock(ctx, func() error {
 		applied := false
+		succeeded := map[string]bool{}
 		url := q.ExternalURL
 		if p.MCP != nil && url == "" {
 			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
@@ -331,6 +338,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				agentErr = skills.Install(ctx, p, env, k, generated)
 				if agentErr == nil {
 					applied = true
+					succeeded[env.ID+"\x00skill"] = true
 				}
 			}
 			if agentErr == nil && p.MCP != nil {
@@ -363,6 +371,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 							agentErr = errors.Join(agentErr, restoreRegistration(files))
 						} else {
 							applied = true
+							succeeded[env.ID+"\x00mcp"] = true
 						}
 					}
 				}
@@ -371,28 +380,24 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				out.Errors = append(out.Errors, env.ID+": "+agentErr.Error())
 			}
 		}
+		rows, e := s.Store.Installations()
+		if e != nil {
+			return e
+		}
+		for _, r := range rows {
+			if r.Key == k && succeeded[r.AgentID+"\x00"+r.Component] {
+				out.Changes = append(out.Changes, r)
+			}
+		}
 		if applied {
 			if e := s.rememberSource(); e != nil {
 				return e
 			}
 		}
-		rows, e := s.Store.Installations()
-		if e != nil {
-			return e
-		}
-		selected := map[string]bool{}
-		for _, a := range q.Agents {
-			selected[a.ID] = true
-		}
-		for _, r := range rows {
-			if r.Key == k && selected[r.AgentID] {
-				out.Changes = append(out.Changes, r)
-			}
-		}
 		if len(out.Errors) > 0 {
 			return errors.New(strings.Join(out.Errors, "; "))
 		}
-		return s.saveAnswers(k, p, values)
+		return nil
 	})
 	return out, err
 }
@@ -494,7 +499,14 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 		}
 		spec = *result.Runtime
 	}
-	return s.Options.Runtime.Start(ctx, k, spec)
+	instance, err := s.Options.Runtime.Start(ctx, k, spec)
+	if errors.Is(err, mcp.ErrRunningWithDifferentSettings) {
+		if stopErr := s.Options.Runtime.Stop(ctx, k); stopErr != nil {
+			return mcp.Instance{}, fmt.Errorf("apply changed MCP settings: stop old instance: %w", stopErr)
+		}
+		return s.Options.Runtime.Start(ctx, k, spec)
+	}
+	return instance, err
 }
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error) {
 	switch q.Action {

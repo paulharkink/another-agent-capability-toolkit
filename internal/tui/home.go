@@ -304,7 +304,7 @@ func (m *Model) menuEntries() []string {
 			}
 			return name
 		}
-		return []string{"Details", label("Start", "s"), label("Stop", "x"), label("Authenticate", "a"), "Parameters — disabled: service support pending", label("Configure registrations", "registrations"), label("Remove registrations", "remove-registrations"), label("View logs", "l"), label("Check connection", "check-connection"), "Back"}
+		return []string{"Details", label("Start", "s"), label("Stop", "x"), label("Authenticate", "a"), label("Parameters", "parameters"), label("Configure registrations", "registrations"), label("Remove registrations", "remove-registrations"), label("View logs", "l"), label("Check connection", "check-connection"), "Back"}
 	}
 	install := "Install / Parameters"
 	if c, ok := m.selectedCapability(); ok && c.CatalogIndex < 0 {
@@ -394,8 +394,11 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			return m.openProfileLogs(p)
 		}
 		if action == "parameters" {
-			m.output = "This action awaits the typed service operation."
-			return nil
+			if reason := m.profileActionReason(p, action); reason != "" {
+				m.output = reason
+				return nil
+			}
+			return m.beginSetup(p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target)
 		}
 		actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
 		kind := actions[action]

@@ -48,7 +48,7 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	}{
 		{"public", "package", "public-default", true},
 		{"saved", "saved", "saved-value", true},
-		{"source", "source", "source-value", true},
+		{"source", "saved", "stale-saved", true},
 		{"target", "target", filepath.Join(filepath.Dir(targetPath), "certs", "ca.pem"), true},
 		{"missing", "unset", nil, false},
 	}
@@ -112,6 +112,99 @@ func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 		} else if destination.Selected {
 			t.Fatalf("unconfigured named destination selected: %#v", destination)
 		}
+	}
+}
+
+func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", Component: "mcp", Destination: "/tmp/opencode.json", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := map[string]bool{}
+	for _, destination := range preview.Destinations {
+		selected[destination.ID] = destination.Selected
+	}
+	if selected["codex"] || !selected["opencode"] {
+		t.Fatalf("saved defaults replaced actual registration state: %#v", selected)
+	}
+}
+
+func TestUISetupPreviewDoesNotCheckFailedSkillDestination(t *testing.T) {
+	svc, _, store := fixture(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswers(key, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range preview.Destinations {
+		if destination.Selected {
+			t.Fatalf("failed install appeared checked: %#v", preview.Destinations)
+		}
+	}
+}
+
+func TestUISetupPreviewDoesNotCheckUninstalledSavedMCPProfile(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range preview.Destinations {
+		if destination.Selected {
+			t.Fatalf("saved profile without registration appeared checked: %#v", preview.Destinations)
+		}
+	}
+}
+
+func TestSavedCredentialClearOverridesEditableTargetPrefillOnReopen(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"}, {Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	path := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("kubeconfig = './source.yaml'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
+	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": ""}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Inputs) != 2 || preview.Inputs[1].Value != "" || preview.Inputs[1].Provenance != "saved" {
+		t.Fatalf("cleared credential was restored by target prefill: %#v", preview.Inputs)
 	}
 }
 

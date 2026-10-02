@@ -26,6 +26,19 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 	if m.profileError != nil {
 		return "Profile refresh failed: " + m.profileError.Error()
 	}
+	if action == "parameters" {
+		if _, ok := m.backend.(setupBackend); !ok {
+			return "setup service unavailable"
+		}
+		c, ok := m.selectedCapability()
+		if !ok || c.CatalogIndex < 0 {
+			return "package is absent from the local catalog"
+		}
+		if p.Instance.Ownership != "local" || p.Status == "external" {
+			return "runtime belongs to another installation"
+		}
+		return ""
+	}
 	if action == "check-connection" {
 		if _, ok := m.backend.(connectionBackend); !ok {
 			return "connection service support pending"

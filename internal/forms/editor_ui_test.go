@@ -54,6 +54,18 @@ func TestKeyboardFormMasksSecretsAndCancels(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestExclusiveCredentialFormExplainsAutomaticClear(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{
+		{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "cluster_credentials"},
+		{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"},
+	}, map[string]any{"kubeconfig": "/tmp/config"})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	view := m.View().Content
+	if !strings.Contains(view, "Source kubeconfig") || !strings.Contains(view, "clears") {
+		t.Fatalf("credential switch behavior was not explained: %s", view)
+	}
+}
 func TestFormRequiredValidationKeepsFormOpen(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "required", Type: "string", Required: true}}, nil)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})

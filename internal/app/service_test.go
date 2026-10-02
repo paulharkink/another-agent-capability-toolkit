@@ -39,6 +39,34 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 
 type fakeRuntime struct{ starts int }
 
+type failingRuntime struct{ fakeRuntime }
+
+type changedRuntime struct {
+	starts, stops int
+	failRestart   bool
+}
+
+func (r *changedRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
+	r.starts++
+	if r.starts == 1 {
+		return mcp.Instance{}, mcp.ErrRunningWithDifferentSettings
+	}
+	if r.failRestart {
+		return mcp.Instance{}, errors.New("Docker: port 9000 is already allocated")
+	}
+	return mcp.Instance{URL: "http://127.0.0.1:9000/mcp"}, nil
+}
+func (r *changedRuntime) Stop(context.Context, state.Key) error      { r.stops++; return nil }
+func (*changedRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (*changedRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (f *failingRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
+	f.starts++
+	return mcp.Instance{}, errors.New("Docker: port 9000 is already allocated")
+}
+
 func (f *fakeRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
 	f.starts++
 	return mcp.Instance{URL: "http://127.0.0.1:8765/mcp"}, nil
@@ -69,6 +97,151 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestFailedSkillInstallKeepsEditedAnswersWithoutClaimingInstallation(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswers(key, map[string]any{"label": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(env.SkillsDir, "demo")
+	if err := os.MkdirAll(destination, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("user-owned"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "new"}})
+	if err == nil || !strings.Contains(err.Error(), "refusing foreign skill") {
+		t.Fatalf("concrete install failure missing: %v", err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil || answers["label"] != "new" {
+		t.Fatalf("edited answers were reverted after failed apply: %#v, %v", answers, err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 || len(result.Changes) != 0 {
+		t.Fatalf("failed destination claimed installed: rows=%#v result=%#v err=%v", rows, result, err)
+	}
+}
+
+func TestFailedSkillGenerationKeepsEditedAnswers(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
+	svc.Source.Catalog[0].Templates = []catalog.Template{{Source: "missing.mustache", Destination: "SKILL.md"}}
+	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "retry-me"}})
+	if err == nil || !strings.Contains(err.Error(), "missing.mustache") {
+		t.Fatalf("generation failure missing: %v", err)
+	}
+	answers, err := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if err != nil || answers["label"] != "retry-me" {
+		t.Fatalf("generated skill failure discarded inputs: %#v, %v", answers, err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("failed generation claimed installed: %#v, %v", rows, err)
+	}
+}
+
+func TestFailedMCPStartKeepsEditedAnswersWithoutClaimingRuntimeOrRegistration(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
+	env.Kind = "generic"
+	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
+	runtime := &failingRuntime{}
+	svc.Options.Runtime = runtime
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	if err == nil || !strings.Contains(err.Error(), "port 9000 is already allocated") {
+		t.Fatalf("MCP startup cause hidden: %v", err)
+	}
+	answers, err := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if err != nil || answers["port"] != json.Number("9000") {
+		t.Fatalf("failed start discarded edited port: %#v, %v", answers, err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 || len(result.Changes) != 0 {
+		t.Fatalf("failed MCP claimed running or registered: rows=%#v result=%#v err=%v", rows, result, err)
+	}
+	profiles, err := store.Profiles()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("desired profile not available for retry: %#v, %v", profiles, err)
+	}
+}
+
+func TestChangedRunningMCPParametersStopAndAttemptNewSettingsWithoutReverting(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
+	env.Kind = "generic"
+	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
+	runtime := &changedRuntime{failRestart: true}
+	svc.Options.Runtime = runtime
+	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	if err == nil || !strings.Contains(err.Error(), "port 9000 is already allocated") {
+		t.Fatalf("restart failure hidden: %v", err)
+	}
+	if runtime.starts != 2 || runtime.stops != 1 {
+		t.Fatalf("changed settings did not attempt immediate replacement: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
+	answers, err := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if err != nil || answers["port"] != json.Number("9000") {
+		t.Fatalf("new desired setting reverted: %#v, %v", answers, err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("failed replacement claimed running: %#v, %v", rows, err)
+	}
+}
+
+func TestFailedRegistrationUpdateDoesNotReportOldRegistrationAsApplied(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	env.Kind = "generic"
+	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
+	oldURL := "http://127.0.0.1:8765/mcp"
+	newURL := "http://127.0.0.1:9000/mcp"
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: oldURL}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("ledger disk full") }
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: newURL})
+	if err == nil || !strings.Contains(err.Error(), "ledger disk full") {
+		t.Fatalf("registration failure hidden: %v", err)
+	}
+	if len(result.Changes) != 0 {
+		t.Fatalf("old registration incorrectly reported as newly applied: %#v", result.Changes)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].URL != oldURL {
+		t.Fatalf("failed update changed actual registration: %#v, %v", rows, err)
+	}
+}
+
+func TestSourceRegistryFailureStillReportsAppliedRegistration(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	env.Kind = "generic"
+	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
+	svc.Options.RecordInstallation = func(row state.Installation) error {
+		if err := store.Record(row); err != nil {
+			return err
+		}
+		return os.Mkdir(filepath.Join(store.Root(), "manager", "sources.json"), 0700)
+	}
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "http://127.0.0.1:8765/mcp"})
+	if err == nil {
+		t.Fatal("source registry write unexpectedly succeeded")
+	}
+	if len(result.Changes) != 1 || result.Changes[0].AgentID != env.ID || result.Changes[0].Component != "mcp" {
+		t.Fatalf("successful agent registration hidden by later state error: %#v, %v", result, err)
 	}
 }
 
@@ -229,6 +402,54 @@ type prepareExecutor struct{ output string }
 
 func (f prepareExecutor) Run(context.Context, []string, string, []byte, map[string]string, func([]byte)) ([]byte, error) {
 	return []byte(f.output), nil
+}
+
+type countingPrepareExecutor struct {
+	calls int
+}
+
+func (f *countingPrepareExecutor) Run(context.Context, []string, string, []byte, map[string]string, func([]byte)) ([]byte, error) {
+	f.calls++
+	return []byte(`{"runtime":{"image":"fixture","host":"127.0.0.1","host_port":9000,"container_port":8765,"transport":"streamable-http","endpoint_path":"/mcp"}}`), nil
+}
+
+func TestChangedRunningMCPPreparesOnlyOnce(t *testing.T) {
+	svc, env, _ := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}}
+	env.Kind = "generic"
+	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
+	prepare := &countingPrepareExecutor{}
+	svc.Options.Runner = prepare
+	runtime := &changedRuntime{}
+	svc.Options.Runtime = runtime
+	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepare.calls != 1 || runtime.starts != 2 || runtime.stops != 1 {
+		t.Fatalf("Save repeated prepare or skipped replacement: prepare=%d starts=%d stops=%d", prepare.calls, runtime.starts, runtime.stops)
+	}
+}
+
+func TestExplicitCredentialSwitchOverridesEnvironmentPrefill(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"},
+		{Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"},
+	}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("kubeconfig = './source.yaml'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"token": "new-token", "kubeconfig": ""}, false, false)
+	if err != nil || values["token"] != "new-token" || values["kubeconfig"] != "" {
+		t.Fatalf("explicit switch did not clear target kubeconfig: %#v, %v", values, err)
+	}
 }
 func TestPrepareChoicesReachEditableForm(t *testing.T) {
 	svc, env, _ := fixture(t)
@@ -407,7 +628,7 @@ func TestPartialAgentFailureRecorded(t *testing.T) {
 		t.Fatal(rows, e)
 	}
 }
-func TestAnswersSavedOnlyOnSuccess(t *testing.T) {
+func TestAnswersKeepLastValidEditAfterFailedApplyWithoutPersistingSecrets(t *testing.T) {
 	svc, env, s := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string"}, {Name: "token", Type: "secret"}}
 	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "yes", "token": "never-persist"}})
@@ -427,7 +648,7 @@ func TestAnswersSavedOnlyOnSuccess(t *testing.T) {
 		t.Fatal("expected failure")
 	}
 	a, _ = s.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
-	if a["label"] != "yes" {
+	if a["label"] != "failed" || a["token"] != nil {
 		t.Fatal(a)
 	}
 }

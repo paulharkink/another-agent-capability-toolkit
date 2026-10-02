@@ -36,11 +36,13 @@ required = true
 name = "token"
 type = "secret"
 label = "Token"
+exclusive_group = "cluster_credentials"
 
 [[inputs]]
 name = "kubeconfig"
 type = "file"
 label = "Source kubeconfig"
+exclusive_group = "cluster_credentials"
 
 [[inputs]]
 name = "connections"
