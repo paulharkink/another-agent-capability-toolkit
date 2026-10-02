@@ -78,7 +78,9 @@ func TestUISetupPreviewDoesNotWriteStateOrRequireCompletedAnswers(t *testing.T) 
 
 func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 	svc, _, _ := fixture(t)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := state.WriteJSON(filepath.Join(svc.Store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex", "opencode"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 	if err != nil || len(skill.Destinations) == 0 || skill.Destinations[0].ID != "all" || !skill.Destinations[0].Selected {
 		t.Fatalf("skill destinations: %#v %v", skill.Destinations, err)
 	}
-	if skill.Destinations[0].Path != filepath.Join(os.Getenv("HOME"), ".agents", "skills") {
+	if skill.Destinations[0].Path != filepath.Join(home, ".agents", "skills") {
 		t.Fatalf("global skill path: %#v", skill.Destinations[0])
 	}
 	for _, destination := range skill.Destinations[1:] {
@@ -131,6 +133,7 @@ func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testin
 	svc, _, store := fixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
 	svc.Source.Catalog[0].Templates = []catalog.Template{{Source: "SKILL.md.mustache", Destination: "SKILL.md"}}
 	if err := os.WriteFile(filepath.Join(svc.Source.Catalog[0].Dir, "SKILL.md.mustache"), []byte("hello {{{inputs.label}}}"), 0644); err != nil {
@@ -159,7 +162,9 @@ func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testin
 
 func TestUIInstallRejectsGlobalDestinationForMCPBeforeStartingIt(t *testing.T) {
 	svc, _, _ := fixture(t)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
