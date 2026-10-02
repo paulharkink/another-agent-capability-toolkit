@@ -97,6 +97,27 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 		t.Fatalf("install result hidden: %s", m.output)
 	}
 }
+func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
+	b := &setupBackendFixture{extraInputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "api_server", Label: "API server", Type: "string", Required: true}, Value: "https://fixed.example", HasValue: true, Provenance: "target", Editable: false}}}
+	m := NewContext(context.Background(), b)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m.Update(m.Init()())
+	m.Update(m.homeOperation("parameters")())
+	if strings.Contains(m.View().Content, "API server") {
+		t.Fatal("fixed target input appeared in form")
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Save unavailable")
+	}
+	m.Update(cmd())
+	if b.installRequest == nil {
+		t.Fatal("Save did not submit")
+	}
+	if _, ok := b.installRequest.Inputs["api_server"]; ok {
+		t.Fatalf("fixed target input was submitted: %+v", b.installRequest.Inputs)
+	}
+}
 
 func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
@@ -105,7 +126,7 @@ func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
 		Key: state.Key{Source: "team-source", Package: "plain", Target: "default"},
 		Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string"},
 			Value: "/repos/team", HasValue: true, Provenance: "source",
-			ProvenancePath: "/a/very/long/checkout/path/for/a/company/private/capabilities/repository/that/exceeds/the/terminal/width/aact.toml"}},
+			ProvenancePath: "/a/very/long/checkout/path/for/a/company/private/capabilities/repository/that/exceeds/the/terminal/width/aact.toml", Editable: true}},
 		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills", Selected: true}},
 	})
 	view := m.View().Content

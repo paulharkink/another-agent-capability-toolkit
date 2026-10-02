@@ -170,15 +170,16 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
   configure and remove current-environment agent registrations only. An explicit
   Check connection action observes the selected endpoint without registering it.
 - The capability Install/Parameters action now opens one typed, scrollable form
-  with all declared inputs, provenance, and destination selection. Save passes
+  with editable declared inputs, provenance, and destination selection. Save passes
   its complete answers to the noninteractive install service. The Agents screen
   distinguishes client detection from config-file presence and can show exact
   config bytes without masking. The Environments screen reads actual target TOML,
   displays malformed target files as error rows, and views exact contents while
   keeping saved profiles visibly separate from files on disk.
-- Owned MCP logs open in a bounded, scrollable snapshot viewer. Keyboard and
-  mouse wheel move through the last 200 Docker log lines; closing it leaves the
-  runtime running. Live follow/pause awaits a streaming backend.
+- Owned MCP logs open in a bounded, scrollable viewer that polls the last 200
+  Docker log lines once per second while Follow is active. Keyboard and mouse
+  wheel scrolling pause it; `f` or the footer resumes it. Closing leaves the
+  runtime running.
 - Environment target rows now open the same typed setup form for that target;
   No environment file opens setup for the selected home capability. Saved-profile
   rows are not treated as target TOML. Completed operations show a full-screen
@@ -230,14 +231,14 @@ in the form and backend. Explicitly entering Token clears Source kubeconfig
 and vice versa; a prefill alone clears neither. The public Cluster Inspector
 manifest declares this group. A regression caught target prefills resurrecting
 a cleared credential on reopening; saved local edits now take precedence over
-editable source and target defaults. Fixed environment values still await the
-separate policy decision and implementation.
+editable source and target defaults. The target-only `[aact.input_policy]`
+table now makes fixed target values authoritative in TUI, interactive CLI, and
+noninteractive CLI paths; fixed fields are hidden from setup and Parameters.
 After the credential and precedence changes, full tests, race tests, vet, the
 real Docker fixture, and CGO-free builds for darwin/arm64, linux/amd64,
 linux/arm64, windows/amd64, and windows/arm64 passed.
 
-Environment TOML fixed input policy, TOML authoring, complete native
-agent/plugin detection, and live log follow/pause still need implementation or
-review. Stop currently removes its Docker container while retaining last-action
+TOML authoring and complete native agent/plugin detection still need
+implementation or review. Stop currently removes its Docker container while retaining last-action
 state; the browser mock's retain-container choice was not yet accepted as a
 terminal runtime contract. The public GitHub Pages mock remains unpublished.

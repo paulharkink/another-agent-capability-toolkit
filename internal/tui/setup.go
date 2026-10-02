@@ -55,6 +55,9 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 		destinationField = "_" + destinationField
 	}
 	for _, input := range preview.Inputs {
+		if !input.Editable {
+			continue
+		}
 		def := input.Definition
 		label := def.Label
 		if label == "" {
@@ -85,6 +88,9 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 	m.pendingSetupField = destinationField
 	m.form = forms.NewForm(m.ctx, defs, values)
 	for _, input := range preview.Inputs {
+		if !input.Editable {
+			continue
+		}
 		if input.HasValue && input.ProvenancePath != "" {
 			m.form.SetHint(input.Definition.Name, input.Provenance+" · "+filepath.Base(input.ProvenancePath)+" · "+input.ProvenancePath)
 		}
@@ -104,6 +110,9 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	m.pendingSetupField = ""
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
+		if !input.Editable {
+			continue
+		}
 		if value, exists := values[input.Definition.Name]; exists {
 			inputs[input.Definition.Name] = value
 		}

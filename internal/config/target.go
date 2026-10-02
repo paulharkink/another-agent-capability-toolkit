@@ -9,10 +9,11 @@ import (
 )
 
 type Target struct {
-	Environment string         `json:"environment"`
-	Name        string         `json:"name"`
-	Path        string         `json:"path"`
-	Raw         map[string]any `json:"raw"`
+	Environment string            `json:"environment"`
+	Name        string            `json:"name"`
+	Path        string            `json:"path"`
+	Raw         map[string]any    `json:"raw"`
+	InputPolicy map[string]string `json:"input_policy,omitempty"`
 }
 
 func LoadTarget(s Source, packageID, environment, target string) (Target, error) {
@@ -36,7 +37,27 @@ func LoadTarget(s Source, packageID, environment, target string) (Target, error)
 	if err = toml.Unmarshal(data, &raw); err != nil {
 		return Target{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return Target{Environment: environment, Name: target, Path: path, Raw: raw}, nil
+	policy := map[string]string{}
+	if aact, ok := raw["aact"]; ok {
+		settings, ok := aact.(map[string]any)
+		if !ok {
+			return Target{}, fmt.Errorf("%s: aact must be a table", path)
+		}
+		if declared, ok := settings["input_policy"]; ok {
+			fields, ok := declared.(map[string]any)
+			if !ok {
+				return Target{}, fmt.Errorf("%s: aact.input_policy must be a table", path)
+			}
+			for name, value := range fields {
+				mode, ok := value.(string)
+				if !ok || (mode != "fixed" && mode != "default") {
+					return Target{}, fmt.Errorf("%s: aact.input_policy.%s must be fixed or default", path, name)
+				}
+				policy[name] = mode
+			}
+		}
+	}
+	return Target{Environment: environment, Name: target, Path: path, Raw: raw, InputPolicy: policy}, nil
 }
 func contained(root, path string) error {
 	absRoot, e := filepath.Abs(root)

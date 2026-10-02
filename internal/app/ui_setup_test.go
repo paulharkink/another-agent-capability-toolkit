@@ -62,6 +62,113 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		t.Fatalf("target provenance path: %#v", got.Inputs[3])
 	}
 }
+func TestFixedTargetInputWinsSavedAnswersAndRejectsOverride(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", ConfigKey: "cluster.api_server", Required: true}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("[cluster]\napi_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
+	if err := store.SaveAnswers(key, map[string]any{"api_server": "https://stale.example"}); err != nil {
+		t.Fatal(err)
+	}
+	q := viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}
+	preview, err := svc.UISetupPreview(context.Background(), q)
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "target" {
+		t.Fatalf("fixed preview: %+v %v", preview, err)
+	}
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, false, false)
+	if err != nil || values["api_server"] != "https://fixed.example" {
+		t.Fatalf("resolved: %+v %v", values, err)
+	}
+	if _, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"api_server": "https://other.example"}, false, false); err == nil || !strings.Contains(err.Error(), "fixed") {
+		t.Fatalf("override accepted: %v", err)
+	}
+}
+func TestFixedTargetPolicyRequiresDeclaredTargetValue(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("missing fixed value accepted: %v", err)
+	}
+}
+func TestTargetOnlyPolicyDoesNotLockSourceDefault(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
+	svc.Source.PackageDefaults["demo"] = map[string]any{"api_server": "https://source.example", "aact": map[string]any{"input_policy": map[string]any{"api_server": "fixed"}}}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil || len(preview.Inputs) != 1 || !preview.Inputs[0].Editable {
+		t.Fatalf("source default locked input: %+v %v", preview, err)
+	}
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "", "", map[string]any{"api_server": "https://override.example"}, false, false)
+	if err != nil || values["api_server"] != "https://override.example" {
+		t.Fatalf("source default was fixed: %+v %v", values, err)
+	}
+}
+func TestTargetPolicyRejectsUnknownInputAndKeepsDefaultEditable(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("api_server='https://target.example'\n[aact.input_policy]\nunknown='fixed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	q := viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}
+	if _, err := svc.UISetupPreview(context.Background(), q); err == nil || !strings.Contains(err.Error(), "undeclared") {
+		t.Fatalf("unknown policy accepted: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("api_server='https://target.example'\n[aact.input_policy]\napi_server='default'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), q)
+	if err != nil || !preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://target.example" {
+		t.Fatalf("editable default: %+v %v", preview, err)
+	}
+}
+func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}, {Name: "local_port", Type: "integer", Required: true}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("api_server='https://fixed.example'\nlocal_port=8765\n[aact.input_policy]\napi_server='fixed'\nlocal_port='default'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	svc.Options.Editor = func(_ context.Context, defs []catalog.Input, values map[string]any) (map[string]any, error) {
+		called = true
+		if len(defs) != 1 || defs[0].Name != "local_port" {
+			t.Fatalf("fixed input reached editor: %+v", defs)
+		}
+		if _, ok := values["api_server"]; ok {
+			t.Fatalf("fixed value reached editor: %+v", values)
+		}
+		values["local_port"] = int64(9000)
+		return values, nil
+	}
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false)
+	if err != nil || !called || values["api_server"] != "https://fixed.example" || values["local_port"] != int64(9000) {
+		t.Fatalf("interactive fixed values: %+v %v", values, err)
+	}
+}
 
 func TestUISetupPreviewDoesNotWriteStateOrRequireCompletedAnswers(t *testing.T) {
 	svc, _, store := fixture(t)

@@ -14,6 +14,23 @@ func TestNamedTargetRetainsRawTables(t *testing.T) {
 		t.Fatalf("%#v %v", target, e)
 	}
 }
+func TestTargetInputPolicyIsReadFromTargetOnly(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "dev", "inspect", "production.toml"), "[cluster]\napi_server='https://cluster.example'\n[aact.input_policy]\napi_server='fixed'\nlocal_port='default'\n")
+	target, err := LoadTarget(Source{EnvironmentRoot: root}, "inspect", "dev", "production")
+	if err != nil || target.InputPolicy["api_server"] != "fixed" || target.InputPolicy["local_port"] != "default" {
+		t.Fatalf("policy: %#v %v", target.InputPolicy, err)
+	}
+}
+func TestTargetRejectsInvalidInputPolicy(t *testing.T) {
+	for _, body := range []string{"[aact.input_policy]\napi_server='locked'\n", "[aact]\ninput_policy='fixed'\n"} {
+		root := t.TempDir()
+		put(t, filepath.Join(root, "dev", "inspect", "production.toml"), body)
+		if _, err := LoadTarget(Source{EnvironmentRoot: root}, "inspect", "dev", "production"); err == nil {
+			t.Fatalf("accepted %q", body)
+		}
+	}
+}
 func TestTargetPathsCannotEscapeRoot(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][3]string{{"../inspect", "dev", "target"}, {"inspect", "../dev", "target"}, {"inspect", "dev", "../target"}} {

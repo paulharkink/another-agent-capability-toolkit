@@ -96,6 +96,10 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 			return viewmodel.SetupPreview{}, invalid(err)
 		}
 	}
+	fixed, err := fixedTargetInputs(p.Inputs, target, layers[2])
+	if err != nil {
+		return viewmodel.SetupPreview{}, invalid(err)
+	}
 	// Resolve each layer without declaration defaults. This preserves the same
 	// precedence and config_key conflict checks as Install while identifying origin.
 	defs := append([]catalog.Input(nil), p.Inputs...)
@@ -118,13 +122,19 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 			provenancePaths[name] = paths[i]
 		}
 	}
+	for name, value := range fixed {
+		values[name] = value
+		provenance[name] = "target"
+		provenancePaths[name] = target.Path
+	}
 	for _, def := range p.Inputs {
 		value, present := values[def.Name]
 		origin := provenance[def.Name]
 		if !present {
 			origin = "unset"
 		}
-		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: value, HasValue: present, Provenance: origin, ProvenancePath: provenancePaths[def.Name], Editable: true})
+		_, locked := fixed[def.Name]
+		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: value, HasValue: present, Provenance: origin, ProvenancePath: provenancePaths[def.Name], Editable: !locked})
 	}
 	ids, err := s.UIAgents(ctx)
 	if err != nil {

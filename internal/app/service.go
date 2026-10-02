@@ -152,10 +152,20 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 			return nil, t, k, invalid(e)
 		}
 	}
+	fixed, e := fixedTargetInputs(p.Inputs, t, layers[2])
+	if e != nil {
+		return nil, t, k, invalid(e)
+	}
+	for n := range fixed {
+		if _, overridden := cli[n]; overridden {
+			return nil, t, k, invalid(fmt.Errorf("input %q is fixed by target %s", n, t.Path))
+		}
+	}
 	values, e := forms.ResolvePartial(p.Inputs, layers...)
 	if e != nil {
 		return nil, t, k, invalid(e)
 	}
+	values = withFixed(values, fixed)
 	if interactive {
 		if s.Options.Editor == nil {
 			return nil, t, k, invalid(errors.New("interactive editor is unavailable"))
@@ -171,10 +181,12 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 				}
 			}
 		}
-		values, e = s.Options.Editor(ctx, seedDefs, values)
+		visibleDefs, editableValues := withoutFixed(seedDefs, values, fixed)
+		values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
 		if e != nil {
 			return nil, t, k, e
 		}
+		values = withFixed(values, fixed)
 		values, e = config.ResolveInputPaths(p.Inputs, values, filepath.Join(cwd, ".aact-inputs"))
 		if e != nil {
 			return nil, t, k, invalid(e)
@@ -195,10 +207,12 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 				}
 				if len(result.Choices) > 0 {
 					defs := withChoices(p.Inputs, result.Choices)
-					values, e = s.Options.Editor(ctx, defs, values)
+					visibleDefs, editableValues := withoutFixed(defs, values, fixed)
+					values, e = s.Options.Editor(ctx, visibleDefs, editableValues)
 					if e != nil {
 						return nil, t, k, e
 					}
+					values = withFixed(values, fixed)
 					values, e = config.ResolveInputPaths(defs, values, filepath.Join(cwd, ".aact-inputs"))
 					if e != nil {
 						return nil, t, k, invalid(e)

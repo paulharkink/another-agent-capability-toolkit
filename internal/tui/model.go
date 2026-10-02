@@ -51,6 +51,9 @@ type Model struct {
 	pendingRegistrationRemoval bool
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
+	logSession                 uint64
+	logProfile                 state.Key
+	logLabel                   string
 	pendingDefaultAgents       bool
 	agents                     []string
 	agentManagement            []viewmodel.AgentManagementRow
@@ -230,7 +233,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case logsMsg:
-		m.showLogs(msg)
+		return m, m.showLogs(msg)
+	case logPollMsg:
+		if msg.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
+			return m, m.fetchLogs(msg.session)
+		}
 	case setupPreviewMsg:
 		m.busy = false
 		if msg.err != nil {

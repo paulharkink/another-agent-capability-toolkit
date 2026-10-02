@@ -58,8 +58,8 @@ terminals that report mouse events. An MCP started by another AACT installation
 can be observed and registered with agents here without claiming its runtime.
 The Environments menu browses target TOML from the current checkout and opens
 setup with the chosen target; Settings can choose default named MCP agents for
-future installs. Profile Actions can check a connection and view scrollable
-recent logs; operation results remain scrollable until dismissed.
+future installs. Profile Actions can check a connection and view recent logs
+with Follow/Pause (`f`); operation results remain scrollable until dismissed.
 
 CLI subcommands are noninteractive by default. Supply declared inputs with
 repeated `--set name=value` options, or use `--interactive` for prefilled forms.
@@ -145,8 +145,12 @@ must match its package ID. Relative paths resolve against the file that declares
 them. Target files are `ENVIRONMENT_ROOT/ENVIRONMENT/PACKAGE/TARGET.toml`.
 Set a default environment root with `aact config set-environment-root PATH`, or
 supply `--environment-root PATH`. CLI input values override saved local edits,
-which override editable target, project, and package defaults. `--environment`
-and `--target` are used together.
+which override editable target, project, and package defaults. A target TOML can
+set `[aact.input_policy]` entries to `fixed` or `default`. A `fixed` input must
+have a value in that target file, is omitted from setup and Parameters forms,
+and cannot be overridden with `--set`. A `default` input remains editable.
+Input policy is read only from target TOML. `--environment` and `--target` are
+used together.
 Without a checkout manifest, AACT exposes the bundled catalog.
 
 Existing configuration can be previewed with `aact migrate --dry-run --json` and

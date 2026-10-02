@@ -44,6 +44,7 @@ type modalState struct {
 	Rows     []string
 	Offset   int
 	Column   int
+	Follow   bool
 }
 type hitRegion struct {
 	X, Y, Width, Height int

@@ -62,7 +62,7 @@ The Main menu has exactly the management destinations `Agents`, `Environments`, 
 
 ## Capability install and parameter forms
 
-Installing a capability opens one scrollable form containing every declared input and the destination controls. The bottom action row remains visible while fields scroll. Environment values marked fixed are visible and non-editable with their source file; defaults are editable with their provenance. Fields outside the chosen conditional branch remain visible but disabled with a reason. For Cluster Inspector, `Token` and `Source kubeconfig` are mutually exclusive; the latter is clearly described as an import source, not a live runtime path.
+Installing a capability opens one scrollable form containing editable declared inputs and the destination controls. The bottom action row remains visible while fields scroll. Fixed environment values are omitted; defaults are editable with their provenance. Fields outside the chosen conditional branch remain visible but disabled with a reason. For Cluster Inspector, `Token` and `Source kubeconfig` are mutually exclusive; the latter is clearly described as an import source, not a live runtime path.
 
 Skill-only installation initially selects `All — ~/.agents/skills`, and may also offer named agent destinations. When the selected installation requires an MCP registration, `All` is absent and at least one named agent is required. Destination paths and the planned effect appear before applying. Each directory picker adds one path; a multiple-value field provides its own Add/Edit/Remove controls.
 
@@ -115,12 +115,11 @@ The current browser prototype illustrates several choices that still require the
 
 ### Environment input policy
 
-The manifest declares input types, defaults, and mutually exclusive groups;
-target TOML supplies editable prefill values but does not yet declare fixed
-fields. The form currently shows every field as editable. The user decided that fixed
-environment values may be omitted from both initial setup and later Parameters
-forms. They remain authoritative during apply, including noninteractive runs.
-The concrete TOML schema below remains a proposal pending review.
+The manifest declares input types, defaults, and mutually exclusive groups.
+Only a specific environment target TOML can declare input policy. Fixed fields
+are omitted from initial setup and later Parameters forms. Their target values
+remain authoritative during apply, including noninteractive runs. The user
+selected target-only scope for this policy.
 
 ```toml
 # environments/company/cluster-inspector/production.toml
@@ -136,11 +135,9 @@ A generic `exclusive_group = "cluster_credentials"` field on the manifest's
 `token` and `kubeconfig` inputs rejects simultaneous nonempty values in both
 the form and noninteractive CLI. Both fields remain visible; explicitly entering
 one clears the other. Loading a prefill does not silently clear either field.
-The backend must enforce future fixed values after all input layers are merged
+The backend enforces fixed values after all input layers are merged
 so `--set` cannot bypass the UI. Relative file paths continue resolving against
 the file that supplied them.
-
-Whether fixed policy may also appear in source-wide defaults remains unresolved.
 
 ### Existing-profile Save/apply failure contract
 
