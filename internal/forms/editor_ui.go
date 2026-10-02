@@ -23,15 +23,17 @@ type FormModel struct {
 	editing                     bool
 	buffer, editAction, message string
 	choiceIndex, rowIndex       map[string]int
+	hints                       map[string]string
 	done                        bool
 	result                      map[string]any
 	err                         error
 }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
-	return &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}}
+	return &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}}
 }
-func (m *FormModel) Init() tea.Cmd { return nil }
+func (m *FormModel) SetHint(name, hint string) { m.hints[name] = hint }
+func (m *FormModel) Init() tea.Cmd             { return nil }
 func (m *FormModel) Result() (map[string]any, error) {
 	if !m.done {
 		return nil, ErrNotSubmitted
@@ -436,6 +438,9 @@ func (m *FormModel) layout() formLayout {
 	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
 	if len(m.defs) > 0 {
 		def := m.defs[m.selected]
+		if hint := m.hints[def.Name]; hint != "" {
+			footer = "Source: " + hint + "\n" + footer
+		}
 		if def.Multiple && len(def.Options) == 0 && def.Type != "directory" && def.Type != "file" {
 			footer += "\na Add · e Edit · r Remove · [/] row"
 		}

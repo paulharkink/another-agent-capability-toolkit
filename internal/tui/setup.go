@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -61,9 +62,6 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 		}
 		if input.HasValue {
 			origin := input.Provenance
-			if input.ProvenancePath != "" {
-				origin += ": " + input.ProvenancePath
-			}
 			def.Label = label + " [" + origin + "]"
 			values[def.Name] = input.Value
 		}
@@ -86,6 +84,11 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 	m.pendingSetup = &preview
 	m.pendingSetupField = destinationField
 	m.form = forms.NewForm(m.ctx, defs, values)
+	for _, input := range preview.Inputs {
+		if input.HasValue && input.ProvenancePath != "" {
+			m.form.SetHint(input.Definition.Name, input.Provenance+" · "+filepath.Base(input.ProvenancePath)+" · "+input.ProvenancePath)
+		}
+	}
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 }
 

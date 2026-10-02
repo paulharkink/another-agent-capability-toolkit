@@ -196,6 +196,10 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
 - Settings can save default named MCP agents for future setups without touching
   existing registrations. The default CLI and TUI destinations now honor
   `CODEX_HOME` and `XDG_CONFIG_HOME`; explicit agent homes retain their paths.
+- A native PTY smoke opened the two-pane home, Main menu, Environments, Actions,
+  and a no-environment setup form without changing live agent configuration.
+  It exposed long provenance paths hiding values at 80 columns; a failing TUI
+  regression led to separate selected-field source hints, leaving values visible.
 - Independent review found that an unsupported JetBrains MCP destination could
   start Docker before adapter validation. A failing regression demonstrated the
   side effect; service validation now rejects it before runtime start, and the

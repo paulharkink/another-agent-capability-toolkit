@@ -97,3 +97,19 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 		t.Fatalf("install result hidden: %s", m.output)
 	}
 }
+
+func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key: state.Key{Source: "team-source", Package: "plain", Target: "default"},
+		Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string"},
+			Value: "/repos/team", HasValue: true, Provenance: "source",
+			ProvenancePath: "/a/very/long/checkout/path/for/a/company/private/capabilities/repository/that/exceeds/the/terminal/width/aact.toml"}},
+		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills", Selected: true}},
+	})
+	view := m.View().Content
+	if !strings.Contains(view, "Repository [source]: /repos/team") || !strings.Contains(view, "aact.toml") {
+		t.Fatalf("provenance hid the field's value: %s", view)
+	}
+}
