@@ -54,6 +54,24 @@ func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
 		t.Fatalf("global skill missing: %s, %v", content, err)
 	}
 }
+func TestAgentEnvironmentsHonorNativeConfigOverridesWithoutCustomHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	codexRoot := filepath.Join(home, "codex-override")
+	xdgRoot := filepath.Join(home, "xdg-override")
+	t.Setenv("CODEX_HOME", codexRoot)
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	envs, err := agentEnvironments(flags{agents: []string{"codex", "opencode"}})
+	if err != nil || len(envs) != 2 || envs[0].ConfigPath != filepath.Join(codexRoot, "config.toml") || envs[1].ConfigPath != filepath.Join(xdgRoot, "opencode", "opencode.json") {
+		t.Fatalf("native overrides ignored: %+v, %v", envs, err)
+	}
+	custom := filepath.Join(home, "custom-agent")
+	envs, err = agentEnvironments(flags{agents: []string{"codex"}, homes: []string{"codex=" + custom}})
+	if err != nil || len(envs) != 1 || envs[0].ConfigPath != filepath.Join(custom, ".codex", "config.toml") {
+		t.Fatalf("explicit agent home overridden: %+v, %v", envs, err)
+	}
+}
 func TestMissingInputExitTwo(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer

@@ -112,3 +112,51 @@ Before public release, include a standalone static version of the approved inter
 ## Decisions outside this interaction approval
 
 The current browser prototype illustrates several choices that still require the user's architecture decision before their real operations are implemented: whether Stop retains a container; whether environment TOML is edited inside AACT; environment-root precedence; and whether a new attachment requires a successful connection check. Current registration reports a failed connection check as a warning and does not block saving. The user chose one Save action that persists and immediately applies changes; this decision is separate from approval of the mockup's menu interaction.
+
+### Input policy proposal awaiting architecture decision
+
+The current manifest declares input types and defaults, and target TOML supplies
+values, but neither format declares fixed fields or mutually exclusive inputs.
+The form currently shows every field as editable. This proposal is recorded for
+review; it is not implemented or approved by the interaction mockup alone.
+
+```toml
+# environments/company/cluster-inspector/production.toml
+[cluster]
+api_server = "https://cluster.example"
+
+[aact.input_policy]
+api_server = "fixed"   # requires a value in this target file
+local_port = "default" # editable prefill
+```
+
+A generic `exclusive_group = "cluster_credentials"` field on the manifest's
+`token` and `kubeconfig` inputs would reject simultaneous nonempty values in
+both the form and noninteractive CLI. The form would keep both fields visible,
+disable the opposite branch after a choice, and explain why. The backend must
+enforce fixed values after all input layers are merged so `--set` cannot bypass
+the UI. Relative file paths continue resolving against the file that supplied
+them.
+
+Two choices remain: whether fixed policy may also appear in source-wide
+defaults, and whether explicitly choosing the other credential branch clears
+the previous branch automatically or asks the user to clear it first. The
+smallest scope is target-file fixed policy with clearing only after an explicit
+branch change; no preview should discard a prefilled credential silently.
+
+### Existing-profile Save/apply recovery proposal awaiting decision
+
+For a running MCP, one Save should persist edited answers and restart/apply
+immediately. The current service has separate answer persistence and runtime
+operations, so a failed restart needs a defined observable state. Two possible
+contracts are:
+
+| Contract | On failed apply | Consequence |
+| --- | --- | --- |
+| Restore prior state | Restore prior answers and attempt to restore the prior running MCP; report each recovery step and any incomplete restoration. | Save either applies or explicitly reports degraded recovery, but compensation must cover both state and Docker. |
+| Keep new desired state | Retain new answers, report that the MCP is still running with old settings or is down, and offer Retry. | Desired configuration and observed runtime intentionally diverge until retry succeeds. |
+
+Neither contract has been selected. The current TUI keeps existing-profile
+Parameters disabled rather than presenting a Save action with unspecified
+failure behavior. New capability installation uses the existing noninteractive
+Install transaction and reports its partial results separately.

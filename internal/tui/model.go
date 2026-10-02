@@ -51,11 +51,13 @@ type Model struct {
 	pendingRegistrationRemoval bool
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
+	pendingDefaultAgents       bool
 	agents                     []string
 	agentManagement            []viewmodel.AgentManagementRow
 	settings, sourceLabels     map[string]string
 	busy                       bool
 	output, action             string
+	result                     *resultState
 	form                       *forms.FormModel
 	pending                    operation
 	management                 managementState
@@ -82,6 +84,7 @@ type operationMsg struct {
 	origin, output string
 	err            error
 }
+type settingsSavedMsg struct{ err error }
 
 func New(backend Backend) tea.Model { return NewContext(context.Background(), backend) }
 func NewContext(ctx context.Context, backend Backend) *Model {
@@ -164,6 +167,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingRegistrationRemoval = false
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
+			m.pendingDefaultAgents = false
 			m.output = "Cancelled"
 			return m, nil
 		}
@@ -204,6 +208,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.pendingSetup != nil {
 			return m, m.applySetup(values)
+		}
+		if m.pendingDefaultAgents {
+			m.pendingDefaultAgents = false
+			selected, _ := values["agents"].([]string)
+			backend := m.backend.(defaultAgentsBackend)
+			m.busy = true
+			return m, func() tea.Msg { return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, selected)} }
 		}
 		op := m.pending
 		if op.action == "set-environment-root" {
@@ -268,15 +279,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case operationMsg:
 		m.busy = false
 		m.view = msg.origin
-		m.output = m.cleanOutput(msg.output)
+		m.showOperationResult(msg)
+		return m, m.load()
+	case settingsSavedMsg:
+		m.busy = false
 		if msg.err != nil {
-			if m.output != "" {
-				m.output += "\n"
-			}
-			m.output += m.cleanOutput(msg.err.Error())
+			m.output = m.cleanOutput(msg.err.Error())
+			return m, nil
 		}
+		m.output = "Default named agents saved for future MCP installs"
 		return m, m.load()
 	case tea.MouseMsg:
+		if m.result != nil {
+			return m, m.resultMouse(msg)
+		}
 		if m.view == "Catalog" && !m.busy {
 			return m, m.homeMouse(msg)
 		}
@@ -285,6 +301,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		stroke := msg.String()
+		if m.result != nil {
+			return m, m.resultKey(stroke)
+		}
 		if m.busy {
 			if stroke == "ctrl+c" {
 				return m, tea.Quit
@@ -558,6 +577,9 @@ func (m *Model) cleanOutput(output string) string {
 	return output
 }
 func (m *Model) View() tea.View {
+	if m.result != nil {
+		return m.resultView()
+	}
 	if m.form == nil && (m.view == "Catalog" || m.width < 80 || m.height < 16) {
 		return m.homeView()
 	}

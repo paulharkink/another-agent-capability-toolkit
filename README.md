@@ -56,6 +56,10 @@ Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item
 Actions, and `m` for the Main menu. Mouse clicks and scrolling work in
 terminals that report mouse events. An MCP started by another AACT installation
 can be observed and registered with agents here without claiming its runtime.
+The Environments menu browses target TOML from the current checkout and opens
+setup with the chosen target; Settings can choose default named MCP agents for
+future installs. Profile Actions can check a connection and view scrollable
+recent logs; operation results remain scrollable until dismissed.
 
 CLI subcommands are noninteractive by default. Supply declared inputs with
 repeated `--set name=value` options, or use `--interactive` for prefilled forms.

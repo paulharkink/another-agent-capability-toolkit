@@ -31,15 +31,22 @@ type managementState struct {
 }
 
 type environmentEntry struct {
-	Name    string
-	Targets []string
-	Paths   []string
-	Errors  []string
+	Name       string
+	Targets    []string
+	Paths      []string
+	Errors     []string
+	TargetDefs []viewmodel.EnvironmentTarget
+	NoFile     bool
 }
 
 type environmentBrowserBackend interface {
 	UIEnvironmentSnapshot(context.Context) (viewmodel.EnvironmentSnapshot, error)
 	UIEnvironmentTarget(context.Context, string) (string, error)
+}
+
+type defaultAgentsBackend interface {
+	UIAgentDefaultOptions(context.Context) ([]string, error)
+	UISetDefaultAgents(context.Context, []string) error
 }
 
 type environmentTargetMsg struct {
@@ -114,7 +121,7 @@ func (m *Model) agentRegistrations(id string) []string {
 // Actual target files and saved profiles have separate rows. A saved profile
 // never counts as evidence that its target TOML still exists.
 func (m *Model) environmentEntries() []environmentEntry {
-	entries := []environmentEntry{{Name: "No environment file"}}
+	entries := []environmentEntry{{Name: "No environment file", NoFile: true}}
 	actual := map[string]*environmentEntry{}
 	if m.environmentSnapshot != nil {
 		for _, name := range m.environmentSnapshot.Environments {
@@ -135,6 +142,7 @@ func (m *Model) environmentEntries() []environmentEntry {
 			entry.Targets = append(entry.Targets, label)
 			entry.Paths = append(entry.Paths, target.Path)
 			entry.Errors = append(entry.Errors, target.Error)
+			entry.TargetDefs = append(entry.TargetDefs, target)
 		}
 	}
 	actualNames := make([]string, 0, len(actual))
@@ -313,16 +321,50 @@ func (m *Model) managementMenuEntries() []string {
 		viewer := "View target — disabled: select an actual TOML target"
 		entries := m.environmentEntries()
 		selected := entries[min(max(0, m.management.EnvironmentIndex), len(entries)-1)]
+		setup := "Use for new setups"
+		if reason := m.environmentSetupReason(selected); reason != "" {
+			setup += " — disabled: " + reason
+		}
 		if m.management.TargetIndex < len(selected.Paths) && selected.Paths[m.management.TargetIndex] != "" {
 			if _, ok := m.backend.(environmentBrowserBackend); ok {
 				viewer = "View target"
 			}
 		}
-		return []string{"Use for new setups — disabled: target selection for setup pending", viewer, "Environment root", "Close"}
+		return []string{setup, viewer, "Environment root", "Close"}
 	case "Settings":
-		return []string{"Edit environment root", "Default named agents — disabled: service support pending", "Docker backend — disabled: service support pending", "Back"}
+		defaults := "Default named agents — disabled: service support pending"
+		if _, ok := m.backend.(defaultAgentsBackend); ok {
+			defaults = "Default named agents"
+		}
+		return []string{"Edit environment root", defaults, "Docker backend — disabled: service support pending", "Back"}
 	}
 	return nil
+}
+
+func (m *Model) environmentSetupReason(selected environmentEntry) string {
+	if _, ok := m.backend.(setupBackend); !ok {
+		return "setup service unavailable"
+	}
+	if selected.NoFile {
+		capability, ok := m.selectedCapability()
+		if !ok || capability.CatalogIndex < 0 {
+			return "select an available capability on the home screen"
+		}
+		return ""
+	}
+	if m.management.TargetIndex >= len(selected.TargetDefs) {
+		return "select an actual TOML target"
+	}
+	target := selected.TargetDefs[m.management.TargetIndex]
+	if target.Error != "" || target.Path == "" {
+		return "selected TOML target is invalid"
+	}
+	for _, capability := range m.capabilities() {
+		if capability.Source == target.SourceID && capability.Package == target.PackageID && capability.CatalogIndex >= 0 {
+			return ""
+		}
+	}
+	return "target capability is not available in this checkout"
 }
 
 func (m *Model) managementModalKey(stroke string) tea.Cmd {
@@ -425,9 +467,24 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				return environmentTargetMsg{path: path, content: content, err: err}
 			}
 		}
+		if m.view == "Environments" && i == 0 {
+			selected := m.environmentEntries()[m.management.EnvironmentIndex]
+			m.management.Modal = ""
+			if selected.NoFile {
+				capability, _ := m.selectedCapability()
+				return m.beginSetup(capability.Source, capability.Package, "", "")
+			}
+			target := selected.TargetDefs[m.management.TargetIndex]
+			return m.beginSetup(target.SourceID, target.PackageID, target.Environment, target.Name)
+		}
 		if entries[i] == "Environment root" || entries[i] == "Edit environment root" {
 			m.management.Modal = ""
 			m.editEnvironmentRoot()
+			return nil
+		}
+		if m.view == "Settings" && i == 1 {
+			m.management.Modal = ""
+			m.editDefaultAgents()
 			return nil
 		}
 		m.management.Modal = ""
@@ -438,6 +495,35 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.settings["environment_root"]})
+	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+}
+
+func (m *Model) editDefaultAgents() {
+	backend, ok := m.backend.(defaultAgentsBackend)
+	if !ok {
+		m.output = "Default named agent service unavailable"
+		return
+	}
+	ids, err := backend.UIAgentDefaultOptions(m.ctx)
+	if err != nil {
+		m.output = m.cleanOutput(err.Error())
+		return
+	}
+	choices := make([]catalog.Choice, 0, len(ids))
+	for _, id := range ids {
+		choices = append(choices, catalog.Choice{Value: id, Label: id})
+	}
+	selected := []string{}
+	for _, id := range strings.Split(m.settings["default_agents"], ",") {
+		for _, choice := range choices {
+			if id == choice.Value {
+				selected = append(selected, id)
+				break
+			}
+		}
+	}
+	m.pendingDefaultAgents = true
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agents", Label: "Default named agents", Type: "multichoice", Options: choices}}, map[string]any{"agents": selected})
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 }
 

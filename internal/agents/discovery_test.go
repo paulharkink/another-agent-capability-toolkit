@@ -110,10 +110,70 @@ func TestDiscoverySeparatesDesktopAppFromCLIAndJetBrainsXML(t *testing.T) {
 	}
 }
 
-func TestDiscoveryDoesNotCertifyUnverifiedWindowsPaths(t *testing.T) {
+func TestDiscoveryWindowsCLIUsesExecutableEvidenceAndUserConfigPaths(t *testing.T) {
+	p, home := probeFixture(t)
+	p.GOOS = "windows"
+	p.LookPath = func(name string) (string, error) {
+		if name == "codex" || name == "claude" || name == "opencode" {
+			return filepath.Join(home, "bin", name+".exe"), nil
+		}
+		return "", os.ErrNotExist
+	}
+	for _, tc := range []struct {
+		id, config string
+	}{
+		{"codex", filepath.Join(home, ".codex", "config.toml")},
+		{"claude", filepath.Join(home, ".claude.json")},
+		{"opencode", filepath.Join(home, ".config", "opencode", "opencode.json")},
+	} {
+		got := DiscoverAgent(context.Background(), tc.id, p)
+		if got.Detection != "installed" || !strings.Contains(got.Evidence, "CLI executable:") || len(got.ConfigFiles) == 0 || got.ConfigFiles[0].Path != tc.config || got.ConfigFiles[0].Exists {
+			t.Fatalf("%s Windows CLI discovery: %+v", tc.id, got)
+		}
+	}
+}
+
+func TestDiscoveryWindowsConfigFileAloneIsNotInstallEvidence(t *testing.T) {
+	p, home := probeFixture(t)
+	p.GOOS = "windows"
+	config := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("model = 'demo'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := DiscoverAgent(context.Background(), "codex", p)
+	if got.Detection != "not-detected" || len(got.ConfigFiles) != 1 || !got.ConfigFiles[0].Exists {
+		t.Fatalf("Windows config was treated as installation: %+v", got)
+	}
+}
+
+func TestDiscoveryWSLUsesLinuxCLIAndHomeOnly(t *testing.T) {
+	p, home := probeFixture(t)
+	p.GOOS = "linux"
+	p.Getenv = func(name string) string {
+		if name == "WSL_DISTRO_NAME" {
+			return "Ubuntu"
+		}
+		return ""
+	}
+	p.LookPath = func(name string) (string, error) {
+		if name == "opencode" {
+			return "/usr/local/bin/opencode", nil
+		}
+		return "", os.ErrNotExist
+	}
+	got := DiscoverAgent(context.Background(), "opencode", p)
+	if got.Detection != "installed" || got.ConfigFiles[0].Path != filepath.Join(home, ".config", "opencode", "opencode.json") || !strings.Contains(got.Note, "WSL") {
+		t.Fatalf("WSL discovery escaped its Linux scope: %+v", got)
+	}
+}
+
+func TestDiscoveryDoesNotCertifyUnverifiedWindowsClients(t *testing.T) {
 	p, _ := probeFixture(t)
 	p.GOOS = "windows"
-	for _, id := range []string{"codex", "claude", "intellij", "copilot-intellij", "copilot-cli"} {
+	for _, id := range []string{"claude-desktop", "opencode-desktop", "intellij", "copilot-intellij", "copilot-cli"} {
 		got := DiscoverAgent(context.Background(), id, p)
 		if got.Detection != "unverified" || got.Note == "" {
 			t.Fatalf("%s claimed Windows evidence: %+v", id, got)

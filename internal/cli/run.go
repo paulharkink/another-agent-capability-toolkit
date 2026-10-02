@@ -370,6 +370,12 @@ func agentEnvironments(f flags) ([]agents.Environment, error) {
 		if e != nil {
 			return nil, e
 		}
+		if kind != "all" && shared == "" && overrides[id] == "" {
+			env, e = agents.ApplyNativeConfigOverrides(env)
+			if e != nil {
+				return nil, e
+			}
+		}
 		out = append(out, env)
 	}
 	for id := range overrides {

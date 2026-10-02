@@ -59,6 +59,36 @@ func ResolveEnvironment(id, kind, home string) (Environment, error) {
 	return e, nil
 }
 
+// ApplyNativeConfigOverrides follows config-root environment variables for the
+// process's default agent home. Callers with an explicit custom agent home keep
+// the paths returned by ResolveEnvironment instead.
+func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
+	var root string
+	switch env.Kind {
+	case "codex":
+		root = os.Getenv("CODEX_HOME")
+		if root != "" {
+			absolute, err := filepath.Abs(root)
+			if err != nil {
+				return env, err
+			}
+			env.ConfigPath = filepath.Join(absolute, "config.toml")
+		}
+	case "opencode":
+		root = os.Getenv("XDG_CONFIG_HOME")
+		if root != "" {
+			absolute, err := filepath.Abs(root)
+			if err != nil {
+				return env, err
+			}
+			base := filepath.Join(absolute, "opencode")
+			env.ConfigPath = filepath.Join(base, "opencode.json")
+			env.SkillsDir = filepath.Join(base, "skills")
+		}
+	}
+	return env, nil
+}
+
 type Registration struct {
 	Name, URL, Transport string
 	TimeoutMS            int

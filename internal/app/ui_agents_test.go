@@ -45,6 +45,29 @@ func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing
 	}
 }
 
+func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	codexRoot := filepath.Join(home, "alternate-codex")
+	xdgRoot := filepath.Join(home, "alternate-xdg")
+	t.Setenv("CODEX_HOME", codexRoot)
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	svc, _, _ := fixture(t)
+	for _, tc := range []struct{ id, want string }{
+		{"codex", filepath.Join(codexRoot, "config.toml")},
+		{"opencode", filepath.Join(xdgRoot, "opencode", "opencode.json")},
+	} {
+		env, err := svc.uiEnvironment(tc.id, state.Key{Source: "fixture", Package: "demo", Target: "default"})
+		if err != nil || env.ConfigPath != tc.want {
+			t.Fatalf("%s writes %q rather than active config %q: %v", tc.id, env.ConfigPath, tc.want, err)
+		}
+		if tc.id == "opencode" && env.SkillsDir != filepath.Join(xdgRoot, "opencode", "skills") {
+			t.Fatalf("OpenCode skills use inactive config root: %q", env.SkillsDir)
+		}
+	}
+}
+
 func TestUIAgentConfigShowsExactContentsAndRejectsUndiscoveredPaths(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS Codex path fixture")

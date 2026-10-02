@@ -160,6 +160,73 @@ func (s *Service) UISettings(context.Context) (map[string]string, error) {
 	out["default_agents"] = strings.Join(settings.Agents, ",")
 	return out, nil
 }
+
+// UISetDefaultAgents changes only the destinations proposed for future MCP setups.
+// Existing registrations and installation records are unaffected.
+func (s *Service) UISetDefaultAgents(ctx context.Context, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	available, err := s.UIAgents(ctx)
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(available))
+	for _, id := range available {
+		known[id] = true
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || id == "all" || !known[id] || seen[id] {
+			return invalid(fmt.Errorf("invalid default MCP agent %q", id))
+		}
+		kind, _, _ := strings.Cut(id, ":")
+		if _, err := agents.For(kind, s.Options.Runner); err != nil {
+			return invalid(fmt.Errorf("default MCP agent %q: %w", id, err))
+		}
+		seen[id] = true
+	}
+	path := filepath.Join(s.Store.Root(), "manager", "settings.json")
+	return s.Store.WithLock(ctx, func() error {
+		settings := map[string]json.RawMessage{}
+		b, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil {
+			if err := json.Unmarshal(b, &settings); err != nil {
+				return fmt.Errorf("read settings: %w", err)
+			}
+			if settings == nil {
+				return errors.New("settings must be a JSON object")
+			}
+		}
+		agentsJSON, err := json.Marshal(ids)
+		if err != nil {
+			return err
+		}
+		settings["agents"] = agentsJSON
+		return state.WriteJSON(path, settings)
+	})
+}
+
+func (s *Service) UIAgentDefaultOptions(ctx context.Context) ([]string, error) {
+	ids, err := s.UIAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	options := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "all" {
+			continue
+		}
+		kind, _, _ := strings.Cut(id, ":")
+		if _, err := agents.For(kind, s.Options.Runner); err == nil {
+			options = append(options, id)
+		}
+	}
+	return options, nil
+}
 func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	labels := map[string]string{s.Source.ID: s.Source.ID}
 	for _, p := range s.Source.Catalog {
@@ -253,6 +320,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	if e != nil {
 		return agents.Environment{}, e
 	}
+	defaultHome := home
 	kind, _, _ := strings.Cut(id, ":")
 	rows, e := s.Store.Installations()
 	if e != nil {
@@ -294,6 +362,14 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	}
 	if e != nil {
 		return env, e
+	}
+	// Only the process-native default agent follows these environment overrides.
+	// A recorded or explicit custom agent home retains its own config location.
+	if filepath.Clean(home) == filepath.Clean(defaultHome) {
+		env, e = agents.ApplyNativeConfigOverrides(env)
+		if e != nil {
+			return env, e
+		}
 	}
 	for _, r := range matching {
 		switch r.Component {

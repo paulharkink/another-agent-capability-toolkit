@@ -44,3 +44,24 @@ The first Codex probe established that an explicitly configured `CODEX_HOME` mus
 - No Copilot CLI was found in local PATH. Provider access in OpenCode does not establish a separately installed Copilot client.
 - JetBrains XML serialization/editing, external-agent config scopes, Junie, and Copilot plugin behavior still need isolated fixtures and application/source evidence. No license was acquired or activated.
 - macOS observations must not be presented as Windows/Linux/WSL live verification.
+
+## Native Linux, WSL, and Windows discovery boundary
+
+The Agents screen now checks the process-native PATH for Codex, Claude Code,
+and OpenCode CLIs on Linux and Windows, including a Linux executable when
+running inside WSL. It lists their documented user config locations separately
+from installation evidence: a config file alone does not prove an agent is
+installed. A WSL AACT reads the WSL user's Linux home and XDG config, not the
+Windows user's config. Windows PowerShell and MinGW run the Windows build and
+use the Windows user's home. These rules have temporary-directory fixture tests;
+no native Windows or WSL agent installation was inspected during this change.
+
+Codex Desktop, Claude Desktop, OpenCode Desktop, JetBrains AI Assistant, and
+Copilot plugin discovery remain unverified on Linux and Windows. An IDE
+executable or a config file is insufficient evidence that an MCP-capable
+plugin is installed and enabled. The fixture paths for the three CLIs are
+supported by the [Codex config documentation](https://developers.openai.com/codex/config-basic),
+[Claude Code MCP documentation](https://code.claude.com/docs/en/mcp), and
+[OpenCode config documentation](https://opencode.ai/docs/config). Those sources
+establish user-level config locations, not live Windows/WSL behavior for this
+machine.

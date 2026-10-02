@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -12,6 +13,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -158,6 +161,67 @@ func TestUISettingsPreservesMigratedAgentPreference(t *testing.T) {
 	v, e := svc.UISettings(context.Background())
 	if e != nil || v["default_agents"] != "opencode,codex" {
 		t.Fatal(v, e)
+	}
+}
+
+// A future-install preference must not discard migration metadata or mutate registrations.
+func TestUISetDefaultAgentsPreservesOtherSettings(t *testing.T) {
+	svc, _, store := fixture(t)
+	path := filepath.Join(store.Root(), "manager", "settings.json")
+	if err := state.WriteJSON(path, map[string]any{"agents": []string{"codex"}, "environment_root": "/team", "extra": map[string]any{"enabled": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UISetDefaultAgents(context.Background(), []string{"claude", "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &saved) != nil {
+		t.Fatal(err, string(data))
+	}
+	if got := saved["agents"]; !reflect.DeepEqual(got, []any{"claude", "opencode"}) {
+		t.Fatalf("defaults = %#v", got)
+	}
+	if saved["environment_root"] != "/team" || !reflect.DeepEqual(saved["extra"], map[string]any{"enabled": true}) {
+		t.Fatalf("other settings lost: %#v", saved)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("registrations changed: %#v, %v", rows, err)
+	}
+}
+
+func TestUISetDefaultAgentsRejectsUnsupportedMCPDestinationsWithoutChangingSettings(t *testing.T) {
+	svc, _, store := fixture(t)
+	path := filepath.Join(store.Root(), "manager", "settings.json")
+	if err := state.WriteJSON(path, map[string]any{"agents": []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	for _, ids := range [][]string{{"all"}, {"intellij"}, {"codex", "no-such-agent"}} {
+		if err := svc.UISetDefaultAgents(context.Background(), ids); err == nil {
+			t.Fatalf("accepted %#v", ids)
+		}
+		after, _ := os.ReadFile(path)
+		if !bytes.Equal(before, after) {
+			t.Fatalf("invalid %#v changed preferences", ids)
+		}
+	}
+}
+
+func TestUIAgentDefaultOptionsExcludesAllAndUnsupportedAdapters(t *testing.T) {
+	svc, _, _ := fixture(t)
+	ids, err := svc.UIAgentDefaultOptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"codex", "claude", "opencode"} {
+		if !slices.Contains(ids, want) {
+			t.Fatalf("missing %s: %#v", want, ids)
+		}
+	}
+	if slices.Contains(ids, "all") || slices.Contains(ids, "intellij") {
+		t.Fatalf("unsupported default option exposed: %#v", ids)
 	}
 }
 

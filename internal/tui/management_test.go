@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,6 +22,83 @@ type typedEnvironmentBackend struct {
 	fixtureBackend
 	snapshot viewmodel.EnvironmentSnapshot
 	contents map[string]string
+}
+
+type setupEnvironmentBackend struct {
+	fixtureBackend
+	snapshot       viewmodel.EnvironmentSnapshot
+	previewRequest viewmodel.SetupRequest
+}
+
+func (b *setupEnvironmentBackend) UIEnvironmentSnapshot(context.Context) (viewmodel.EnvironmentSnapshot, error) {
+	return b.snapshot, nil
+}
+
+func (b *setupEnvironmentBackend) UIEnvironmentTarget(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (b *setupEnvironmentBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	b.previewRequest = request
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID}, nil
+}
+
+func (b *setupEnvironmentBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return viewmodel.OperationResult{}, nil
+}
+
+func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
+	b := &setupEnvironmentBackend{snapshot: viewmodel.EnvironmentSnapshot{SourceID: "team-source", Targets: []viewmodel.EnvironmentTarget{{SourceID: "team-source", Environment: "dev", PackageID: "plain", Name: "production", Path: "/environments/dev/plain/production.toml"}}}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Environments")
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyRight, "")
+	press(m, tea.KeyEnter, "")
+	if !strings.Contains(m.View().Content, "Use for new setups") || strings.Contains(m.View().Content, "Use for new setups — disabled") {
+		t.Fatalf("actual target cannot start setup: %s", m.View().Content)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || !m.busy {
+		t.Fatal("selected TOML target did not request setup preview")
+	}
+	m.Update(cmd())
+	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: "production"}) || m.form == nil {
+		t.Fatalf("setup used wrong target: %+v, form=%v", b.previewRequest, m.form)
+	}
+}
+
+func TestNoEnvironmentFileStartsSetupForSelectedCapability(t *testing.T) {
+	b := &setupEnvironmentBackend{}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Environments")
+	press(m, tea.KeyEnter, "")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("No environment file did not start selected capability setup")
+	}
+	m.Update(cmd())
+	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain"}) || m.form == nil {
+		t.Fatalf("no-file setup lost selected capability: %+v, form=%v", b.previewRequest, m.form)
+	}
+}
+
+func TestSavedProfileDoesNotBecomeSetupTarget(t *testing.T) {
+	b := &setupEnvironmentBackend{}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}}}}
+	m.navigate("Environments")
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyRight, "")
+	press(m, tea.KeyEnter, "")
+	if !strings.Contains(m.View().Content, "Use for new setups — disabled") {
+		t.Fatalf("saved profile offered as target TOML: %s", m.View().Content)
+	}
 }
 
 func (b *typedEnvironmentBackend) UIEnvironmentSnapshot(context.Context) (viewmodel.EnvironmentSnapshot, error) {
@@ -252,6 +330,45 @@ func TestSettingsActionsExplainMissingPreferenceService(t *testing.T) {
 	view := m.View().Content
 	if !strings.Contains(view, "Default named agents") || !strings.Contains(view, "disabled: service support pending") || !strings.Contains(view, "Docker backend") {
 		t.Fatalf("settings actions did not explain service gaps: %s", view)
+	}
+}
+
+type editableSettingsBackend struct {
+	fixtureBackend
+	saved []string
+}
+
+func (*editableSettingsBackend) UIAgentDefaultOptions(context.Context) ([]string, error) {
+	return []string{"codex", "claude"}, nil
+}
+func (b *editableSettingsBackend) UISetDefaultAgents(_ context.Context, ids []string) error {
+	b.saved = append([]string(nil), ids...)
+	return nil
+}
+func (*editableSettingsBackend) UISettings(context.Context) (map[string]string, error) {
+	return map[string]string{"environment_root": "/environments", "default_agents": "claude"}, nil
+}
+
+// The Settings action must save a future-install preference without running an install.
+func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	press(m, tea.KeyF2, "")
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyEnter, "")
+	if m.form == nil || !strings.Contains(m.View().Content, "Default named agents") || !strings.Contains(m.View().Content, "[claude]") {
+		t.Fatalf("default-agent form missing or not prefilled: %s", m.View().Content)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("saving default agents did not dispatch")
+	}
+	m.Update(cmd())
+	if !reflect.DeepEqual(backend.saved, []string{"claude"}) {
+		t.Fatalf("saved agents = %#v", backend.saved)
 	}
 }
 

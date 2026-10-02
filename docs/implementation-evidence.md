@@ -179,12 +179,23 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
 - Owned MCP logs open in a bounded, scrollable snapshot viewer. Keyboard and
   mouse wheel move through the last 200 Docker log lines; closing it leaves the
   runtime running. Live follow/pause awaits a streaming backend.
+- Environment target rows now open the same typed setup form for that target;
+  No environment file opens setup for the selected home capability. Saved-profile
+  rows are not treated as target TOML. Completed operations show a full-screen
+  scrollable result with all per-agent messages and errors.
 - Skill-only installation supports the global `all` destination under
   `~/.agents/skills`; MCP packages reject it before any runtime mutation.
 - Claude Code user-scope MCP JSON was verified with a temporary
   `CLAUDE_CONFIG_DIR` CLI probe. OpenCode's JSONC precedence and shadow-entry
   handling have tests. The incorrect JetBrains AI Assistant JSON writer was
   disabled after the installed IDE's XML settings were inspected.
+- Agent discovery now probes CLI presence and lists user config paths on native
+  Linux and Windows, with WSL explicitly scoped to Linux files. The new paths
+  have fixtures and official documentation evidence; native Windows/WSL client
+  installations have not been inspected live.
+- Settings can save default named MCP agents for future setups without touching
+  existing registrations. The default CLI and TUI destinations now honor
+  `CODEX_HOME` and `XDG_CONFIG_HOME`; explicit agent homes retain their paths.
 - Independent review found that an unsupported JetBrains MCP destination could
   start Docker before adapter validation. A failing regression demonstrated the
   side effect; service validation now rejects it before runtime start, and the
@@ -200,9 +211,9 @@ implemented on the existing `feature/aact-mvp` branch and draft PR #1.
 
 The redesign is not yet at full mockup parity. Existing-profile parameter
 Save/apply and its failed-apply recovery, environment TOML fixed/default and
-conditional input policies, Use-for-new-setup and TOML authoring, full agent
-detection, a scrollable operation result viewer, and live log follow/pause still
-need implementation or review. Stop currently removes its Docker container
+conditional input policies, TOML authoring, complete native agent/plugin
+detection, and live log follow/pause still need implementation or review.
+Stop currently removes its Docker container
 while retaining last-action state; the browser mock's retain-container choice
 was not yet accepted as a terminal runtime contract. The public GitHub Pages
 mock remains unpublished.

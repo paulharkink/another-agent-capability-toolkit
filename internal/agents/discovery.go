@@ -51,7 +51,7 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 		r.Detection, r.Note = "unverified", err.Error()
 		return r
 	}
-	if probe.GOOS != "darwin" {
+	if probe.GOOS != "darwin" && probe.GOOS != "linux" && probe.GOOS != "windows" {
 		r.Detection = "unverified"
 		r.Note = "Discovery for this platform has not been verified locally"
 		return r
@@ -61,6 +61,14 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 	}
 	if probe.Getenv == nil {
 		probe.Getenv = os.Getenv
+	}
+	if probe.GOOS != "darwin" && id != "codex" && id != "claude" && id != "opencode" {
+		r.Detection = "unverified"
+		r.Note = "Desktop, IDE plugin, or Copilot installation discovery is not verified on this platform"
+		return r
+	}
+	if probe.GOOS == "linux" && probe.Getenv("WSL_DISTRO_NAME") != "" {
+		r.Note = "WSL uses this Linux user's agent configs; Windows agent configs are separate"
 	}
 	addConfig := func(path, scope, precedence, evidence string) {
 		_, err := os.Stat(path)
@@ -90,7 +98,7 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 	switch id {
 	case "codex":
 		cli("codex")
-		if app("Codex.app") {
+		if probe.GOOS == "darwin" && app("Codex.app") {
 			r.Note = "Codex Desktop MCP reload behavior has not been verified"
 		}
 		root := probe.Getenv("CODEX_HOME")
