@@ -242,3 +242,21 @@ TOML authoring and complete native agent/plugin detection still need
 implementation or review. Stop currently removes its Docker container while retaining last-action
 state; the browser mock's retain-container choice was not yet accepted as a
 terminal runtime contract. The public GitHub Pages mock remains unpublished.
+
+## Terminal layout comparison, 2026-10-02
+
+Rendered the TUI model at 120×24 for Home, capability Actions, Main menu,
+Agents, profile Actions, and setup, and compared those screens with the approved
+written interaction specification. Home uses the related two-pane layout, the
+Main menu is an overlay rather than a pane, profile Actions include disabled
+reasons, and setup combines inputs and destinations. The comparison found that
+the shared input form was an unframed short block with Save floating above the
+bottom. A failing layout test was added first; the form now fills the terminal
+with a frame and keeps Save/Cancel and key guidance at the bottom. Existing
+keyboard, mouse, scrolling, and validation tests pass with that layout.
+
+The live browser mock at localhost requires a session key unavailable to this
+terminal session. This was a comparison against its approved written spec and
+captured TUI renders, not a pixel-by-pixel comparison with the browser. Native
+terminal rendering, colors, and every mock interaction still need direct visual
+review before claiming full mockup parity.

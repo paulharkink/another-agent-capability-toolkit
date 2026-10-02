@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"io"
@@ -296,7 +297,7 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	layout := m.layout()
 	if mouse.Y == layout.footerY {
-		if mouse.X >= 0 && mouse.X < len("[ Save ]") {
+		if mouse.X >= 1 && mouse.X < 1+len("[ Save ]") {
 			if m.editing {
 				m.commitBuffer()
 				if m.editing {
@@ -305,7 +306,7 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 		}
-		cancelStart := len("[ Save ]  ")
+		cancelStart := 1 + len("[ Save ]  ")
 		if mouse.X >= cancelStart && mouse.X < cancelStart+len("[ Cancel ]") {
 			m.editor.Cancel()
 			m.done = true
@@ -313,7 +314,7 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	}
-	bodyY := mouse.Y - 2
+	bodyY := mouse.Y - 3
 	if bodyY < 0 || bodyY >= len(layout.visibleFields) {
 		return m, nil
 	}
@@ -435,7 +436,7 @@ func (m *FormModel) layout() formLayout {
 		}
 		editInfo = "\n\nEdit: " + buffer + "_\nEnter applies; Ctrl+U clears; Esc cancels edit"
 	}
-	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
+	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc cancel"
 	if len(m.defs) > 0 {
 		def := m.defs[m.selected]
 		if def.ExclusiveGroup != "" {
@@ -471,14 +472,30 @@ func (m *FormModel) layout() formLayout {
 	footerLines := len(strings.Split(footer, "\n"))
 	editLines := 0
 	if editInfo != "" {
-		editLines = len(strings.Split(editInfo, "\n")) - 1
+		editLines = strings.Count(editInfo, "\n") + 1
 	}
-	visible := max(1, m.height-4-footerLines-editLines)
+	visible := max(1, m.height-6-footerLines-editLines)
 	start := max(0, selectedLine-visible+1)
 	start = min(start, max(0, len(bodyLines)-visible))
 	end := min(len(bodyLines), start+visible)
 	body := strings.Join(bodyLines[start:end], "\n")
-	content := title + "\n\n" + body + editInfo + "\n\n" + m.message + "\n" + footer
+	head := strings.Split(title+"\n\n"+body+editInfo, "\n")
+	feet := strings.Split(m.message+"\n"+footer, "\n")
+	innerHeight := max(1, m.height-2)
+	padding := max(1, innerHeight-len(head)-len(feet))
+	framedRows := append([]string{}, head...)
+	for i := 0; i < padding; i++ {
+		framedRows = append(framedRows, "")
+	}
+	framedRows = append(framedRows, feet...)
+	innerWidth := max(18, m.width-2)
+	framed := []string{"╔" + strings.Repeat("═", innerWidth) + "╗"}
+	for _, row := range framedRows {
+		clipped := ansi.Truncate(row, innerWidth, "")
+		framed = append(framed, "║"+clipped+strings.Repeat(" ", max(0, innerWidth-lipgloss.Width(clipped)))+"║")
+	}
+	framed = append(framed, "╚"+strings.Repeat("═", innerWidth)+"╝")
+	content := strings.Join(framed, "\n")
 	footerY := -1
 	for y, line := range strings.Split(content, "\n") {
 		if strings.Contains(line, "[ Save ]  [ Cancel ]") {

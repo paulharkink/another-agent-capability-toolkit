@@ -43,6 +43,28 @@ func TestLongFormKeepsSelectedFieldAndSaveVisible(t *testing.T) {
 		t.Fatalf("form exceeds terminal height (%d lines):\n%s", lines, view)
 	}
 }
+func TestFormUsesFullHeightCommanderFrame(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "repo", Label: "Repository", Type: "string", Required: true}}, map[string]any{"repo": "/repos/team"})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	lines := strings.Split(m.View().Content, "\n")
+	if len(lines) != 24 || !strings.HasPrefix(lines[0], "╔") || !strings.HasPrefix(lines[len(lines)-1], "╚") {
+		t.Fatalf("form is not a full-height framed screen (%d lines):\n%s", len(lines), m.View().Content)
+	}
+	if !strings.Contains(lines[len(lines)-3], "[ Save ]") && !strings.Contains(lines[len(lines)-4], "[ Save ]") {
+		t.Fatalf("Save is not pinned to the bottom:\n%s", m.View().Content)
+	}
+}
+func TestFramedFormFitsMinimumTerminalWithHintsAndEdit(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "source", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "credentials", Required: true}, {Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "credentials"}}, nil)
+	m.SetHint("source", "target · production.toml · /very/long/path/to/production.toml")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m.beginEdit("apply", "bad")
+	m.message = "Selected path could not be read"
+	lines := strings.Split(m.View().Content, "\n")
+	if len(lines) > 16 || !strings.Contains(m.View().Content, "[ Save ]") || !strings.Contains(m.View().Content, m.message) {
+		t.Fatalf("minimum form overflowed or hid controls/error (%d lines):\n%s", len(lines), m.View().Content)
+	}
+}
 func TestKeyboardFormMasksSecretsAndCancels(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "token", Type: "secret"}}, map[string]any{"token": "very-private-test-value"})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
