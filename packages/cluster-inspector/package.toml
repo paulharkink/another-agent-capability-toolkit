@@ -40,7 +40,7 @@ label = "Token"
 [[inputs]]
 name = "kubeconfig"
 type = "file"
-label = "Kubeconfig"
+label = "Source kubeconfig"
 
 [[inputs]]
 name = "connections"

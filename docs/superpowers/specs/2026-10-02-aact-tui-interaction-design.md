@@ -36,7 +36,7 @@ A skill-only capability shows `No MCP profiles — skill-only capability`. A cap
 
 Each pane owns a stable selected item ID and scroll offset. Resizing, refreshing, applying an operation, or returning from a modal keeps the originating item selected where it still exists. If it has disappeared, choose the nearest surviving row and explain why. Long lists scroll within their pane and show position/count. The detail strip shows the full selected identity when columns truncate it.
 
-Profile rows represent configured and saved profiles, including never-started ones. The displayed runtime status, authentication status, connection observation, and pending saved changes remain separate facts. A failed Docker refresh displays an error and the timestamp of the last observation; it must not invent `Stopped` or erase configured profiles.
+Profile rows represent configured and saved profiles, including never-started ones. The displayed runtime status, authentication status, and connection observation remain separate facts. A failed Docker refresh displays an error and the timestamp of the last observation; it must not invent `Stopped` or erase configured profiles.
 
 ## Navigation and menu contract
 
@@ -73,15 +73,17 @@ Keyboard behavior in forms:
 - `Space` toggles a checkbox; `Enter` activates the focused button or selected menu entry; `Esc` closes or initiates dirty-form discard handling.
 - Form errors stay in the same form, focus the first invalid input, and preserve the draft and scroll position. Loading dynamic choices updates the same form instead of reopening it.
 
-Parameters for an existing managed profile use the same field model. The browser mockup depicts separate `Save` and `Apply and restart…` actions and a `Changes pending` state. Those **runtime semantics remain subject to the profile-lifecycle decision**; the TUI must not fake an apply action before its service contract exists. An attached profile displays owner-controlled server fields read-only and permits only applicable local connection/registration fields.
+Parameters for an existing managed profile use the same field model. The user decided that there is one `Save` action: it persists the edited values and applies them immediately, restarting a running MCP when its runtime parameters change. A stopped MCP uses the saved values on its next Start. A failed apply must be surfaced; the precise recovery behavior still needs to be specified. An attached profile displays owner-controlled server fields read-only and permits only applicable local connection/registration fields.
 
 ## MCP profile actions and dialogs
 
-The profile Actions menu includes Start/Restart, Stop, Authenticate, Edit parameters, Configure registrations, Remove registrations, Check connection, View logs, View details, and Back. Labels and enabled states depend on the selected profile. With saved but unapplied changes, Restart must distinguish current configuration from applying the saved configuration if that lifecycle model is approved.
+The profile Actions menu includes Start/Restart, Stop, Authenticate, Edit parameters, Configure registrations, Remove registrations, Check connection, View logs, View details, and Back. Labels and enabled states depend on the selected profile. Editing parameters uses the single Save action described above; there is no separate Apply command.
+
+Windows AACT and WSL AACT are separate running installations in the ownership model; the browser mock's viewpoint switch is outside the TUI and is not a TUI tab. Each installation uses its own agent configs and state. When both connect to the same Docker Engine, an installation may observe a running MCP that it did not start. Its local start/stop record and the live Docker observation must remain distinct, with disagreement shown explicitly. A runtime owned by another installation must not expose local Start/Stop. **Configure registrations remains available for that runtime** so an agent in the current environment can use its reachable endpoint; it changes only that environment's agent config and registration state. The user explicitly chose this registration behavior. The implementation uses an installation ID in Docker labels plus a local action record; ownership based only on matching package or profile names is forbidden.
 
 Registration dialogs show the endpoint and **named agents only**. Configure presents desired final registration state; Remove opens with no removals selected. Agent detection failures and foreign-name conflicts are visible. Applying reports each agent's result individually rather than declaring a partial batch successful. The exact edit and rollback work belongs to compiled Go agent adapters, outside the TUI model.
 
-Details is a scrollable read-only account of source, environment, target, value origins, desired/applied revision, binding, runtime observations, and local registrations. Check connection is explicit and reports its observation and time. Logs has follow/pause/scroll controls and closing it does not stop the server. Exact agent config viewing shows the entire file **without masking**, as the user specified.
+Details is a scrollable read-only account of source, environment, target, value origins, saved configuration, binding, runtime observations, and local registrations. Check connection is explicit and reports its observation and time. Logs has follow/pause/scroll controls and closing it does not stop the server. Exact agent config viewing shows the entire file **without masking**, as the user specified.
 
 Mutating operations show a foreground progress dialog with steps, output, and per-target results. The UI continues handling resize and input while work runs. Cancellation requests recovery and reports completed, restored, failed, and untouched steps rather than claiming every effect vanished.
 
@@ -109,4 +111,4 @@ Before public release, include a standalone static version of the approved inter
 
 ## Decisions outside this interaction approval
 
-The current browser prototype illustrates several choices that still require the user's architecture decision before their real operations are implemented: whether Save is separate from Apply/restart; whether Stop retains a container; whether environment TOML is edited inside AACT; environment-root precedence; Windows/WSL shared-engine attachment and runtime ownership; and whether a new attachment requires a successful connection check. The internal proposal records options and consequences. These are not inferred merely from the user approving the mockup's menu interaction.
+The current browser prototype illustrates several choices that still require the user's architecture decision before their real operations are implemented: whether Stop retains a container; whether environment TOML is edited inside AACT; environment-root precedence; and whether a new attachment requires a successful connection check. Current registration reports a failed connection check as a warning and does not block saving. The user chose one Save action that persists and immediately applies changes; this decision is separate from approval of the mockup's menu interaction.

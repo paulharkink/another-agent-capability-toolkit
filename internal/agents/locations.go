@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 )
@@ -42,7 +43,14 @@ func ResolveEnvironment(id, kind, home string) (Environment, error) {
 		e.ConfigPath = filepath.Join(base, "github-copilot", "intellij", "mcp.json")
 	case "claude":
 		e.SkillsDir = filepath.Join(home, ".claude", "skills")
-		e.ConfigPath = filepath.Join(home, ".claude.json")
+		configRoot := home
+		if override := os.Getenv("CLAUDE_CONFIG_DIR"); override != "" {
+			configRoot, err = filepath.Abs(override)
+			if err != nil {
+				return Environment{}, err
+			}
+		}
+		e.ConfigPath = filepath.Join(configRoot, ".claude.json")
 	case "generic", "generic-mcp":
 		e.SkillsDir = filepath.Join(home, ".agents", "skills")
 	default:

@@ -51,6 +51,12 @@ aact agents
 aact settings
 ```
 
+The terminal home has a Capabilities pane and a related MCP profiles pane.
+Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item
+Actions, and `m` for the Main menu. Mouse clicks and scrolling work in
+terminals that report mouse events. An MCP started by another AACT installation
+can be observed and registered with agents here without claiming its runtime.
+
 CLI subcommands are noninteractive by default. Supply declared inputs with
 repeated `--set name=value` options, or use `--interactive` for prefilled forms.
 Repeated values for a collection add items; scalar inputs accept one value.
@@ -63,6 +69,7 @@ start an MCP before it appears in runtime inventory; they ask for its context.
 aact install git-repo-map --agent codex \
   --set scan_roots="$HOME/projects" --set scan_roots="$HOME/worktrees"
 aact uninstall git-repo-map --agent codex
+aact install non-interactive-ready-planning --agent all
 
 # Register an existing MCP URL without starting a container:
 aact install forgejo --agent opencode --external-url http://localhost:8765/mcp \
@@ -73,12 +80,16 @@ aact install non-interactive-ready-planning --agent codex \
   --agent-home "$HOME/test-agent" --state-dir "$HOME/test-aact-state"
 ```
 
-Supported MCP adapters are Codex, Copilot CLI, OpenCode, IntelliJ AI Assistant,
-Copilot IntelliJ, and generic manual configuration. Select `--agent` more than
+MCP adapters currently include Codex, Claude Code, Copilot CLI, OpenCode,
+Copilot IntelliJ, and generic manual configuration. JetBrains AI Assistant's
+installed configuration uses IDE XML, so its former JSON writer is disabled
+until an XML adapter is verified. Select `--agent` more than
 once to target several agents. `--agent-home ID=PATH` assigns separate homes;
 a single shared path applies to all selected agents. Copilot IntelliJ requires
 opening Copilot Chat and selecting **Add MCP Tools** to create its configuration
 first. Generic MCP produces a manual configuration artifact and reports its path.
+The skill-only `all` destination installs under `~/.agents/skills`; it cannot
+be used for an MCP registration.
 
 ```sh
 aact mcp list --json
@@ -170,6 +181,11 @@ sh tools/test-containers.sh
 CI runs native tests on macOS/Linux/Windows, race tests where supported, Docker
 integration on Linux, and archive-content checks. Only the version-tag workflow
 publishes releases. Creating a development archive does not publish or tag it.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development, tests, agent adapters,
+capability packages, and the pull request process.
 
 AACT is MIT licensed. Bundled third-party notices are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

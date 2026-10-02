@@ -19,8 +19,8 @@ type publicManifest struct {
 	} `toml:"skill"`
 	Templates []struct{ Source, Destination string } `toml:"templates"`
 	Inputs    []struct {
-		Name, Type string
-		Default    any
+		Name, Type, Label string
+		Default           any
 	} `toml:"inputs"`
 	Generator any `toml:"generator"`
 	MCP       *struct {
@@ -36,6 +36,19 @@ type publicManifest struct {
 			Windows struct{ Command []string }
 		}
 	} `toml:"mcp"`
+}
+
+func TestClusterKubeconfigInputIdentifiesImportSource(t *testing.T) {
+	p, _ := loadPublic(t, "cluster-inspector")
+	for _, input := range p.Inputs {
+		if input.Name == "kubeconfig" {
+			if input.Label != "Source kubeconfig" {
+				t.Fatalf("kubeconfig input must identify the import source, got %q", input.Label)
+			}
+			return
+		}
+	}
+	t.Fatal("kubeconfig input missing")
 }
 
 func loadPublic(t *testing.T, name string) (publicManifest, string) {

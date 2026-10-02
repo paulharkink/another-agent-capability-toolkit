@@ -80,6 +80,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			err = m.editor.Apply(msg.name, msg.path)
 		}
 		m.setError(err)
+	case tea.MouseMsg:
+		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
 		if stroke == "ctrl+c" || stroke == "esc" && !m.editing {
@@ -273,6 +275,65 @@ func (m *FormModel) pick(def catalog.Input, action, initial string) tea.Cmd {
 	})
 }
 
+func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	if _, ok := msg.(tea.MouseWheelMsg); ok {
+		if len(m.defs) == 0 || m.editing {
+			return m, nil
+		}
+		switch mouse.Button {
+		case tea.MouseWheelDown:
+			m.selected = min(len(m.defs)-1, m.selected+1)
+		case tea.MouseWheelUp:
+			m.selected = max(0, m.selected-1)
+		}
+		return m, nil
+	}
+	if _, ok := msg.(tea.MouseClickMsg); !ok || mouse.Button != tea.MouseLeft {
+		return m, nil
+	}
+	layout := m.layout()
+	if mouse.Y == layout.footerY {
+		if mouse.X >= 0 && mouse.X < len("[ Save ]") {
+			if m.editing {
+				m.commitBuffer()
+				if m.editing {
+					return m, nil
+				}
+			}
+			return m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+		}
+		cancelStart := len("[ Save ]  ")
+		if mouse.X >= cancelStart && mouse.X < cancelStart+len("[ Cancel ]") {
+			m.editor.Cancel()
+			m.done = true
+			m.err = picker.ErrCancelled
+			return m, tea.Quit
+		}
+	}
+	bodyY := mouse.Y - 2
+	if bodyY < 0 || bodyY >= len(layout.visibleFields) {
+		return m, nil
+	}
+	field := layout.visibleFields[bodyY]
+	if field < 0 {
+		return m, nil
+	}
+	if m.editing {
+		m.commitBuffer()
+		if m.editing {
+			return m, nil
+		}
+	}
+	m.selected = field
+	m.message = ""
+	if row := layout.visibleRows[bodyY]; row >= 0 {
+		m.rowIndex[m.defs[field].Name] = row
+		return m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	}
+	return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
 type pickerExec struct {
 	ctx                 context.Context
 	kind, initial, path string
@@ -288,8 +349,20 @@ func (e *pickerExec) Run() error {
 func (e *pickerExec) SetStdin(in io.Reader)   { e.in = in }
 func (e *pickerExec) SetStdout(out io.Writer) { e.out = out }
 func (e *pickerExec) SetStderr(out io.Writer) { e.err = out }
-func (m *FormModel) View() tea.View {
-	title := lipgloss.NewStyle().Bold(true).Render("Edit package inputs")
+
+type formLayout struct {
+	content       string
+	visibleFields []int
+	visibleRows   []int
+	footerY       int
+}
+
+func (m *FormModel) layout() formLayout {
+	position := ""
+	if len(m.defs) > 0 {
+		position = fmt.Sprintf(" (%d/%d)", m.selected+1, len(m.defs))
+	}
+	title := lipgloss.NewStyle().Bold(true).Render("Edit package inputs" + position)
 	rows := []string{}
 	values := m.editor.Values()
 	for i, def := range m.defs {
@@ -333,18 +406,34 @@ func (m *FormModel) View() tea.View {
 		}
 		rows = append(rows, prefix+label+": "+display)
 	}
-	body := strings.Join(rows, "\n")
-	if len(rows) == 0 {
-		body = "No inputs"
+	selectedLine := 0
+	bodyLines := []string{}
+	fieldLines := []int{}
+	rowLines := []int{}
+	for i, row := range rows {
+		if i == m.selected {
+			selectedLine = len(bodyLines)
+		}
+		for part, line := range strings.Split(row, "\n") {
+			bodyLines = append(bodyLines, line)
+			fieldLines = append(fieldLines, i)
+			rowLines = append(rowLines, part-1)
+		}
 	}
+	if len(bodyLines) == 0 {
+		bodyLines = []string{"No inputs"}
+		fieldLines = []int{-1}
+		rowLines = []int{-1}
+	}
+	editInfo := ""
 	if m.editing {
 		buffer := m.buffer
 		if m.defs[m.selected].Type == "secret" {
 			buffer = strings.Repeat("•", utf8.RuneCountInString(buffer))
 		}
-		body += "\n\nEdit: " + buffer + "_\nEnter applies; Ctrl+U clears; Esc cancels edit"
+		editInfo = "\n\nEdit: " + buffer + "_\nEnter applies; Ctrl+U clears; Esc cancels edit"
 	}
-	footer := "Tab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
+	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle · Ctrl+S save · Esc cancel"
 	if len(m.defs) > 0 {
 		def := m.defs[m.selected]
 		if def.Multiple && len(def.Options) == 0 && def.Type != "directory" && def.Type != "file" {
@@ -358,10 +447,34 @@ func (m *FormModel) View() tea.View {
 			}
 		}
 	}
-	content := title + "\n\n" + body + "\n\n" + m.message + "\n" + footer
+	footerLines := len(strings.Split(footer, "\n"))
+	editLines := 0
+	if editInfo != "" {
+		editLines = len(strings.Split(editInfo, "\n")) - 1
+	}
+	visible := max(1, m.height-4-footerLines-editLines)
+	start := max(0, selectedLine-visible+1)
+	start = min(start, max(0, len(bodyLines)-visible))
+	end := min(len(bodyLines), start+visible)
+	body := strings.Join(bodyLines[start:end], "\n")
+	content := title + "\n\n" + body + editInfo + "\n\n" + m.message + "\n" + footer
+	footerY := -1
+	for y, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "[ Save ]  [ Cancel ]") {
+			footerY = y
+			break
+		}
+	}
+	return formLayout{content: content, visibleFields: fieldLines[start:end], visibleRows: rowLines[start:end], footerY: footerY}
+}
+
+func (m *FormModel) View() tea.View {
+	content := m.layout().content
 	width := m.width
 	if width < 20 {
 		width = 20
 	}
-	return tea.NewView(lipgloss.NewStyle().MaxWidth(width).Render(content))
+	view := tea.NewView(lipgloss.NewStyle().MaxWidth(width).Render(content))
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
 }

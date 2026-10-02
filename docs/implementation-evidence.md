@@ -154,3 +154,50 @@ published version tag.
 All implementation tasks were delivered. The only deliberately unperformed
 checks are real-account/vendor sign-in and native GUI visual testing. Marketplace
 support remains the agreed future scope.
+
+## 2026-10-02 Norton Commander TUI redesign (current draft PR work)
+
+The preceding acceptance summary covers the original MVP. The later approved
+two-pane TUI and independent Windows/WSL runtime ownership design are being
+implemented on the existing `feature/aact-mvp` branch and draft PR #1.
+
+- Runtime ownership uses a persistent state-root installation ID, Docker owner
+  labels, and a local last-action record. List reports live Docker state and
+  foreign ownership independently. Start/Stop/Logs reject foreign containers.
+- The home TUI now has capability and related MCP-profile panes with keyboard,
+  function-key, menu, scrolling, resize, and mouse paths. Saved never-started
+  profiles and foreign Docker profiles remain visible; foreign runtimes can
+  configure and remove current-environment agent registrations only. An explicit
+  Check connection action observes the selected endpoint without registering it.
+- The capability Install/Parameters action now opens one typed, scrollable form
+  with all declared inputs, provenance, and destination selection. Save passes
+  its complete answers to the noninteractive install service. The Agents screen
+  distinguishes client detection from config-file presence and can show exact
+  config bytes without masking; the Environments screen presently shows saved
+  profile targets rather than pretending to read target TOML.
+- Skill-only installation supports the global `all` destination under
+  `~/.agents/skills`; MCP packages reject it before any runtime mutation.
+- Claude Code user-scope MCP JSON was verified with a temporary
+  `CLAUDE_CONFIG_DIR` CLI probe. OpenCode's JSONC precedence and shadow-entry
+  handling have tests. The incorrect JetBrains AI Assistant JSON writer was
+  disabled after the installed IDE's XML settings were inspected.
+- Independent review found that an unsupported JetBrains MCP destination could
+  start Docker before adapter validation. A failing regression demonstrated the
+  side effect; service validation now rejects it before runtime start, and the
+  setup form omits unsupported MCP destinations. Registration-only reconciliation
+  now leaves unchanged local agent registrations untouched.
+- After the final changes, `go test ./... -count=1`, `go test -race ./...
+  -count=1`, `go vet ./...`, `git diff --check`, and the isolated real-Docker
+  `TestDockerMCP` fixture all passed. CGO-free `cmd/aact` cross-builds passed for
+  darwin/arm64, linux/amd64, linux/arm64, windows/amd64, and windows/arm64.
+  The Docker fixture's Stop assertion distinguishes a removed container from a
+  retained local last-action record. Native Windows/WSL interaction remains
+  unverified by these cross-builds.
+
+The redesign is not yet at full mockup parity. Existing-profile parameter
+Save/apply and its failed-apply recovery, environment TOML fixed/default and
+conditional input policies, environment browsing/authoring, full agent detection,
+and a scrollable operation result/log viewer still need implementation or
+review. Stop currently removes its Docker container while retaining last-action
+state; the browser mock's retain-container choice was not yet accepted as a
+terminal runtime contract. The public GitHub Pages mock remains unpublished.

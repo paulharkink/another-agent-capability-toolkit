@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,11 +40,14 @@ type RunSpec struct {
 	EndpointPath  string            `json:"endpoint_path"`
 }
 type Instance struct {
-	Key    state.Key `json:"key"`
-	ID     string    `json:"id"`
-	Name   string    `json:"name"`
-	Status string    `json:"status"`
-	URL    string    `json:"url"`
+	Key          state.Key `json:"key"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	URL          string    `json:"url"`
+	Ownership    string    `json:"ownership"`
+	LastAction   string    `json:"last_action,omitempty"`
+	LastActionAt time.Time `json:"last_action_at,omitempty"`
 }
 type Runtime struct {
 	Store      *state.Store
@@ -112,8 +116,43 @@ func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) 
 	}
 	return v[0], nil
 }
-func owned(d dockerInfo, k state.Key) bool {
-	return d.Config.Labels["aact.managed"] == "1" && d.Config.Labels["aact.key"] == k.ID() && d.Config.Labels["aact.source"] == k.Source
+func isDockerNotFound(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such object:") || strings.Contains(message, "no such container:")
+}
+func ownership(d dockerInfo, k state.Key, localID string, rows []state.Installation) string {
+	l := d.Config.Labels
+	if l["aact.managed"] != "1" || l["aact.key"] != k.ID() || l["aact.source"] != k.Source {
+		return "unknown"
+	}
+	if owner := l["aact.owner"]; owner != "" {
+		if owner == localID {
+			return "local"
+		}
+		return "other-aact"
+	}
+	for _, row := range rows {
+		if row.Component == "runtime" && row.Key == k && row.SourcePath != "" && row.SourcePath == d.ID {
+			return "local"
+		}
+	}
+	return "unknown"
+}
+func runtimeRecord(rows []state.Installation, k state.Key, id string) (state.Installation, bool) {
+	for _, row := range rows {
+		if row.Component == "runtime" && row.Key == k && row.SourcePath == id {
+			return row, true
+		}
+	}
+	return state.Installation{}, false
+}
+func (r *Runtime) recordAction(k state.Key, i Instance, action string) (Instance, error) {
+	i.LastAction = action
+	i.LastActionAt = time.Now().UTC()
+	if err := r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: i.Name, SourcePath: i.ID, Mode: "docker", URL: i.URL, LastAction: action, LastActionAt: i.LastActionAt}); err != nil {
+		return i, err
+	}
+	return i, nil
 }
 func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
 	secretValues := []string{}
@@ -139,22 +178,42 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	}
 	name := containerName(k)
 	expected := labels(k, s)
+	var attempt [16]byte
+	if _, e := rand.Read(attempt[:]); e != nil {
+		return Instance{}, e
+	}
+	expected["aact.attempt"] = hex.EncodeToString(attempt[:])
+	installationID, e := r.Store.InstallationID()
+	if e != nil {
+		return Instance{}, e
+	}
+	expected["aact.owner"] = installationID
+	rows, e := r.Store.Installations()
+	if e != nil {
+		return Instance{}, e
+	}
 	var previous *dockerInfo
 	if old, e := r.inspect(ctx, name); e == nil {
-		if !owned(old, k) {
-			return Instance{}, errors.New("container name belongs to an unmanaged container")
+		if ownership(old, k, installationID, rows) != "local" {
+			return Instance{}, errors.New("container name belongs to another installation or an unknown owner")
 		}
 		if old.State.Running {
 			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
 				return Instance{}, errors.New("MCP is running with different settings; stop it before starting again")
 			}
 			out := instance(old)
+			out.Ownership = "local"
 			if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
 				return out, fmt.Errorf("existing MCP health check failed: %w", e)
+			}
+			if out, e = r.recordAction(k, out, "start"); e != nil {
+				return out, fmt.Errorf("MCP state recording failed: %w", e)
 			}
 			return out, nil
 		}
 		previous = &old
+	} else if !isDockerNotFound(e) {
+		return Instance{}, e
 	}
 	image := s.Image
 	if s.BuildContext != "" {
@@ -235,7 +294,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		defer cancel()
 		var cleanupErr error
 		if createdID == "" {
-			if candidate, err := r.inspect(cleanupCtx, name); err == nil && owned(candidate, k) && candidate.Config.Labels["aact.spec"] == expected["aact.spec"] && (previous == nil || candidate.ID != previous.ID) {
+			if candidate, err := r.inspect(cleanupCtx, name); err == nil && ownership(candidate, k, installationID, rows) == "local" && candidate.Config.Labels["aact.spec"] == expected["aact.spec"] && candidate.Config.Labels["aact.attempt"] == expected["aact.attempt"] && (previous == nil || candidate.ID != previous.ID) {
 				createdID = candidate.ID
 			}
 		}
@@ -262,11 +321,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.Host, s.HostPort, e)
 	}
 	createdID = strings.TrimSpace(string(b))
-	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s)}
+	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
 	if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
 		return out, fmt.Errorf("MCP health check failed: %w", e)
 	}
-	if e = r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: name, SourcePath: out.ID, Mode: "docker", URL: out.URL}); e != nil {
+	if out, e = r.recordAction(k, out, "start"); e != nil {
 		return out, fmt.Errorf("MCP state recording failed: %w", e)
 	}
 	committed = true
@@ -328,30 +387,38 @@ func instance(d dockerInfo) Instance {
 	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
+	installationID, err := r.Store.InstallationID()
+	if err != nil {
+		return err
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return err
+	}
 	d, e := r.inspect(ctx, containerName(k))
 	if e != nil {
 		return e
 	}
-	if !owned(d, k) {
-		return errors.New("refusing to stop an unmanaged container")
+	if ownership(d, k, installationID, rows) != "local" {
+		return errors.New("refusing to stop a container owned by another installation or an unknown owner")
 	}
 	_, e = r.run(ctx, []string{"rm", "--force", d.ID})
 	if e == nil {
-		rows, err := r.Store.Installations()
-		if err != nil {
+		if _, err := r.recordAction(k, instance(d), "stop"); err != nil {
 			return err
-		}
-		for _, row := range rows {
-			if row.Key == k && row.Component == "runtime" {
-				if err = r.Store.Remove(row); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return e
 }
 func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
+	installationID, e := r.Store.InstallationID()
+	if e != nil {
+		return nil, e
+	}
+	rows, e := r.Store.Installations()
+	if e != nil {
+		return nil, e
+	}
 	b, e := r.run(ctx, []string{"ps", "--all", "--filter", "label=aact.managed=1", "--format", "{{.ID}}"})
 	if e != nil {
 		return nil, e
@@ -370,19 +437,20 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 		if d.Config.Labels["aact.key"] != i.Key.ID() {
 			continue
 		}
+		i.Ownership = ownership(d, i.Key, installationID, rows)
+		if row, ok := runtimeRecord(rows, i.Key, i.ID); ok {
+			i.LastAction = row.LastAction
+			i.LastActionAt = row.LastActionAt
+		}
 		out = append(out, i)
 	}
-	rows, e := r.Store.Installations()
-	if e != nil {
-		return nil, e
-	}
-	present := map[state.Key]bool{}
+	present := map[string]bool{}
 	for _, i := range out {
-		present[i.Key] = true
+		present[i.ID] = true
 	}
 	for _, row := range rows {
-		if row.Component == "runtime" && !present[row.Key] {
-			out = append(out, Instance{Key: row.Key, ID: row.SourcePath, Name: row.Destination, Status: "missing", URL: row.URL})
+		if row.Component == "runtime" && !present[row.SourcePath] {
+			out = append(out, Instance{Key: row.Key, ID: row.SourcePath, Name: row.Destination, Status: "missing", URL: row.URL, Ownership: "local", LastAction: row.LastAction, LastActionAt: row.LastActionAt})
 		}
 	}
 	type registration struct {
@@ -398,19 +466,27 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 	for _, row := range rows {
 		identity := registration{row.Key, row.URL}
 		if row.Component == "mcp" && row.URL != "" && !seen[identity] {
-			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL})
+			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL, Ownership: "unknown"})
 			seen[identity] = true
 		}
 	}
 	return out, nil
 }
 func (r *Runtime) Logs(ctx context.Context, k state.Key) (io.ReadCloser, error) {
+	installationID, err := r.Store.InstallationID()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return nil, err
+	}
 	d, e := r.inspect(ctx, containerName(k))
 	if e != nil {
 		return nil, e
 	}
-	if !owned(d, k) {
-		return nil, errors.New("refusing unmanaged container logs")
+	if ownership(d, k, installationID, rows) != "local" {
+		return nil, errors.New("refusing logs for a container owned by another installation or an unknown owner")
 	}
 	var errlog bytes.Buffer
 	b, e := r.Executor.Run(ctx, []string{"docker", "logs", "--tail", "200", d.ID}, "", nil, nil, func(p []byte) { errlog.Write(p) })

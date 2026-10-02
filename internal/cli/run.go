@@ -360,7 +360,13 @@ func agentEnvironments(f flags) ([]agents.Environment, error) {
 		if v := overrides[id]; v != "" {
 			root = v
 		}
-		env, e := agents.ResolveEnvironment(id, kind, root)
+		var env agents.Environment
+		var e error
+		if kind == "all" {
+			env, e = agents.GlobalSkillsEnvironment(root)
+		} else {
+			env, e = agents.ResolveEnvironment(id, kind, root)
+		}
 		if e != nil {
 			return nil, e
 		}

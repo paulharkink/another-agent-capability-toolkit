@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 type Editor func(context.Context, []catalog.Input, map[string]any) (map[string]any, error)
@@ -36,9 +38,12 @@ type Options struct {
 	RemoveInstallation func(state.Installation) error
 }
 type Service struct {
-	Source  config.Source
-	Store   *state.Store
-	Options Options
+	Source         config.Source
+	Store          *state.Store
+	Options        Options
+	observationMu  sync.Mutex
+	lastInstances  []mcp.Instance
+	lastObservedAt time.Time
 }
 
 func New(src config.Source, s *state.Store, o Options) *Service {
@@ -51,7 +56,7 @@ func New(src config.Source, s *state.Store, o Options) *Service {
 		r.OnStderr = o.OnStderr
 		o.Runtime = r
 	}
-	return &Service{src, s, o}
+	return &Service{Source: src, Store: s, Options: o}
 }
 
 type InstallRequest struct {
@@ -220,7 +225,13 @@ func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]
 			}
 		}
 	}
-	return s.Store.SaveAnswers(k, safe)
+	if err := s.Store.SaveAnswers(k, safe); err != nil {
+		return err
+	}
+	if p.MCP != nil {
+		return s.Store.RecordProfile(state.ProfileRecord{Key: k})
+	}
+	return nil
 }
 func registrationName(k state.Key) string {
 	parts := []string{k.Package}
@@ -250,6 +261,16 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	p, e := s.packageByID(q.Package)
 	if e != nil {
 		return out, e
+	}
+	if e := validateGlobalSkillDestination(p, q.Agents); e != nil {
+		return out, invalid(e)
+	}
+	if p.MCP != nil {
+		for _, env := range q.Agents {
+			if _, e := agents.For(env.Kind, s.Options.Runner); e != nil {
+				return out, invalid(fmt.Errorf("agent %s: %w", env.ID, e))
+			}
+		}
 	}
 	refs, e := s.sourceRefs()
 	if e != nil {
@@ -381,8 +402,12 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 	if len(q.Agents) == 0 {
 		return out, invalid(errors.New("select at least one --agent"))
 	}
-	if _, e := s.packageByID(q.Package); e != nil {
+	p, e := s.packageByID(q.Package)
+	if e != nil {
 		return out, e
+	}
+	if e := validateGlobalSkillDestination(p, q.Agents); e != nil {
+		return out, invalid(e)
 	}
 	k := s.key(q.Package, q.Environment, q.Target)
 	err = s.Store.WithLock(ctx, func() error {

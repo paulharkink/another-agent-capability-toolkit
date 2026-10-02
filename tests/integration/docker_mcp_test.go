@@ -76,9 +76,16 @@ func TestDockerMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	stoppedRecord := false
 	for _, i := range all {
 		if i.Key == k {
-			t.Fatal("stopped container remains")
+			if i.Status != "missing" || i.Ownership != "local" || i.LastAction != "stop" {
+				t.Fatalf("stopped container observation is incorrect: %+v", i)
+			}
+			stoppedRecord = true
 		}
+	}
+	if !stoppedRecord {
+		t.Fatal("stopped container's local last action was lost")
 	}
 }

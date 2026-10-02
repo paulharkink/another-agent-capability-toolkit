@@ -85,8 +85,8 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 			return fmt.Errorf("refusing foreign skill at %s", destination)
 		}
 		for _, row := range shared {
-			if row.Key.Source != k.Source || row.Key.Package != k.Package || row.AgentID != e.ID {
-				return fmt.Errorf("skill destination owned by another source/package/agent: %s", destination)
+			if row.Key.Source != k.Source || row.Key.Package != k.Package {
+				return fmt.Errorf("skill destination owned by another source/package: %s", destination)
 			}
 			if err := verifyOwned(ctx, row); err != nil {
 				return err

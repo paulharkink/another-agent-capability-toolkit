@@ -3,6 +3,7 @@ package forms
 import (
 	tea "charm.land/bubbletea/v2"
 	"context"
+	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"reflect"
@@ -21,6 +22,25 @@ func TestKeyboardFormEditsPrefillAndSaves(t *testing.T) {
 	got, e := m.Result()
 	if e != nil || got["team"] != "new" {
 		t.Fatalf("%v %v", got, e)
+	}
+}
+
+func TestLongFormKeepsSelectedFieldAndSaveVisible(t *testing.T) {
+	defs := make([]catalog.Input, 30)
+	for i := range defs {
+		defs[i] = catalog.Input{Name: fmt.Sprintf("field_%02d", i), Label: fmt.Sprintf("Field %02d", i), Type: "string"}
+	}
+	m := NewForm(context.Background(), defs, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	for i := 0; i < 25; i++ {
+		m.Update(key(tea.KeyDown, ""))
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "Field 25") || !strings.Contains(view, "Ctrl+S save") || strings.Contains(view, "Field 00") {
+		t.Fatalf("long form did not scroll to selected field with footer visible:\n%s", view)
+	}
+	if lines := len(strings.Split(view, "\n")); lines > 16 {
+		t.Fatalf("form exceeds terminal height (%d lines):\n%s", lines, view)
 	}
 }
 func TestKeyboardFormMasksSecretsAndCancels(t *testing.T) {
@@ -107,5 +127,85 @@ func TestTypedCollectionInvalidEditPreservesRows(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if _, err := m.Result(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func clickVisibleText(t *testing.T, m *FormModel, needle string) tea.Cmd {
+	t.Helper()
+	for y, line := range strings.Split(m.View().Content, "\n") {
+		if x := strings.Index(line, needle); x >= 0 {
+			_, cmd := m.Update(tea.MouseClickMsg{X: x + 1, Y: y, Button: tea.MouseLeft})
+			return cmd
+		}
+	}
+	t.Fatalf("%q not visible in form:\n%s", needle, m.View().Content)
+	return nil
+}
+
+func TestMouseCanEditVisibleFieldAndSaveCurrentBuffer(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{
+		{Name: "name", Label: "Name", Type: "string", Required: true},
+		{Name: "team", Label: "Team", Type: "string", Required: true},
+	}, map[string]any{"name": "original", "team": "old"})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	clickVisibleText(t, m, "Team *:")
+	if m.selected != 1 || !m.editing {
+		t.Fatalf("field click did not open Team editor: selected=%d editing=%t", m.selected, m.editing)
+	}
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(key('n', "new"))
+	clickVisibleText(t, m, "[ Save ]")
+	got, err := m.Result()
+	if err != nil || got["name"] != "original" || got["team"] != "new" {
+		t.Fatalf("mouse Save did not apply edited field: %v, %v", got, err)
+	}
+}
+
+func TestMouseChoicesAndBooleanUseEditorValues(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{
+		{Name: "enabled", Label: "Enabled", Type: "boolean"},
+		{Name: "targets", Label: "Targets", Type: "multichoice", Options: []catalog.Choice{{Value: "one"}, {Value: "two"}}},
+	}, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	clickVisibleText(t, m, "Enabled:")
+	clickVisibleText(t, m, "Targets:")
+	if got := m.editor.Values()["targets"]; !reflect.DeepEqual(got, []string{"one"}) {
+		t.Fatalf("choice click did not toggle first choice: %v", got)
+	}
+	m.Update(key(tea.KeyRight, ""))
+	clickVisibleText(t, m, "Targets:")
+	if got := m.editor.Values()["targets"]; !reflect.DeepEqual(got, []string{"one", "two"}) {
+		t.Fatalf("choice click did not toggle second choice: %v", got)
+	}
+	if got := m.editor.Values()["enabled"]; got != true {
+		t.Fatalf("boolean click did not toggle value: %v", got)
+	}
+}
+
+func TestMouseClickAfterScrollTargetsVisibleField(t *testing.T) {
+	defs := make([]catalog.Input, 30)
+	for i := range defs {
+		defs[i] = catalog.Input{Name: fmt.Sprintf("field_%02d", i), Label: fmt.Sprintf("Field %02d", i), Type: "string"}
+	}
+	m := NewForm(context.Background(), defs, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	for i := 0; i < 25; i++ {
+		m.Update(key(tea.KeyDown, ""))
+	}
+	clickVisibleText(t, m, "Field 23:")
+	if m.selected != 23 || !m.editing {
+		t.Fatalf("scroll hit mapped to wrong field: selected=%d editing=%t", m.selected, m.editing)
+	}
+}
+
+func TestMouseSaveValidatesAndCancelCancels(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "required", Label: "Required", Type: "string", Required: true}}, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	if cmd := clickVisibleText(t, m, "[ Save ]"); cmd != nil || m.done {
+		t.Fatal("Save click bypassed required validation")
+	}
+	clickVisibleText(t, m, "[ Cancel ]")
+	if _, err := m.Result(); err != picker.ErrCancelled {
+		t.Fatalf("Cancel click did not cancel: %v", err)
 	}
 }

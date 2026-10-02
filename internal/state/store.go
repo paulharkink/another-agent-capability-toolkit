@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,20 +31,22 @@ func (k Key) ID() string {
 }
 
 type Installation struct {
-	Key              Key    `json:"key"`
-	AgentID          string `json:"agent_id"`
-	AgentHome        string `json:"agent_home,omitempty"`
-	AgentKind        string `json:"agent_kind,omitempty"`
-	Component        string `json:"component"`
-	Destination      string `json:"destination"`
-	SourcePath       string `json:"source_path,omitempty"`
-	Mode             string `json:"mode"`
-	ReleaseID        string `json:"release_id,omitempty"`
-	Digest           string `json:"digest,omitempty"`
-	RegistrationName string `json:"registration_name,omitempty"`
-	URL              string `json:"url,omitempty"`
-	Transport        string `json:"transport,omitempty"`
-	TimeoutMS        int    `json:"timeout_ms,omitempty"`
+	Key              Key       `json:"key"`
+	AgentID          string    `json:"agent_id"`
+	AgentHome        string    `json:"agent_home,omitempty"`
+	AgentKind        string    `json:"agent_kind,omitempty"`
+	Component        string    `json:"component"`
+	Destination      string    `json:"destination"`
+	SourcePath       string    `json:"source_path,omitempty"`
+	Mode             string    `json:"mode"`
+	ReleaseID        string    `json:"release_id,omitempty"`
+	Digest           string    `json:"digest,omitempty"`
+	RegistrationName string    `json:"registration_name,omitempty"`
+	URL              string    `json:"url,omitempty"`
+	Transport        string    `json:"transport,omitempty"`
+	TimeoutMS        int       `json:"timeout_ms,omitempty"`
+	LastAction       string    `json:"last_action,omitempty"`
+	LastActionAt     time.Time `json:"last_action_at,omitempty"`
 }
 type Store struct {
 	root     string
@@ -110,6 +113,53 @@ func open(root string, readonly bool) (*Store, error) {
 func (s *Store) Root() string              { return s.root }
 func (s *Store) KeyDir(k Key) string       { return filepath.Join(s.root, "instances", k.ID()) }
 func (s *Store) GeneratedDir(k Key) string { return filepath.Join(s.root, "generated", k.ID()) }
+func (s *Store) InstallationID() (string, error) {
+	path := filepath.Join(s.root, "manager", "installation-id")
+	read := func() (string, error) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		id := strings.TrimSpace(string(b))
+		decoded, err := hex.DecodeString(id)
+		if err != nil || len(decoded) != 16 {
+			return "", fmt.Errorf("invalid installation ID in %s", path)
+		}
+		return id, nil
+	}
+	if id, err := read(); !errors.Is(err, os.ErrNotExist) {
+		return id, err
+	}
+	if s.readonly {
+		return "", os.ErrNotExist
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".installation-id-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	if err = f.Chmod(0600); err == nil {
+		_, err = fmt.Fprintln(f, hex.EncodeToString(random[:]))
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err = os.Link(f.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	return read()
+}
 func (s *Store) Answers(k Key) (map[string]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

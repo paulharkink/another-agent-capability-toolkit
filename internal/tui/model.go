@@ -11,6 +11,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"io"
 	"sort"
 	"strings"
@@ -28,29 +29,50 @@ type Backend interface {
 	UISourceLabels(context.Context) (map[string]string, error)
 	UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error)
 }
+
+type agentManagementBackend interface {
+	UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
+	UIAgentConfig(context.Context, string, string) (string, error)
+}
 type Model struct {
-	backend                 Backend
-	ctx                     context.Context
-	view                    string
-	selected, width, height int
-	catalog                 []catalog.Package
-	inventory               []state.Installation
-	mcps                    []mcp.Instance
-	agents                  []string
-	settings, sourceLabels  map[string]string
-	busy                    bool
-	output, action          string
-	form                    *forms.FormModel
-	pending                 operation
+	home                       homeState
+	backend                    Backend
+	ctx                        context.Context
+	view                       string
+	selected, width, height    int
+	catalog                    []catalog.Package
+	inventory                  []state.Installation
+	mcps                       []mcp.Instance
+	profileSnapshot            *viewmodel.ProfileSnapshot
+	profileError               error
+	pendingRegistration        *viewmodel.RegistrationRequest
+	pendingRegistrationRemoval bool
+	pendingSetup               *viewmodel.SetupPreview
+	pendingSetupField          string
+	agents                     []string
+	agentManagement            []viewmodel.AgentManagementRow
+	settings, sourceLabels     map[string]string
+	busy                       bool
+	output, action             string
+	form                       *forms.FormModel
+	pending                    operation
+	management                 managementState
 }
 type operation struct{ action, source, packageID, agent, environment, target string }
 type loadedMsg struct {
 	catalog          []catalog.Package
 	inventory        []state.Installation
 	mcps             []mcp.Instance
+	profileSnapshot  *viewmodel.ProfileSnapshot
+	profileError     error
 	agents           []string
+	agentManagement  []viewmodel.AgentManagementRow
 	settings, labels map[string]string
 	err              error
+}
+type agentConfigMsg struct {
+	path, content string
+	err           error
 }
 type operationMsg struct {
 	origin, output string
@@ -75,13 +97,28 @@ func (m *Model) load() tea.Cmd {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		msg.mcps, e = m.backend.UIMCPs(m.ctx)
+		if backend, ok := m.backend.(profileSnapshotBackend); ok {
+			snapshot, err := backend.UIProfileSnapshot(m.ctx)
+			e = err
+			msg.profileError = err
+			if err == nil {
+				msg.profileSnapshot = &snapshot
+			}
+		} else {
+			msg.mcps, e = m.backend.UIMCPs(m.ctx)
+		}
 		if e != nil {
 			errs = append(errs, e)
 		}
 		msg.agents, e = m.backend.UIAgents(m.ctx)
 		if e != nil {
 			errs = append(errs, e)
+		}
+		if backend, ok := m.backend.(agentManagementBackend); ok {
+			msg.agentManagement, e = backend.UIAgentManagement(m.ctx)
+			if e != nil {
+				errs = append(errs, e)
+			}
 		}
 		msg.settings, e = m.backend.UISettings(m.ctx)
 		if e != nil {
@@ -99,6 +136,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = size.Width
 		m.height = size.Height
+		m.reconcileHome()
 	}
 	if m.form != nil {
 		next, cmd := m.form.Update(msg)
@@ -109,12 +147,50 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.form = nil
 		if errors.Is(e, picker.ErrCancelled) {
+			m.pendingRegistration = nil
+			m.pendingRegistrationRemoval = false
+			m.pendingSetup = nil
+			m.pendingSetupField = ""
 			m.output = "Cancelled"
 			return m, nil
 		}
 		if e != nil {
 			m.output = e.Error()
 			return m, nil
+		}
+		if m.pendingRegistration != nil {
+			request := *m.pendingRegistration
+			m.pendingRegistration = nil
+			selected, _ := values["agent"].([]string)
+			removing := m.pendingRegistrationRemoval
+			m.pendingRegistrationRemoval = false
+			if removing {
+				if len(selected) == 0 {
+					m.output = "No registrations selected for removal"
+					m.home.Modal = nil
+					return m, nil
+				}
+				removed := make(map[string]bool, len(selected))
+				for _, agent := range selected {
+					removed[agent] = true
+				}
+				remaining := make([]string, 0, len(request.AgentIDs))
+				for _, agent := range request.AgentIDs {
+					if !removed[agent] {
+						remaining = append(remaining, agent)
+					}
+				}
+				request.AgentIDs = remaining
+			} else {
+				request.AgentIDs = selected
+			}
+			if request.Transport == "" {
+				request.Transport, _ = values["transport"].(string)
+			}
+			return m, m.configureRegistrations(request, removing)
+		}
+		if m.pendingSetup != nil {
+			return m, m.applySetup(values)
 		}
 		op := m.pending
 		if op.action == "set-environment-root" {
@@ -129,19 +205,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.run(op)
 	}
 	switch msg := msg.(type) {
+	case setupPreviewMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.output = m.cleanOutput(msg.err.Error())
+			return m, nil
+		}
+		m.openSetupForm(msg.preview)
 	case loadedMsg:
 		m.catalog = msg.catalog
 		m.inventory = msg.inventory
 		m.mcps = msg.mcps
+		m.profileError = msg.profileError
+		if msg.profileSnapshot != nil {
+			m.profileSnapshot = msg.profileSnapshot
+		}
 		m.agents = msg.agents
+		m.agentManagement = msg.agentManagement
 		m.settings = msg.settings
 		m.sourceLabels = msg.labels
 		if msg.err != nil {
 			m.output = m.cleanOutput(msg.err.Error())
 		}
-		if m.selected >= len(m.rows()) {
-			m.selected = 0
+		m.reconcileHome()
+	case agentConfigMsg:
+		if msg.err != nil {
+			m.output = m.cleanOutput(msg.err.Error())
+			return m, nil
 		}
+		m.management.ViewerPath = msg.path
+		m.management.ViewerContent = msg.content
+		m.management.ViewerOffset = 0
+		m.management.ViewerHorizontal = 0
+		m.management.Modal = "viewer"
 	case operationMsg:
 		m.busy = false
 		m.view = msg.origin
@@ -153,40 +249,40 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output += m.cleanOutput(msg.err.Error())
 		}
 		return m, m.load()
+	case tea.MouseMsg:
+		if m.view == "Catalog" && !m.busy {
+			return m, m.homeMouse(msg)
+		}
+		if isManagementView(m.view) && !m.busy {
+			return m, m.managementMouse(msg)
+		}
 	case tea.KeyPressMsg:
 		stroke := msg.String()
-		if stroke == "q" || stroke == "ctrl+c" {
-			return m, tea.Quit
-		}
 		if m.busy {
+			if stroke == "ctrl+c" {
+				return m, tea.Quit
+			}
 			return m, nil
 		}
+		if m.view == "Catalog" {
+			return m, m.homeKey(stroke)
+		}
+		if isManagementView(m.view) {
+			return m, m.managementKey(stroke)
+		}
 		switch stroke {
-		case "1":
+		case "esc":
 			m.navigate("Catalog")
-		case "2":
-			m.navigate("MCPs")
-		case "3":
-			m.navigate("Agents")
-		case "4":
-			m.navigate("Settings")
-		case "tab":
-			views := []string{"Catalog", "MCPs", "Agents", "Settings"}
-			for i, view := range views {
-				if m.view == view {
-					m.navigate(views[(i+1)%len(views)])
-					break
-				}
-			}
+		case "f10", "ctrl+c":
+			return m, tea.Quit
 		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
-			}
+			m.selected = max(0, m.selected-1)
 		case "down", "j":
-			if m.selected+1 < len(m.rows()) {
-				m.selected++
-			}
-		case "R":
+			m.selected = min(max(0, len(m.rows())-1), m.selected+1)
+		case "f9", "m":
+			m.navigate("Catalog")
+			m.home.Modal = &modalState{Kind: "main"}
+		case "f5", "R":
 			return m, m.load()
 		default:
 			return m, m.handleAction(stroke)
@@ -194,7 +290,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-func (m *Model) navigate(view string) { m.view = view; m.selected = 0; m.output = "" }
+func (m *Model) navigate(view string) {
+	if view == "Help" && m.view != "Help" {
+		m.management.HelpOrigin = m.view
+		m.management.HelpSelected = m.selected
+		m.view = view
+		m.selected = 0
+		m.output = ""
+		m.management.Modal = ""
+		return
+	}
+	m.view = view
+	m.selected = 0
+	m.output = ""
+	m.management.Modal = ""
+	m.management.Focus = CapabilitiesPane
+	m.management.EnvironmentIndex = 0
+	m.management.TargetIndex = 0
+	if view == "Catalog" {
+		m.reconcileHome()
+	}
+}
 func (m *Model) label(source string) string {
 	if label := m.sourceLabels[source]; label != "" {
 		return label
@@ -235,6 +351,10 @@ func (m *Model) rows() []string {
 		for _, agent := range m.agents {
 			rows = append(rows, agent)
 		}
+	case "Environments":
+		rows = append(rows, "Environment root: "+m.settings["environment_root"], "Target browsing awaits the environment service.")
+	case "Help":
+		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Space: mark capability; mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
 	case "Settings":
 		rows = append(rows, "Environment root: "+m.settings["environment_root"])
 		keys := []string{}
@@ -290,18 +410,13 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 	case "MCPs":
 		if m.selected < len(m.mcps) {
 			inst := m.mcps[m.selected]
-			actions := map[string]string{"enter": "status", "s": "start", "x": "stop", "a": "authenticate", "l": "logs", "u": "uninstall"}
+			actions := map[string]string{"enter": "status", "s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
 			if action := actions[stroke]; action != "" {
-				if inst.Status == "external" && action != "status" && action != "uninstall" {
-					m.output = "External registrations support status and unregister actions."
+				if inst.Status == "external" && action != "status" {
+					m.output = "External registrations support status; use profile Actions to configure registrations."
 					return nil
 				}
 				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target}
-				if action == "uninstall" {
-					m.pending = op
-					m.contextForm()
-					return nil
-				}
 				return m.run(op)
 			}
 		}
@@ -319,31 +434,53 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 	return nil
 }
 func (m *Model) contextForm() {
+	allowAll := false
+	for _, p := range m.catalog {
+		source := m.sourceLabels[p.Dir]
+		if source == "" {
+			source = m.settings["source"]
+		}
+		if p.ID == m.pending.packageID && source == m.pending.source && p.Skill != nil && p.MCP == nil {
+			allowAll = true
+			break
+		}
+	}
 	choices := []catalog.Choice{}
+	if allowAll {
+		choices = append(choices, catalog.Choice{Value: "all", Label: "All — ~/.agents/skills"})
+	}
 	for _, agent := range m.agents {
+		if strings.EqualFold(agent, "all") {
+			continue
+		}
 		choices = append(choices, catalog.Choice{Value: agent, Label: agent})
 	}
 	selected := []string{}
-	for _, configured := range strings.Split(m.settings["default_agents"], ",") {
-		candidate := strings.TrimSpace(configured)
-		for _, agent := range m.agents {
-			if candidate == agent {
-				present := false
-				for _, old := range selected {
-					if old == agent {
-						present = true
+	if allowAll {
+		selected = []string{"all"}
+	} else {
+		for _, configured := range strings.Split(m.settings["default_agents"], ",") {
+			candidate := strings.TrimSpace(configured)
+			for _, choice := range choices {
+				if candidate == choice.Value {
+					present := false
+					for _, old := range selected {
+						if old == choice.Value {
+							present = true
+						}
 					}
+					if !present {
+						selected = append(selected, choice.Value)
+					}
+					break
 				}
-				if !present {
-					selected = append(selected, agent)
-				}
-				break
 			}
 		}
 	}
-	if len(selected) == 0 && len(m.agents) > 0 {
-		selected = append(selected, m.agents[0])
+	if len(selected) == 0 && len(choices) > 0 {
+		selected = append(selected, choices[0].Value)
 	}
+
 	target := m.pending.target
 	if m.pending.environment == "" && target == "default" {
 		target = ""
@@ -394,11 +531,17 @@ func (m *Model) cleanOutput(output string) string {
 	return output
 }
 func (m *Model) View() tea.View {
+	if m.form == nil && (m.view == "Catalog" || m.width < 80 || m.height < 16) {
+		return m.homeView()
+	}
 	if m.form != nil {
 		return m.form.View()
 	}
+	if isManagementView(m.view) {
+		return m.managementView()
+	}
 	title := lipgloss.NewStyle().Bold(true).Render("AACT · " + m.view)
-	nav := "1 Catalog · 2 MCPs · 3 Agents · 4 Settings"
+	nav := "Esc Back · m Main menu"
 	rows := m.rows()
 	if len(rows) == 0 {
 		rows = []string{"No entries"}
@@ -423,15 +566,15 @@ func (m *Model) View() tea.View {
 		}
 		shown = append(shown, prefix+rows[i])
 	}
-	footer := "↑↓ select · Tab switch · R refresh · q quit"
+	footer := "↑↓ Select · Esc Back · F5 Refresh · F10 Quit"
 	switch m.view {
 	case "Catalog":
 		footer += "\nEnter install · a authenticate MCP · s start MCP · u uninstall installed skill"
 	case "MCPs":
 		if m.selected < len(m.mcps) && m.mcps[m.selected].Status == "external" {
-			footer += "\nEnter status · u unregister"
+			footer += "\nEnter status · registration changes available from home Actions"
 		} else {
-			footer += "\nEnter status · s start · x stop · a authenticate · l logs · u uninstall"
+			footer += "\nEnter status · s start · x stop · a authenticate · l logs"
 		}
 	case "Agents":
 		footer += "\nEnter agent details"

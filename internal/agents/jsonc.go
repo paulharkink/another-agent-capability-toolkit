@@ -65,6 +65,13 @@ func (a jsonAdapter) value(r Registration) map[string]any {
 	if a.kind == "opencode" {
 		return map[string]any{"type": "remote", "url": r.URL, "enabled": true, "oauth": false, "timeout": r.TimeoutMS}
 	}
+	if a.kind == "claude" {
+		transport := "http"
+		if r.Transport == "sse" {
+			transport = "sse"
+		}
+		return map[string]any{"type": transport, "url": r.URL}
+	}
 	return map[string]any{"url": r.URL}
 }
 func sameJSON(a, b any) bool {
@@ -105,6 +112,7 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 		path = resolved.ConfigPath
 	}
 	paths := []string{path}
+	primary := path
 	if a.kind == "opencode" {
 		ext := filepath.Ext(path)
 		other := ""
@@ -119,6 +127,21 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			} else if !os.IsNotExist(err) {
 				return err
 			}
+		}
+		jsonc := path
+		if ext == ".json" {
+			jsonc = strings.TrimSuffix(path, ext) + ".jsonc"
+		}
+		if _, err := os.Stat(jsonc); err == nil {
+			primary = jsonc
+		} else if !os.IsNotExist(err) {
+			return err
+		} else if _, err := os.Stat(path); os.IsNotExist(err) && len(paths) == 1 {
+			// Match OpenCode's default config file when neither sibling exists.
+			primary = jsonc
+			paths = []string{jsonc}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 	edits := []fileEdit{}
@@ -162,7 +185,13 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 				return fmt.Errorf("owned MCP registration %q changed in %s", name, file)
 			}
 		}
-		if r == nil && current == nil {
+		fileRegistration := r
+		if a.kind == "opencode" && r != nil && file != primary {
+			// Retire an owned shadow entry. Keeping its old value would make the
+			// next update fail ownership verification after the ledger advances.
+			fileRegistration = nil
+		}
+		if fileRegistration == nil && current == nil {
 			continue
 		}
 		v, err := hujson.Parse(original)
@@ -174,9 +203,9 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			ops = append(ops, map[string]any{"op": "add", "path": "/" + pointer(a.parent), "value": map[string]any{}})
 		}
 		op := map[string]any{"op": "remove", "path": "/" + pointer(a.parent) + "/" + pointer(name)}
-		if r != nil {
+		if fileRegistration != nil {
 			op["op"] = "add"
-			op["value"] = a.value(*r)
+			op["value"] = a.value(*fileRegistration)
 		}
 		ops = append(ops, op)
 		patch, _ := json.Marshal(ops)

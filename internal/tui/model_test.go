@@ -42,21 +42,9 @@ func fixtureModel(t *testing.T) *Model {
 	return m
 }
 func press(m *Model, code rune, text string) { m.Update(tea.KeyPressMsg{Code: code, Text: text}) }
-func TestMenuViewsIndependentlyReachable(t *testing.T) {
-	m := fixtureModel(t)
-	for _, entry := range []struct {
-		key  rune
-		view string
-	}{{'2', "MCPs"}, {'3', "Agents"}, {'4', "Settings"}, {'1', "Catalog"}} {
-		press(m, entry.key, string(entry.key))
-		if m.view != entry.view || !strings.Contains(m.View().Content, entry.view) {
-			t.Fatalf("view %s text %s", m.view, m.View().Content)
-		}
-	}
-}
 func TestOperationReturnsToOriginView(t *testing.T) {
 	m := fixtureModel(t)
-	press(m, '2', "2")
+	focusFixtureProfile(m)
 	m.busy = true
 	m.Update(operationMsg{origin: "MCPs", output: "Stopped inspect"})
 	if m.view != "MCPs" || m.busy || !strings.Contains(m.View().Content, "Stopped inspect") {
@@ -75,15 +63,16 @@ func TestGeneratorFailureRetainsViewAndOutput(t *testing.T) {
 func TestGlobalInventoryShowsSourceLabels(t *testing.T) {
 	m := fixtureModel(t)
 	text := m.View().Content
-	if !strings.Contains(text, "Team checkout") || !strings.Contains(text, "codex") || !strings.Contains(text, "Installed") {
+	if !strings.Contains(text, "Team checkout") || !strings.Contains(text, "Plain") {
 		t.Fatalf("%s", text)
 	}
 }
 func TestMCPStatusAuthLogsActions(t *testing.T) {
 	m := fixtureModel(t)
-	press(m, '2', "2")
+	focusFixtureProfile(m)
+	press(m, tea.KeyEnter, "")
 	text := m.View().Content
-	for _, part := range []string{"running", "127.0.0.1", "authenticate", "logs", "start", "stop"} {
+	for _, part := range []string{"Start", "Stop", "Authenticate", "View logs"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("missing %s: %s", part, text)
 		}
@@ -91,6 +80,7 @@ func TestMCPStatusAuthLogsActions(t *testing.T) {
 }
 func TestCancelledFormDoesNotInstall(t *testing.T) {
 	m := fixtureModel(t)
+	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnter, "")
 	if m.form == nil {
 		t.Fatal("operation context form not opened")
@@ -102,7 +92,7 @@ func TestCancelledFormDoesNotInstall(t *testing.T) {
 }
 func TestSettingsEnvironmentRootEditable(t *testing.T) {
 	m := fixtureModel(t)
-	press(m, '4', "4")
+	m.navigate("Settings")
 	press(m, tea.KeyEnter, "")
 	if m.form == nil || !strings.Contains(m.View().Content, "Environment root") {
 		t.Fatalf("%s", m.View().Content)
@@ -111,7 +101,9 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 
 func TestCatalogContextSupportsDefaultMultipleAgents(t *testing.T) {
 	m := fixtureModel(t)
+	m.catalog[0].MCP = &catalog.MCP{}
 	m.settings["default_agents"] = "claude,codex"
+	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnter, "")
 	if !strings.Contains(m.View().Content, "[claude codex]") {
 		t.Fatalf("multiple agent prefill missing: %s", m.View().Content)
@@ -121,8 +113,22 @@ func TestCatalogContextSupportsDefaultMultipleAgents(t *testing.T) {
 		t.Fatalf("operation lacks agents: %#v", m.pending)
 	}
 }
+
+func TestSkillOnlyContextDefaultsToAllDespiteNamedMCPDefaults(t *testing.T) {
+	m := fixtureModel(t)
+	m.settings["default_agents"] = "claude"
+	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnter, "")
+	if m.form == nil {
+		t.Fatal("skill install form missing")
+	}
+	if !strings.Contains(m.View().Content, "[all]") || !strings.Contains(m.View().Content, "All — ~/.agents/skills") {
+		t.Fatalf("skill-only default did not select All: %s", m.View().Content)
+	}
+}
 func TestCatalogRequiresAtLeastOneAgent(t *testing.T) {
 	m := fixtureModel(t)
+	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnter, "")
 	press(m, tea.KeySpace, " ")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
@@ -130,40 +136,26 @@ func TestCatalogRequiresAtLeastOneAgent(t *testing.T) {
 		t.Fatal("empty agent selection accepted")
 	}
 }
-func TestMCPUninstallPromptsPrefilledContext(t *testing.T) {
-	for _, tc := range []struct{ environment, target, wantTarget string }{{"dev", "production", "production"}, {"", "default", ""}} {
-		t.Run(tc.target, func(t *testing.T) {
-			m := fixtureModel(t)
-			m.mcps[0].Key.Environment = tc.environment
-			m.mcps[0].Key.Target = tc.target
-			press(m, '2', "2")
-			press(m, 'u', "u")
-			if m.form == nil || m.busy {
-				t.Fatal("uninstall skipped agent context")
-			}
-			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-			if cmd == nil || m.pending.action != "uninstall" || m.pending.agent != "codex" || m.pending.environment != tc.environment || m.pending.target != tc.wantTarget {
-				t.Fatalf("wrong context %#v", m.pending)
-			}
-		})
+func TestProfileShortcutCannotOpenPackageUninstall(t *testing.T) {
+	for _, status := range []string{"running", "external"} {
+		m := fixtureModel(t)
+		m.mcps[0].Status = status
+		focusFixtureProfile(m)
+		_, cmd := m.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+		if cmd != nil || m.form != nil || m.busy || m.pending.action == "uninstall" {
+			t.Fatalf("%s profile shortcut dispatched package uninstall", status)
+		}
 	}
 }
-func TestExternalMCPRejectsDockerActionsAllowsUnregister(t *testing.T) {
+func TestExternalMCPRejectsDockerActions(t *testing.T) {
 	for _, stroke := range []string{"s", "x", "a", "l"} {
 		m := fixtureModel(t)
 		m.mcps[0].Status = "external"
-		press(m, '2', "2")
+		focusFixtureProfile(m)
 		_, cmd := m.Update(tea.KeyPressMsg{Code: rune(stroke[0]), Text: stroke})
 		if cmd != nil || m.busy {
 			t.Fatalf("external action %s dispatched", stroke)
 		}
-	}
-	m := fixtureModel(t)
-	m.mcps[0].Status = "external"
-	press(m, '2', "2")
-	press(m, 'u', "u")
-	if m.form == nil {
-		t.Fatal("external unregister unavailable")
 	}
 }
 
@@ -195,4 +187,12 @@ func TestCatalogMCPActionsRejectSkillOnlyPackage(t *testing.T) {
 			t.Fatal("skill-only package did not explain missing MCP action")
 		}
 	}
+}
+
+func focusFixtureProfile(m *Model) {
+	m.catalog[0].ID = "inspect"
+	m.catalog[0].MCP = &catalog.MCP{}
+	m.mcps[0].Ownership = "local"
+	m.reconcileHome()
+	m.focusPane(ProfilesPane)
 }

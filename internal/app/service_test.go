@@ -69,6 +69,26 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsUnsupportedMCPAdapterBeforeRuntimeStart(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	runtime := &fakeRuntime{}
+	svc.Options.Runtime = runtime
+	env.Kind = "intellij"
+	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	if err == nil || !strings.Contains(err.Error(), "JetBrains") {
+		t.Fatalf("unsupported adapter accepted: %v", err)
+	}
+	if runtime.starts != 0 {
+		t.Fatalf("unsupported destination started Docker %d time(s)", runtime.starts)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("unsupported destination changed state: %+v, %v", rows, err)
+	}
+}
+
 func TestDefaultInventoryKeyCanStart(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", ContainerPort: 8765, HostPortInput: "port"}

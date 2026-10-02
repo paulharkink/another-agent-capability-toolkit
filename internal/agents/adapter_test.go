@@ -98,17 +98,104 @@ func readJSON(t *testing.T, path string) map[string]any {
 }
 func TestOpenCodeUpdatesExistingJSONAndJSONC(t *testing.T) {
 	a, e := configFixture(t, "opencode", `{"theme":"dark","mcp":{}}`)
+	jsonBefore, _ := os.ReadFile(e.ConfigPath)
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
 	os.WriteFile(jsonc, []byte("{ // comment\n \"model\":\"sample\",\n}"), 0644)
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
 	if err := a.Register(context.Background(), e, reg); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{e.ConfigPath, jsonc} {
-		v := readJSON(t, p)
-		m := server(t, v, "mcp", "local")
-		if m["url"] != reg.URL || m["type"] != "remote" || m["timeout"] != float64(30000) {
-			t.Fatalf("%v", v)
+	jsonAfter, _ := os.ReadFile(e.ConfigPath)
+	if string(jsonAfter) != string(jsonBefore) {
+		t.Fatalf("lower precedence JSON changed: %s", jsonAfter)
+	}
+	v := readJSON(t, jsonc)
+	m := server(t, v, "mcp", "local")
+	if m["url"] != reg.URL || m["type"] != "remote" || m["timeout"] != float64(30000) {
+		t.Fatalf("%v", v)
+	}
+}
+
+func TestOpenCodeJSONCOnlyDoesNotCreateJSON(t *testing.T) {
+	a, e := configFixture(t, "opencode", "")
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte("{ // keep\n \"mcp\":{}\n}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
+	if err := a.Register(context.Background(), e, reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(e.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("JSON sibling unexpectedly created: %v", err)
+	}
+	if server(t, readJSON(t, jsonc), "mcp", "local")["url"] != reg.URL {
+		t.Fatal("effective JSONC config was not updated")
+	}
+}
+
+func TestOpenCodeBothFilesRegisterInEffectiveJSONCOnly(t *testing.T) {
+	a, e := configFixture(t, "opencode", `{"theme":"json","mcp":{}}`)
+	before, _ := os.ReadFile(e.ConfigPath)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte("{ // keep\n \"mcp\":{}\n}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
+	if err := a.Register(context.Background(), e, reg); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(e.ConfigPath)
+	if string(after) != string(before) {
+		t.Fatalf("lower precedence JSON changed: %s", after)
+	}
+	if server(t, readJSON(t, jsonc), "mcp", "local")["url"] != reg.URL {
+		t.Fatal("effective JSONC config was not updated")
+	}
+}
+
+func TestOpenCodeRemovalDoesNotExposeLowerPrecedenceOwnedEntry(t *testing.T) {
+	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
+	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(reg))
+	body := `{"mcp":{"local":` + string(entry) + `}}`
+	a, e := configFixture(t, "opencode", body)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.Owned = map[string]Registration{"local": reg}
+	if err := a.Unregister(context.Background(), e, "local"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		servers := readJSON(t, path)["mcp"].(map[string]any)
+		if servers["local"] != nil {
+			t.Fatalf("owned entry still exposed in %s: %+v", path, servers)
+		}
+	}
+}
+
+func TestOpenCodeUpdateRetiresOwnedLowerPrecedenceEntry(t *testing.T) {
+	previous := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
+	next := Registration{Name: "local", URL: "http://localhost:2/mcp", TimeoutMS: 30000}
+	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(previous))
+	body := `{"mcp":{"local":` + string(entry) + `}}`
+	a, e := configFixture(t, "opencode", body)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.Owned = map[string]Registration{"local": previous}
+	if err := a.Register(context.Background(), e, next); err != nil {
+		t.Fatal(err)
+	}
+	e.Owned["local"] = next
+	if err := a.Unregister(context.Background(), e, "local"); err != nil {
+		t.Fatalf("updated registration could not be removed: %v", err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		if readJSON(t, path)["mcp"].(map[string]any)["local"] != nil {
+			t.Fatalf("owned entry remains in %s", path)
 		}
 	}
 }
@@ -150,13 +237,11 @@ func TestMalformedConfigRemainsUnchanged(t *testing.T) {
 		}
 	}
 }
-func TestIntellijUsesMcpServers(t *testing.T) {
-	a, e := configFixture(t, "intellij-ai-assistant", `{}`)
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
-		t.Fatal(err)
-	}
-	if readJSON(t, e.ConfigPath)["mcpServers"] == nil {
-		t.Fatal("wrong config shape")
+func TestIntellijAIAssistantWrongJSONAdapterIsUnavailable(t *testing.T) {
+	for _, kind := range []string{"intellij", "intellij-ai-assistant"} {
+		if _, err := For(kind, nil); err == nil || !strings.Contains(err.Error(), "XML") {
+			t.Fatalf("%s still advertises an unverified JSON writer: %v", kind, err)
+		}
 	}
 }
 func TestCopilotIntellijUsesServers(t *testing.T) {
@@ -172,8 +257,37 @@ func TestCopilotIntellijUsesServers(t *testing.T) {
 		t.Fatalf("missing prerequisite: %v", err)
 	}
 }
+
+func TestClaudeCodeUserRegistrationPreservesOtherConfiguration(t *testing.T) {
+	a, e := configFixture(t, "claude", `{"theme":"dark","mcpServers":{"other":{"type":"http","url":"http://other"}}}`)
+	registration := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "streamable-http"}
+	if err := a.Register(context.Background(), e, registration); err != nil {
+		t.Fatal(err)
+	}
+	document := readJSON(t, e.ConfigPath)
+	if document["theme"] != "dark" || server(t, document, "mcpServers", "local")["type"] != "http" || server(t, document, "mcpServers", "other")["url"] != "http://other" {
+		t.Fatalf("Claude Code configuration changed unexpectedly: %+v", document)
+	}
+	e.Owned = map[string]Registration{"local": registration}
+	if err := a.Unregister(context.Background(), e, "local"); err != nil {
+		t.Fatal(err)
+	}
+	document = readJSON(t, e.ConfigPath)
+	if document["theme"] != "dark" || document["mcpServers"].(map[string]any)["local"] != nil || server(t, document, "mcpServers", "other")["url"] != "http://other" {
+		t.Fatalf("Claude Code removal changed unrelated config: %+v", document)
+	}
+}
+
+func TestClaudeCodeConfigDirectoryOverride(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", root)
+	e, err := ResolveEnvironment("claude", "claude", t.TempDir())
+	if err != nil || e.ConfigPath != filepath.Join(root, ".claude.json") {
+		t.Fatalf("Claude Code override ignored: %+v, %v", e, err)
+	}
+}
 func TestChangedOwnedRegistrationRefused(t *testing.T) {
-	a, e := configFixture(t, "intellij-ai-assistant", `{"mcpServers":{"local":{"url":"http://changed"}}}`)
+	a, e := configFixture(t, "generic-mcp", `{"servers":{"local":{"url":"http://changed"}}}`)
 	reg := Registration{Name: "local", URL: "http://original"}
 	e.Owned = map[string]Registration{"local": reg}
 	if err := a.Unregister(context.Background(), e, "local"); err == nil {
@@ -184,7 +298,7 @@ func TestChangedOwnedRegistrationRefused(t *testing.T) {
 	}
 }
 func TestForeignRegistrationRefused(t *testing.T) {
-	a, e := configFixture(t, "intellij-ai-assistant", `{"mcpServers":{"local":{"url":"http://foreign"}}}`)
+	a, e := configFixture(t, "generic-mcp", `{"servers":{"local":{"url":"http://foreign"}}}`)
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://foreign"}); err == nil {
 		t.Fatal("unowned matching registration adopted")
 	}
@@ -278,19 +392,55 @@ func TestCLIQueryFailurePreservesOwnedRegistration(t *testing.T) {
 	}
 }
 
-type cancelBetweenWritesContext struct {
+type cancelBeforeWriteContext struct {
 	context.Context
 	checks int
 }
 
-func (c *cancelBetweenWritesContext) Err() error {
+type cancelBetweenSiblingWritesContext struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelBetweenSiblingWritesContext) Err() error {
 	c.checks++
 	if c.checks > 2 {
 		return context.Canceled
 	}
 	return nil
 }
-func TestOpenCodeCancellationRestoresWrittenSibling(t *testing.T) {
+
+func TestOpenCodeCancellationRestoresRetiredOwnedShadow(t *testing.T) {
+	previous := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
+	next := Registration{Name: "local", URL: "http://localhost:2/mcp", TimeoutMS: 30000}
+	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(previous))
+	body := `{"mcp":{"local":` + string(entry) + `}}`
+	a, e := configFixture(t, "opencode", body)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.Owned = map[string]Registration{"local": previous}
+	ctx := &cancelBetweenSiblingWritesContext{Context: context.Background()}
+	if err := a.Register(ctx, e, next); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation between files: %v", err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		content, err := os.ReadFile(path)
+		if err != nil || string(content) != body {
+			t.Fatalf("cancellation changed %s: %s, %v", path, content, err)
+		}
+	}
+}
+
+func (c *cancelBeforeWriteContext) Err() error {
+	c.checks++
+	if c.checks > 1 {
+		return context.Canceled
+	}
+	return nil
+}
+func TestOpenCodeCancellationLeavesBothFilesUnchanged(t *testing.T) {
 	first := `{"theme":"first","mcp":{}}`
 	second := "{ // preserve\n \"theme\":\"second\",\"mcp\":{} }"
 	a, e := configFixture(t, "opencode", first)
@@ -298,7 +448,7 @@ func TestOpenCodeCancellationRestoresWrittenSibling(t *testing.T) {
 	if err := os.WriteFile(jsonc, []byte(second), 0644); err != nil {
 		t.Fatal(err)
 	}
-	ctx := &cancelBetweenWritesContext{Context: context.Background()}
+	ctx := &cancelBeforeWriteContext{Context: context.Background()}
 	err := a.Register(ctx, e, Registration{Name: "local", URL: "http://localhost:1/mcp"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation got %v", err)

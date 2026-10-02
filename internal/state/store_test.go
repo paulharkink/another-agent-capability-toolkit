@@ -33,6 +33,47 @@ func TestReadOnlyOpenHasNoWrites(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestInstallationIDPersistsPerStateRoot(t *testing.T) {
+	root := t.TempDir()
+	first, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := first.InstallationID()
+	if err != nil || id == "" {
+		t.Fatalf("first installation ID = %q, %v", id, err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := reopened.InstallationID()
+	if err != nil || again != id {
+		t.Fatalf("reopened installation ID = %q, %v; want %q", again, err, id)
+	}
+	other, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, err := other.InstallationID()
+	if err != nil || otherID == "" || otherID == id {
+		t.Fatalf("other installation ID = %q, %v; first = %q", otherID, err, id)
+	}
+}
+
+func TestReadOnlyInstallationIDDoesNotCreateIdentity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent")
+	s, err := OpenReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InstallationID(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing read-only identity error = %v", err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only identity created state: %v", err)
+	}
+}
 func TestSourceScopedAnswers(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

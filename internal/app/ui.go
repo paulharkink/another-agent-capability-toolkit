@@ -125,7 +125,7 @@ func (s *Service) UIMCPs(ctx context.Context) ([]mcp.Instance, error) {
 	return s.Options.Runtime.List(ctx)
 }
 func (s *Service) UIAgents(context.Context) ([]string, error) {
-	out := []string{"codex", "opencode", "copilot-cli", "intellij", "copilot-intellij", "generic"}
+	out := []string{"all", "codex", "opencode", "claude", "copilot-cli", "intellij", "copilot-intellij", "generic"}
 	seen := map[string]bool{}
 	for _, id := range out {
 		seen[id] = true
@@ -206,7 +206,12 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 			return "", e
 		}
 		kind, _, _ := strings.Cut(agentID, ":")
-		a, e := agents.ResolveEnvironment(agentID, kind, home)
+		var a agents.Environment
+		if agentID == "all" {
+			a, e = agents.GlobalSkillsEnvironment(home)
+		} else {
+			a, e = agents.ResolveEnvironment(agentID, kind, home)
+		}
 		if e != nil {
 			return "", e
 		}
@@ -260,6 +265,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 		}
 	}
 	homes := map[string]bool{}
+	configPaths := map[string]bool{}
 	for _, r := range matching {
 		if r.AgentHome != "" {
 			homes[r.AgentHome] = true
@@ -267,14 +273,25 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 		if r.AgentKind != "" {
 			kind = r.AgentKind
 		}
+		if r.Component == "mcp" && r.Destination != "" {
+			configPaths[r.Destination] = true
+		}
 	}
 	if len(homes) > 1 {
 		return agents.Environment{}, fmt.Errorf("agent %s has multiple homes; use the CLI with --agent-home", id)
 	}
+	if len(configPaths) > 1 {
+		return agents.Environment{}, fmt.Errorf("agent %s has multiple MCP config files for this profile; use an explicit config path outside the TUI", id)
+	}
 	for h := range homes {
 		home = h
 	}
-	env, e := agents.ResolveEnvironment(id, kind, home)
+	var env agents.Environment
+	if id == "all" {
+		env, e = agents.GlobalSkillsEnvironment(home)
+	} else {
+		env, e = agents.ResolveEnvironment(id, kind, home)
+	}
 	if e != nil {
 		return env, e
 	}

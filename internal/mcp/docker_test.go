@@ -61,9 +61,72 @@ func testRuntime(t *testing.T) (*Runtime, *fakeExec, state.Key) {
 }
 func absent(a []string) ([]byte, error) {
 	if len(a) > 1 && a[1] == "inspect" {
-		return nil, errors.New("not found")
+		return nil, errors.New("No such object: requested container")
 	}
 	return []byte("cid"), nil
+}
+func TestStartFailsClosedWhenInitialInspectFails(t *testing.T) {
+	r, f, k := testRuntime(t)
+	spec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80}
+	preexisting := dockerInfo{ID: "healthy-existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: true, Status: "running"}}
+	inspectCalls := 0
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			inspectCalls++
+			if inspectCalls == 1 {
+				return nil, errors.New("daemon unavailable")
+			}
+			return json.Marshal([]dockerInfo{preexisting})
+		case "run":
+			return nil, errors.New("container name is already in use")
+		}
+		return nil, nil
+	}
+	if _, err := r.Start(context.Background(), k, spec); err == nil || !strings.Contains(err.Error(), "daemon unavailable") {
+		t.Fatalf("inspection error was ignored: %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0][1] != "inspect" {
+		t.Fatalf("inspection failure mutated Docker or entered cleanup: %v", f.calls)
+	}
+}
+
+func TestFailedRunCannotRemoveContainerCreatedByAnotherStart(t *testing.T) {
+	r, f, k := testRuntime(t)
+	spec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80}
+	other := dockerInfo{ID: "other-start", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: true, Status: "running"}}
+	inspectCalls := 0
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			inspectCalls++
+			if inspectCalls == 1 {
+				return nil, errors.New("No such object: requested container")
+			}
+			return json.Marshal([]dockerInfo{other})
+		case "run":
+			return nil, errors.New("container name is already in use")
+		}
+		return nil, nil
+	}
+	if _, err := r.Start(context.Background(), k, spec); err == nil {
+		t.Fatal("name collision accepted")
+	}
+	for _, args := range f.calls {
+		if args[1] == "rm" || args[1] == "rename" {
+			t.Fatalf("another start's container was mutated: %v", f.calls)
+		}
+	}
+}
+func locallyOwnedLabels(t *testing.T, r *Runtime, k state.Key, spec RunSpec) map[string]string {
+	t.Helper()
+	id, err := r.Store.InstallationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := labels(k, spec)
+	l["aact.owner"] = id
+	return l
 }
 func TestDockerBuildRunAndMountArguments(t *testing.T) {
 	r, f, k := testRuntime(t)
@@ -107,7 +170,7 @@ func TestPortCollisionIsVisible(t *testing.T) {
 	r, f, k := testRuntime(t)
 	f.f = func(a []string) ([]byte, error) {
 		if a[1] == "inspect" {
-			return nil, errors.New("not found")
+			return nil, errors.New("No such object: requested container")
 		}
 		return nil, errors.New("port is already allocated")
 	}
@@ -214,7 +277,7 @@ func TestExistingRunningRuntimeHealthFailureNeverBecomesSuccess(t *testing.T) {
 	r.SkipHealth = false
 	spec := unhealthySpec(t)
 	f.f = func(args []string) ([]byte, error) {
-		return json.Marshal([]dockerInfo{{ID: "existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: labels(k, spec)}, State: dockerState{Running: true, Status: "running"}}})
+		return json.Marshal([]dockerInfo{{ID: "existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: true, Status: "running"}}})
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -281,7 +344,7 @@ func TestStoppedOwnedRuntimeSurvivesFailedReplacement(t *testing.T) {
 			r, f, k := testRuntime(t)
 			spec := unhealthySpec(t)
 			r.SkipHealth = failure != "health"
-			old := dockerInfo{ID: "old-id", Name: "/" + containerName(k), Config: dockerConfig{Labels: labels(k, spec)}, State: dockerState{Running: false, Status: "exited"}}
+			old := dockerInfo{ID: "old-id", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: false, Status: "exited"}}
 			currentName := containerName(k)
 			oldRemoved := false
 			f.f = func(args []string) ([]byte, error) {
@@ -290,7 +353,7 @@ func TestStoppedOwnedRuntimeSurvivesFailedReplacement(t *testing.T) {
 					if args[2] == currentName {
 						return json.Marshal([]dockerInfo{old})
 					}
-					return nil, errors.New("absent")
+					return nil, errors.New("No such object: requested container")
 				case "rename":
 					if args[2] == "old-id" {
 						currentName = args[3]

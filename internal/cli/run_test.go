@@ -41,6 +41,19 @@ func TestCLIInstallRenderRemove(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	var out, errout bytes.Buffer
+	args := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "all", "--agent-home", home, "--set", "label=global"}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("global install failed (%d): %s", code, errout.String())
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".agents", "skills", "demo", "SKILL.md"))
+	if err != nil || string(content) != "Hello global" {
+		t.Fatalf("global skill missing: %s, %v", content, err)
+	}
+}
 func TestMissingInputExitTwo(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer
