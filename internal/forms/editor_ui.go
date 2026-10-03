@@ -343,6 +343,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if def.Type == "boolean" && !def.Multiple {
 				current, _ := value.(bool)
 				m.setError(m.editor.Apply(def.Name, !current))
+			} else if def.OptionsFrom != "" && len(def.Options) == 0 {
+				m.message = "No choices available in selected target"
 			} else if len(def.Options) > 0 {
 				m.choose(def, value)
 			} else if def.Type == "directory" || def.Type == "file" {
@@ -568,6 +570,16 @@ func (m *FormModel) layout() formLayout {
 		}
 		value := values[def.Name]
 		display := textValue(value)
+		if def.OptionsFrom != "" && len(def.Options) == 0 {
+			display = "No choices available in selected target"
+		} else if def.OptionsFrom != "" && len(def.Options) > 0 {
+			selected, _ := value.([]string)
+			if len(selected) == 0 {
+				display = ""
+			} else {
+				display = fmt.Sprintf("%d selected", len(selected))
+			}
+		}
 		if reason := m.disabledReason(def.Name); reason != "" {
 			display += " — " + reason
 		}
@@ -654,6 +666,9 @@ func (m *FormModel) layout() formLayout {
 	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc cancel"
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
+		if def.OptionsFrom != "" && len(def.Options) > 0 {
+			footer = "[ Save ]  [ Cancel ]\n↑↓ fields/choices · Tab next field · Space/Enter toggle\nCtrl+S save · Esc cancel"
+		}
 		if def.ExclusiveGroup != "" && m.disabledReason(def.Name) == "" {
 			others := []string{}
 			for _, other := range m.defs {

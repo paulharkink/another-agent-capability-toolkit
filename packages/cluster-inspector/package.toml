@@ -46,9 +46,9 @@ exclusive_group = "cluster_credentials"
 
 [[inputs]]
 name = "connections"
-type = "string"
-label = "Connections"
-multiple = true
+type = "multichoice"
+label = "Read-only database queries (optional)"
+options_from = "dbms.*.tenants.*"
 
 [[inputs]]
 name = "ca_file"

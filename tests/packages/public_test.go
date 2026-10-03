@@ -52,6 +52,23 @@ func TestClusterKubeconfigInputIdentifiesImportSource(t *testing.T) {
 	t.Fatal("kubeconfig input missing")
 }
 
+func TestClusterInspectorDatabaseInputUsesTargetChoices(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "cluster-inspector"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range p.Inputs {
+		if input.Name != "connections" {
+			continue
+		}
+		if input.Type != "multichoice" || input.OptionsFrom != "dbms.*.tenants.*" || input.Label != "Read-only database queries (optional)" {
+			t.Fatalf("database selection is not a target-backed checkbox list: %+v", input)
+		}
+		return
+	}
+	t.Fatal("connections input missing")
+}
+
 func TestClusterInspectorRejectsBothCredentialMethods(t *testing.T) {
 	p, err := catalog.Load(filepath.Join("..", "..", "packages", "cluster-inspector"))
 	if err != nil {

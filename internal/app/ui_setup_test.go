@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -60,6 +61,36 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	}
 	if got.Inputs[3].ProvenancePath != targetPath {
 		t.Fatalf("target provenance path: %#v", got.Inputs[3])
+	}
+}
+
+func TestUISetupPreviewListsDatabaseChoicesFromTarget(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{
+		Name: "connections", Type: "multichoice", Label: "Read-only database queries (optional)", OptionsFrom: "dbms.*.tenants.*",
+	}}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "home", "demo", "pms15.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := "[dbms.shared_postgres.tenants.plane]\nlabel='Plane'\n" +
+		"[dbms.shared_postgres.tenants.openwebui]\nlabel='OpenWebUI'\n" +
+		"[dbms.homeassistant_postgres.tenants.homeassistant]\nlabel='Home Assistant'\n"
+	if err := os.WriteFile(targetPath, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "home", Target: "pms15"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []catalog.Choice{
+		{Value: "homeassistant_postgres/homeassistant", Label: "Home Assistant — homeassistant_postgres/homeassistant"},
+		{Value: "shared_postgres/openwebui", Label: "OpenWebUI — shared_postgres/openwebui"},
+		{Value: "shared_postgres/plane", Label: "Plane — shared_postgres/plane"},
+	}
+	if len(preview.Inputs) != 1 || !reflect.DeepEqual(preview.Inputs[0].Definition.Options, want) {
+		t.Fatalf("database choices: %#v; want %#v", preview.Inputs, want)
 	}
 }
 func TestFixedTargetInputWinsSavedAnswersAndRejectsOverride(t *testing.T) {

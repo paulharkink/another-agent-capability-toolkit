@@ -95,6 +95,9 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 			continue
 		}
 		def := input.Definition
+		if def.OptionsFrom != "" && input.HasValue {
+			def = withUnavailableSavedChoices(def, input.Value)
+		}
 		if selector := selectors[def.ExclusiveGroup]; selector != "" && groups[def.ExclusiveGroup][0] == i {
 			options := []catalog.Choice{}
 			selected := preview.Inputs[groups[def.ExclusiveGroup][0]].Definition.Name
@@ -198,6 +201,36 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+}
+
+func withUnavailableSavedChoices(def catalog.Input, value any) catalog.Input {
+	known := map[string]bool{}
+	for _, option := range def.Options {
+		known[option.Value] = true
+	}
+	selected := []string{}
+	switch entries := value.(type) {
+	case []string:
+		selected = entries
+	case []any:
+		for _, entry := range entries {
+			if text, ok := entry.(string); ok {
+				selected = append(selected, text)
+			}
+		}
+	}
+	for _, entry := range selected {
+		if known[entry] {
+			continue
+		}
+		label := "Unavailable saved choice " + entry + " — deselect to remove"
+		if entry == "" {
+			label = "Empty saved entry — deselect to remove"
+		}
+		def.Options = append(def.Options, catalog.Choice{Value: entry, Label: label})
+		known[entry] = true
+	}
+	return def
 }
 
 func (m *Model) applySetup(values map[string]any) tea.Cmd {

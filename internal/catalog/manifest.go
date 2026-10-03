@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -99,6 +100,23 @@ func Validate(p Package) error {
 		case "string", "secret", "integer", "number", "float", "boolean", "choice", "multichoice", "multiple-choice", "file", "directory":
 		default:
 			return fmt.Errorf("input %s: unsupported type %q", in.Name, in.Type)
+		}
+		if in.OptionsFrom != "" {
+			if in.Type != "multichoice" && in.Type != "multiple-choice" {
+				return fmt.Errorf("input %s: options_from requires multichoice type", in.Name)
+			}
+			hasWildcard := false
+			validPath := true
+			for _, part := range strings.Split(in.OptionsFrom, ".") {
+				if part == "*" {
+					hasWildcard = true
+				} else if part == "" || strings.Contains(part, "*") {
+					validPath = false
+				}
+			}
+			if !hasWildcard || !validPath {
+				return fmt.Errorf("input %s: options_from must be a dotted target path with a wildcard", in.Name)
+			}
 		}
 		if in.Min != nil && in.Max != nil && *in.Min > *in.Max {
 			return fmt.Errorf("input %s: min exceeds max", in.Name)

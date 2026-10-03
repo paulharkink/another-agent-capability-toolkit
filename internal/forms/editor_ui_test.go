@@ -185,6 +185,30 @@ func TestMultipleChoiceKeyboardRemainsArray(t *testing.T) {
 	}
 }
 
+func TestTargetBackedMultiChoiceCannotCreateEmptyRows(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "connections", Type: "multichoice", OptionsFrom: "dbms.*.tenants.*"}}, nil)
+	m.Update(key(tea.KeyEnter, ""))
+	if m.editing {
+		t.Fatal("Enter opened a free-text editor for target-backed choices")
+	}
+	if !strings.Contains(m.View().Content, "No choices available in selected target") {
+		t.Fatalf("missing empty-choice explanation: %s", m.View().Content)
+	}
+}
+
+func TestTargetBackedMultiChoiceDeselectShowsNoArraySyntax(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{
+		Name: "connections", Type: "multichoice", OptionsFrom: "dbms.*.tenants.*",
+		Options: []catalog.Choice{{Value: "shared_postgres/plane", Label: "Plane — shared_postgres/plane"}},
+	}}, nil)
+	m.Update(key(tea.KeyEnter, ""))
+	m.Update(key(tea.KeyEnter, ""))
+	view := m.View().Content
+	if strings.Contains(view, "connections: []") || !strings.Contains(view, "[ ] Plane — shared_postgres/plane") || !strings.Contains(view, "Space/Enter toggle") {
+		t.Fatalf("empty database selection rendered as array syntax or lost checkbox: %s", view)
+	}
+}
+
 func TestTypedCollectionsKeyboardAddEditRemove(t *testing.T) {
 	for _, tc := range []struct {
 		kind, first, second, replacement string

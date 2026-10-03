@@ -97,6 +97,27 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 		t.Fatalf("install result hidden: %s", m.output)
 	}
 }
+
+func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key: state.Key{Source: "team-source", Package: "cluster-inspector", Target: "pms15"},
+		Inputs: []viewmodel.SetupInput{{
+			Definition: catalog.Input{Name: "connections", Label: "Read-only database queries (optional)", Type: "multichoice", OptionsFrom: "dbms.*.tenants.*", Options: []catalog.Choice{{Value: "shared_postgres/plane", Label: "Plane — shared_postgres/plane"}}},
+			Value:      []string{""}, HasValue: true, Provenance: "saved", Editable: true,
+		}},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/tmp/codex/config.toml", Selected: true}},
+	})
+	if !strings.Contains(m.View().Content, "[x] Empty saved entry — deselect to remove") {
+		t.Fatalf("saved empty entry cannot be identified or removed: %s", m.View().Content)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if strings.Contains(m.View().Content, "[x] Empty saved entry") {
+		t.Fatalf("saved empty entry stayed selected after Enter: %s", m.View().Content)
+	}
+}
 func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
 	b := &setupBackendFixture{extraInputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "api_server", Label: "API server", Type: "string", Required: true}, Value: "https://fixed.example", HasValue: true, Provenance: "target", Editable: false}}}
 	m := NewContext(context.Background(), b)
