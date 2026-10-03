@@ -58,17 +58,18 @@ button { cursor: pointer; }
 .action-button.primary { background: #e5d17d; color: #10275c; border-color: #fff2af; font-weight: bold; }
 .action-button:disabled { opacity: .55; cursor: not-allowed; }
 .overlay { position: absolute; inset: 0; z-index: 4; display: flex; justify-content: center; align-items: center; background: #06164ac7; }
-.dialog { display: flex; flex-direction: column; min-height: 0; max-height: 82%; background: #0c3185; border: 4px double #ffdf86; box-shadow: 0 18px 36px #021141; }
+.dialog { display: flex; flex-direction: column; min-height: 0; max-height: 82%; overflow: hidden; background: #0c3185; border: 4px double #ffdf86; box-shadow: 0 18px 36px #021141; }
 .single-dialog { width: min(94%, 590px); }
-.split-dialog { position: absolute; top: 28px; left: 50%; transform: translateX(-50%); width: calc(100% - 48px); max-width: 1130px; max-height: calc(100% - 56px); }
+.split-dialog { position: absolute; top: 28px; left: 50%; transform: translateX(-50%); width: calc(100% - 48px); max-width: 1130px; height: min(580px, calc(100% - 56px)); max-height: calc(100% - 56px); }
 .dialog-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #9cc9f0; }
 .dialog-title strong { color: #ffe38a; font-size: 16px; }
 .dialog-scope { padding: 6px 12px; color: #d2e8fb; border-bottom: 1px solid #4f81c3; font-size: 12px; }
 .form-error { padding: 6px 12px; color: #ffe0cf; background: #803b4a; border-bottom: 1px solid #ffd0ba; }
-.dialog-content { padding: 12px; overflow: auto; }
+.dialog-content { flex: 1 1 auto; min-height: 0; padding: 12px; overflow: auto; }
 .dialog-content > .scroll-frame { min-height: 220px; max-height: 55vh; }
 .single-dialog > .scroll-frame { min-height: 220px; max-height: 55vh; }
-.dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 9px 12px; border-top: 1px solid #9cc9f0; }
+.dialog-actions { display: flex; flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 9px 12px; border-top: 1px solid #9cc9f0; }
+.dialog-actions:focus-within { background: #16418f; border-top-color: #ffe38a; }
 .dialog-nav { color: #b9d7f3; font-size: 11px; border-top: 1px solid #4f81c3; padding: 5px 11px; }
 .menu-content { padding: 7px; }
 .menu-item { display: block; width: 100%; padding: 8px 9px; border: 0; color: #fff; background: transparent; text-align: left; }
@@ -77,7 +78,7 @@ button { cursor: pointer; }
 .menu-item.active, .menu-item:hover:not(:disabled) { color: #08245d; background: #e9f2fb; font-weight: bold; }
 .menu-item.active small, .menu-item:hover:not(:disabled) small { color: #375377; }
 .menu-item:disabled { cursor: not-allowed; opacity: .67; }
-.overlay-panes { grid-template-columns: minmax(180px, 34%) minmax(0, 1fr); height: clamp(295px, 52vh, 480px); padding: 8px; }
+.overlay-panes { grid-template-columns: minmax(180px, 34%) minmax(0, 1fr); flex: 1 1 auto; min-height: 0; height: auto; padding: 8px; }
 .overlay-panes .pane { background: #0c3185; }
 .overlay-panes .scroll-region { scrollbar-color: #8bb8eb #0c3185; }
 .field-block, .credential { display: flex; flex-direction: column; gap: 4px; margin: 11px 0; padding: 8px; border: 1px solid #8bb8eb; }

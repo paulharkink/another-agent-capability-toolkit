@@ -8,6 +8,8 @@ import {
   scrollCues,
   setupSectionsFor,
   nextOverlayControlIndex,
+  nextOverlayArea,
+  overlayKeyCommand,
   transition,
   visibleProfiles,
 } from '../docs/demo/model.mjs';
@@ -54,6 +56,28 @@ test('arrow navigation stays inside the current overlay pane', () => {
   assert.equal(nextOverlayControlIndex(groups, 2, 1), 2);
   assert.equal(nextOverlayControlIndex(groups, 3, -1), 3);
   assert.equal(nextOverlayControlIndex(groups, 4, -1), 3);
+});
+
+test('Tab moves through overlay sections, details, and action bar as three areas', () => {
+  const areas = ['left', 'right', 'actions'];
+  assert.equal(nextOverlayArea(areas, 'left', 1), 'right');
+  assert.equal(nextOverlayArea(areas, 'right', 1), 'actions');
+  assert.equal(nextOverlayArea(areas, 'actions', 1), 'left');
+  assert.equal(nextOverlayArea(areas, 'actions', -1), 'right');
+});
+
+test('save shortcut and pane-return keys coexist with text editing', () => {
+  assert.equal(overlayKeyCommand({ key: 's', ctrlKey: true, area: 'right' }), 'save');
+  assert.equal(overlayKeyCommand({ key: 'S', metaKey: true, area: 'right', editing: true }), 'save');
+  assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: false }), 'left');
+  assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: true, atTextStart: true }), 'left');
+  assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: true, atTextStart: false }), null);
+  assert.equal(overlayKeyCommand({ key: 'ArrowDown', area: 'right', atControlEnd: true }), 'actions');
+  assert.equal(overlayKeyCommand({ key: 'ArrowUp', area: 'actions' }), 'right');
+  assert.equal(overlayKeyCommand({ key: 'Escape', area: 'right', split: true }), 'left');
+  assert.equal(overlayKeyCommand({ key: 'Escape', area: 'actions', split: true }), 'right');
+  assert.equal(overlayKeyCommand({ key: 'Escape', area: 'left', split: true }), 'cancel');
+  assert.equal(overlayKeyCommand({ key: 'Escape', area: 'menu', split: false }), 'cancel');
 });
 
 test('authentication changes when an inactive credential receives input', () => {

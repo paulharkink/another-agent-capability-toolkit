@@ -22,6 +22,8 @@ test('setup overlay has its own left and right panes and direct credential field
   const state = transition(createInitialState(), { type: 'openSetup' });
   const html = render(state);
   assert.match(html, /data-layer="3-4"/);
+  assert.match(html, /data-area="actions"/);
+  assert.match(html, /Ctrl\/Cmd\+S Save/);
   assert.match(html, /data-section="Authentication"/);
   assert.match(html, /data-section="Databases"/);
   assert.match(html, /data-section="Destinations"/);

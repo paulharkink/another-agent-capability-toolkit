@@ -9,5 +9,11 @@ local files, so the directory can later be served directly from GitHub Pages
 with a `/docs` Pages source. Opening the HTML via `file://` may block ES modules
 in some browsers.
 
+In a setup popup, Tab and Shift-Tab cycle sections, details, and the action
+bar. Up/Down moves through controls within an area. Left returns from details
+to sections when a text cursor is at the start of its field. Ctrl-S or Cmd-S
+activates Save or Install. Esc returns from details to sections, then cancels
+from sections, with a discard prompt for unsaved edits.
+
 Run the design checks with `node --test test/demo-*.test.mjs` from the repo root.
 Node is only needed for these mock tests; it is not an AACT runtime dependency.

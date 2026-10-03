@@ -20,4 +20,6 @@ test('stylesheet keeps the Norton Commander palette and visibly stacked overlays
   assert.match(css, /top:\s*[1-9]/);
   assert.match(css, /\.scroll-cue/);
   assert.match(css, /\.inactive-credential/);
+  assert.match(css, /\.overlay-panes\s*\{[^}]*flex:\s*1 1 auto/);
+  assert.match(css, /\.dialog-actions\s*\{[^}]*flex:\s*0 0 auto/);
 });

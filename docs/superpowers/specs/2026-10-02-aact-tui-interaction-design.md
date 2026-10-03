@@ -64,7 +64,7 @@ Every scrollable pane and overlay must visibly indicate when content continues b
 | Home | `F9`, visible Main menu control | Open Agents, Environments, Settings, Help. This does not switch home panes. |
 | Home | `F3`, `F4`, `F5` | Open Details, open Parameters/Install, or refresh the focused item/context. |
 | Menus | `↑`, `↓`, `Enter`, `Esc` | Move through actions, activate enabled action, or return to the exact origin. |
-| Dialogs | `Esc` | Close, or ask whether to discard unsaved edits when a form is dirty. |
+| Dialogs | `Esc` | Close a single dialog. In a split form, step back from actions or details to the left section list; from there, close or ask whether to discard unsaved edits. |
 | Home | `F10`, visible Quit control | Exit. Input forms do not have a global letter-key quit shortcut. |
 
 Menus show unavailable actions in place with concise reasons. They do not silently omit a command because the selected profile is stopped, attached, unauthenticated, or read-only. The action menu is a centered overlay; its first enabled item receives focus. Closing it restores the selected row and pane. All popup controls have visible focus, and modal focus remains within the popup until it closes.
@@ -85,9 +85,9 @@ Skill-only installation initially selects `All — ~/.agents/skills`, and may al
 
 Keyboard behavior in forms:
 
-- `↑`/`↓` moves focus among fields, checkboxes, selectors, and action buttons. `Tab`/`Shift+Tab` also traverses them.
-- `←`/`→` changes a discrete selector choice when it has focus. Inside a text field, those keys move the cursor instead. An opened picker/list uses its own documented navigation.
-- `Space` toggles a checkbox; `Enter` activates the focused button or selected menu entry; `Esc` closes or initiates dirty-form discard handling.
+- A split form has three keyboard areas: the left section list (layer 3), the right details and controls (layer 4), and the fixed Save/Cancel action bar. `Tab`/`Shift+Tab` cycles these areas. `↑`/`↓` moves among controls inside the active area. `↓` from the last right-side control reaches the action bar; `↑` from the action bar returns to the right pane. `←`/`→` moves between the left and right panes and between action buttons in the action bar.
+- Inside a text field, `←`/`→` moves the cursor; `←` at the start of the field returns to the left section list. An opened picker/list uses its own documented navigation. All three areas and the focused action must be visibly identified, and the action bar must remain visible when the form is taller than the terminal.
+- `Ctrl+S` or `Cmd+S` activates the single Save/Install action from anywhere in a setup form. `Space` toggles a checkbox; `Enter` activates the focused button or selected menu entry. In a split form, `Esc` returns from details or actions toward the left section list, then cancels from the left; a dirty form asks whether to discard. The mouse is optional for every action.
 - Form errors stay in the same form, focus the first invalid input, and preserve the draft and scroll position. Loading dynamic choices updates the same form instead of reopening it.
 
 Parameters for an existing managed profile use the same field model. The user decided that there is one `Save` action: it persists the edited values and applies them immediately, restarting a running MCP when its runtime parameters change. A stopped MCP uses the saved values on its next Start. A failed apply keeps the new values and shows the exact error as specified below. An attached profile displays owner-controlled server fields read-only and permits only applicable local connection/registration fields.

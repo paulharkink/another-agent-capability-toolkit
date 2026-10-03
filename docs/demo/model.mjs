@@ -58,6 +58,26 @@ export function nextOverlayControlIndex(groups, current, step) {
   const candidates = groups.flatMap((item, index) => item === group ? [index] : []);
   return candidates[Math.max(0, Math.min(candidates.length - 1, candidates.indexOf(current) + step))];
 }
+
+export function nextOverlayArea(areas, current, step) {
+  if (areas.length === 0) return null;
+  const index = areas.indexOf(current);
+  return areas[(index + step + areas.length) % areas.length] ?? areas[0];
+}
+
+export function overlayKeyCommand({ key, ctrlKey = false, metaKey = false, area, editing = false, atTextStart = false, atControlEnd = false, split = false }) {
+  if ((ctrlKey || metaKey) && key.toLowerCase() === 's') return 'save';
+  if (key === 'Escape') {
+    if (split && area === 'right') return 'left';
+    if (split && area === 'actions') return 'right';
+    return 'cancel';
+  }
+  if (key === 'ArrowLeft' && area === 'right' && (!editing || atTextStart)) return 'left';
+  if (key === 'ArrowRight' && area === 'left') return 'right';
+  if (key === 'ArrowDown' && area === 'right' && atControlEnd) return 'actions';
+  if (key === 'ArrowUp' && area === 'actions') return 'right';
+  return null;
+}
 export const settingsSections = ['Default agents', 'Docker backend', 'Catalog and state'];
 export const helpSections = ['Navigation', 'Status labels', 'Forms and values'];
 

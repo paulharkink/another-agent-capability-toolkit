@@ -1,6 +1,7 @@
 import {
   agents, capabilities, createInitialState, databases, destinationsFor, helpSections,
-  nextOverlayControlIndex, profileActions, scrollCues, selectedCapability, selectedProfile,
+  nextOverlayArea, nextOverlayControlIndex, overlayKeyCommand, profileActions,
+  scrollCues, selectedCapability, selectedProfile,
   settingsSections, setupSectionsFor, transition, visibleProfiles,
 } from './model.mjs';
 
@@ -118,7 +119,7 @@ function menuItems(state) {
 
 function dialog(content, title, actions, layout = 'single') {
   const split = layout === 'split';
-  return `<div class="overlay" role="presentation"><section class="dialog ${split ? 'split-dialog' : 'single-dialog'}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}" data-layer="${split ? '3-4' : '3'}"><header class="dialog-title"><strong>${escapeHTML(title)}</strong><span class="sample-tag">SIMULATION</span></header>${content}<footer class="dialog-actions">${actions}</footer></section></div>`;
+  return `<div class="overlay" role="presentation"><section class="dialog ${split ? 'split-dialog' : 'single-dialog'}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}" data-layer="${split ? '3-4' : '3'}"><header class="dialog-title"><strong>${escapeHTML(title)}</strong><span class="sample-tag">SIMULATION</span></header>${content}<footer class="dialog-actions" data-area="actions">${actions}</footer></section></div>`;
 }
 
 function renderMenu(state) {
@@ -150,8 +151,8 @@ function renderSetup(state) {
   const left = pane('Setup sections', sections, `${sectionsForCapability.indexOf(state.setup.section) + 1} / ${sectionsForCapability.length}`, 'setup-sections', true);
   const right = pane(`${capability.name} · ${state.setup.section}`, `<div class="detail-copy">${setupRight(state)}</div>`, 'Details', 'setup-detail', false);
   const scope = capability.id === 'cluster-inspector' ? 'Environment: home · Target: pms15' : capability.mcp ? 'Environment: home · Target: default' : 'Source: pms15-agent-skills · Package defaults';
-  const content = `<div class="dialog-scope">${scope} · ${state.setup.kind === 'new' ? 'New setup' : 'Existing profile'} · Sample data</div>${state.setup.error ? `<div class="form-error" role="alert">${escapeHTML(state.setup.error)}</div>` : ''}<div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab/←→ Panes · ↑↓ Controls · Space Toggle · Enter Activate · Esc Back</div>`;
-  return dialog(content, `${state.setup.kind === 'new' ? 'Install' : 'Parameters'} · ${capability.name}`, button('Cancel', 'closeOverlay') + button(state.setup.kind === 'new' ? 'Install' : 'Save', 'saveSetup', true), 'split');
+  const content = `<div class="dialog-scope">${scope} · ${state.setup.kind === 'new' ? 'New setup' : 'Existing profile'} · Sample data</div>${state.setup.error ? `<div class="form-error" role="alert">${escapeHTML(state.setup.error)}</div>` : ''}<div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: sections → details → actions · ↑↓ Controls · ← at start of text: sections · Ctrl/Cmd+S ${state.setup.kind === 'new' ? 'Install' : 'Save'} · Esc Back/Cancel</div>`;
+  return dialog(content, `${state.setup.kind === 'new' ? 'Install' : 'Parameters'} · ${capability.name}`, button('Cancel', 'closeOverlay') + button(state.setup.kind === 'new' ? 'Install' : 'Save', 'saveSetup', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
 }
 
 function renderRegistrations(state) {
@@ -164,7 +165,7 @@ function renderRegistrations(state) {
   const notRegistered = removing && !state.registrations.includes(agent.id);
   const right = pane(agent.name, `<div class="detail-copy"><h3>${escapeHTML(agent.name)}</h3><p>Endpoint: <code>${escapeHTML(selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp')}</code></p>${button('Check connection', 'check')}<dl><dt>Agent detection</dt><dd>${escapeHTML(agent.status)} · sample</dd><dt>Config file</dt><dd>${escapeHTML(agent.config)}</dd><dt>Planned effect</dt><dd>${escapeHTML(agent.effect)}</dd></dl><label class="check-row"><input type="checkbox" data-toggle-registration="${agent.id}" ${marked.includes(agent.id) ? 'checked' : ''} ${notRegistered ? 'disabled' : ''}><span>${escapeHTML(rowLabel)}${notRegistered ? ' · no registration exists' : ''}</span></label></div>`, 'Details', 'registration-detail', false);
   const scope = removing ? 'Select existing registrations to remove' : 'Desired final local registrations';
-  return dialog(`<div class="dialog-scope">${scope} · Endpoint: ${escapeHTML(selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp')}</div><div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab/←→ Panes · ↑↓ Agents · Space Toggle · Esc Back</div>`, removing ? 'Remove local registrations' : 'Configure agent registrations', button('Cancel', 'closeOverlay') + button('Apply changes', 'applyRegistrations', true), 'split');
+  return dialog(`<div class="dialog-scope">${scope} · Endpoint: ${escapeHTML(selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp')}</div><div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: agents → details → actions · ↑↓ Controls · Ctrl/Cmd+S Apply · Esc Back/Cancel</div>`, removing ? 'Remove local registrations' : 'Configure agent registrations', button('Cancel', 'closeOverlay') + button('Apply changes', 'applyRegistrations', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
 }
 
 function renderDetails(state) {
@@ -240,7 +241,12 @@ export function mount(root) {
       case 'details': state = { ...state, overlay: { kind: 'details', layout: 'single' } }; paint('.dialog-actions button'); break;
       case 'registrations': send({ type: 'openRegistrations' }, '.list-row.selected'); break;
       case 'removeRegistrations': send({ type: 'openRegistrations', remove: true }, '.list-row.selected'); break;
-      case 'saveSetup': send({ type: 'saveSetup' }, '.dialog-actions button'); break;
+      case 'saveSetup': {
+        state = transition(state, { type: 'saveSetup' });
+        const invalid = state.overlay?.kind === 'setup' && state.setup.error;
+        paint(invalid ? (state.setup.section === 'Authentication' ? '[data-field="token"]' : '[data-toggle-destination]') : undefined);
+        break;
+      }
       case 'editAnswers': send({ type: 'editAnswers' }, '.section-row.selected'); break;
       case 'closeOverlay': send({ type: 'closeOverlay' }); break;
       case 'keepEditing': send({ type: 'keepEditing' }, '.section-row.selected'); break;
@@ -309,19 +315,64 @@ export function mount(root) {
 
   root.addEventListener('keydown', event => {
     const key = event.key;
-    if (key === 'Escape') { event.preventDefault(); perform('back'); return; }
     const editing = event.target.matches('input[type="text"], input:not([type]), select, textarea');
     if (state.overlay) {
       const dialogElement = root.querySelector('.dialog');
       const controls = [...dialogElement.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')];
       const current = controls.indexOf(event.target);
-      if (key === 'Tab' && controls.length) {
+      const leftPane = dialogElement.querySelector('.overlay-panes .pane:first-child');
+      const rightPane = dialogElement.querySelector('.overlay-panes .pane:last-child');
+      const actions = dialogElement.querySelector('.dialog-actions');
+      const menu = dialogElement.querySelector('.menu-content');
+      const area = actions.contains(event.target) ? 'actions'
+        : leftPane?.contains(event.target) ? 'left'
+        : rightPane?.contains(event.target) ? 'right'
+        : menu?.contains(event.target) ? 'menu' : null;
+      const areas = state.overlay.layout === 'split' ? ['left', 'right', 'actions'] : menu ? ['menu', 'actions'] : ['actions'];
+      const areaElement = name => ({ left: leftPane, right: rightPane, actions, menu })[name];
+      const focusArea = (name, last = false) => {
+        const region = areaElement(name);
+        if (!region) return;
+        const available = [...region.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')];
+        const selected = !last && region.querySelector('.section-row.selected, .list-row.selected, .menu-item.active');
+        (selected ?? (last ? available.at(-1) : available[0]) ?? region).focus();
+      };
+      const rightControls = rightPane ? [...rightPane.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')] : [];
+      const atControlEnd = area === 'right' && (rightControls.length === 0 || event.target === rightControls.at(-1));
+      const command = overlayKeyCommand({
+        key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, area, editing,
+        atTextStart: editing && event.target.selectionStart === 0 && event.target.selectionEnd === 0,
+        atControlEnd, split: state.overlay.layout === 'split',
+      });
+      if (command === 'save') {
         event.preventDefault();
-        controls[(current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
+        if (state.overlay.kind === 'setup') perform('saveSetup');
+        else if (state.overlay.kind === 'registrations') perform('applyRegistrations');
         return;
+      }
+      if (key === 'Tab') {
+        event.preventDefault();
+        if (areas.length === 1) controls[(current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length]?.focus();
+        else focusArea(nextOverlayArea(areas, area ?? areas[0], event.shiftKey ? -1 : 1));
+        return;
+      }
+      if (command === 'left' || command === 'right' || command === 'actions') {
+        event.preventDefault();
+        focusArea(command === 'right' && !rightPane ? 'menu' : command, key === 'ArrowUp');
+        return;
+      }
+      if (command === 'cancel') { event.preventDefault(); perform('back'); return; }
+      if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        if (area === 'actions') {
+          const buttons = [...actions.querySelectorAll('button:not(:disabled)')];
+          event.preventDefault();
+          buttons[Math.max(0, Math.min(buttons.length - 1, buttons.indexOf(event.target) + (key === 'ArrowRight' ? 1 : -1)))]?.focus();
+          return;
+        }
       }
       if ((key === 'ArrowDown' || key === 'ArrowUp') && controls.length) {
         event.preventDefault();
+        if (current < 0) { focusArea(area === 'right' ? (key === 'ArrowDown' ? 'actions' : 'right') : areas[0], key === 'ArrowUp'); return; }
         const groups = controls.map(control => control.closest('.pane')?.dataset.pane ?? (control.closest('.menu-content') ? 'menu' : 'footer'));
         const index = nextOverlayControlIndex(groups, current, key === 'ArrowDown' ? 1 : -1);
         const target = controls[index];
@@ -330,17 +381,12 @@ export function mount(root) {
         else if (target) target.focus();
         return;
       }
-      if (!editing && (key === 'ArrowLeft' || key === 'ArrowRight') && state.overlay.layout === 'split') {
-        const paneSelector = key === 'ArrowRight' ? '.overlay-panes .pane:last-child' : '.overlay-panes .pane:first-child';
-        const target = dialogElement.querySelector(`${paneSelector} button, ${paneSelector} input, ${paneSelector} select`) ?? dialogElement.querySelector(paneSelector);
-        if (target) { event.preventDefault(); target.focus(); }
-        return;
-      }
       if ((state.overlay.kind === 'main' || state.overlay.kind === 'actions') && key === 'Enter' && event.target === dialogElement) {
         event.preventDefault(); controls.find(control => !control.disabled)?.click();
       }
       return;
     }
+    if (key === 'Escape') { event.preventDefault(); perform('back'); return; }
     if (editing) return;
     const commands = { F1: 'help', F2: 'actions', F3: 'details', F4: 'parameters', F5: 'refresh', F9: 'main', F10: 'back' };
     if (commands[key]) { event.preventDefault(); perform(commands[key]); return; }
@@ -385,6 +431,12 @@ export function mount(root) {
         const focused = item === pane;
         item.classList.toggle('focused', focused);
         item.querySelector('.pane-title span').textContent = focused ? '● focused' : '';
+      });
+    }
+    if (event.target.closest('.dialog-actions')) {
+      root.querySelectorAll('.overlay-panes .pane').forEach(item => {
+        item.classList.remove('focused');
+        item.querySelector('.pane-title span').textContent = '';
       });
     }
     if (event.target.matches('.menu-item')) {
