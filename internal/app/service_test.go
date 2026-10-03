@@ -210,6 +210,9 @@ func TestFailedMCPStartKeepsEditedAnswersWithoutClaimingRuntimeOrRegistration(t 
 	if err == nil || !strings.Contains(err.Error(), "port 9000 is already allocated") {
 		t.Fatalf("MCP startup cause hidden: %v", err)
 	}
+	if !result.Saved {
+		t.Fatal("failed apply did not report that answers were saved")
+	}
 	answers, err := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
 	if err != nil || answers["port"] != json.Number("9000") {
 		t.Fatalf("failed start discarded edited port: %#v, %v", answers, err)

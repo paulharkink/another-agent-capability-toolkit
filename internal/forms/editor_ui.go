@@ -110,6 +110,33 @@ func (m *FormModel) moveFocus(delta int) {
 			break
 		}
 	}
+	if m.selected < len(m.defs) {
+		def := m.defs[m.selected]
+		if isChoiceList(def) {
+			m.choiceIndex[def.Name] = 0
+			if delta < 0 {
+				m.choiceIndex[def.Name] = len(def.Options) - 1
+			}
+		}
+	}
+}
+
+func isChoiceList(def catalog.Input) bool {
+	return len(def.Options) > 0 && (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice")
+}
+
+func (m *FormModel) moveControl(delta int) {
+	if m.selected < len(m.defs) {
+		def := m.defs[m.selected]
+		if isChoiceList(def) {
+			next := m.choiceIndex[def.Name] + delta
+			if next >= 0 && next < len(def.Options) {
+				m.choiceIndex[def.Name] = next
+				return
+			}
+		}
+	}
+	m.moveFocus(delta)
 }
 func (m *FormModel) Init() tea.Cmd { return nil }
 func (m *FormModel) Result() (map[string]any, error) {
@@ -218,7 +245,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if stroke == "up" || stroke == "shift+tab" {
 						delta = -1
 					}
-					m.moveFocus(delta)
+					m.moveControl(delta)
 				}
 			default:
 				if msg.Text != "" {
@@ -230,34 +257,12 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch stroke {
-		case "down":
-			if m.selected < len(m.defs) {
-				def := m.defs[m.selected]
-				if (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice") && len(def.Options) > 0 && m.choiceIndex[def.Name] < len(def.Options)-1 {
-					m.choiceIndex[def.Name]++
-					return m, nil
-				}
-			}
-			m.moveFocus(1)
+		case "down", "tab":
+			m.moveControl(1)
 			m.message = ""
 			return m, nil
-		case "tab":
-			m.moveFocus(1)
-			m.message = ""
-			return m, nil
-		case "up":
-			if m.selected < len(m.defs) {
-				def := m.defs[m.selected]
-				if (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice") && len(def.Options) > 0 && m.choiceIndex[def.Name] > 0 {
-					m.choiceIndex[def.Name]--
-					return m, nil
-				}
-			}
-			m.moveFocus(-1)
-			m.message = ""
-			return m, nil
-		case "shift+tab":
-			m.moveFocus(-1)
+		case "up", "shift+tab":
+			m.moveControl(-1)
 			m.message = ""
 			return m, nil
 		}
@@ -376,6 +381,16 @@ func (m *FormModel) save() (tea.Model, tea.Cmd) {
 		for i, def := range m.defs {
 			if m.editor.initialErrors[def.Name] != nil || Validate([]catalog.Input{def}, m.editor.Values()) != nil {
 				m.selected = i
+				if def.Required && isChoiceList(def) && len(collectionRows(m.editor.Values()[def.Name])) == 0 {
+					label := def.Label
+					if label == "" {
+						label = def.Name
+					}
+					m.message = "Select at least one option for " + label
+					if def.Name == "__aact_destinations" {
+						m.message = "Select at least one destination"
+					}
+				}
 				break
 			}
 		}
@@ -512,6 +527,10 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.selected = field
 	m.message = ""
+	if isChoiceList(m.defs[field]) && layout.visibleChoices[bodyY] < 0 {
+		m.choiceIndex[m.defs[field].Name] = 0
+		return m, nil
+	}
 	if choice := layout.visibleChoices[bodyY]; choice >= 0 {
 		m.choiceIndex[m.defs[field].Name] = choice
 		return m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -552,13 +571,16 @@ func (m *FormModel) layout() formLayout {
 	position := ""
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		position = fmt.Sprintf(" (%d/%d)", m.selected+1, len(m.defs))
+		if def := m.defs[m.selected]; isChoiceList(def) {
+			position += fmt.Sprintf(" · choice %d/%d", m.choiceIndex[def.Name]+1, len(def.Options))
+		}
 	}
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffe38a")).Render(m.title + position)
 	rows := []string{}
 	values := m.editor.Values()
 	for i, def := range m.defs {
 		prefix := "  "
-		if i == m.selected {
+		if i == m.selected && !isChoiceList(def) {
 			prefix = "> "
 		}
 		label := def.Label
@@ -666,8 +688,8 @@ func (m *FormModel) layout() formLayout {
 	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc cancel"
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
-		if def.OptionsFrom != "" && len(def.Options) > 0 {
-			footer = "[ Save ]  [ Cancel ]\n↑↓ fields/choices · Tab next field · Space/Enter toggle\nCtrl+S save · Esc cancel"
+		if isChoiceList(def) {
+			footer = "[ Save ]  [ Cancel ]\n↑↓/Tab next control · Space/Enter toggle\nCtrl+S save · Esc cancel"
 		}
 		if def.ExclusiveGroup != "" && m.disabledReason(def.Name) == "" {
 			others := []string{}

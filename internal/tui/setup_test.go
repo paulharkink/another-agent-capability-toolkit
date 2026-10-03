@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,6 +18,8 @@ type setupBackendFixture struct {
 	previewRequest viewmodel.SetupRequest
 	installRequest *viewmodel.SetupInstallRequest
 	extraInputs    []viewmodel.SetupInput
+	installResult  *viewmodel.OperationResult
+	installErr     error
 }
 
 func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
@@ -63,7 +66,29 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 
 func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	b.installRequest = &q
+	if b.installResult != nil || b.installErr != nil {
+		if b.installResult == nil {
+			return viewmodel.OperationResult{}, b.installErr
+		}
+		return *b.installResult, b.installErr
+	}
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "all", Component: "skill"}}}, nil
+}
+
+func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
+	b := &setupBackendFixture{installResult: &viewmodel.OperationResult{Saved: true}, installErr: errors.New("MCP port 9000 is already allocated")}
+	m := NewContext(context.Background(), b)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.Update(m.Init()())
+	m.Update(m.homeOperation("parameters")())
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Save did not submit")
+	}
+	m.Update(cmd())
+	if !strings.Contains(m.output, "Inputs saved") || !strings.Contains(m.output, "port 9000 is already allocated") || strings.Contains(m.output, "configured") {
+		t.Fatalf("result hid save/apply distinction: %q", m.output)
+	}
 }
 
 func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {

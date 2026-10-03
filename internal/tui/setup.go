@@ -263,6 +263,9 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	return func() tea.Msg {
 		result, err := backend.UIInstall(m.ctx, request)
 		lines := []string{}
+		if result.Saved {
+			lines = append(lines, "Inputs saved")
+		}
 		if result.Message != "" {
 			lines = append(lines, result.Message)
 		}

@@ -209,6 +209,57 @@ func TestTargetBackedMultiChoiceDeselectShowsNoArraySyntax(t *testing.T) {
 	}
 }
 
+func TestMultiChoiceRowsAreFlatKeyboardControls(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{
+		{Name: "before", Label: "Before", Type: "string"},
+		{Name: "databases", Label: "Databases", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}, {Value: "honcho", Label: "Honcho"}}},
+		{Name: "after", Label: "After", Type: "string"},
+	}, nil)
+	m.Update(key(tea.KeyDown, ""))
+	if m.selected != 1 || m.choiceIndex["databases"] != 0 || strings.Contains(m.View().Content, "> Databases:") || !strings.Contains(m.View().Content, "> [ ] Plane") {
+		t.Fatalf("first checkbox did not receive clear focus: %s", m.View().Content)
+	}
+	m.Update(key(tea.KeyEnter, ""))
+	if got := m.editor.Values()["databases"]; !reflect.DeepEqual(got, []string{"plane"}) {
+		t.Fatalf("Enter did not toggle focused checkbox: %#v", got)
+	}
+	m.Update(key(tea.KeyTab, ""))
+	if m.selected != 1 || m.choiceIndex["databases"] != 1 {
+		t.Fatalf("Tab skipped the second checkbox: selected=%d choice=%d", m.selected, m.choiceIndex["databases"])
+	}
+	m.Update(key(tea.KeyDown, ""))
+	if m.selected != 2 {
+		t.Fatalf("Down did not leave checkbox list: selected=%d", m.selected)
+	}
+	m.Update(key(tea.KeyUp, ""))
+	if m.selected != 1 || m.choiceIndex["databases"] != 1 {
+		t.Fatalf("Up did not enter checkbox list at its last row: selected=%d choice=%d", m.selected, m.choiceIndex["databases"])
+	}
+}
+
+func TestRequiredDestinationsErrorNamesVisibleControl(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "__aact_destinations", Label: "Destinations", Type: "multichoice", Required: true, Options: []catalog.Choice{{Value: "codex", Label: "Codex"}}}}, nil)
+	m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if !strings.Contains(m.message, "Select at least one destination") || strings.Contains(m.message, "__aact_destinations") || strings.Contains(m.message, "--interactive") {
+		t.Fatalf("Save error is not actionable: %q", m.message)
+	}
+	if m.done || m.selected != 0 || m.choiceIndex["__aact_destinations"] != 0 {
+		t.Fatalf("Save did not leave destination choice focused: done=%t selected=%d choice=%d", m.done, m.selected, m.choiceIndex["__aact_destinations"])
+	}
+}
+
+func TestClickingChoiceHeadingOnlyFocusesFirstCheckbox(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "databases", Label: "Databases", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}}}}, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 18})
+	clickVisibleText(t, m, "Databases:")
+	if got := m.editor.Values()["databases"]; len(collectionRows(got)) != 0 {
+		t.Fatalf("clicking heading changed selection: %#v", got)
+	}
+	if m.selected != 0 || m.choiceIndex["databases"] != 0 {
+		t.Fatal("clicking heading did not focus first checkbox")
+	}
+}
+
 func TestTypedCollectionsKeyboardAddEditRemove(t *testing.T) {
 	for _, tc := range []struct {
 		kind, first, second, replacement string
@@ -302,12 +353,11 @@ func TestMouseChoicesAndBooleanUseEditorValues(t *testing.T) {
 	}, nil)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	clickVisibleText(t, m, "Enabled:")
-	clickVisibleText(t, m, "Targets:")
+	clickVisibleText(t, m, "[ ] one")
 	if got := m.editor.Values()["targets"]; !reflect.DeepEqual(got, []string{"one"}) {
 		t.Fatalf("choice click did not toggle first choice: %v", got)
 	}
-	m.Update(key(tea.KeyRight, ""))
-	clickVisibleText(t, m, "Targets:")
+	clickVisibleText(t, m, "[ ] two")
 	if got := m.editor.Values()["targets"]; !reflect.DeepEqual(got, []string{"one", "two"}) {
 		t.Fatalf("choice click did not toggle second choice: %v", got)
 	}

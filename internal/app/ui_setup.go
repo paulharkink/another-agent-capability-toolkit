@@ -278,5 +278,5 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		inputs[name] = value
 	}
 	result, err := s.Install(ctx, InstallRequest{Package: q.PackageID, Environment: q.Environment, Target: q.Target, Agents: envs, Inputs: inputs, Interactive: false})
-	return viewmodel.OperationResult{Changes: result.Changes, Errors: result.Errors, Message: result.Message}, err
+	return viewmodel.OperationResult{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message}, err
 }
