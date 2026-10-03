@@ -294,6 +294,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = m.cleanOutput(msg.err.Error())
 			return m, nil
 		}
+		m.navigate("Catalog")
 		m.output = "Default named agents saved for future MCP installs"
 		return m, m.load()
 	case tea.MouseMsg:
@@ -360,6 +361,9 @@ func (m *Model) navigate(view string) {
 	m.management.Focus = CapabilitiesPane
 	m.management.EnvironmentIndex = 0
 	m.management.TargetIndex = 0
+	if view == "Settings" {
+		m.initSettingsDraft()
+	}
 	if view == "Catalog" {
 		m.reconcileHome()
 	}

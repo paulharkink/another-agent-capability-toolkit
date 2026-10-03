@@ -319,6 +319,26 @@ func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 	}
 }
 
+func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
+	m, _ := typedAgentModel(t)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"╦ Codex", "Status: installed", "Config: /home/test/config.json", "AACT MCPs: 1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("agent detail summary missing %q: %s", want, view)
+		}
+	}
+	if strings.Contains(view, "Note:") || !strings.Contains(view, "Registrations:") {
+		t.Fatalf("agent detail shows an empty note or unlabeled registrations: %s", view)
+	}
+	m = fixtureModel(t)
+	m.navigate("Agents")
+	press(m, tea.KeyDown, "")
+	view = ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "╦ claude") || !strings.Contains(view, "Status: Detection unavailable") || !strings.Contains(view, "Config: location unavailable") {
+		t.Fatalf("selected fallback agent summary is misleading: %s", view)
+	}
+}
+
 // This catches masking config values or replacing exact file contents with a summary.
 func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 	m, _ := typedAgentModel(t)
@@ -482,6 +502,164 @@ func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
 	m.Update(cmd())
 	if !reflect.DeepEqual(backend.saved, []string{"claude"}) {
 		t.Fatalf("saved agents = %#v", backend.saved)
+	}
+}
+
+func TestSettingsInPlaceCheckboxesSaveAndCancel(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"[ ] Codex", "[x] Claude Code", "Docker backend", "Check backend", "View known checkouts", "disabled:", "[ Save ]", "[ Cancel ]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings missing in-place control %q: %s", want, view)
+		}
+	}
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ ] Codex") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeySpace, " ")
+	if backend.saved != nil || !strings.Contains(ansi.Strip(m.View().Content), "[x] Codex") {
+		t.Fatal("checkbox toggle saved early or did not update the draft")
+	}
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ Save ]") {
+			m.selected = i
+			break
+		}
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("in-place Save did not dispatch preference write")
+	}
+	m.Update(cmd())
+	if !reflect.DeepEqual(backend.saved, []string{"codex", "claude"}) {
+		t.Fatalf("in-place Save wrote %v", backend.saved)
+	}
+	m.navigate("Settings")
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ ] Codex") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeySpace, " ")
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ Cancel ]") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeyEnter, "")
+	if m.view != "Catalog" || !reflect.DeepEqual(backend.saved, []string{"codex", "claude"}) {
+		t.Fatalf("Cancel persisted draft or stayed in Settings: view=%q saved=%v", m.view, backend.saved)
+	}
+}
+
+func TestSettingsUnavailableBackendAndCheckoutControlsStayInert(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Settings")
+	for _, label := range []string{"Select backend", "Check backend", "View known checkouts"} {
+		found := false
+		for i, row := range m.managementSettingsRows() {
+			if !strings.Contains(row, label) {
+				continue
+			}
+			found = true
+			if !strings.Contains(row, "disabled:") {
+				t.Fatalf("%s lacks a disabled reason: %s", label, row)
+			}
+			m.selected = i
+			_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if cmd != nil || m.form != nil || m.management.Modal != "" {
+				t.Fatalf("%s invoked an unavailable service", label)
+			}
+		}
+		if !found {
+			t.Fatalf("Settings omitted %s", label)
+		}
+	}
+}
+
+func TestSettingsSkillOnlyNoteWrapsWithoutHidingActions(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{
+		"Skill-only installations default to All — ~/.agents/skills.",
+		"These named-agent defaults do not change existing registrations.",
+		"[ Save ]",
+		"[ Cancel ]",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings clipped %q: %s", want, view)
+		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := ansi.StringWidth(line); width != 100 {
+			t.Fatalf("Settings line %d has width %d, want 100", i, width)
+		}
+	}
+}
+
+func TestSettingsSaveCancelStayPinnedAndRequireExplicitActivation(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 100, Height: 30}} {
+		backend := &editableSettingsBackend{}
+		m := New(backend).(*Model)
+		m.Update(size)
+		m.Update(m.Init()())
+		m.navigate("Settings")
+		view := ansi.Strip(m.View().Content)
+		lines := strings.Split(view, "\n")
+		actions := lines[size.Height-7]
+		if !strings.Contains(actions, "[ Save ]") || !strings.Contains(actions, "[ Cancel ]") {
+			t.Fatalf("%dx%d Settings actions are not pinned: %s", size.Width, size.Height, view)
+		}
+		if len(lines) != size.Height || ansi.StringWidth(actions) != size.Width {
+			t.Fatalf("%dx%d Settings action geometry is wrong", size.Width, size.Height)
+		}
+		save := len(m.managementSettingsRows()) - 2
+		cancel := save + 1
+		press(m, tea.KeyTab, "")
+		if m.selected != save {
+			t.Fatalf("%dx%d Tab did not focus Save: %d", size.Width, size.Height, m.selected)
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+		if cmd != nil || backend.saved != nil || m.view != "Settings" {
+			t.Fatal("Space on Save submitted settings")
+		}
+		press(m, tea.KeyTab, "")
+		if m.selected != cancel {
+			t.Fatal("Tab did not focus Cancel")
+		}
+		press(m, tea.KeyUp, "")
+		if m.selected != save {
+			t.Fatal("Up did not return to Save")
+		}
+		press(m, tea.KeyDown, "")
+		if m.selected != cancel {
+			t.Fatal("Down did not reach Cancel")
+		}
+		m.View()
+		found := false
+		for _, hit := range m.management.Hits {
+			if hit.Control == "row" && hit.Index == cancel && hit.Y == size.Height-7 {
+				found = true
+				m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+				break
+			}
+		}
+		if !found || m.view != "Catalog" || backend.saved != nil {
+			t.Fatal("pinned Cancel mouse action failed or persisted settings")
+		}
 	}
 }
 
