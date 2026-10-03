@@ -80,6 +80,9 @@ func Validate(p Package) error {
 	if p.MCP != nil && !identifier.MatchString(p.MCP.Name) {
 		return fmt.Errorf("invalid mcp name %q", p.MCP.Name)
 	}
+	if p.MCP != nil && p.MCP.RegistrationTimeoutMS < 0 {
+		return fmt.Errorf("mcp registration_timeout_ms must be positive")
+	}
 	seen := map[string]bool{}
 	for _, in := range p.Inputs {
 		if !identifier.MatchString(in.Name) {

@@ -46,6 +46,13 @@ type Service struct {
 	lastObservedAt time.Time
 }
 
+func registrationTimeoutMS(m *catalog.MCP) int {
+	if m != nil && m.RegistrationTimeoutMS > 0 {
+		return m.RegistrationTimeoutMS
+	}
+	return 30000
+}
+
 func New(src config.Source, s *state.Store, o Options) *Service {
 	if o.Runner == nil {
 		o.Runner = process.OSExecutor{}
@@ -372,7 +379,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				if e != nil {
 					agentErr = e
 				} else {
-					reg := agents.Registration{Name: registrationName(k), URL: url, Transport: p.MCP.Transport, TimeoutMS: 30000}
+					reg := agents.Registration{Name: registrationName(k), URL: url, Transport: p.MCP.Transport, TimeoutMS: registrationTimeoutMS(p.MCP)}
 					files, snapshotErr := snapshotRegistration(env)
 					agentErr = snapshotErr
 					if agentErr == nil {

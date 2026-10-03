@@ -19,6 +19,17 @@ type RegistrationRequest struct {
 	Agents    []agents.Environment
 }
 
+func (s *Service) registrationTimeoutForKey(key state.Key) int {
+	if key.Source == s.Source.ID {
+		for _, p := range s.Source.Catalog {
+			if p.ID == key.Package {
+				return registrationTimeoutMS(p.MCP)
+			}
+		}
+	}
+	return 30000
+}
+
 // ConfigureRegistrations changes only local agent registration files and this
 // installation's registration ledger. It never starts or claims the MCP runtime.
 func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequest) (out Result, err error) {
@@ -28,6 +39,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 		return out, invalid(errors.New("MCP source, package, and endpoint URL are required"))
 	}
 	desired := make(map[string]agents.Environment, len(q.Agents))
+	timeoutMS := s.registrationTimeoutForKey(q.Key)
 	for _, env := range q.Agents {
 		env, err = s.registrationEnvironment(env)
 		if err != nil {
@@ -85,7 +97,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 			for _, row := range rows {
 				if row.Key == q.Key && row.Component == "mcp" && row.AgentID == env.ID &&
 					row.Destination == env.ConfigPath && row.URL == q.URL &&
-					row.Transport == q.Transport && row.RegistrationName == registrationName(q.Key) {
+					row.Transport == q.Transport && row.TimeoutMS == timeoutMS && row.RegistrationName == registrationName(q.Key) {
 					unchanged = true
 					break
 				}
@@ -99,7 +111,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 				out.Errors = append(out.Errors, env.ID+": "+err.Error())
 				continue
 			}
-			registration := agents.Registration{Name: registrationName(q.Key), URL: q.URL, Transport: q.Transport, TimeoutMS: 30000}
+			registration := agents.Registration{Name: registrationName(q.Key), URL: q.URL, Transport: q.Transport, TimeoutMS: timeoutMS}
 			files, err := snapshotRegistration(env)
 			if err == nil {
 				err = adapter.Register(ctx, env, registration)

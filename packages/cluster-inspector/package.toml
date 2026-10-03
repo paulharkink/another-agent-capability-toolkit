@@ -106,6 +106,7 @@ transport = "streamable-http"
 container_port = 8765
 endpoint_path = "/mcp"
 host_port_input = "local_port"
+registration_timeout_ms = 60000
 build_context = "./mcp"
 
 [mcp.actions.prepare]

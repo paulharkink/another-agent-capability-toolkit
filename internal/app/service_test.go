@@ -80,7 +80,7 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	svc, env, s := fixture(t)
 	env.Kind = "generic"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationTimeoutMS: 60000}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
 	out, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
@@ -94,9 +94,60 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatal(rows)
 	}
+	if rows[1].Component != "mcp" || rows[1].TimeoutMS != 60000 {
+		t.Fatalf("MCP registration timeout: %+v", rows)
+	}
 	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestInstallUpdatesOwnedOpenCodeRegistrationTimeout(t *testing.T) {
+	svc, initial, store := fixture(t)
+	env, err := agents.ResolveEnvironment("opencode", "opencode", initial.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	request := InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "http://127.0.0.1:8765/mcp"}
+	if _, err := svc.Install(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	svc.Source.Catalog[0].MCP.RegistrationTimeoutMS = 60000
+	if _, err := svc.Install(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registration state.Installation
+	for _, row := range rows {
+		if row.Component == "mcp" {
+			registration = row
+		}
+	}
+	if registration.TimeoutMS != 60000 {
+		t.Fatalf("stored timeout = %d", registration.TimeoutMS)
+	}
+	content, err := os.ReadFile(env.ConfigPath)
+	if os.IsNotExist(err) {
+		content, err = os.ReadFile(strings.TrimSuffix(env.ConfigPath, ".json") + ".jsonc")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		MCP map[string]struct {
+			Timeout int `json:"timeout"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.MCP[registration.RegistrationName].Timeout != 60000 {
+		t.Fatalf("OpenCode timeout = %d", config.MCP[registration.RegistrationName].Timeout)
 	}
 }
 
