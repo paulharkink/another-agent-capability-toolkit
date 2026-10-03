@@ -1,15 +1,15 @@
 # AACT terminal interaction design
 
 Date: 2026-10-02  
-Status: conversational interaction design approved contingent on a matching TUI; written specification awaiting review
+Status: revised 2026-10-03 with user-defined navigation hierarchy and MCP setup layout; written specification awaiting review
 
 ## Intent and scope
 
-Replace the current single-view TUI with the Norton Commander style interaction reviewed in the browser mockup. The deliverable is a real Go terminal UI, backed by AACT's application services. The browser mockup is an interaction prototype with illustrative data; it is not a runtime dependency or evidence that its simulated operations work.
+Replace the current single-view TUI with the Norton Commander style interaction reviewed in the browser mockup and revised by the user on 2026-10-03. The deliverable is a real Go terminal UI, backed by AACT's application services. The browser mockup is an interaction prototype with illustrative data; it is not a runtime dependency or evidence that its simulated operations work. The 2026-10-03 decisions below supersede the mock wherever they differ, and the mock must be updated before it is used as a visual acceptance reference again.
 
 The user owns the architecture. This specification records the interaction they approved and distinguishes still-open server and state semantics. Approval of this TUI layout does not silently approve the unresolved Docker and profile-lifecycle proposals listed below.
 
-The acceptance target is the mockup's **layout, navigation, visibility, form behavior, and truthful state presentation** within terminal constraints. Terminal fonts, glyph widths, color depth, and function-key delivery vary; exact browser pixels are not a feasible cross-terminal contract. Every action must remain reachable through visible menus and ordinary keys when a terminal intercepts a function key.
+The acceptance target is this document's **layout, navigation, visibility, form behavior, and truthful state presentation** within terminal constraints. Terminal fonts, glyph widths, color depth, and function-key delivery vary; exact browser pixels are not a feasible cross-terminal contract. Every action must remain reachable through visible menus and ordinary keys when a terminal intercepts a function key.
 
 ## Home screen
 
@@ -38,6 +38,19 @@ Each pane owns a stable selected item ID and scroll offset. Resizing, refreshing
 
 Profile rows represent configured and saved profiles, including never-started ones. The displayed runtime status, authentication status, and connection observation remain separate facts. A failed Docker refresh displays an error and the timestamp of the last observation; it must not invent `Stopped` or erase configured profiles.
 
+## Navigation hierarchy (user decision, 2026-10-03)
+
+The same spatial rule governs every navigable part of the TUI:
+
+1. **Layer 1, left pane:** high-level items or sections.
+2. **Layer 2, right pane:** details and controls for the item highlighted on the left. Changing the left selection updates the right pane without opening another menu.
+3. **Layer 3:** opening detail from layer 2 puts an overlay above layers 1 and 2. If that overlay contains everything needed, it is a narrower centered popup.
+4. **Layers 3 and 4 together:** when a layer-3 item itself needs a more detailed view, use two side-by-side panes inside one overlay: layer 3 on its left, layer 4 on its right. This overlay is slightly narrower than the underlying layers 1 and 2 and begins at least one terminal row lower, so the stacked relationship remains visible. Do not replace the underlying screen with an unrelated full-screen view.
+
+Selection, focus, Back/Esc, mouse clicks, and scrolling must follow this hierarchy consistently. A Back action closes only the topmost layer and restores the previous selection and focus. A menu must not introduce a one-off navigation pattern that differs from the hierarchy without a specific reason in this design.
+
+Every scrollable pane and overlay must visibly indicate when content continues below its viewport. The cue remains visible while there is more below, including when the bottom action row is fixed. Scrolling to the end removes the downward cue. Long content must not silently disappear below the screen.
+
 ## Navigation and menu contract
 
 | Context | Keys and visible controls | Result |
@@ -62,7 +75,11 @@ The Main menu has exactly the management destinations `Agents`, `Environments`, 
 
 ## Capability install and parameter forms
 
-Installing a capability opens one scrollable form containing editable declared inputs and the destination controls. The bottom action row remains visible while fields scroll. Fixed environment values are omitted; defaults are editable with their provenance. Fields outside the chosen conditional branch remain visible but disabled with a reason. For Cluster Inspector, `Token` and `Source kubeconfig` are mutually exclusive; the latter is clearly described as an import source, not a live runtime path.
+Installing or configuring an MCP capability uses the same two-pane hierarchy: the left pane lists high-level sections such as Authentication, database access, and Destinations; the right pane shows the fields, choices, paths, and explanatory details for the highlighted section. Both panes are part of one setup form with one bottom action: Install for a new setup or Save for existing parameters. Either action persists and applies immediately. The bottom action row remains visible while content scrolls. Fixed environment values are omitted; defaults are editable with their provenance. Ordinary conditional fields outside the chosen branch remain visible but disabled with a reason; the authentication pair below has special activation behavior.
+
+For Cluster Inspector, selecting **Authentication** on the left shows **Token** and **Source kubeconfig** together on the right. One is visually de-emphasized, but both remain focusable and able to accept input. Typing into the inactive field, or choosing its file, activates it immediately, clears the previously active credential, and de-emphasizes the other field. Merely moving focus does not change modes or clear a value. There is no separate authentication mode submenu that the user must discover. `Source kubeconfig` is labeled and explained as a file to import, not a live runtime path. The two credentials remain mutually exclusive in the saved data and in noninteractive use.
+
+Selecting the database-access section on the left shows its available databases, selection controls, and explanatory information on the right; it does not open a separate database submenu. Selecting **Destinations** on the left likewise shows named agents, their paths, detection state, and planned effects on the right. The right pane's controls are reachable by keyboard and mouse under the same focus rules as the rest of the TUI.
 
 Skill-only installation initially selects `All — ~/.agents/skills`, and may also offer named agent destinations. When the selected installation requires an MCP registration, `All` is absent and at least one named agent is required. Destination paths and the planned effect appear before applying. Each directory picker adds one path; a multiple-value field provides its own Add/Edit/Remove controls.
 
@@ -80,6 +97,8 @@ Parameters for an existing managed profile use the same field model. The user de
 The profile Actions menu includes Start/Restart, Stop, Authenticate, Edit parameters, Configure registrations, Remove registrations, Check connection, View logs, View details, and Back. Labels and enabled states depend on the selected profile. Editing parameters uses the single Save action described above; there is no separate Apply command.
 
 Windows AACT and WSL AACT are separate running installations in the ownership model; the browser mock's viewpoint switch is outside the TUI and is not a TUI tab. Each installation uses its own agent configs and state. When both connect to the same Docker Engine, an installation may observe a running MCP that it did not start. Its local start/stop record and the live Docker observation must remain distinct, with disagreement shown explicitly. A runtime owned by another installation must not expose local Start/Stop. **Configure registrations remains available for that runtime** so an agent in the current environment can use its reachable endpoint; it changes only that environment's agent config and registration state. The user explicitly chose this registration behavior. The implementation uses an installation ID in Docker labels plus a local action record; ownership based only on matching package or profile names is forbidden.
+
+**Unknown runtime owner is a diagnosis state, not a blanket dead end.** The user reports that v0.1.2 currently shows only `disabled: Runtime owner is unknown` after selecting an MCP instance, without making it clear whether anything is running or how to proceed. The selected MCP profile must show the separately observed runtime state, endpoint, last observation time, and any concrete observation or ownership error. `Runtime owner is unknown` alone does not explain whether an MCP is running or why a command is unavailable. Details, Refresh, Check connection, and Back remain reachable. Configure registrations remains reachable when the endpoint is known and the local agent adapter can register it, even if AACT cannot establish who started the runtime. A runtime-changing action may be unavailable until ownership is established, but its disabled explanation must identify the missing evidence and point to a useful next step. The user must be able to diagnose the condition or choose another action rather than be left at a screen of disabled commands. This requirement does not authorize taking ownership of an unknown runtime automatically.
 
 Registration dialogs show the endpoint and **named agents only**. Configure presents desired final registration state; Remove opens with no removals selected. Agent detection failures and foreign-name conflicts are visible. Applying reports each agent's result individually rather than declaring a partial batch successful. The exact edit and rollback work belongs to compiled Go agent adapters, outside the TUI model.
 
@@ -103,11 +122,11 @@ Bubble Tea v2 owns events and asynchronous commands; Lip Gloss v2 renders the te
 
 The UI runs with native Windows, macOS, and Linux builds; WSL is a Linux runtime scope. Bubble Tea v2 mouse click and wheel events are enabled for supporting terminals. The renderer maintains hit regions from its current layout so scrolling, resize, truncation, and Unicode character widths do not make clicks target the wrong row or button. Mouse support is additive; no mouse is required. A minimum terminal size may be specified after layout review; below it, show the required/current dimensions and allow exit. At and above the minimum, resizing must preserve focused controls and scroll positions.
 
-Implementation follows the user's TDD requirement. Model tests cover pane filtering, keyboard paths, mouse hit regions and wheel routing, modal focus restoration, long-list scrolling, small terminals, conditional forms, fixed/default values, disabled reasons, refresh failure, and partial operation results. Adapter tests remain separate from TUI tests. A manual terminal review compares the implemented flows against this mockup before claiming a match; tests alone cannot establish the visual result.
+Implementation follows the user's TDD requirement. Model tests cover pane filtering, keyboard paths, mouse hit regions and wheel routing, modal focus restoration, long-list scrolling and visible continuation cues, small terminals, conditional forms, input-activated authentication switching, fixed/default values, disabled reasons, unknown-owner diagnosis, refresh failure, and partial operation results. Adapter tests remain separate from TUI tests. A manual terminal review compares the implemented flows against the updated mockup before claiming a match; tests alone cannot establish the visual result.
 
 ## Public interactive demonstration
 
-Before public release, include a standalone static version of the approved interaction mockup in the public repository and link it from README. Publish it via GitHub Pages through the repository's chosen Pages source. The public demonstration uses illustrative data and no credentials, local session key, real agent config, Docker calls, or backend mutation. Keep its navigation aligned with the actual TUI as the implementation changes.
+Before public release, update the interactive mockup to follow the 2026-10-03 navigation hierarchy, the two-pane MCP setup form, the scroll cues, and the unknown-owner recovery presentation. Include a standalone static version in the public repository and link it from README. Publish it via GitHub Pages through the repository's chosen Pages source. The public demonstration uses illustrative data and no credentials, local session key, real agent config, Docker calls, or backend mutation. Keep its navigation aligned with the actual TUI as the implementation changes.
 
 ## Decisions outside this interaction approval
 
@@ -133,8 +152,9 @@ local_port = "default" # editable prefill
 
 A generic `exclusive_group = "cluster_credentials"` field on the manifest's
 `token` and `kubeconfig` inputs rejects simultaneous nonempty values in both
-the form and noninteractive CLI. Both fields remain visible; explicitly entering
-one clears the other. Loading a prefill does not silently clear either field.
+the form and noninteractive CLI. Both fields remain visible and focusable;
+starting to enter one activates it and clears the other. Loading a prefill or
+merely moving focus does not silently clear either field.
 The backend enforces fixed values after all input layers are merged
 so `--set` cannot bypass the UI. Relative file paths continue resolving against
 the file that supplied them.

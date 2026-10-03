@@ -43,6 +43,12 @@ these URLs become available when a version tag is published.
 
 ## Use the manager
 
+The [interactive TUI design mock](docs/demo/index.html) shows the intended
+Mac layout and navigation using illustrative data. It is a static, browser-only
+simulation: clicking Install or Save does not change local agent configuration,
+credentials, files, or containers. The self-contained `docs/demo/` directory
+can be served by GitHub Pages when the design is ready to publish.
+
 ```sh
 aact                         # editable terminal menus
 aact version
