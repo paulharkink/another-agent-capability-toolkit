@@ -8,6 +8,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -46,6 +47,7 @@ type modalState struct {
 	Column   int
 	Follow   bool
 }
+type homeMenuItem struct{ Label, Action, Reason string }
 type hitRegion struct {
 	X, Y, Width, Height int
 	Pane                Pane
@@ -252,7 +254,7 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 	case "ctrl+c", "f10", "q":
 		return tea.Quit
 	case "m", "f9":
-		m.home.Modal = &modalState{Kind: "main"}
+		m.openHomeMenu("main")
 	case "f1", "?":
 		m.navigate("Help")
 	case "tab":
@@ -274,7 +276,7 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 		}
 	case "enter", "f2":
 		if _, ok := m.selectedCapability(); ok {
-			m.home.Modal = &modalState{Kind: "actions"}
+			m.openHomeMenu("actions")
 		}
 	case "f3":
 		m.home.Modal = &modalState{Kind: "details"}
@@ -289,29 +291,74 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 	}
 	return nil
 }
-func (m *Model) menuEntries() []string {
+func (m *Model) batchCount() int {
+	n := 0
+	for _, marked := range m.home.Marks {
+		if marked {
+			n++
+		}
+	}
+	return n
+}
+func (m *Model) homeMenuItems() []homeMenuItem {
 	if m.home.Modal.Kind == "main" {
-		return []string{"Agents", "Environments", "Settings", "Help"}
+		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.home.Focus == ProfilesPane {
 		rows := m.profiles()
 		if len(rows) == 0 {
-			return []string{"Back"}
+			return []homeMenuItem{{"Back", "back", ""}}
 		}
 		p := rows[m.home.Profiles.Index]
-		label := func(name, action string) string {
-			if reason := m.profileActionReason(p, action); reason != "" {
-				return name + " — disabled: " + reason
-			}
-			return name
+		item := func(label, action string) homeMenuItem {
+			return homeMenuItem{label, action, m.profileActionReason(p, action)}
 		}
-		return []string{"Details", label("Start", "s"), label("Stop", "x"), label("Authenticate", "a"), label("Parameters", "parameters"), label("Configure registrations", "registrations"), label("Remove registrations", "remove-registrations"), label("View logs", "l"), label("Check connection", "check-connection"), "Back"}
+		start := "Start…"
+		if strings.EqualFold(p.Status, "running") {
+			start = "Restart…"
+		}
+		return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Authenticate…", "a"), item("Edit parameters…", "parameters"), item("Configure agent registrations…", "registrations"), item("Remove agent registrations…", "remove-registrations"), item("Check connection", "check-connection"), item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
 	}
-	install := "Install / Parameters"
-	if c, ok := m.selectedCapability(); ok && c.CatalogIndex < 0 {
-		install += " — disabled: absent from local catalog"
+	c, ok := m.selectedCapability()
+	if !ok {
+		return []homeMenuItem{{"Back", "back", ""}}
 	}
-	return []string{install, "Details", "Refresh", "Back"}
+	mark := "Mark for batch"
+	if m.home.Marks[c.ID] {
+		mark = "Unmark for batch"
+	}
+	installReason := ""
+	if c.CatalogIndex < 0 {
+		installReason = "absent from local catalog"
+	}
+	batchReason := ""
+	if m.batchCount() == 0 {
+		batchReason = "Mark at least one capability first"
+	} else {
+		batchReason = "batch setup is unavailable from the service"
+	}
+	return []homeMenuItem{{"Configure / install " + c.Name + "…", "parameters", installReason}, {"View capability details", "details", ""}, {mark, "mark", ""}, {fmt.Sprintf("Apply marked (%d)…", m.batchCount()), "apply-marked", batchReason}, {"Back", "back", ""}}
+}
+func (m *Model) menuEntries() []string {
+	items := m.homeMenuItems()
+	entries := make([]string, 0, len(items))
+	for _, item := range items {
+		label := item.Label
+		if item.Reason != "" {
+			label += " — disabled: " + item.Reason
+		}
+		entries = append(entries, label)
+	}
+	return entries
+}
+func (m *Model) openHomeMenu(kind string) {
+	m.home.Modal = &modalState{Kind: kind}
+	for i, item := range m.homeMenuItems() {
+		if item.Reason == "" {
+			m.home.Modal.Selected = i
+			break
+		}
+	}
 }
 func (m *Model) modalKey(stroke string) tea.Cmd {
 	if m.home.Modal.Kind == "logs" {
@@ -327,44 +374,71 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 		}
 		return nil
 	}
-	entries := m.menuEntries()
+	items := m.homeMenuItems()
 	switch stroke {
 	case "up":
-		m.home.Modal.Selected = max(0, m.home.Modal.Selected-1)
+		for step := 0; step < len(items); step++ {
+			m.home.Modal.Selected = (m.home.Modal.Selected + len(items) - 1) % len(items)
+			if items[m.home.Modal.Selected].Reason == "" {
+				break
+			}
+		}
 	case "down":
-		m.home.Modal.Selected = min(len(entries)-1, m.home.Modal.Selected+1)
+		for step := 0; step < len(items); step++ {
+			m.home.Modal.Selected = (m.home.Modal.Selected + 1) % len(items)
+			if items[m.home.Modal.Selected].Reason == "" {
+				break
+			}
+		}
 	case "home":
-		m.home.Modal.Selected = 0
+		for i, item := range items {
+			if item.Reason == "" {
+				m.home.Modal.Selected = i
+				break
+			}
+		}
 	case "end":
-		m.home.Modal.Selected = len(entries) - 1
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Reason == "" {
+				m.home.Modal.Selected = i
+				break
+			}
+		}
 	case "enter":
 		index := m.home.Modal.Selected
-		kind := m.home.Modal.Kind
-		if kind == "main" {
-			m.home.Modal = nil
-			m.navigate(entries[index])
+		if index < 0 || index >= len(items) {
 			return nil
 		}
-		if m.home.Focus == ProfilesPane {
-			if index == 0 {
-				m.home.Modal = &modalState{Kind: "details"}
-				return nil
-			}
-			if index == 9 {
-				m.home.Modal = nil
-				return nil
-			}
-			actions := map[int]string{1: "s", 2: "x", 3: "a", 4: "parameters", 5: "registrations", 6: "remove-registrations", 7: "l", 8: "check-connection"}
-			return m.homeOperation(actions[index])
+		item := items[index]
+		if item.Reason != "" {
+			m.output = item.Reason
+			return nil
 		}
-		m.home.Modal = nil
-		switch index {
-		case 0:
-			return m.homeOperation("parameters")
-		case 1:
+		if m.home.Modal.Kind == "main" {
+			m.home.Modal = nil
+			if item.Action != "back" {
+				m.navigate(item.Action)
+			}
+			return nil
+		}
+		switch item.Action {
+		case "back":
+			m.home.Modal = nil
+		case "details":
 			m.home.Modal = &modalState{Kind: "details"}
-		case 2:
-			return m.load()
+		case "mark":
+			if c, ok := m.selectedCapability(); ok {
+				if m.home.Marks == nil {
+					m.home.Marks = map[string]bool{}
+				}
+				m.home.Marks[c.ID] = !m.home.Marks[c.ID]
+			}
+			m.home.Modal = nil
+		case "apply-marked":
+			m.output = "Batch setup is unavailable from the service"
+		default:
+			m.home.Modal = nil
+			return m.homeOperation(item.Action)
 		}
 	}
 	return nil
@@ -421,6 +495,21 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 	m.selected = c.CatalogIndex
 	if action == "parameters" || action == "i" {
 		if _, ok := m.backend.(setupBackend); ok {
+			var matching []viewmodel.EnvironmentTarget
+			if m.environmentSnapshot != nil {
+				for _, target := range m.environmentSnapshot.Targets {
+					if target.SourceID == c.Source && target.PackageID == c.Package && target.Error == "" {
+						matching = append(matching, target)
+					}
+				}
+			}
+			if len(matching) == 1 {
+				return m.beginSetup(c.Source, c.Package, matching[0].Environment, matching[0].Name)
+			}
+			if len(matching) > 1 {
+				m.output = "Multiple environment targets are available; select the target in Environments."
+				return nil
+			}
 			return m.beginSetup(c.Source, c.Package, "", "")
 		}
 	}
@@ -538,7 +627,15 @@ func (m *Model) homeView() tea.View {
 	cs := m.capabilities()
 	ps := m.profiles()
 	c, _ := m.selectedCapability()
-	lines := []string{"╔" + fit(" AACT ", width-2) + "╗", "║" + fit(" Main menu [F9 / m]", width-2) + "║", "║" + fit(" Checkout: "+m.settings["checkout"]+"   Managing: "+runtime.GOOS+" / "+runtime.GOARCH, width-2) + "║"}
+	shortPath := func(path string) string {
+		if path == "" {
+			return "none"
+		}
+		return filepath.Base(path)
+	}
+	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
+	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Actions"
+	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"
 	rtitle := "MCP profiles · " + c.Name
 	if m.home.Focus == CapabilitiesPane {
@@ -546,7 +643,9 @@ func (m *Model) homeView() tea.View {
 	} else {
 		rtitle = "► " + rtitle
 	}
-	lines = append(lines, "╠"+fit(ltitle, left)+"╦"+fit(rtitle, right)+"╣")
+	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+	lines = append(lines, "╠"+gold.Render(fit(ltitle, left))+"╦"+gold.Render(fit(rtitle, right))+"╣")
 	for row := 0; row < visible; row++ {
 		l, r := "", ""
 		i := m.home.Capabilities.Offset + row
@@ -583,7 +682,15 @@ func (m *Model) homeView() tea.View {
 		} else if row == 0 && len(ps) == 0 {
 			r = m.emptyProfiles()
 		}
-		lines = append(lines, "║"+fit(l, left)+"║"+fit(r, right)+"║")
+		l = fit(l, left)
+		r = fit(r, right)
+		if i := m.home.Capabilities.Offset + row; i < len(cs) && i == m.home.Capabilities.Index && m.home.Focus == CapabilitiesPane {
+			l = selected.Render(l)
+		}
+		if i := m.home.Profiles.Offset + row; i < len(ps) && i == m.home.Profiles.Index && m.home.Focus == ProfilesPane {
+			r = selected.Render(r)
+		}
+		lines = append(lines, "║"+l+"║"+r+"║")
 	}
 	pos := func(p paneState, n int) string {
 		if n == 0 {
@@ -627,11 +734,12 @@ func (m *Model) homeView() tea.View {
 		x += lipgloss.Width(b.text)
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║", "╚"+strings.Repeat("═", width-2)+"╝")
-	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: 24, Height: 1, Control: "main"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
+	actionsStart := strings.Index(menubar, "F2 Actions")
+	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Actions"), Height: 1, Control: "actions"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
 	if m.home.Modal != nil {
 		lines = m.overlay(lines)
 	}
-	v := tea.NewView(strings.Join(lines, "\n"))
+	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
@@ -642,6 +750,17 @@ func (m *Model) overlay(lines []string) []string {
 	title := "Actions"
 	if m.home.Modal.Kind == "main" {
 		title = "Main menu"
+	} else if m.home.Modal.Kind == "actions" {
+		if m.home.Focus == ProfilesPane {
+			if profiles := m.profiles(); len(profiles) > 0 {
+				profile := profiles[m.home.Profiles.Index]
+				if capability, ok := m.selectedCapability(); ok {
+					title = capability.Name + " · " + profile.Name
+				}
+			}
+		} else if capability, ok := m.selectedCapability(); ok {
+			title = capability.Name + " · Actions"
+		}
 	}
 	entries := []string{}
 	if m.home.Modal.Kind == "details" {
@@ -653,13 +772,19 @@ func (m *Model) overlay(lines []string) []string {
 	w := min(m.width-6, 64)
 	x := (m.width - w) / 2
 	y := max(3, (len(lines)-len(entries)-4)/2)
-	box := []string{"┌" + fit(" "+title, w-2) + "┐"}
+	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+	box := []string{"┌" + gold.Render(fit(" "+title, w-2)) + "┐"}
 	for i, e := range entries {
 		prefix := "  "
 		if i == m.home.Modal.Selected {
 			prefix = "> "
 		}
-		box = append(box, "│"+fit(prefix+e, w-2)+"│")
+		item := fit(prefix+e, w-2)
+		if i == m.home.Modal.Selected && m.home.Modal.Kind != "details" {
+			item = selected.Render(item)
+		}
+		box = append(box, "│"+item+"│")
 		if m.home.Modal.Kind != "details" {
 			m.home.Hits = append(m.home.Hits, hitRegion{X: x + 1, Y: y + i + 1, Width: w - 2, Height: 1, Index: i, Control: "menu"})
 		}

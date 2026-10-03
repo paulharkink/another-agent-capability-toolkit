@@ -50,7 +50,7 @@ func TestCheckConnectionActionObservesSelectedEndpoint(t *testing.T) {
 	m, b := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	cmd := openProfileAction(t, m, 8, false)
+	cmd := openProfileAction(t, m, "Check connection", false)
 	if cmd == nil || !m.busy {
 		t.Fatal("Check connection did not run")
 	}
@@ -73,9 +73,19 @@ func typedProfileFixture() (*Model, *profileBackend) {
 	m.Update(m.Init()())
 	return m, b
 }
-func openProfileAction(t *testing.T, m *Model, index int, mouse bool) tea.Cmd {
+func openProfileAction(t *testing.T, m *Model, label string, mouse bool) tea.Cmd {
 	t.Helper()
 	press(m, tea.KeyEnter, "")
+	index := -1
+	for i, entry := range m.menuEntries() {
+		if strings.HasPrefix(entry, label) {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		t.Fatalf("profile action %q absent: %v", label, m.menuEntries())
+	}
 	if mouse {
 		m.View()
 		for _, hit := range m.home.Hits {
@@ -127,7 +137,7 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 			m, b := typedProfileFixture()
 			m.focusPane(ProfilesPane)
 			m.selectPane(ProfilesPane, 1)
-			openProfileAction(t, m, 5, mouse)
+			openProfileAction(t, m, "Configure agent registrations", mouse)
 			if m.form == nil {
 				t.Fatal("configure registrations did not open form")
 			}
@@ -163,7 +173,7 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 	}
 }
 func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
-	for _, action := range []int{1, 2} {
+	for _, action := range []string{"Restart", "Stop"} {
 		m, _ := typedProfileFixture()
 		m.focusPane(ProfilesPane)
 		m.selectPane(ProfilesPane, 1)
@@ -177,7 +187,7 @@ func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
 	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, 5, false)
+	openProfileAction(t, m, "Configure agent registrations", false)
 	if m.form == nil || !strings.Contains(m.View().Content, "Transport") {
 		t.Fatal("unknown foreign transport must be selected in the registration form")
 	}
@@ -204,10 +214,10 @@ func TestRegistrationCancelRestoresActions(t *testing.T) {
 	m, b := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, 5, false)
+	openProfileAction(t, m, "Configure agent registrations", false)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if cmd != nil || m.form != nil || m.home.Modal == nil || m.home.Modal.Selected != 5 || b.request != nil {
-		t.Fatal("cancel did not restore originating Actions menu")
+	if cmd != nil || m.form != nil || m.home.Modal != nil || m.home.Focus != ProfilesPane || b.request != nil {
+		t.Fatal("cancel did not restore originating profile selection")
 	}
 }
 func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
@@ -215,7 +225,7 @@ func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	m.agents = append(m.agents, "All", "all")
-	openProfileAction(t, m, 5, false)
+	openProfileAction(t, m, "Configure agent registrations", false)
 	for i := 0; i < 4; i++ {
 		press(m, tea.KeyRight, "")
 		if strings.Contains(m.View().Content, "[All]") || strings.Contains(m.View().Content, "[all]") {
@@ -238,7 +248,7 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 	m, b := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, 6, false)
+	openProfileAction(t, m, "Remove agent registrations", false)
 	if m.form == nil {
 		t.Fatalf("Remove registrations did not open a form: %s", m.output)
 	}
@@ -246,7 +256,7 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 	if cmd != nil || b.request != nil || !strings.Contains(m.output, "No registrations selected") {
 		t.Fatalf("unselected removal should be a no-op: %+v", b.request)
 	}
-	openProfileAction(t, m, 6, false)
+	openProfileAction(t, m, "Remove agent registrations", false)
 	press(m, tea.KeySpace, " ")
 	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
@@ -263,7 +273,7 @@ func TestRegistrationPreservesUnavailableRegisteredAgent(t *testing.T) {
 	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, 5, false)
+	openProfileAction(t, m, "Configure agent registrations", false)
 	if !strings.Contains(m.View().Content, "generic:old") {
 		t.Fatal("unavailable existing registration was silently removed from selection")
 	}
@@ -285,7 +295,7 @@ func TestRegistrationConnectionObservationIsVisible(t *testing.T) {
 		if reachable {
 			b.result.Connection.Error = ""
 		}
-		openProfileAction(t, m, 5, false)
+		openProfileAction(t, m, "Configure agent registrations", false)
 		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 		if cmd == nil {
 			t.Fatal("no save command")
@@ -326,7 +336,7 @@ func TestSnapshotFailurePreservesRowsAndDisablesRuntime(t *testing.T) {
 		t.Fatal("failed refresh erased known profiles")
 	}
 	m.focusPane(ProfilesPane)
-	cmd := openProfileAction(t, m, 1, false)
+	cmd := openProfileAction(t, m, "Start", false)
 	if cmd != nil || m.busy || !strings.Contains(m.output, "profile store unavailable") {
 		t.Fatalf("failed refresh left runtime actions enabled: %s", m.output)
 	}
@@ -360,7 +370,7 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 		}
 	}
 	m.focusPane(ProfilesPane)
-	openProfileAction(t, m, 5, false)
+	openProfileAction(t, m, "Configure agent registrations", false)
 	if m.form == nil {
 		t.Fatal("foreign profile registration inaccessible")
 	}

@@ -405,14 +405,14 @@ func (m *Model) rows() []string {
 			rows = append(rows, agent)
 		}
 	case "Environments":
-		rows = append(rows, "Environment root: "+m.settings["environment_root"], "Target browsing awaits the environment service.")
+		rows = append(rows, "Environment root: "+m.environmentRoot(), "Target browsing awaits the environment service.")
 	case "Help":
 		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Space: mark capability; mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
 	case "Settings":
-		rows = append(rows, "Environment root: "+m.settings["environment_root"])
+		rows = append(rows, "Environment root: "+m.environmentRoot())
 		keys := []string{}
 		for key := range m.settings {
-			if key != "environment_root" {
+			if key != "environment_root" && key != "environment-root" {
 				keys = append(keys, key)
 			}
 		}
@@ -480,7 +480,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 	case "Settings":
 		if m.selected == 0 && stroke == "enter" {
 			m.pending = operation{action: "set-environment-root"}
-			m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.settings["environment_root"]})
+			m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
 			m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		}
 	}

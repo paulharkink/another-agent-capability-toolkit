@@ -20,21 +20,98 @@ type FormModel struct {
 	ctx                         context.Context
 	editor                      *Editor
 	defs                        []catalog.Input
+	title                       string
+	contextLine                 string
 	selected, width, height     int
 	editing                     bool
 	buffer, editAction, message string
+	cursor                      int
 	choiceIndex, rowIndex       map[string]int
 	hints                       map[string]string
+	conditions                  map[string]fieldCondition
+	disabled                    map[string]string
 	done                        bool
 	result                      map[string]any
 	err                         error
 }
+type fieldCondition struct{ Selector, Choice string }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
-	return &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}}
+	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}}
+	values := m.editor.Values()
+	for _, def := range defs {
+		if def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice" {
+			continue
+		}
+		for i, option := range def.Options {
+			if values[def.Name] == option.Value {
+				m.choiceIndex[def.Name] = i
+				break
+			}
+		}
+	}
+	return m
 }
+func (m *FormModel) SetTitle(title string)     { m.title = title }
 func (m *FormModel) SetHint(name, hint string) { m.hints[name] = hint }
-func (m *FormModel) Init() tea.Cmd             { return nil }
+func (m *FormModel) SetContext(line string)    { m.contextLine = line }
+func (m *FormModel) SetConditional(name, selector, choice string) {
+	m.conditions[name] = fieldCondition{Selector: selector, Choice: choice}
+	m.clearInactiveForSelector(selector)
+}
+func (m *FormModel) SetDisabled(name, reason string) {
+	m.disabled[name] = reason
+	m.setError(m.editor.Apply(name, ""))
+	if m.selected < len(m.defs) && m.defs[m.selected].Name == name {
+		m.moveFocus(1)
+	}
+}
+func (m *FormModel) clearInactiveForSelector(selector string) {
+	selected, _ := m.editor.Values()[selector].(string)
+	for name, condition := range m.conditions {
+		if condition.Selector == selector && condition.Choice != selected {
+			m.setError(m.editor.Apply(name, ""))
+		}
+	}
+}
+func (m *FormModel) disabledReason(name string) string {
+	if reason := m.disabled[name]; reason != "" {
+		return reason
+	}
+	condition, ok := m.conditions[name]
+	if !ok {
+		return ""
+	}
+	selected, _ := m.editor.Values()[condition.Selector].(string)
+	if selected == condition.Choice {
+		return ""
+	}
+	for _, def := range m.defs {
+		if def.Name != condition.Selector {
+			continue
+		}
+		for _, option := range def.Options {
+			if option.Value == selected {
+				label := option.Label
+				if label == "" {
+					label = selected
+				}
+				return "inactive while " + label + " is selected"
+			}
+		}
+	}
+	return "inactive for the selected method"
+}
+func (m *FormModel) moveFocus(delta int) {
+	count := len(m.defs) + 2
+	for step := 0; step < count; step++ {
+		m.selected = (m.selected + count + delta) % count
+		if m.selected >= len(m.defs) || m.disabledReason(m.defs[m.selected].Name) == "" {
+			break
+		}
+	}
+}
+func (m *FormModel) Init() tea.Cmd { return nil }
 func (m *FormModel) Result() (map[string]any, error) {
 	if !m.done {
 		return nil, ErrNotSubmitted
@@ -83,25 +160,27 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			err = m.editor.Apply(msg.name, msg.path)
 		}
 		m.setError(err)
+		if err == nil && msg.action == "add" {
+			m.rowIndex[msg.name] = len(collectionRows(m.editor.Values()[msg.name])) - 1
+		}
 	case tea.MouseMsg:
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
-		if stroke == "ctrl+c" || stroke == "esc" && !m.editing {
-			m.editor.Cancel()
-			m.done = true
-			m.err = picker.ErrCancelled
-			return m, tea.Quit
+		if stroke == "ctrl+c" {
+			return m.cancel()
 		}
-		if stroke == "ctrl+s" && !m.editing {
-			values, e := m.editor.Commit()
-			if e != nil {
-				m.message = e.Error()
-				return m, nil
+		if stroke == "esc" && !m.editing {
+			return m.cancel()
+		}
+		if stroke == "ctrl+s" {
+			if m.editing {
+				m.commitBuffer()
+				if m.editing {
+					return m, nil
+				}
 			}
-			m.done = true
-			m.result = values
-			return m, tea.Quit
+			return m.save()
 		}
 		if m.editing {
 			switch stroke {
@@ -110,33 +189,98 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = "Edit cancelled"
 			case "ctrl+u":
 				m.buffer = ""
+				m.cursor = 0
+			case "left":
+				m.cursor = max(0, m.cursor-1)
+			case "right":
+				m.cursor = min(utf8.RuneCountInString(m.buffer), m.cursor+1)
+			case "home":
+				m.cursor = 0
+			case "end":
+				m.cursor = utf8.RuneCountInString(m.buffer)
 			case "backspace":
-				_, size := utf8.DecodeLastRuneInString(m.buffer)
-				if size > 0 {
-					m.buffer = m.buffer[:len(m.buffer)-size]
+				if m.cursor > 0 {
+					runes := []rune(m.buffer)
+					m.buffer = string(append(runes[:m.cursor-1], runes[m.cursor:]...))
+					m.cursor--
+				}
+			case "delete":
+				runes := []rune(m.buffer)
+				if m.cursor < len(runes) {
+					m.buffer = string(append(runes[:m.cursor], runes[m.cursor+1:]...))
 				}
 			case "enter":
 				m.commitBuffer()
+			case "tab", "down", "up", "shift+tab":
+				m.commitBuffer()
+				if !m.editing {
+					delta := 1
+					if stroke == "up" || stroke == "shift+tab" {
+						delta = -1
+					}
+					m.moveFocus(delta)
+				}
 			default:
 				if msg.Text != "" {
-					m.buffer += msg.Text
+					runes := []rune(m.buffer)
+					m.buffer = string(runes[:m.cursor]) + msg.Text + string(runes[m.cursor:])
+					m.cursor += utf8.RuneCountInString(msg.Text)
 				}
 			}
 			return m, nil
 		}
-		if len(m.defs) == 0 {
+		switch stroke {
+		case "down":
+			if m.selected < len(m.defs) {
+				def := m.defs[m.selected]
+				if (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice") && len(def.Options) > 0 && m.choiceIndex[def.Name] < len(def.Options)-1 {
+					m.choiceIndex[def.Name]++
+					return m, nil
+				}
+			}
+			m.moveFocus(1)
+			m.message = ""
+			return m, nil
+		case "tab":
+			m.moveFocus(1)
+			m.message = ""
+			return m, nil
+		case "up":
+			if m.selected < len(m.defs) {
+				def := m.defs[m.selected]
+				if (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice") && len(def.Options) > 0 && m.choiceIndex[def.Name] > 0 {
+					m.choiceIndex[def.Name]--
+					return m, nil
+				}
+			}
+			m.moveFocus(-1)
+			m.message = ""
+			return m, nil
+		case "shift+tab":
+			m.moveFocus(-1)
+			m.message = ""
+			return m, nil
+		}
+		if m.selected >= len(m.defs) {
+			if stroke == "enter" {
+				if m.selected == len(m.defs) {
+					return m.save()
+				}
+				m.editor.Cancel()
+				m.done = true
+				m.err = picker.ErrCancelled
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 		def := m.defs[m.selected]
+		if reason := m.disabledReason(def.Name); reason != "" {
+			m.message = reason
+			return m, nil
+		}
 		values := m.editor.Values()
 		value := values[def.Name]
 		switch stroke {
-		case "tab", "down":
-			m.selected = (m.selected + 1) % len(m.defs)
-			m.message = ""
-		case "shift+tab", "up":
-			m.selected = (m.selected + len(m.defs) - 1) % len(m.defs)
-			m.message = ""
 		case "left", "right":
 			if len(def.Options) > 0 {
 				delta := 1
@@ -144,6 +288,9 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					delta = -1
 				}
 				m.choiceIndex[def.Name] = (m.choiceIndex[def.Name] + len(def.Options) + delta) % len(def.Options)
+				if !def.Multiple && def.Type != "multichoice" && def.Type != "multiple-choice" {
+					m.choose(def, value)
+				}
 			}
 		case "[", "]":
 			if paths := collectionRows(value); len(paths) > 0 {
@@ -212,10 +359,35 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+func (m *FormModel) cancel() (tea.Model, tea.Cmd) {
+	m.editor.Cancel()
+	m.done = true
+	m.err = picker.ErrCancelled
+	return m, tea.Quit
+}
+
+func (m *FormModel) save() (tea.Model, tea.Cmd) {
+	values, err := m.editor.Commit()
+	if err != nil {
+		m.message = err.Error()
+		for i, def := range m.defs {
+			if m.editor.initialErrors[def.Name] != nil || Validate([]catalog.Input{def}, m.editor.Values()) != nil {
+				m.selected = i
+				break
+			}
+		}
+		return m, nil
+	}
+	m.done = true
+	m.result = values
+	return m, tea.Quit
+}
 func (m *FormModel) beginEdit(action, buffer string) {
 	m.editing = true
 	m.editAction = action
 	m.buffer = buffer
+	m.cursor = utf8.RuneCountInString(buffer)
 	m.message = ""
 }
 func (m *FormModel) commitBuffer() {
@@ -231,6 +403,9 @@ func (m *FormModel) commitBuffer() {
 	}
 	m.setError(e)
 	if e == nil {
+		if m.editAction == "add" {
+			m.rowIndex[def.Name] = len(collectionRows(m.editor.Values()[def.Name])) - 1
+		}
 		m.editing = false
 	}
 }
@@ -252,7 +427,11 @@ func (m *FormModel) choose(def catalog.Input, current any) {
 		}
 		m.setError(m.editor.Apply(def.Name, next))
 	} else {
-		m.setError(m.editor.Apply(def.Name, option))
+		err := m.editor.Apply(def.Name, option)
+		m.setError(err)
+		if err == nil {
+			m.clearInactiveForSelector(def.Name)
+		}
 	}
 }
 func (m *FormModel) setError(e error) {
@@ -308,18 +487,19 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		cancelStart := 1 + len("[ Save ]  ")
 		if mouse.X >= cancelStart && mouse.X < cancelStart+len("[ Cancel ]") {
-			m.editor.Cancel()
-			m.done = true
-			m.err = picker.ErrCancelled
-			return m, tea.Quit
+			return m.cancel()
 		}
 	}
-	bodyY := mouse.Y - 3
+	bodyY := mouse.Y - layout.bodyStart
 	if bodyY < 0 || bodyY >= len(layout.visibleFields) {
 		return m, nil
 	}
 	field := layout.visibleFields[bodyY]
 	if field < 0 {
+		return m, nil
+	}
+	if reason := m.disabledReason(m.defs[field].Name); reason != "" {
+		m.message = reason
 		return m, nil
 	}
 	if m.editing {
@@ -330,6 +510,10 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.selected = field
 	m.message = ""
+	if choice := layout.visibleChoices[bodyY]; choice >= 0 {
+		m.choiceIndex[m.defs[field].Name] = choice
+		return m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	}
 	if row := layout.visibleRows[bodyY]; row >= 0 {
 		m.rowIndex[m.defs[field].Name] = row
 		return m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
@@ -354,18 +538,20 @@ func (e *pickerExec) SetStdout(out io.Writer) { e.out = out }
 func (e *pickerExec) SetStderr(out io.Writer) { e.err = out }
 
 type formLayout struct {
-	content       string
-	visibleFields []int
-	visibleRows   []int
-	footerY       int
+	content        string
+	visibleFields  []int
+	visibleRows    []int
+	visibleChoices []int
+	footerY        int
+	bodyStart      int
 }
 
 func (m *FormModel) layout() formLayout {
 	position := ""
-	if len(m.defs) > 0 {
+	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		position = fmt.Sprintf(" (%d/%d)", m.selected+1, len(m.defs))
 	}
-	title := lipgloss.NewStyle().Bold(true).Render("Edit package inputs" + position)
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffe38a")).Render(m.title + position)
 	rows := []string{}
 	values := m.editor.Values()
 	for i, def := range m.defs {
@@ -382,8 +568,8 @@ func (m *FormModel) layout() formLayout {
 		}
 		value := values[def.Name]
 		display := textValue(value)
-		if def.Type == "secret" && display != "" {
-			display = "••••••••"
+		if reason := m.disabledReason(def.Name); reason != "" {
+			display += " — " + reason
 		}
 		if paths := collectionRows(value); scalarDefinition(def).Multiple && len(def.Options) == 0 {
 			display = fmt.Sprintf("%d items", len(paths))
@@ -393,13 +579,10 @@ func (m *FormModel) layout() formLayout {
 					mark = ">"
 				}
 				row := textValue(path)
-				if def.Type == "secret" {
-					row = "••••••••"
-				}
 				display += "\n    " + mark + " " + row
 			}
 		}
-		if i == m.selected && len(def.Options) > 0 {
+		if i == m.selected && len(def.Options) > 0 && def.Type != "multichoice" && def.Type != "multiple-choice" && !def.Multiple {
 			option := def.Options[m.choiceIndex[def.Name]%len(def.Options)]
 			labelValue := option.Label
 			if labelValue == "" {
@@ -408,38 +591,70 @@ func (m *FormModel) layout() formLayout {
 			display += "  [" + labelValue + "]"
 		}
 		rows = append(rows, prefix+label+": "+display)
+		if len(def.Options) > 0 && (def.Type == "multichoice" || def.Type == "multiple-choice" || def.Multiple) {
+			chosen, _ := value.([]string)
+			for optionIndex, option := range def.Options {
+				mark := "[ ]"
+				for _, current := range chosen {
+					if current == option.Value {
+						mark = "[x]"
+						break
+					}
+				}
+				name := option.Label
+				if name == "" {
+					name = option.Value
+				}
+				pointer := " "
+				if i == m.selected && optionIndex == m.choiceIndex[def.Name]%len(def.Options) {
+					pointer = ">"
+				}
+				rows[len(rows)-1] += "\n    " + pointer + " " + mark + " " + name
+			}
+		}
 	}
 	selectedLine := 0
 	bodyLines := []string{}
 	fieldLines := []int{}
 	rowLines := []int{}
+	choiceLines := []int{}
 	for i, row := range rows {
 		if i == m.selected {
 			selectedLine = len(bodyLines)
+			if len(m.defs[i].Options) > 0 && (m.defs[i].Type == "multichoice" || m.defs[i].Type == "multiple-choice" || m.defs[i].Multiple) {
+				selectedLine += 1 + m.choiceIndex[m.defs[i].Name]%len(m.defs[i].Options)
+			}
+			if paths := collectionRows(values[m.defs[i].Name]); scalarDefinition(m.defs[i]).Multiple && len(m.defs[i].Options) == 0 && len(paths) > 0 {
+				selectedLine += 1 + min(m.rowIndex[m.defs[i].Name], len(paths)-1)
+			}
 		}
 		for part, line := range strings.Split(row, "\n") {
 			bodyLines = append(bodyLines, line)
 			fieldLines = append(fieldLines, i)
 			rowLines = append(rowLines, part-1)
+			choice := -1
+			if len(m.defs[i].Options) > 0 && (m.defs[i].Type == "multichoice" || m.defs[i].Type == "multiple-choice" || m.defs[i].Multiple) && part > 0 {
+				choice = part - 1
+			}
+			choiceLines = append(choiceLines, choice)
 		}
 	}
 	if len(bodyLines) == 0 {
 		bodyLines = []string{"No inputs"}
 		fieldLines = []int{-1}
 		rowLines = []int{-1}
+		choiceLines = []int{-1}
 	}
 	editInfo := ""
 	if m.editing {
-		buffer := m.buffer
-		if m.defs[m.selected].Type == "secret" {
-			buffer = strings.Repeat("•", utf8.RuneCountInString(buffer))
-		}
-		editInfo = "\n\nEdit: " + buffer + "_\nEnter applies; Ctrl+U clears; Esc cancels edit"
+		runes := []rune(m.buffer)
+		cursor := min(m.cursor, len(runes))
+		editInfo = "\n\nEdit: " + string(runes[:cursor]) + "_" + string(runes[cursor:]) + "\nEnter applies; Ctrl+U clears; Esc cancels edit"
 	}
 	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc cancel"
-	if len(m.defs) > 0 {
+	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
-		if def.ExclusiveGroup != "" {
+		if def.ExclusiveGroup != "" && m.disabledReason(def.Name) == "" {
 			others := []string{}
 			for _, other := range m.defs {
 				if other.Name == def.Name || other.ExclusiveGroup != def.ExclusiveGroup {
@@ -474,12 +689,31 @@ func (m *FormModel) layout() formLayout {
 	if editInfo != "" {
 		editLines = strings.Count(editInfo, "\n") + 1
 	}
-	visible := max(1, m.height-6-footerLines-editLines)
+	contextLines := 0
+	if m.contextLine != "" {
+		contextLines = 1
+	}
+	visible := max(1, m.height-6-footerLines-editLines-contextLines)
 	start := max(0, selectedLine-visible+1)
+	if m.selected >= len(m.defs) {
+		start = max(0, len(bodyLines)-visible)
+	}
 	start = min(start, max(0, len(bodyLines)-visible))
 	end := min(len(bodyLines), start+visible)
 	body := strings.Join(bodyLines[start:end], "\n")
-	head := strings.Split(title+"\n\n"+body+editInfo, "\n")
+	heading := title + "\n\n"
+	if m.contextLine != "" {
+		heading = title + "\n" + m.contextLine + "\n\n"
+	}
+	head := strings.Split(heading+body+editInfo, "\n")
+	actions := "[ Save ]  [ Cancel ]"
+	if m.selected == len(m.defs) {
+		actions = "> [ Save ]  [ Cancel ]"
+	}
+	if m.selected == len(m.defs)+1 {
+		actions = "[ Save ]  > [ Cancel ]"
+	}
+	footer = strings.Replace(footer, "[ Save ]  [ Cancel ]", actions, 1)
 	feet := strings.Split(m.message+"\n"+footer, "\n")
 	innerHeight := max(1, m.height-2)
 	padding := max(1, innerHeight-len(head)-len(feet))
@@ -490,9 +724,14 @@ func (m *FormModel) layout() formLayout {
 	framedRows = append(framedRows, feet...)
 	innerWidth := max(18, m.width-2)
 	framed := []string{"╔" + strings.Repeat("═", innerWidth) + "╗"}
+	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	for _, row := range framedRows {
 		clipped := ansi.Truncate(row, innerWidth, "")
-		framed = append(framed, "║"+clipped+strings.Repeat(" ", max(0, innerWidth-lipgloss.Width(clipped)))+"║")
+		padded := clipped + strings.Repeat(" ", max(0, innerWidth-lipgloss.Width(clipped)))
+		if strings.HasPrefix(row, "> ") {
+			padded = selectedStyle.Render(padded)
+		}
+		framed = append(framed, "║"+padded+"║")
 	}
 	framed = append(framed, "╚"+strings.Repeat("═", innerWidth)+"╝")
 	content := strings.Join(framed, "\n")
@@ -503,7 +742,7 @@ func (m *FormModel) layout() formLayout {
 			break
 		}
 	}
-	return formLayout{content: content, visibleFields: fieldLines[start:end], visibleRows: rowLines[start:end], footerY: footerY}
+	return formLayout{content: content, visibleFields: fieldLines[start:end], visibleRows: rowLines[start:end], visibleChoices: choiceLines[start:end], footerY: footerY, bodyStart: 3 + contextLines}
 }
 
 func (m *FormModel) View() tea.View {
@@ -512,7 +751,7 @@ func (m *FormModel) View() tea.View {
 	if width < 20 {
 		width = 20
 	}
-	view := tea.NewView(lipgloss.NewStyle().MaxWidth(width).Render(content))
+	view := tea.NewView(navyCanvas(content))
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }

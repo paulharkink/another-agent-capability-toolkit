@@ -3,16 +3,28 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
+
+var managementGold = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+var managementSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+
+func (m *Model) environmentRoot() string {
+	if root := m.settings["environment-root"]; root != "" {
+		return root
+	}
+	return m.settings["environment_root"]
+}
 
 type managementState struct {
 	Modal            string
@@ -205,8 +217,8 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			m.navigate("Help")
 		}
 	case "m", "f9":
-		m.navigate("Catalog")
-		m.home.Modal = &modalState{Kind: "main"}
+		m.management.Modal = "main"
+		m.management.ModalSelected = 0
 	case "enter":
 		if m.view == "Settings" && m.selected == 0 {
 			m.editEnvironmentRoot()
@@ -288,6 +300,9 @@ func (m *Model) moveManagementSelection(stroke string) {
 }
 
 func (m *Model) managementMenuEntries() []string {
+	if m.management.Modal == "main" {
+		return []string{"Agents", "Environments", "Settings", "Help", "Back"}
+	}
 	if m.management.Modal == "files" {
 		row, ok := m.selectedAgentManagement()
 		if !ok {
@@ -321,7 +336,10 @@ func (m *Model) managementMenuEntries() []string {
 		viewer := "View target — disabled: select an actual TOML target"
 		entries := m.environmentEntries()
 		selected := entries[min(max(0, m.management.EnvironmentIndex), len(entries)-1)]
-		setup := "Use for new setups"
+		setup := "Configure / install selected target…"
+		if selected.NoFile {
+			setup = "Configure / install selected capability…"
+		}
 		if reason := m.environmentSetupReason(selected); reason != "" {
 			setup += " — disabled: " + reason
 		}
@@ -407,9 +425,9 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 	}
 	switch stroke {
 	case "up":
-		m.management.ModalSelected = max(0, m.management.ModalSelected-1)
+		m.management.ModalSelected = (m.management.ModalSelected + len(entries) - 1) % len(entries)
 	case "down":
-		m.management.ModalSelected = min(len(entries)-1, m.management.ModalSelected+1)
+		m.management.ModalSelected = (m.management.ModalSelected + 1) % len(entries)
 	case "home":
 		m.management.ModalSelected = 0
 	case "end":
@@ -421,6 +439,13 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 		}
 		if strings.Contains(entries[i], "disabled:") {
 			m.output = strings.TrimSpace(strings.SplitN(entries[i], "disabled:", 2)[1])
+			return nil
+		}
+		if m.management.Modal == "main" {
+			m.management.Modal = ""
+			if entries[i] != "Back" && entries[i] != m.view {
+				m.navigate(entries[i])
+			}
 			return nil
 		}
 		if m.management.Modal == "files" {
@@ -487,6 +512,11 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 			m.editDefaultAgents()
 			return nil
 		}
+		if m.view == "Environments" && i == 3 {
+			m.management.Modal = ""
+			m.navigate("Catalog")
+			return nil
+		}
 		m.management.Modal = ""
 	}
 	return nil
@@ -494,7 +524,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.settings["environment_root"]})
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 }
 
@@ -533,7 +563,7 @@ func (m *Model) managementSettingsRows() []string {
 		defaultAgents = "None selected"
 	}
 	return []string{
-		"Environment root: " + m.settings["environment_root"],
+		"Environment root: " + m.environmentRoot(),
 		"Default named agents: " + defaultAgents,
 		"Docker backend: selection unavailable from service",
 		"Source: " + m.settings["source"],
@@ -572,14 +602,25 @@ func (m *Model) managementView() tea.View {
 	for i := range lines {
 		lines[i] = "║" + fit("", width-2) + "║"
 	}
-	lines[0] = "╔" + fit(" AACT · "+m.view, width-2) + "╗"
-	lines[1] = "║" + fit(" F9/m Main menu · F1 Help · Esc Back", width-2) + "║"
-	lines[2] = "╠" + strings.Repeat("═", width-2) + "╣"
-	visible := height - 11
+	shortPath := func(path string) string {
+		if path == "" {
+			return "none"
+		}
+		return filepath.Base(path)
+	}
+	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Actions"
+	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
+	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
+	lines[1] = "║" + fit(menubar, width-2) + "║"
+	lines[2] = "║" + fit(scope, width-2) + "║"
+	lines[3] = "╠" + strings.Repeat("═", width-2) + "╣"
+	actionsStart := strings.Index(menubar, "F2 Actions")
+	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Actions"), Height: 1, Control: "actions"})
+	visible := height - 12
 	if m.view == "Agents" {
 		m.renderAgentManagement(lines, visible)
 	} else if m.view == "Environments" {
-		m.renderEnvironmentManagement(lines, visible)
+		m.renderEnvironmentManagement(lines, visible-1)
 	} else {
 		rows := m.managementSettingsRows()
 		if m.view == "Help" {
@@ -604,7 +645,7 @@ func (m *Model) managementView() tea.View {
 	if m.management.Modal != "" {
 		m.renderManagementModal(lines)
 	}
-	v := tea.NewView(strings.Join(lines, "\n"))
+	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
@@ -624,17 +665,25 @@ func (m *Model) renderManagementList(lines []string, rows []string, visible int)
 		if i == m.selected {
 			prefix = "> "
 		}
-		lines[y+4] = "║" + fit(prefix+rows[i], width-2) + "║"
-		m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 4, Width: width - 2, Height: 1, Index: i, Control: "row"})
+		row := fit(prefix+rows[i], width-2)
+		if i == m.selected {
+			row = managementSelected.Render(row)
+		}
+		lines[y+5] = "║" + row + "║"
+		m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: width - 2, Height: 1, Index: i, Control: "row"})
 	}
-	lines[3] = "║" + fit(" "+m.view, width-2) + "║"
+	lines[4] = "║" + managementGold.Render(fit(" "+m.view, width-2)) + "║"
+}
+
+func managementPaneWidths(width int) (int, int) {
+	left := (width - 3) * 4 / 9
+	return left, width - 3 - left
 }
 
 func (m *Model) renderAgentManagement(lines []string, visible int) {
 	rows := m.namedAgents()
-	left := (m.width - 3) / 2
-	right := m.width - 3 - left
-	lines[3] = "╠" + fit(" Agents", left) + "╦" + fit(" Evidence and registrations", right) + "╣"
+	left, right := managementPaneWidths(m.width)
+	lines[4] = "╠" + managementGold.Render(fit(" Detected agents", left)) + "╦" + managementGold.Render(fit(" Evidence and registrations", right)) + "╣"
 	start := max(0, m.selected-visible+1)
 	if m.selected < visible {
 		start = 0
@@ -654,7 +703,7 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 					break
 				}
 			}
-			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 4, Width: left, Height: 1, Index: i, Control: "row"})
+			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: left, Height: 1, Index: i, Control: "row"})
 		}
 		rightText := ""
 		if len(rows) > 0 {
@@ -678,7 +727,11 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 				rightText = details[y]
 			}
 		}
-		lines[y+4] = "║" + fit(leftText, left) + "║" + fit(rightText, right) + "║"
+		leftCell := fit(leftText, left)
+		if i < len(rows) && i == m.selected {
+			leftCell = managementSelected.Render(leftCell)
+		}
+		lines[y+5] = "║" + leftCell + "║" + fit(rightText, right) + "║"
 	}
 }
 
@@ -707,7 +760,7 @@ func (m *Model) agentConfigView() tea.View {
 	}
 	lines[height-2] = "║" + fit(fmt.Sprintf(" Line %d/%d · Esc Back", m.management.ViewerOffset+1, len(content)), width-2) + "║"
 	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
-	v := tea.NewView(strings.Join(lines, "\n"))
+	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
@@ -716,15 +769,14 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 	entries := m.environmentEntries()
 	m.management.EnvironmentIndex = min(max(0, m.management.EnvironmentIndex), len(entries)-1)
 	selected := entries[m.management.EnvironmentIndex]
-	left := (m.width - 3) / 2
-	right := m.width - 3 - left
-	leftTitle, rightTitle := " Environments", " Targets · "+selected.Name
+	left, right := managementPaneWidths(m.width)
+	leftTitle, rightTitle := " Environment", " Configured targets · "+selected.Name
 	if m.management.Focus == CapabilitiesPane {
 		leftTitle = "►" + leftTitle
 	} else {
 		rightTitle = "►" + rightTitle
 	}
-	lines[3] = "╠" + fit(leftTitle, left) + "╦" + fit(rightTitle, right) + "╣"
+	lines[4] = "╠" + managementGold.Render(fit(leftTitle, left)) + "╦" + managementGold.Render(fit(rightTitle, right)) + "╣"
 	leftStart := max(0, m.management.EnvironmentIndex-visible+1)
 	rightStart := max(0, m.management.TargetIndex-visible+1)
 	for y := 0; y < visible; y++ {
@@ -736,7 +788,7 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 				prefix = "> "
 			}
 			l = prefix + entries[i].Name
-			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 4, Width: left, Height: 1, Pane: CapabilitiesPane, Index: i, Control: "row"})
+			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: left, Height: 1, Pane: CapabilitiesPane, Index: i, Control: "row"})
 		}
 		i = rightStart + y
 		if i < len(selected.Targets) {
@@ -745,16 +797,36 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 				prefix = "> "
 			}
 			r = prefix + selected.Targets[i]
-			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 4, Width: right, Height: 1, Pane: ProfilesPane, Index: i, Control: "row"})
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Pane: ProfilesPane, Index: i, Control: "row"})
 		} else if y == 0 && len(selected.Targets) == 0 {
 			r = "No targets in this selection"
 		}
-		lines[y+4] = "║" + fit(l, left) + "║" + fit(r, right) + "║"
+		leftCell, rightCell := fit(l, left), fit(r, right)
+		if m.management.Focus == CapabilitiesPane && leftStart+y == m.management.EnvironmentIndex {
+			leftCell = managementSelected.Render(leftCell)
+		}
+		if m.management.Focus == ProfilesPane && rightStart+y == m.management.TargetIndex && rightStart+y < len(selected.Targets) {
+			rightCell = managementSelected.Render(rightCell)
+		}
+		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
+	root := " Environment root: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
 	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
-		lines[m.height-8] = "║" + fit(" Invalid TOML: "+selected.Errors[m.management.TargetIndex], m.width-2) + "║"
+		root = " Invalid TOML: " + selected.Errors[m.management.TargetIndex]
 	}
-	lines[m.height-7] = "║" + fit(" Environment root: "+m.settings["environment_root"]+" · saved profiles are separate from TOML files", m.width-2) + "║"
+	lines[m.height-8] = "║" + fit(root, m.width-2) + "║"
+	labels := []string{"Configure / install", "View target", "Environment root", "Close"}
+	inline := " "
+	for i, label := range labels {
+		if i > 0 {
+			inline += "  "
+		}
+		x := len(inline) + 1
+		button := "[ " + label + " ]"
+		inline += button
+		m.management.Hits = append(m.management.Hits, hitRegion{X: x, Y: m.height - 7, Width: len(button), Height: 1, Index: i, Control: "env-action"})
+	}
+	lines[m.height-7] = "║" + managementGold.Render(fit(inline, m.width-2)) + "║"
 }
 
 func (m *Model) renderManagementModal(lines []string) {
@@ -762,13 +834,21 @@ func (m *Model) renderManagementModal(lines []string) {
 	w := min(m.width-6, 75)
 	x := (m.width - w) / 2
 	y := max(4, (m.height-len(entries)-4)/2)
-	box := []string{"┌" + fit(" Actions", w-2) + "┐"}
+	title := " Actions"
+	if m.management.Modal == "main" {
+		title = " Main menu"
+	}
+	box := []string{"┌" + managementGold.Render(fit(title, w-2)) + "┐"}
 	for i, entry := range entries {
 		prefix := "  "
 		if i == m.management.ModalSelected {
 			prefix = "> "
 		}
-		box = append(box, "│"+fit(prefix+entry, w-2)+"│")
+		row := fit(prefix+entry, w-2)
+		if i == m.management.ModalSelected {
+			row = managementSelected.Render(row)
+		}
+		box = append(box, "│"+row+"│")
 		m.management.Hits = append(m.management.Hits, hitRegion{X: x + 1, Y: y + i + 1, Width: w - 2, Height: 1, Index: i, Control: "menu"})
 	}
 	box = append(box, "│"+fit(" ↑↓ Select · Enter Open · Esc Back", w-2)+"│", "└"+strings.Repeat("─", w-2)+"┘")
@@ -838,6 +918,18 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 			return m.managementKey("f1")
 		case "actions":
 			return m.managementKey("f2")
+		case "env-action":
+			entries := m.managementMenuEntries()
+			if hit.Index >= len(entries) {
+				return nil
+			}
+			if strings.Contains(entries[hit.Index], "disabled:") {
+				m.output = strings.TrimSpace(strings.SplitN(entries[hit.Index], "disabled:", 2)[1])
+				return nil
+			}
+			m.management.Modal = "actions"
+			m.management.ModalSelected = hit.Index
+			return m.managementModalKey("enter")
 		case "refresh":
 			return m.managementKey("f5")
 		case "main":

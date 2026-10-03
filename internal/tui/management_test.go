@@ -6,8 +6,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -56,7 +58,7 @@ func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Use for new setups") || strings.Contains(m.View().Content, "Use for new setups — disabled") {
+	if !strings.Contains(m.View().Content, "Configure / install selected target…") || strings.Contains(m.View().Content, "Configure / install selected target… — disabled") {
 		t.Fatalf("actual target cannot start setup: %s", m.View().Content)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -66,6 +68,103 @@ func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
 	m.Update(cmd())
 	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: "production"}) || m.form == nil {
 		t.Fatalf("setup used wrong target: %+v, form=%v", b.previewRequest, m.form)
+	}
+}
+
+func TestEnvironmentActionNamesItsImmediateSetupEffect(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Environments")
+	press(m, tea.KeyEnter, "")
+	view := m.View().Content
+	if !strings.Contains(view, "Configure / install") || strings.Contains(view, "Use for new setups") {
+		t.Fatalf("immediate setup action is mislabeled: %s", view)
+	}
+}
+
+func TestManagementScreensAndMenuUseApprovedPalette(t *testing.T) {
+	m := fixtureModel(t)
+	for _, screen := range []string{"Agents", "Environments", "Settings"} {
+		m.navigate(screen)
+		view := m.View().Content
+		if !strings.Contains(view, "48;2;9;38;111") || !strings.Contains(view, "48;2;233;242;251") {
+			t.Fatalf("%s lost navy background or selected row highlight: %q", screen, view)
+		}
+		if got := defaultBackgroundGlyphs(view); got != 0 {
+			t.Fatalf("%s has %d default-background glyphs", screen, got)
+		}
+	}
+	press(m, tea.KeyF9, "")
+	view := m.View().Content
+	if !strings.Contains(view, "38;2;255;227;138") || !strings.Contains(view, "48;2;233;242;251") {
+		t.Fatalf("management menu lost gold title or selected highlight: %q", view)
+	}
+	if got := defaultBackgroundGlyphs(view); got != 0 {
+		t.Fatalf("management menu has %d default-background glyphs", got)
+	}
+}
+
+func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
+	m := fixtureModel(t)
+	for _, screen := range []string{"Agents", "Environments", "Settings"} {
+		m.navigate(screen)
+		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Actions") || !strings.Contains(lines[2], "Checkout:") {
+			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
+		}
+		if screen != "Settings" {
+			separator := strings.Index(lines[4], "╦")
+			if separator < 0 || utf8.RuneCountInString(lines[4][:separator]) >= 45 {
+				t.Fatalf("%s detail pane is not wider: %q", screen, lines[4])
+			}
+		}
+	}
+}
+
+func TestEnvironmentInlineControlsUseExistingActions(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Environments")
+	view := ansi.Strip(m.View().Content)
+	for _, label := range []string{"Configure / install", "View target", "Environment root", "Close"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("environment action %q is not visible: %s", label, view)
+		}
+	}
+	for _, hit := range m.management.Hits {
+		if hit.Control == "env-action" && hit.Index == 1 {
+			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+			if m.form != nil || m.busy || !strings.Contains(m.output, "select an actual TOML target") {
+				t.Fatalf("disabled View target became active: form=%v busy=%t output=%q", m.form, m.busy, m.output)
+			}
+			break
+		}
+	}
+	m.View()
+	for _, hit := range m.management.Hits {
+		if hit.Control == "env-action" && hit.Index == 3 {
+			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+			break
+		}
+	}
+	if m.view != "Catalog" {
+		t.Fatalf("Close did not return home: %q", m.view)
+	}
+}
+
+func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
+	m := fixtureModel(t)
+	delete(m.settings, "environment_root")
+	m.settings["environment-root"] = "/actual/environments"
+	m.navigate("Environments")
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+		t.Fatalf("Environments omitted canonical root: %s", view)
+	}
+	m.navigate("Settings")
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+		t.Fatalf("Settings omitted canonical root: %s", view)
+	}
+	m.editEnvironmentRoot()
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "/actual/environments") {
+		t.Fatalf("root editor lost canonical prefill: %s", view)
 	}
 }
 
@@ -96,7 +195,7 @@ func TestSavedProfileDoesNotBecomeSetupTarget(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Use for new setups — disabled") {
+	if !strings.Contains(m.View().Content, "Configure / install selected target… — disabled") {
 		t.Fatalf("saved profile offered as target TOML: %s", m.View().Content)
 	}
 }
@@ -282,12 +381,26 @@ func TestManagementHelpReturnsToOrigin(t *testing.T) {
 	}
 }
 
+func TestMainMenuFromSettingsClosesBackToSettings(t *testing.T) {
+	m, _ := homeFixture()
+	m.navigate("Settings")
+	m.selected = 1
+	press(m, tea.KeyF9, "")
+	if m.view != "Settings" || !strings.Contains(m.View().Content, "Main menu") {
+		t.Fatalf("F9 replaced Settings instead of overlaying it: view=%q", m.view)
+	}
+	press(m, tea.KeyEscape, "")
+	if m.view != "Settings" || m.selected != 1 {
+		t.Fatalf("Esc did not restore Settings selection: view=%q selected=%d", m.view, m.selected)
+	}
+}
+
 // This catches management navigation being keyboard-only in a mouse-capable terminal.
 func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Agents")
 	m.View()
-	m.Update(tea.MouseClickMsg{X: 4, Y: 5, Button: tea.MouseLeft})
+	m.Update(tea.MouseClickMsg{X: 4, Y: 6, Button: tea.MouseLeft})
 	if m.selected != 1 {
 		t.Fatalf("mouse selected row %d, want second agent", m.selected)
 	}
