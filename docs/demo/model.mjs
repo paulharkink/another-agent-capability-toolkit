@@ -84,7 +84,7 @@ export const helpSections = ['Navigation', 'Status labels', 'Forms and values'];
 export function createInitialState() {
   return {
     scope: { checkout: 'agent-skills', platform: 'macOS / arm64', source: 'pms15-agent-skills' },
-    view: 'home', focus: 'capabilities', capabilityIndex: 0, profileIndex: 0,
+    view: 'home', focus: 'capabilities', capabilityIndex: 0, homeDetailIndex: 0,
     agentIndex: 0, environmentIndex: 0, targetIndex: 0, settingsIndex: 0, helpIndex: 0,
     menuIndex: 0, overlay: null, toast: 'Interactive design sample — no files or containers are changed.',
     marked: [],
@@ -107,7 +107,8 @@ export function visibleProfiles(state) {
 }
 
 export function selectedProfile(state) {
-  return visibleProfiles(state)[state.profileIndex] ?? null;
+  return state.homeDetailIndex >= 2 && state.homeDetailIndex < 2 + visibleProfiles(state).length
+    ? visibleProfiles(state)[state.homeDetailIndex - 2] : null;
 }
 
 export function destinationsFor(state) {
@@ -153,14 +154,26 @@ export function transition(state, action) {
       const capabilityIndex = Math.max(0, Math.min(capabilities.length - 1, action.index));
       const skillOnly = !capabilities[capabilityIndex].mcp;
       return {
-        ...state, capabilityIndex, profileIndex: 0, focus: 'capabilities',
+        ...state, capabilityIndex, homeDetailIndex: 0, focus: 'capabilities',
         setup: { ...state.setup, destinations: skillOnly ? ['all'] : ['codex'], dirty: false },
       };
     }
-    case 'selectProfile':
-      return { ...state, profileIndex: Math.max(0, Math.min(visibleProfiles(state).length - 1, action.index)), focus: 'profiles' };
+    case 'selectHomeDetail':
+      return { ...state, homeDetailIndex: Math.max(0, Math.min(2 + visibleProfiles(state).length, action.index)), focus: 'profiles' };
     case 'focusPane':
-      return { ...state, focus: action.pane === 'profiles' && visibleProfiles(state).length === 0 ? 'capabilities' : action.pane };
+      return { ...state, focus: action.pane };
+    case 'backHome':
+      return { ...state, focus: 'capabilities' };
+    case 'enterHome':
+      if (state.focus === 'capabilities') return { ...state, focus: 'profiles' };
+      if (state.homeDetailIndex === 0) return transition(state, { type: 'openSetup', kind: 'new' });
+      if (state.homeDetailIndex === 1) return transition(state, { type: 'openDetails' });
+      if (state.homeDetailIndex === 2 + visibleProfiles(state).length) {
+        return transition(state, { type: 'showResult', message: state.marked.length
+          ? `${state.marked.length} marked capabilities would be configured. This mock does not change the machine.`
+          : 'Mark capabilities with Space in the left pane before applying a batch.' });
+      }
+      return transition(state, { type: 'openActions' });
     case 'setView':
       return { ...state, view: action.view, overlay: null, focus: action.view === 'home' ? 'capabilities' : state.focus };
     case 'selectAgent':
@@ -177,10 +190,14 @@ export function transition(state, action) {
       return { ...state, overlay: { kind: 'main', layout: 'single' }, menuIndex: 0 };
     case 'openActions':
       return { ...state, overlay: { kind: 'actions', layout: 'single' }, menuIndex: 0 };
+    case 'openDetails':
+      return { ...state, overlay: { kind: 'details', layout: 'single', parent: state.overlay } };
     case 'openRegistrations':
-      return { ...state, overlay: { kind: 'registrations', layout: 'split', agentIndex: 0, remove: !!action.remove, draftRegistrations: [...state.registrations], removeSelected: [] } };
-    case 'selectRegistrationAgent':
-      return { ...state, overlay: { ...state.overlay, agentIndex: Math.max(0, Math.min(agents.length - 1, action.index)) } };
+      return { ...state, overlay: { kind: 'registrations', layout: 'split', parent: state.overlay, itemIndex: 0, endpointCheck: 'Not checked in this sample', remove: !!action.remove, draftRegistrations: [...state.registrations], removeSelected: [] } };
+    case 'selectRegistrationItem':
+      return { ...state, overlay: { ...state.overlay, itemIndex: Math.max(0, Math.min(agents.length, action.index)) } };
+    case 'checkRegistrationEndpoint':
+      return { ...state, overlay: { ...state.overlay, endpointCheck: 'Unreachable · connect: connection refused (sample observation)' } };
     case 'toggleRegistration': {
       const field = state.overlay.remove ? 'removeSelected' : 'draftRegistrations';
       if (state.overlay.remove && !state.registrations.includes(action.id)) return state;
@@ -197,7 +214,7 @@ export function transition(state, action) {
         ...state,
         registrations,
         overlay: {
-          kind: 'result', layout: 'single', status: 'success',
+          kind: 'result', layout: 'single', parent: state.overlay.parent, status: 'success',
           message: state.overlay.remove
             ? `Local agent registrations selected for removal: ${state.overlay.removeSelected.join(', ') || 'none'}. No config file was changed (simulation).`
             : `Local agent registrations selected: ${registrations.join(', ') || 'none'}. No config file was changed (simulation).`,
@@ -210,7 +227,7 @@ export function transition(state, action) {
       return {
         ...state,
         setup: { ...state.setup, section, kind: action.kind ?? (selectedProfile(state) ? 'existing' : 'new'), dirty: false, error: '' },
-        overlay: { kind: 'setup', layout: 'split', section },
+        overlay: { kind: 'setup', layout: 'split', parent: state.overlay, section },
       };
       }
     case 'selectSetupSection':
@@ -244,21 +261,21 @@ export function transition(state, action) {
         return {
           ...state,
           setup: { ...state.setup, section: 'Authentication', error: 'Enter a Token or Source kubeconfig.' },
-          overlay: { kind: 'setup', layout: 'split', section: 'Authentication' },
+          overlay: { ...state.overlay, section: 'Authentication' },
         };
       }
       if (state.setup.destinations.length === 0) {
         return {
           ...state,
           setup: { ...state.setup, section: 'Destinations', error: selectedCapability(state).mcp ? 'Select at least one named agent destination.' : 'Select All or at least one named agent destination.' },
-          overlay: { kind: 'setup', layout: 'split', section: 'Destinations' },
+          overlay: { ...state.overlay, section: 'Destinations' },
         };
       }
       const error = state.setup.listenPort === '9999';
       return {
         ...state,
         overlay: {
-          kind: 'result', layout: 'single', status: error ? 'error' : 'success',
+          kind: 'result', layout: 'single', parent: state.overlay.parent, status: error ? 'error' : 'success',
           message: error
             ? 'bind 127.0.0.1:9999: address already in use. Your edited answers remain in this mock. Edit the port and Save to retry.'
             : 'Answers saved and applied (simulation). No file, agent config, or container was changed.',
@@ -267,17 +284,17 @@ export function transition(state, action) {
       };
     }
     case 'editAnswers':
-      return { ...state, overlay: { kind: 'setup', layout: 'split', section: state.setup.section } };
+      return { ...state, overlay: { kind: 'setup', layout: 'split', parent: state.overlay.parent, section: state.setup.section } };
     case 'closeOverlay':
       return state.overlay?.kind === 'setup' && state.setup.dirty
-        ? { ...state, overlay: { kind: 'discard', layout: 'single' } }
-        : { ...state, overlay: null };
+        ? { ...state, overlay: { kind: 'discard', layout: 'single', parent: state.overlay } }
+        : { ...state, overlay: state.overlay?.parent ?? null };
     case 'keepEditing':
-      return { ...state, overlay: { kind: 'setup', layout: 'split', section: state.setup.section } };
+      return { ...state, overlay: state.overlay.parent };
     case 'discardChanges':
-      return { ...state, overlay: null, setup: { ...createInitialState().setup, destinations: state.setup.destinations } };
+      return { ...state, overlay: state.overlay.parent?.parent ?? null, setup: { ...createInitialState().setup, destinations: state.setup.destinations } };
     case 'showResult':
-      return { ...state, overlay: { kind: 'result', layout: 'single', status: action.status ?? 'info', message: action.message } };
+      return { ...state, overlay: { kind: 'result', layout: 'single', parent: state.overlay, status: action.status ?? 'info', message: action.message } };
     case 'setToast':
       return { ...state, toast: action.message };
     case 'setSettingsBackend':

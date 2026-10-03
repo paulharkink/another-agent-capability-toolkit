@@ -33,6 +33,7 @@ button { cursor: pointer; }
 .scroll-cue.up { top: 0; border-top: 0; border-bottom: 1px solid #d9c472; }
 .scroll-cue.down { bottom: 0; }
 .list-row, .section-row { display: flex; width: 100%; gap: 8px; align-items: baseline; color: #e9f5ff; background: transparent; border: 0; border-radius: 0; padding: 5px 7px; text-align: left; white-space: nowrap; }
+.list-heading { padding: 9px 7px 3px; color: #ffdf86; border-bottom: 1px solid #547fc3; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
 .list-row span, .section-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .list-row small, .section-row small { color: #bdd5ef; font-size: 11px; }
 .list-row.selected, .section-row.selected { background: #e9f2fb; color: #081f5b; font-weight: bold; }

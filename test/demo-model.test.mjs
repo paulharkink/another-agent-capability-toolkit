@@ -6,6 +6,7 @@ import {
   destinationsFor,
   profileActions,
   scrollCues,
+  selectedProfile,
   setupSectionsFor,
   nextOverlayControlIndex,
   nextOverlayArea,
@@ -26,6 +27,47 @@ test('Mac sample starts in the two-pane home view with only related MCP profiles
   assert.deepEqual(visibleProfiles(selected), []);
   assert.equal(selected.focus, 'capabilities');
   assert.equal(state.capabilityIndex, 0);
+});
+
+test('home Enter moves from layer 1 to layer 2 before opening deeper content', () => {
+  let state = createInitialState();
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.focus, 'profiles');
+  assert.equal(state.homeDetailIndex, 0);
+  assert.equal(state.overlay, null);
+  assert.equal(selectedProfile(state), null);
+
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.overlay.kind, 'setup');
+
+  state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
+  state = transition(state, { type: 'selectHomeDetail', index: 1 });
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.overlay.kind, 'details');
+
+  state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
+  state = transition(state, { type: 'selectHomeDetail', index: 2 });
+  assert.equal(selectedProfile(state).name, 'home / pms15');
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.overlay.kind, 'actions');
+});
+
+test('Back from the home detail pane returns to the capability pane', () => {
+  let state = transition(createInitialState(), { type: 'enterHome' });
+  assert.equal(state.focus, 'profiles');
+  state = transition(state, { type: 'backHome' });
+  assert.equal(state.focus, 'capabilities');
+  assert.equal(state.overlay, null);
+});
+
+test('skill-only capability still has layer 2 items to enter', () => {
+  const skillIndex = capabilities.findIndex(capability => capability.name === 'Find Session');
+  let state = transition(createInitialState(), { type: 'selectCapability', index: skillIndex });
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.focus, 'profiles');
+  assert.equal(state.overlay, null);
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.overlay.kind, 'setup');
 });
 
 test('MCP destinations are named agents only, while skill-only setup offers All', () => {
@@ -115,6 +157,7 @@ test('database and destination sections remain in the setup right pane', () => {
 test('unknown ownership shows diagnosis actions without enabling runtime mutation', () => {
   let state = createInitialState();
   state = transition(state, { type: 'focusPane', pane: 'profiles' });
+  state = transition(state, { type: 'selectHomeDetail', index: 2 });
   const actions = profileActions(state);
   for (const id of ['details', 'refresh', 'check', 'registrations']) {
     assert.equal(actions.find(action => action.id === id)?.disabled, false, id);
@@ -163,16 +206,40 @@ test('scroll cues disclose content below and disappear at the end', () => {
 
 test('registration dialog is split and changes only the local agent selection', () => {
   let state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
+  state = transition(state, { type: 'selectHomeDetail', index: 2 });
   state = transition(state, { type: 'openRegistrations' });
   assert.equal(state.overlay.kind, 'registrations');
   assert.equal(state.overlay.layout, 'split');
+  assert.equal(state.overlay.itemIndex, 0);
+  state = transition(state, { type: 'checkRegistrationEndpoint' });
+  assert.equal(state.overlay.kind, 'registrations');
+  assert.match(state.overlay.endpointCheck, /connection refused/);
   state = transition(state, { type: 'toggleRegistration', id: 'opencode' });
   assert.deepEqual(state.overlay.draftRegistrations, ['codex', 'opencode']);
   assert.deepEqual(state.registrations, ['codex']);
-  state = transition(state, { type: 'selectRegistrationAgent', index: 1 });
-  assert.equal(state.overlay.agentIndex, 1);
+  state = transition(state, { type: 'selectRegistrationItem', index: 2 });
+  assert.equal(state.overlay.itemIndex, 2);
   state = transition(state, { type: 'closeOverlay' });
   assert.deepEqual(state.registrations, ['codex']);
+});
+
+test('closing a deeper detail restores the selected profile action layer', () => {
+  let state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
+  state = transition(state, { type: 'selectHomeDetail', index: 2 });
+  state = transition(state, { type: 'enterHome' });
+  assert.equal(state.overlay.kind, 'actions');
+  state = { ...state, menuIndex: 4 };
+  state = transition(state, { type: 'openRegistrations' });
+  assert.equal(state.overlay.kind, 'registrations');
+  state = transition(state, { type: 'closeOverlay' });
+  assert.equal(state.overlay.kind, 'actions');
+  assert.equal(state.menuIndex, 4);
+  assert.equal(selectedProfile(state).name, 'home / pms15');
+
+  state = transition(state, { type: 'openDetails' });
+  assert.equal(state.overlay.kind, 'details');
+  state = transition(state, { type: 'closeOverlay' });
+  assert.equal(state.overlay.kind, 'actions');
 });
 
 test('registration changes apply only after confirmation, and removals start unselected', () => {

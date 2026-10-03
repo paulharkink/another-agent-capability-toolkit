@@ -33,13 +33,21 @@ function renderHome(state) {
     const mark = state.marked.includes(item.id) ? '[x]' : '[ ]';
     return listRow(`${mark} ${item.name}`, item.kind, 'capability', index, index === state.capabilityIndex, item.name);
   }).join('');
-  const right = related.length
-    ? related.map((item, index) => listRow(item.name, `${item.runtime} · ${item.owner}`, 'profile', index, index === state.profileIndex, item.endpoint)).join('')
-    : `<p class="empty-list">${capability.mcp ? 'No MCP profiles yet — configure/install to create one.' : 'No MCP profiles — skill-only capability.'}</p>`;
+  const right = `<div class="list-heading">Capability</div>`
+    + listRow(`Configure / install ${capability.name}…`, 'Inputs and destinations', 'homeDetail', 0, state.homeDetailIndex === 0)
+    + listRow('View capability details', 'Source, package and status', 'homeDetail', 1, state.homeDetailIndex === 1)
+    + `<div class="list-heading">Related MCP profiles</div>`
+    + (related.length
+      ? related.map((item, index) => listRow(`MCP · ${item.name}`, `${item.runtime} · ${item.owner}`, 'homeDetail', index + 2, state.homeDetailIndex === index + 2, item.endpoint)).join('')
+      : `<p class="empty-list">${capability.mcp ? 'No MCP profiles yet.' : 'Skill-only capability; no MCP profile needed.'}</p>`)
+    + `<div class="list-heading">Marked capabilities</div>`
+    + listRow(`Apply marked (${state.marked.length})…`, state.marked.length ? 'Review simulated batch' : 'Mark capabilities with Space first', 'homeDetail', 2 + related.length, state.homeDetailIndex === 2 + related.length);
   const status = state.focus === 'profiles' && profile
     ? `<strong>${escapeHTML(profile.name)}</strong> · ${escapeHTML(profile.endpoint)}<br>Runtime: ${escapeHTML(profile.runtime)} · Owner: ${escapeHTML(profile.owner)} · Connection: ${escapeHTML(profile.connection)}<br><span class="subtle">${escapeHTML(profile.observation)} · ${escapeHTML(profile.connectionError || profile.ownerEvidence)}</span>`
-    : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}<br><span class="subtle">${capability.mcp ? 'Select an MCP profile on the right, or configure this capability.' : 'Skill-only: install to All — ~/.agents/skills or a named agent.'}</span>`;
-  return `<div class="panes base-panes">${pane('Capabilities', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`MCP profiles · ${capability.name}`, right, related.length ? `${state.profileIndex + 1} / ${related.length}` : '0 / 0', 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
+    : state.focus === 'profiles'
+      ? `<strong>${escapeHTML(capability.name)}</strong> · ${state.homeDetailIndex === 0 ? 'Configure / install' : state.homeDetailIndex === 1 ? 'Capability details' : 'Marked batch'}<br><span class="subtle">${state.homeDetailIndex === 0 ? 'Enter opens the setup form for this capability.' : state.homeDetailIndex === 1 ? 'Enter opens read-only package details.' : 'Enter reviews the marked capabilities.'}</span>`
+      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}<br><span class="subtle">Enter moves into the selected capability’s details on the right.</span>`;
+  return `<div class="panes base-panes">${pane('Capabilities · layer 1', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${3 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
 }
 
 function renderAgents(state) {
@@ -76,7 +84,7 @@ function renderSettings(state) {
 function renderHelp(state) {
   const left = helpSections.map((section, index) => listRow(section, '', 'help', index, index === state.helpIndex)).join('');
   const copy = [
-    '<h3>Navigation</h3><p>Layer 1: overview on the left. Layer 2: details on the right. Open an item for a centered layer-3 dialog; when it needs its own details, layers 3 and 4 appear side by side above the base screen.</p><p>Tab or ←/→ switches panes. ↑/↓ selects within the focused pane. Enter or F2 opens Actions. Esc closes only the top layer.</p>',
+    '<h3>Navigation</h3><p>Layer 1: overview on the left. Enter moves into the selected item’s layer-2 details on the right. Only a selection in layer 2 can open a deeper layer. A detail needing its own controls opens layers 3 and 4 side by side above the base screen.</p><p>Tab or ←/→ switches base panes. ↑/↓ selects within the focused pane. Enter or F2 moves one layer deeper. Esc steps back.</p>',
     '<h3>Status labels</h3><p>Runtime observation, connection result, and owner evidence are separate facts. Unknown owner does not mean that a server is stopped. Refresh, Check connection, and Details help diagnose it.</p>',
     '<h3>Forms and values</h3><p>Environment fixed values are omitted from setup. Editable defaults show their origin. Token and Source kubeconfig are both focusable; entering one makes it active and clears the other. Save applies immediately.</p>',
   ][state.helpIndex];
@@ -98,14 +106,7 @@ function menuItems(state) {
     { id: 'agents', label: 'Agents' }, { id: 'environments', label: 'Environments' },
     { id: 'settings', label: 'Settings' }, { id: 'help', label: 'Help' }, { id: 'closeOverlay', label: 'Back' },
   ];
-  if (state.view === 'home' && state.focus === 'profiles') return profileActions(state);
-  if (state.view === 'home') return [
-    { id: 'parameters', label: `Configure / install ${selectedCapability(state).name}…` },
-    { id: 'details', label: 'View capability details' },
-    { id: 'mark', label: state.marked.includes(selectedCapability(state).id) ? 'Unmark for batch' : 'Mark for batch' },
-    { id: 'batch', label: `Apply marked (${state.marked.length})…`, disabled: state.marked.length === 0, reason: 'Mark at least one capability first.' },
-    { id: 'closeOverlay', label: 'Back' },
-  ];
+  if (state.view === 'home') return profileActions(state);
   if (state.view === 'agents') return [
     { id: 'viewConfig', label: 'View configuration files' }, { id: 'location', label: 'Configure location…' },
     { id: 'refresh', label: 'Refresh detection' }, { id: 'closeOverlay', label: 'Back' },
@@ -125,7 +126,7 @@ function dialog(content, title, actions, layout = 'single') {
 function renderMenu(state) {
   const items = menuItems(state);
   const title = state.overlay.kind === 'main' ? 'Main menu' : state.view === 'home'
-    ? (state.focus === 'profiles' ? `${selectedCapability(state).name} · ${selectedProfile(state)?.name ?? ''}` : `${selectedCapability(state).name} · Actions`)
+    ? `${selectedCapability(state).name} · ${selectedProfile(state)?.name ?? ''}`
     : `${state.view[0].toUpperCase()}${state.view.slice(1)} · Actions`;
   const content = `<div class="dialog-content menu-content">${items.map((item, index) => `<button type="button" class="menu-item${index === state.menuIndex ? ' active' : ''}" data-action="${item.id}" data-menu-index="${index}" ${item.disabled ? 'disabled' : ''}><span>${escapeHTML(item.label)}</span>${item.reason ? `<small>${escapeHTML(item.reason)}</small>` : ''}</button>`).join('')}</div><div class="dialog-nav">↑↓ Choose · Enter Open · Esc Back</div>`;
   return dialog(content, title, button('Back', 'closeOverlay'));
@@ -156,16 +157,25 @@ function renderSetup(state) {
 }
 
 function renderRegistrations(state) {
-  const index = state.overlay.agentIndex ?? 0;
-  const agent = agents[index];
+  const index = state.overlay.itemIndex ?? 0;
+  const agent = index > 0 ? agents[index - 1] : null;
+  const endpoint = selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp';
   const removing = state.overlay.remove;
   const marked = removing ? state.overlay.removeSelected : state.overlay.draftRegistrations;
-  const left = pane(removing ? 'Registrations to remove' : 'Named agents', agents.map((item, i) => listRow(`${marked.includes(item.id) ? '[x]' : '[ ]'} ${item.name}`, item.status, 'registrationAgent', i, i === index)).join(''), `${index + 1} / ${agents.length}`, 'registration-agents', true);
-  const rowLabel = removing ? `Remove this registration from ${agent.name}` : `Register this endpoint for ${agent.name}`;
-  const notRegistered = removing && !state.registrations.includes(agent.id);
-  const right = pane(agent.name, `<div class="detail-copy"><h3>${escapeHTML(agent.name)}</h3><p>Endpoint: <code>${escapeHTML(selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp')}</code></p>${button('Check connection', 'check')}<dl><dt>Agent detection</dt><dd>${escapeHTML(agent.status)} · sample</dd><dt>Config file</dt><dd>${escapeHTML(agent.config)}</dd><dt>Planned effect</dt><dd>${escapeHTML(agent.effect)}</dd></dl><label class="check-row"><input type="checkbox" data-toggle-registration="${agent.id}" ${marked.includes(agent.id) ? 'checked' : ''} ${notRegistered ? 'disabled' : ''}><span>${escapeHTML(rowLabel)}${notRegistered ? ' · no registration exists' : ''}</span></label></div>`, 'Details', 'registration-detail', false);
+  const items = listRow('Endpoint URI', 'Connection check', 'registrationItem', 0, index === 0, endpoint)
+    + agents.map((item, i) => listRow(`${marked.includes(item.id) ? '[x]' : '[ ]'} ${item.name}`, item.status, 'registrationItem', i + 1, i + 1 === index)).join('');
+  const left = pane(removing ? 'Endpoint and removals' : 'Endpoint and agents', items, `${index + 1} / ${agents.length + 1}`, 'registration-items', true);
+  let detail;
+  if (!agent) {
+    detail = `<div class="detail-copy"><h3>Endpoint URI</h3><p><code>${escapeHTML(endpoint)}</code></p><p class="hint">The local agents below will register this same endpoint. Its connection can be checked independently of any agent.</p>${button('Check connection', 'check')}<dl><dt>Last check</dt><dd>${escapeHTML(state.overlay.endpointCheck)}</dd></dl></div>`;
+  } else {
+    const rowLabel = removing ? `Remove this registration from ${agent.name}` : `Register this endpoint for ${agent.name}`;
+    const notRegistered = removing && !state.registrations.includes(agent.id);
+    detail = `<div class="detail-copy"><h3>${escapeHTML(agent.name)}</h3><dl><dt>Agent detection</dt><dd>${escapeHTML(agent.status)} · sample</dd><dt>Config file</dt><dd>${escapeHTML(agent.config)}</dd><dt>Planned effect</dt><dd>${escapeHTML(agent.effect)}</dd></dl><label class="check-row"><input type="checkbox" data-toggle-registration="${agent.id}" ${marked.includes(agent.id) ? 'checked' : ''} ${notRegistered ? 'disabled' : ''}><span>${escapeHTML(rowLabel)}${notRegistered ? ' · no registration exists' : ''}</span></label></div>`;
+  }
+  const right = pane(agent?.name ?? 'Endpoint', detail, 'Details', 'registration-detail', false);
   const scope = removing ? 'Select existing registrations to remove' : 'Desired final local registrations';
-  return dialog(`<div class="dialog-scope">${scope} · Endpoint: ${escapeHTML(selectedProfile(state)?.endpoint ?? 'http://127.0.0.1:18766/mcp')}</div><div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: agents → details → actions · ↑↓ Controls · Ctrl/Cmd+S Apply · Esc Back/Cancel</div>`, removing ? 'Remove local registrations' : 'Configure agent registrations', button('Cancel', 'closeOverlay') + button('Apply changes', 'applyRegistrations', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
+  return dialog(`<div class="dialog-scope">${scope} · Endpoint: ${escapeHTML(endpoint)}</div><div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: endpoint/agents → details → actions · ↑↓ Controls · Ctrl/Cmd+S Apply · Esc Back/Cancel</div>`, removing ? 'Remove local registrations' : 'Configure agent registrations', button('Cancel', 'closeOverlay') + button('Apply changes', 'applyRegistrations', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
 }
 
 function renderDetails(state) {
@@ -197,8 +207,8 @@ function renderOverlay(state) {
 }
 
 export function render(state) {
-  const footer = `<footer class="terminal-footer"><button data-action="help"><b>F1</b> Help</button><button data-action="actions"><b>F2</b> Actions</button><button data-action="details"><b>F3</b> Details</button><button data-action="parameters"><b>F4</b> Parameters</button><button data-action="refresh"><b>F5</b> Refresh</button><button data-action="main"><b>F9</b> Main menu</button><button data-action="back"><b>${state.view === 'home' ? 'F10' : 'Esc'}</b> ${state.view === 'home' ? 'Quit' : 'Back'}</button></footer>`;
-  return `<div class="terminal"><div class="shell" ${state.overlay ? 'inert' : ''}><header class="terminal-title"><strong>AACT · Another Agent Capability Toolkit</strong><span>INTERACTIVE DESIGN SAMPLE</span></header><div class="menubar"><button data-action="main"><b>F9</b> Main menu: Agents | Environments | Settings | Help</button><button data-action="actions"><b>F2</b> Actions for selected item</button></div><div class="scope">Checkout: ${escapeHTML(state.scope.checkout)} · Managing: ${escapeHTML(state.scope.platform)} · Source: ${escapeHTML(state.scope.source)} · Env: home</div><div class="terminal-body">${renderBody(state)}</div><div class="toast" role="status">${escapeHTML(state.toast)}</div>${footer}</div>${renderOverlay(state)}</div>`;
+  const footer = `<footer class="terminal-footer"><button data-action="help"><b>F1</b> Help</button><button data-action="actions"><b>F2</b> Open / Focus</button><button data-action="details"><b>F3</b> Details</button><button data-action="parameters"><b>F4</b> Parameters</button><button data-action="refresh"><b>F5</b> Refresh</button><button data-action="main"><b>F9</b> Main menu</button><button data-action="${state.view === 'home' ? 'quit' : 'back'}"><b>${state.view === 'home' ? 'F10' : 'Esc'}</b> ${state.view === 'home' ? 'Quit' : 'Back'}</button></footer>`;
+  return `<div class="terminal"><div class="shell" ${state.overlay ? 'inert' : ''}><header class="terminal-title"><strong>AACT · Another Agent Capability Toolkit</strong><span>INTERACTIVE DESIGN SAMPLE</span></header><div class="menubar"><button data-action="main"><b>F9</b> Main menu: Agents | Environments | Settings | Help</button><button data-action="actions"><b>F2</b> Open / Focus selected layer</button></div><div class="scope">Checkout: ${escapeHTML(state.scope.checkout)} · Managing: ${escapeHTML(state.scope.platform)} · Source: ${escapeHTML(state.scope.source)} · Env: home</div><div class="terminal-body">${renderBody(state)}</div><div class="toast" role="status">${escapeHTML(state.toast)}</div>${footer}</div>${renderOverlay(state)}</div>`;
 }
 
 function updateScrollCues(root) {
@@ -217,9 +227,9 @@ export function mount(root) {
   const defaultFocusSelector = () => {
     if (state.overlay?.kind === 'setup') return '.section-row.selected';
     if (state.overlay?.kind === 'registrations') return '.overlay-panes .list-row.selected';
-    if (state.overlay?.kind === 'actions' || state.overlay?.kind === 'main') return '.menu-item:not(:disabled)';
+    if (state.overlay?.kind === 'actions' || state.overlay?.kind === 'main') return '.menu-item.active:not(:disabled), .menu-item:not(:disabled)';
     if (state.overlay) return '.dialog-actions button';
-    if (state.view === 'home') return state.focus === 'profiles' ? '[data-select="profile"].selected' : '[data-select="capability"].selected';
+    if (state.view === 'home') return state.focus === 'profiles' ? '[data-select="homeDetail"].selected' : '[data-select="capability"].selected';
     return `[data-select="${{ agents: 'agent', environments: 'environment', settings: 'settings', help: 'help' }[state.view] ?? 'capability'}"].selected`;
   };
   const paint = focusSelector => {
@@ -232,13 +242,29 @@ export function mount(root) {
   };
   const send = (action, focusSelector) => { state = transition(state, action); paint(focusSelector); };
   const show = (message, status = 'info') => send({ type: 'showResult', message, status }, '.dialog-actions button');
+  const focusBaseRight = () => {
+    const right = root.querySelector('.base-panes .pane:last-child');
+    (right?.querySelector('button:not(:disabled), input:not(:disabled), select:not(:disabled)') ?? right)?.focus();
+  };
   const perform = action => {
     switch (action) {
       case 'main': send({ type: 'openMainMenu' }, '.menu-item:not(:disabled)'); break;
-      case 'actions': send({ type: 'openActions' }, '.menu-item:not(:disabled)'); break;
-      case 'parameters': send({ type: 'openSetup' }, '.section-row.selected'); break;
+      case 'actions':
+        if (state.view === 'home') send({ type: 'enterHome' });
+        else focusBaseRight();
+        break;
+      case 'parameters':
+        if (state.overlay?.kind === 'actions') send({ type: 'openSetup' }, '.section-row.selected');
+        else if (state.view === 'home' && state.focus === 'profiles' && state.homeDetailIndex === 0) send({ type: 'enterHome' });
+        else if (state.view === 'home') send({ type: 'selectHomeDetail', index: 0 });
+        else send({ type: 'openSetup' }, '.section-row.selected');
+        break;
       case 'auth': send({ type: 'openSetup' }, '.section-row.selected'); break;
-      case 'details': state = { ...state, overlay: { kind: 'details', layout: 'single' } }; paint('.dialog-actions button'); break;
+      case 'details':
+        if (state.view === 'home' && !state.overlay && state.focus === 'capabilities') send({ type: 'selectHomeDetail', index: 1 });
+        else if (state.view === 'home' && !state.overlay && state.homeDetailIndex !== 1 && !selectedProfile(state)) send({ type: 'selectHomeDetail', index: 1 });
+        else send({ type: 'openDetails' }, '.dialog-actions button');
+        break;
       case 'registrations': send({ type: 'openRegistrations' }, '.list-row.selected'); break;
       case 'removeRegistrations': send({ type: 'openRegistrations', remove: true }, '.list-row.selected'); break;
       case 'saveSetup': {
@@ -254,12 +280,18 @@ export function mount(root) {
       case 'back':
         if (state.overlay) send({ type: 'closeOverlay' });
         else if (state.view !== 'home') send({ type: 'setView', view: 'home' });
-        else send({ type: 'setToast', message: 'The real TUI exits with F10. Close this browser tab when finished.' });
+        else if (state.focus === 'profiles') send({ type: 'backHome' }, '[data-select="capability"].selected');
+        break;
+      case 'quit':
+        send({ type: 'setToast', message: 'The real TUI exits with F10. Close this browser tab when finished.' });
         break;
       case 'agents': case 'environments': case 'settings': case 'help': send({ type: 'setView', view: action }); break;
       case 'mark': send({ type: 'toggleMark' }); break;
       case 'batch': show(`${state.marked.length} marked capabilities would be configured. This mock does not change the machine.`); break;
-      case 'check': show(`${selectedProfile(state)?.endpoint ?? 'Sample endpoint'}: unreachable · connect: connection refused (sample observation)`, 'error'); break;
+      case 'check':
+        if (state.overlay?.kind === 'registrations') send({ type: 'checkRegistrationEndpoint' }, '[data-action="check"]');
+        else show(`${selectedProfile(state)?.endpoint ?? 'Sample endpoint'}: unreachable · connect: connection refused (sample observation)`, 'error');
+        break;
       case 'refresh': show('Observation refreshed in the simulation. Runtime: not observed; owner: unknown; endpoint connection: unreachable. Check Details for the evidence.'); break;
       case 'start': case 'stop': show(`${action === 'start' ? 'Start' : 'Stop'} simulated. No container was changed.`); break;
       case 'logs': show('No locally owned container logs are available in this sample.'); break;
@@ -282,9 +314,9 @@ export function mount(root) {
     if (row) {
       const index = Number(row.dataset.index);
       const type = {
-        capability: 'selectCapability', profile: 'selectProfile', agent: 'selectAgent',
+        capability: 'selectCapability', homeDetail: 'selectHomeDetail', agent: 'selectAgent',
         environment: 'selectEnvironment', target: 'selectTarget', settings: 'selectSettingsSection',
-        help: 'selectHelpSection', registrationAgent: 'selectRegistrationAgent',
+        help: 'selectHelpSection', registrationItem: 'selectRegistrationItem',
       }[row.dataset.select];
       if (type) send({ type, index }, `[data-select="${row.dataset.select}"][data-index="${index}"]`);
       return;
@@ -377,7 +409,7 @@ export function mount(root) {
         const index = nextOverlayControlIndex(groups, current, key === 'ArrowDown' ? 1 : -1);
         const target = controls[index];
         if (target?.dataset.section) send({ type: 'selectSetupSection', section: target.dataset.section }, `[data-section="${target.dataset.section}"]`);
-        else if (target?.dataset.select === 'registrationAgent') send({ type: 'selectRegistrationAgent', index: Number(target.dataset.index) }, `[data-select="registrationAgent"][data-index="${target.dataset.index}"]`);
+        else if (target?.dataset.select === 'registrationItem') send({ type: 'selectRegistrationItem', index: Number(target.dataset.index) }, `[data-select="registrationItem"][data-index="${target.dataset.index}"]`);
         else if (target) target.focus();
         return;
       }
@@ -388,9 +420,15 @@ export function mount(root) {
     }
     if (key === 'Escape') { event.preventDefault(); perform('back'); return; }
     if (editing) return;
-    const commands = { F1: 'help', F2: 'actions', F3: 'details', F4: 'parameters', F5: 'refresh', F9: 'main', F10: 'back' };
+    const commands = { F1: 'help', F2: 'actions', F3: 'details', F4: 'parameters', F5: 'refresh', F9: 'main', F10: 'quit' };
     if (commands[key]) { event.preventDefault(); perform(commands[key]); return; }
-    if (key === 'Enter' && event.target.matches('.list-row')) { event.preventDefault(); perform('actions'); return; }
+    if (key === 'Enter' && event.target.matches('.list-row')) {
+      event.preventDefault();
+      if (state.view === 'home') perform('actions');
+      else if (event.target.dataset.select === 'target') perform('viewTarget');
+      else focusBaseRight();
+      return;
+    }
     if (key === ' ' && state.view === 'home' && state.focus === 'capabilities') { event.preventDefault(); perform('mark'); return; }
     const basePane = event.target.closest('.base-panes .pane');
     if ((basePane || event.target === root) && (key === 'Tab' || key === 'ArrowLeft' || key === 'ArrowRight')) {
@@ -400,7 +438,7 @@ export function mount(root) {
       const targetPane = panes[right ? 1 : 0];
       if (state.view === 'home') {
         const pane = right ? 'profiles' : 'capabilities';
-        send({ type: 'focusPane', pane }, pane === 'profiles' ? '[data-select="profile"].selected' : '[data-select="capability"].selected');
+        send({ type: 'focusPane', pane }, pane === 'profiles' ? '[data-select="homeDetail"].selected' : '[data-select="capability"].selected');
       } else {
         (targetPane.querySelector('button:not(:disabled), input:not(:disabled), select:not(:disabled)') ?? targetPane).focus();
       }
@@ -416,7 +454,7 @@ export function mount(root) {
         else target?.focus();
         return;
       }
-      if (state.view === 'home' && state.focus === 'profiles') send({ type: 'selectProfile', index: state.profileIndex + step }, '[data-select="profile"].selected');
+      if (state.view === 'home' && state.focus === 'profiles') send({ type: 'selectHomeDetail', index: state.homeDetailIndex + step }, '[data-select="homeDetail"].selected');
       else if (state.view === 'home') send({ type: 'selectCapability', index: state.capabilityIndex + step }, '[data-select="capability"].selected');
       else if (state.view === 'agents') send({ type: 'selectAgent', index: state.agentIndex + step }, '[data-select="agent"].selected');
       else if (state.view === 'environments') send({ type: 'selectEnvironment', index: state.environmentIndex + step }, '[data-select="environment"].selected');

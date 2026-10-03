@@ -17,22 +17,23 @@ The acceptance target is this document's **layout, navigation, visibility, form 
 ╔═ AACT ════════════════════════════════════════════════════════════════════╗
 ║ Main menu [F9]: Agents | Environments | Settings | Help                    ║
 ║ Checkout: company-tools                 Managing: WSL — Ubuntu            ║
-╠═ Capabilities ══════════════════════╦═ MCP profiles · Cluster Inspector ╣
-║►[ ] Cluster Inspector  skill + MCP   ║ Company / production  Running     ║
-║ [ ] Grafana Inspector  skill + MCP   ║ Company / staging     Stopped     ║
-║ [ ] Git repo mapper    skill         ║ Windows attachment   Running     ║
-║                                   1/3║                                1/3 ║
+╠═ Capabilities ══════════════════════╦═ Selected · Cluster Inspector ════╣
+║►[ ] Cluster Inspector  skill + MCP   ║► Configure / install…            ║
+║ [ ] Grafana Inspector  skill + MCP   ║  View capability details        ║
+║ [ ] Git repo mapper    skill         ║  Related MCP profiles           ║
+║                                   1/3║  Company / production  Running   ║
+║                                      ║  Company / staging     Stopped   ║
 ╠══════════════════════════════════════╩════════════════════════════════════╣
 ║ Cluster Inspector · skill + MCP · 3 related MCP profiles                  ║
 ╠═══════════════════════════════════════════════════════════════════════════╣
-║ Tab/←→ Panes  F1 Help  F2 Actions  F3 Details  F4 Parameters  F5 Refresh  ║
+║ Tab/←→ Panes  F1 Help  F2 Open/Focus  F3 Details  F4 Setup  F5 Refresh  ║
 ║ F9 Main menu                                                F10 Quit       ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 ```
 
-The left pane lists capabilities from the current checkout/catalog. The right pane lists **only MCP profiles belonging to the highlighted capability**. Changing the left selection refreshes that related list and selects its first row without disturbing the left selection or scroll position. Profile identity includes source, capability, environment, target, and local profile name where applicable; labels alone must not merge unrelated profiles.
+The left pane lists capabilities from the current checkout/catalog. The right pane is the selected capability's layer-2 menu: configure/install, capability details, and **only MCP profiles belonging to the highlighted capability**. Changing the left selection refreshes that context and selects its first row without disturbing the left selection or scroll position. Profile identity includes source, capability, environment, target, and local profile name where applicable; labels alone must not merge unrelated profiles.
 
-A skill-only capability shows `No MCP profiles — skill-only capability`. A capability with an MCP component but no configured profile shows `No MCP profiles yet — configure/install to create one`. The right pane cannot receive focus while empty. Only Capabilities supports batch marks in this version. The selected profile action never implicitly acts on every visible profile.
+A skill-only capability still has a layer-2 menu with Configure/install and View capability details; it has no MCP profile rows. A capability with an MCP component but no configured profile shows `No MCP profiles yet — configure/install to create one`. Only Capabilities supports batch marks in this version. The selected profile action never implicitly acts on every visible profile.
 
 Each pane owns a stable selected item ID and scroll offset. Resizing, refreshing, applying an operation, or returning from a modal keeps the originating item selected where it still exists. If it has disappeared, choose the nearest surviving row and explain why. Long lists scroll within their pane and show position/count. The detail strip shows the full selected identity when columns truncate it.
 
@@ -55,17 +56,19 @@ Every scrollable pane and overlay must visibly indicate when content continues b
 
 | Context | Keys and visible controls | Result |
 | --- | --- | --- |
-| Home | `Tab`, `←`, `→` | Switch between the two panes; attempting an empty MCP pane leaves focus on Capabilities with an explanation. |
+| Home | `Tab`, `←`, `→` | Switch between the two panes, including for skill-only capabilities. |
 | Focused list | `↑`, `↓`, `PgUp`, `PgDn`, `Home`, `End` | Move its selection and scroll its own viewport. |
 | Home and management lists | Left click on a visible row | Focus its pane and select that row. |
 | Scrollable pane or popup | Mouse wheel over its content | Scroll that content without changing an unrelated pane's selection. |
 | Capability list | `Space` | Toggle that capability's pending batch mark. |
-| Any selected row | `Enter`, `F2`, visible Actions control | Open that row's item-specific Actions menu. |
+| Home layer 1 | `Enter`, `F2`, visible Open/Focus control | Move focus to the selected capability's layer-2 menu; do not open an overlay. |
+| Home layer 2 | `Enter`, `F2`, visible Open/Focus control | Open the selected layer-2 item: setup, details, or a selected MCP profile's actions. |
+| Home layer 2 | `Esc` | Return focus to the selected capability in layer 1. |
 | Home | `F9`, visible Main menu control | Open Agents, Environments, Settings, Help. This does not switch home panes. |
 | Home | `F3`, `F4`, `F5` | Open Details, open Parameters/Install, or refresh the focused item/context. |
 | Menus | `↑`, `↓`, `Enter`, `Esc` | Move through actions, activate enabled action, or return to the exact origin. |
 | Dialogs | `Esc` | Close a single dialog. In a split form, step back from actions or details to the left section list; from there, close or ask whether to discard unsaved edits. |
-| Home | `F10`, visible Quit control | Exit. Input forms do not have a global letter-key quit shortcut. |
+| Home | `F10`, visible Quit control | Exit independently of which pane is focused. Input forms do not have a global letter-key quit shortcut. |
 
 Menus show unavailable actions in place with concise reasons. They do not silently omit a command because the selected profile is stopped, attached, unauthenticated, or read-only. The action menu is a centered overlay; its first enabled item receives focus. Closing it restores the selected row and pane. All popup controls have visible focus, and modal focus remains within the popup until it closes.
 
@@ -100,7 +103,7 @@ Windows AACT and WSL AACT are separate running installations in the ownership mo
 
 **Unknown runtime owner is a diagnosis state, not a blanket dead end.** The user reports that v0.1.2 currently shows only `disabled: Runtime owner is unknown` after selecting an MCP instance, without making it clear whether anything is running or how to proceed. The selected MCP profile must show the separately observed runtime state, endpoint, last observation time, and any concrete observation or ownership error. `Runtime owner is unknown` alone does not explain whether an MCP is running or why a command is unavailable. Details, Refresh, Check connection, and Back remain reachable. Configure registrations remains reachable when the endpoint is known and the local agent adapter can register it, even if AACT cannot establish who started the runtime. A runtime-changing action may be unavailable until ownership is established, but its disabled explanation must identify the missing evidence and point to a useful next step. The user must be able to diagnose the condition or choose another action rather than be left at a screen of disabled commands. This requirement does not authorize taking ownership of an unknown runtime automatically.
 
-Registration dialogs show the endpoint and **named agents only**. Configure presents desired final registration state; Remove opens with no removals selected. Agent detection failures and foreign-name conflicts are visible. Applying reports each agent's result individually rather than declaring a partial batch successful. The exact edit and rollback work belongs to compiled Go agent adapters, outside the TUI model.
+Registration dialogs have a layer-3 left list with an `Endpoint URI` row followed by **named agents only**. The endpoint row's layer-4 detail contains the URI, Check connection control, and its latest observation; Check connection is not shown as an agent's detail. Each agent row's detail contains that agent's detection, config location, planned effect, and registration control. Configure presents desired final registration state; Remove opens with no removals selected. Agent detection failures and foreign-name conflicts are visible. Applying reports each agent's result individually rather than declaring a partial batch successful. The exact edit and rollback work belongs to compiled Go agent adapters, outside the TUI model.
 
 Details is a scrollable read-only account of source, environment, target, value origins, saved configuration, binding, runtime observations, and local registrations. Check connection is explicit and reports its observation and time. Logs has follow/pause/scroll controls and closing it does not stop the server. Exact agent config viewing shows the entire file **without masking**, as the user specified.
 
