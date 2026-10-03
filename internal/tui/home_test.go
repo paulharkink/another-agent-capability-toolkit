@@ -2,13 +2,17 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"context"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func homeFixture() (*Model, loadedMsg) {
@@ -17,6 +21,78 @@ func homeFixture() (*Model, loadedMsg) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(msg)
 	return m, msg
+}
+func TestHomeUsesApprovedBlueBackground(t *testing.T) {
+	m, _ := homeFixture()
+	if !strings.Contains(m.View().Content, "48;2;9;38;111m") {
+		t.Fatalf("home screen lacks the approved navy blue background: prefix %q", m.View().Content[:min(100, len(m.View().Content))])
+	}
+}
+
+func defaultBackgroundGlyphs(content string) int {
+	painted, count := false, 0
+	for i := 0; i < len(content); {
+		if content[i] == '\x1b' && i+1 < len(content) && content[i+1] == '[' {
+			end := strings.IndexByte(content[i:], 'm')
+			if end > 0 {
+				parameters := content[i+2 : i+end]
+				if parameters == "" || parameters == "0" || parameters == "49" {
+					painted = false
+				}
+				if strings.Contains(parameters, "48;2;") {
+					painted = true
+				}
+				i += end + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(content[i:])
+		if r != '\n' && r != '\r' && !painted {
+			count++
+		}
+		i += size
+	}
+	return count
+}
+
+func TestHomeAndOverlayHaveNoDefaultBackgroundGlyphs(t *testing.T) {
+	m, _ := homeFixture()
+	if got := defaultBackgroundGlyphs(m.View().Content); got != 0 {
+		t.Fatalf("home has %d default-background glyphs", got)
+	}
+	press(m, tea.KeyF9, "")
+	if got := defaultBackgroundGlyphs(m.View().Content); got != 0 {
+		t.Fatalf("main menu has %d default-background glyphs", got)
+	}
+}
+
+func TestHomeShowsWhichCheckoutAndEnvironmentRootAreInUse(t *testing.T) {
+	m, msg := homeFixture()
+	msg.settings["checkout"] = "/Users/test/sources/agent-skills"
+	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
+	m.Update(msg)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Source: one", "Checkout: agent-skills", "Env: environments"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("home does not reveal %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
+	m, msg := homeFixture()
+	m.Update(msg)
+	view := m.View().Content
+	if !strings.Contains(view, "48;2;233;242;251m") {
+		t.Fatal("selected capability lacks the light highlight")
+	}
+	if !strings.Contains(view, "38;2;255;227;138m") {
+		t.Fatal("pane title lacks the approved gold accent")
+	}
+	m.home.Modal = &modalState{Kind: "actions"}
+	if !strings.Contains(m.View().Content, "48;2;233;242;251m") {
+		t.Fatal("Actions menu lacks a visible selected item")
+	}
 }
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
@@ -152,9 +228,9 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 	view := m.View().Content
 	lines := strings.Split(view, "\n")
 	y := len(lines) - 2
-	x := strings.Index(lines[y], "F10")
+	x := strings.Index(ansi.Strip(lines[y]), "F10")
 	// All preceding footer glyphs occupy one terminal cell; rune count handles arrows.
-	x = len([]rune(lines[y][:x]))
+	x = len([]rune(ansi.Strip(lines[y])[:x]))
 	_, cmd := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
 	if cmd == nil {
 		t.Fatal("click on visible F10 Quit did not quit")
@@ -193,7 +269,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 			t.Fatalf("view height %d exceeds %d", len(lines), size.Height)
 		}
 		for _, line := range lines {
-			if len([]rune(line)) > size.Width {
+			if lipgloss.Width(line) > size.Width {
 				t.Fatal("row exceeds width", line)
 			}
 		}
@@ -213,7 +289,17 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 				m.Update(msg)
 				m.focusPane(ProfilesPane)
 				press(m, tea.KeyEnter, "")
-				m.home.Modal.Selected = 6
+				index := -1
+				for i, entry := range m.menuEntries() {
+					if strings.Contains(entry, "Remove agent registrations") {
+						index = i
+						break
+					}
+				}
+				if index < 0 {
+					t.Fatal("remove registrations row missing")
+				}
+				m.home.Modal.Selected = index
 				var cmd tea.Cmd
 				if input == "keyboard" {
 					_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -221,7 +307,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 					m.View()
 					found := false
 					for _, hit := range m.home.Hits {
-						if hit.Control == "menu" && hit.Index == 6 {
+						if hit.Control == "menu" && hit.Index == index {
 							found = true
 							_, cmd = m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
 							break
@@ -234,7 +320,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 				if cmd != nil || m.form != nil || m.busy || m.pending.action == "uninstall" {
 					t.Fatalf("registration removal dispatched or opened uninstall: form=%v busy=%v pending=%q", m.form != nil, m.busy, m.pending.action)
 				}
-				if m.home.Modal == nil || !strings.Contains(m.menuEntries()[6], "disabled") {
+				if m.home.Modal == nil || !strings.Contains(m.menuEntries()[index], "disabled") {
 					t.Fatal("registration removal must remain visibly disabled")
 				}
 				if !strings.Contains(m.output, "registration-only") {
@@ -242,5 +328,74 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHomeMenusMatchApprovedCommands(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyF9, "")
+	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Environments", "Settings", "Help", "Back"}) {
+		t.Fatalf("main menu: %v", got)
+	}
+	press(m, tea.KeyEscape, "")
+	press(m, tea.KeyF2, "")
+	for _, want := range []string{"Configure / install Inspector", "View capability details", "Mark for batch", "Apply marked (0)", "Back"} {
+		if !strings.Contains(strings.Join(m.menuEntries(), "\n"), want) {
+			t.Fatalf("missing %q: %v", want, m.menuEntries())
+		}
+	}
+	press(m, tea.KeyEscape, "")
+	m.focusPane(ProfilesPane)
+	press(m, tea.KeyF2, "")
+	got := strings.Join(m.menuEntries(), "\n")
+	for _, want := range []string{"Restart", "Stop", "Authenticate", "Edit parameters", "Configure agent registrations", "Remove agent registrations", "Check connection", "View logs", "View details", "Back"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("profile menu missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
+	m, msg := homeFixture()
+	msg.mcps[0].Ownership = "foreign"
+	m.Update(msg)
+	m.focusPane(ProfilesPane)
+	press(m, tea.KeyF2, "")
+	m.home.Modal.Selected = 0
+	press(m, tea.KeyEnter, "")
+	if m.home.Modal == nil || m.busy || !strings.Contains(m.output, "not locally owned") {
+		t.Fatalf("disabled start activated or hid reason: modal=%v busy=%t output=%q", m.home.Modal, m.busy, m.output)
+	}
+}
+
+func TestHomeTopControlsAndContextMenuTitle(t *testing.T) {
+	m, _ := homeFixture()
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Environments | Settings | Help", "F2 Actions"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("home missing %q:\n%s", want, view)
+		}
+	}
+	m.focusPane(ProfilesPane)
+	m.View()
+	x := -1
+	for _, hit := range m.home.Hits {
+		if hit.Control == "actions" && hit.Y == 1 {
+			x = hit.X + 1
+			break
+		}
+	}
+	if x < 0 {
+		t.Fatal("top Actions control has no hit region")
+	}
+	if cmd := m.homeMouse(tea.MouseClickMsg{X: x, Y: 1, Button: tea.MouseLeft}); cmd != nil {
+		t.Fatal("Actions click dispatched unexpected command")
+	}
+	if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
+		t.Fatal("top Actions control not clickable")
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "Inspector · profile") {
+		t.Fatal("Actions menu has no selected profile title")
 	}
 }

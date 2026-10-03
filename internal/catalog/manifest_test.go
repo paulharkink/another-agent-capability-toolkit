@@ -48,6 +48,30 @@ func TestLoadPlainSkill(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionsFromRequiresMultiChoiceAndWildcard(t *testing.T) {
+	for _, manifest := range []string{
+		plainManifest + `[[inputs]]
+name = "connections"
+type = "string"
+options_from = "dbms.*.tenants.*"
+`,
+		plainManifest + `[[inputs]]
+name = "connections"
+type = "multichoice"
+options_from = "dbms.tenants"
+`,
+		plainManifest + `[[inputs]]
+name = "connections"
+type = "multichoice"
+options_from = "dbms.foo*.tenants"
+`,
+	} {
+		if _, err := Load(writeManifest(t, manifest)); err == nil || !strings.Contains(err.Error(), "options_from") {
+			t.Fatalf("invalid options_from declaration accepted: %v", err)
+		}
+	}
+}
 func TestLoadBundle(t *testing.T) {
 	p, e := Load(writeManifest(t, fixture(t, "bundle.toml")))
 	if e != nil {

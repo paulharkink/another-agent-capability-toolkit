@@ -151,6 +151,11 @@ have a value in that target file, is omitted from setup and Parameters forms,
 and cannot be overridden with `--set`. A `default` input remains editable.
 Input policy is read only from target TOML. `--environment` and `--target` are
 used together.
+For target-backed checkbox inputs, a package can declare `type = "multichoice"`
+and `options_from = "dbms.*.tenants.*"`. Each `*` reads table names from the
+selected target TOML; the selected names are joined with `/` (for example,
+`shared_postgres/plane`). An optional `label` in the leaf table supplies a
+display name. These choices are selected in the form, not entered as free text.
 Without a checkout manifest, AACT exposes the bundled catalog.
 
 Existing configuration can be previewed with `aact migrate --dry-run --json` and

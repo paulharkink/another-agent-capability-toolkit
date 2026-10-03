@@ -82,6 +82,7 @@ type MCPRequest struct {
 type Result struct {
 	Changes   []state.Installation `json:"changes"`
 	Errors    []string             `json:"errors"`
+	Saved     bool                 `json:"saved"`
 	Instances []mcp.Instance       `json:"instances,omitempty"`
 	Logs      string               `json:"logs,omitempty"`
 	Message   string               `json:"message,omitempty"`
@@ -318,6 +319,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswers(k, p, values) }); e != nil {
 		return out, e
 	}
+	out.Saved = true
 	generated := ""
 	if p.Skill != nil && (len(p.Templates) > 0 || p.Generator != nil) {
 		r := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}

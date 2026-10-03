@@ -30,6 +30,7 @@ type Input struct {
 	MinItems       *int     `toml:"min_items" json:"min_items"`
 	MaxItems       *int     `toml:"max_items" json:"max_items"`
 	Options        []Choice `toml:"options" json:"options"`
+	OptionsFrom    string   `toml:"options_from" json:"options_from"`
 }
 type Choice struct {
 	Value string `toml:"value" json:"value"`

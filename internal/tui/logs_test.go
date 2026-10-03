@@ -36,7 +36,7 @@ func TestOwnedProfileLogsOpenScrollableReadOnlyViewer(t *testing.T) {
 	}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	cmd := openProfileAction(t, m, 7, false)
+	cmd := openProfileAction(t, m, "View logs", false)
 	if cmd == nil {
 		t.Fatal("owned profile logs did not load")
 	}
@@ -69,7 +69,7 @@ func TestForeignProfileCannotFetchLogs(t *testing.T) {
 	m.backend = b
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	cmd := openProfileAction(t, m, 7, false)
+	cmd := openProfileAction(t, m, "View logs", false)
 	if cmd != nil || len(b.actions) != 0 || !strings.Contains(m.output, "not locally owned") {
 		t.Fatalf("foreign profile exposed local logs: cmd=%v actions=%v output=%q", cmd, b.actions, m.output)
 	}

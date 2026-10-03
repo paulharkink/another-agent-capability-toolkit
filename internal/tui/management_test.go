@@ -6,8 +6,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -56,7 +58,7 @@ func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Use for new setups") || strings.Contains(m.View().Content, "Use for new setups — disabled") {
+	if !strings.Contains(m.View().Content, "Configure / install selected target…") || strings.Contains(m.View().Content, "Configure / install selected target… — disabled") {
 		t.Fatalf("actual target cannot start setup: %s", m.View().Content)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -66,6 +68,103 @@ func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
 	m.Update(cmd())
 	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: "production"}) || m.form == nil {
 		t.Fatalf("setup used wrong target: %+v, form=%v", b.previewRequest, m.form)
+	}
+}
+
+func TestEnvironmentActionNamesItsImmediateSetupEffect(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Environments")
+	press(m, tea.KeyEnter, "")
+	view := m.View().Content
+	if !strings.Contains(view, "Configure / install") || strings.Contains(view, "Use for new setups") {
+		t.Fatalf("immediate setup action is mislabeled: %s", view)
+	}
+}
+
+func TestManagementScreensAndMenuUseApprovedPalette(t *testing.T) {
+	m := fixtureModel(t)
+	for _, screen := range []string{"Agents", "Environments", "Settings"} {
+		m.navigate(screen)
+		view := m.View().Content
+		if !strings.Contains(view, "48;2;9;38;111") || !strings.Contains(view, "48;2;233;242;251") {
+			t.Fatalf("%s lost navy background or selected row highlight: %q", screen, view)
+		}
+		if got := defaultBackgroundGlyphs(view); got != 0 {
+			t.Fatalf("%s has %d default-background glyphs", screen, got)
+		}
+	}
+	press(m, tea.KeyF9, "")
+	view := m.View().Content
+	if !strings.Contains(view, "38;2;255;227;138") || !strings.Contains(view, "48;2;233;242;251") {
+		t.Fatalf("management menu lost gold title or selected highlight: %q", view)
+	}
+	if got := defaultBackgroundGlyphs(view); got != 0 {
+		t.Fatalf("management menu has %d default-background glyphs", got)
+	}
+}
+
+func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
+	m := fixtureModel(t)
+	for _, screen := range []string{"Agents", "Environments", "Settings"} {
+		m.navigate(screen)
+		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Actions") || !strings.Contains(lines[2], "Checkout:") {
+			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
+		}
+		if screen != "Settings" {
+			separator := strings.Index(lines[4], "╦")
+			if separator < 0 || utf8.RuneCountInString(lines[4][:separator]) >= 45 {
+				t.Fatalf("%s detail pane is not wider: %q", screen, lines[4])
+			}
+		}
+	}
+}
+
+func TestEnvironmentInlineControlsUseExistingActions(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Environments")
+	view := ansi.Strip(m.View().Content)
+	for _, label := range []string{"Configure / install", "View target", "Environment root", "Close"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("environment action %q is not visible: %s", label, view)
+		}
+	}
+	for _, hit := range m.management.Hits {
+		if hit.Control == "env-action" && hit.Index == 1 {
+			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+			if m.form != nil || m.busy || !strings.Contains(m.output, "select an actual TOML target") {
+				t.Fatalf("disabled View target became active: form=%v busy=%t output=%q", m.form, m.busy, m.output)
+			}
+			break
+		}
+	}
+	m.View()
+	for _, hit := range m.management.Hits {
+		if hit.Control == "env-action" && hit.Index == 3 {
+			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+			break
+		}
+	}
+	if m.view != "Catalog" {
+		t.Fatalf("Close did not return home: %q", m.view)
+	}
+}
+
+func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
+	m := fixtureModel(t)
+	delete(m.settings, "environment_root")
+	m.settings["environment-root"] = "/actual/environments"
+	m.navigate("Environments")
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+		t.Fatalf("Environments omitted canonical root: %s", view)
+	}
+	m.navigate("Settings")
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+		t.Fatalf("Settings omitted canonical root: %s", view)
+	}
+	m.editEnvironmentRoot()
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "/actual/environments") {
+		t.Fatalf("root editor lost canonical prefill: %s", view)
 	}
 }
 
@@ -96,7 +195,7 @@ func TestSavedProfileDoesNotBecomeSetupTarget(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Use for new setups — disabled") {
+	if !strings.Contains(m.View().Content, "Configure / install selected target… — disabled") {
 		t.Fatalf("saved profile offered as target TOML: %s", m.View().Content)
 	}
 }
@@ -220,6 +319,26 @@ func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 	}
 }
 
+func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
+	m, _ := typedAgentModel(t)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"╦ Codex", "Status: installed", "Config: /home/test/config.json", "AACT MCPs: 1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("agent detail summary missing %q: %s", want, view)
+		}
+	}
+	if strings.Contains(view, "Note:") || !strings.Contains(view, "Registrations:") {
+		t.Fatalf("agent detail shows an empty note or unlabeled registrations: %s", view)
+	}
+	m = fixtureModel(t)
+	m.navigate("Agents")
+	press(m, tea.KeyDown, "")
+	view = ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "╦ claude") || !strings.Contains(view, "Status: Detection unavailable") || !strings.Contains(view, "Config: location unavailable") {
+		t.Fatalf("selected fallback agent summary is misleading: %s", view)
+	}
+}
+
 // This catches masking config values or replacing exact file contents with a summary.
 func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 	m, _ := typedAgentModel(t)
@@ -282,12 +401,26 @@ func TestManagementHelpReturnsToOrigin(t *testing.T) {
 	}
 }
 
+func TestMainMenuFromSettingsClosesBackToSettings(t *testing.T) {
+	m, _ := homeFixture()
+	m.navigate("Settings")
+	m.selected = 1
+	press(m, tea.KeyF9, "")
+	if m.view != "Settings" || !strings.Contains(m.View().Content, "Main menu") {
+		t.Fatalf("F9 replaced Settings instead of overlaying it: view=%q", m.view)
+	}
+	press(m, tea.KeyEscape, "")
+	if m.view != "Settings" || m.selected != 1 {
+		t.Fatalf("Esc did not restore Settings selection: view=%q selected=%d", m.view, m.selected)
+	}
+}
+
 // This catches management navigation being keyboard-only in a mouse-capable terminal.
 func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Agents")
 	m.View()
-	m.Update(tea.MouseClickMsg{X: 4, Y: 5, Button: tea.MouseLeft})
+	m.Update(tea.MouseClickMsg{X: 4, Y: 6, Button: tea.MouseLeft})
 	if m.selected != 1 {
 		t.Fatalf("mouse selected row %d, want second agent", m.selected)
 	}
@@ -369,6 +502,164 @@ func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
 	m.Update(cmd())
 	if !reflect.DeepEqual(backend.saved, []string{"claude"}) {
 		t.Fatalf("saved agents = %#v", backend.saved)
+	}
+}
+
+func TestSettingsInPlaceCheckboxesSaveAndCancel(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"[ ] Codex", "[x] Claude Code", "Docker backend", "Check backend", "View known checkouts", "disabled:", "[ Save ]", "[ Cancel ]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings missing in-place control %q: %s", want, view)
+		}
+	}
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ ] Codex") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeySpace, " ")
+	if backend.saved != nil || !strings.Contains(ansi.Strip(m.View().Content), "[x] Codex") {
+		t.Fatal("checkbox toggle saved early or did not update the draft")
+	}
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ Save ]") {
+			m.selected = i
+			break
+		}
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("in-place Save did not dispatch preference write")
+	}
+	m.Update(cmd())
+	if !reflect.DeepEqual(backend.saved, []string{"codex", "claude"}) {
+		t.Fatalf("in-place Save wrote %v", backend.saved)
+	}
+	m.navigate("Settings")
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ ] Codex") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeySpace, " ")
+	for i, row := range m.managementSettingsRows() {
+		if strings.Contains(row, "[ Cancel ]") {
+			m.selected = i
+			break
+		}
+	}
+	press(m, tea.KeyEnter, "")
+	if m.view != "Catalog" || !reflect.DeepEqual(backend.saved, []string{"codex", "claude"}) {
+		t.Fatalf("Cancel persisted draft or stayed in Settings: view=%q saved=%v", m.view, backend.saved)
+	}
+}
+
+func TestSettingsUnavailableBackendAndCheckoutControlsStayInert(t *testing.T) {
+	m := fixtureModel(t)
+	m.navigate("Settings")
+	for _, label := range []string{"Select backend", "Check backend", "View known checkouts"} {
+		found := false
+		for i, row := range m.managementSettingsRows() {
+			if !strings.Contains(row, label) {
+				continue
+			}
+			found = true
+			if !strings.Contains(row, "disabled:") {
+				t.Fatalf("%s lacks a disabled reason: %s", label, row)
+			}
+			m.selected = i
+			_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if cmd != nil || m.form != nil || m.management.Modal != "" {
+				t.Fatalf("%s invoked an unavailable service", label)
+			}
+		}
+		if !found {
+			t.Fatalf("Settings omitted %s", label)
+		}
+	}
+}
+
+func TestSettingsSkillOnlyNoteWrapsWithoutHidingActions(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{
+		"Skill-only installations default to All — ~/.agents/skills.",
+		"These named-agent defaults do not change existing registrations.",
+		"[ Save ]",
+		"[ Cancel ]",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Settings clipped %q: %s", want, view)
+		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := ansi.StringWidth(line); width != 100 {
+			t.Fatalf("Settings line %d has width %d, want 100", i, width)
+		}
+	}
+}
+
+func TestSettingsSaveCancelStayPinnedAndRequireExplicitActivation(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 100, Height: 30}} {
+		backend := &editableSettingsBackend{}
+		m := New(backend).(*Model)
+		m.Update(size)
+		m.Update(m.Init()())
+		m.navigate("Settings")
+		view := ansi.Strip(m.View().Content)
+		lines := strings.Split(view, "\n")
+		actions := lines[size.Height-7]
+		if !strings.Contains(actions, "[ Save ]") || !strings.Contains(actions, "[ Cancel ]") {
+			t.Fatalf("%dx%d Settings actions are not pinned: %s", size.Width, size.Height, view)
+		}
+		if len(lines) != size.Height || ansi.StringWidth(actions) != size.Width {
+			t.Fatalf("%dx%d Settings action geometry is wrong", size.Width, size.Height)
+		}
+		save := len(m.managementSettingsRows()) - 2
+		cancel := save + 1
+		press(m, tea.KeyTab, "")
+		if m.selected != save {
+			t.Fatalf("%dx%d Tab did not focus Save: %d", size.Width, size.Height, m.selected)
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+		if cmd != nil || backend.saved != nil || m.view != "Settings" {
+			t.Fatal("Space on Save submitted settings")
+		}
+		press(m, tea.KeyTab, "")
+		if m.selected != cancel {
+			t.Fatal("Tab did not focus Cancel")
+		}
+		press(m, tea.KeyUp, "")
+		if m.selected != save {
+			t.Fatal("Up did not return to Save")
+		}
+		press(m, tea.KeyDown, "")
+		if m.selected != cancel {
+			t.Fatal("Down did not reach Cancel")
+		}
+		m.View()
+		found := false
+		for _, hit := range m.management.Hits {
+			if hit.Control == "row" && hit.Index == cancel && hit.Y == size.Height-7 {
+				found = true
+				m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
+				break
+			}
+		}
+		if !found || m.view != "Catalog" || backend.saved != nil {
+			t.Fatal("pinned Cancel mouse action failed or persisted settings")
+		}
 	}
 }
 

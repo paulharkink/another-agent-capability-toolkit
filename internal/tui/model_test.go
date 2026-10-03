@@ -72,7 +72,7 @@ func TestMCPStatusAuthLogsActions(t *testing.T) {
 	focusFixtureProfile(m)
 	press(m, tea.KeyEnter, "")
 	text := m.View().Content
-	for _, part := range []string{"Start", "Stop", "Authenticate", "View logs"} {
+	for _, part := range []string{"Restart", "Stop", "Authenticate", "View logs"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("missing %s: %s", part, text)
 		}

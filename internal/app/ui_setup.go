@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -128,6 +129,12 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		provenancePaths[name] = target.Path
 	}
 	for _, def := range p.Inputs {
+		if def.OptionsFrom != "" {
+			def.Options, err = targetInputChoices(target.Raw, def.OptionsFrom)
+			if err != nil {
+				return viewmodel.SetupPreview{}, invalid(fmt.Errorf("input %s: %w", def.Name, err))
+			}
+		}
 		value, present := values[def.Name]
 		origin := provenance[def.Name]
 		if !present {
@@ -179,6 +186,60 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	return preview, nil
 }
 
+// targetInputChoices turns wildcard table keys in a target TOML into stable
+// checkbox values. For example, dbms.*.tenants.* yields dbms/tenant IDs.
+func targetInputChoices(raw map[string]any, path string) ([]catalog.Choice, error) {
+	parts := strings.Split(path, ".")
+	choices := []catalog.Choice{}
+	var walk func(any, int, []string) error
+	walk = func(node any, index int, keys []string) error {
+		if index == len(parts) {
+			if len(keys) == 0 {
+				return fmt.Errorf("options_from %q must contain a wildcard", path)
+			}
+			value := strings.Join(keys, "/")
+			label := value
+			if table, ok := node.(map[string]any); ok {
+				if named, exists := table["label"]; exists {
+					name, ok := named.(string)
+					if !ok || strings.TrimSpace(name) == "" {
+						return fmt.Errorf("options_from %q: label for %s must be a non-empty string", path, value)
+					}
+					label = name + " — " + value
+				}
+			}
+			choices = append(choices, catalog.Choice{Value: value, Label: label})
+			return nil
+		}
+		table, ok := node.(map[string]any)
+		if !ok {
+			return fmt.Errorf("options_from %q expects a table at %s", path, strings.Join(parts[:index], "."))
+		}
+		if part := parts[index]; part != "*" {
+			child, exists := table[part]
+			if !exists {
+				return nil
+			}
+			return walk(child, index+1, keys)
+		}
+		names := make([]string, 0, len(table))
+		for name := range table {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err := walk(table[name], index+1, append(append([]string(nil), keys...), name)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(raw, 0, nil); err != nil {
+		return nil, err
+	}
+	return choices, nil
+}
+
 // UIInstall applies the complete form through the existing noninteractive
 // service operation. A caller-supplied form never opens the legacy editor.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -217,5 +278,5 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		inputs[name] = value
 	}
 	result, err := s.Install(ctx, InstallRequest{Package: q.PackageID, Environment: q.Environment, Target: q.Target, Agents: envs, Inputs: inputs, Interactive: false})
-	return viewmodel.OperationResult{Changes: result.Changes, Errors: result.Errors, Message: result.Message}, err
+	return viewmodel.OperationResult{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message}, err
 }

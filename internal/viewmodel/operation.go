@@ -12,6 +12,7 @@ type RegistrationRequest struct {
 type OperationResult struct {
 	Changes    []state.Installation
 	Errors     []string
+	Saved      bool
 	Message    string
 	Connection ConnectionObservation
 }
