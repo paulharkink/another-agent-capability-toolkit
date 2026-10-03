@@ -45,13 +45,14 @@ type Command struct {
 	TimeoutSeconds int      `toml:"timeout_seconds" json:"timeout_seconds"`
 }
 type MCP struct {
-	Name          string             `toml:"name" json:"name"`
-	Runtime       string             `toml:"runtime" json:"runtime"`
-	BuildContext  string             `toml:"build_context" json:"build_context"`
-	Image         string             `toml:"image" json:"image"`
-	Transport     string             `toml:"transport" json:"transport"`
-	ContainerPort int                `toml:"container_port" json:"container_port"`
-	EndpointPath  string             `toml:"endpoint_path" json:"endpoint_path"`
-	HostPortInput string             `toml:"host_port_input" json:"host_port_input"`
-	Actions       map[string]Command `toml:"actions" json:"actions"`
+	Name                  string             `toml:"name" json:"name"`
+	Runtime               string             `toml:"runtime" json:"runtime"`
+	BuildContext          string             `toml:"build_context" json:"build_context"`
+	Image                 string             `toml:"image" json:"image"`
+	Transport             string             `toml:"transport" json:"transport"`
+	ContainerPort         int                `toml:"container_port" json:"container_port"`
+	EndpointPath          string             `toml:"endpoint_path" json:"endpoint_path"`
+	HostPortInput         string             `toml:"host_port_input" json:"host_port_input"`
+	RegistrationTimeoutMS int                `toml:"registration_timeout_ms" json:"registration_timeout_ms"`
+	Actions               map[string]Command `toml:"actions" json:"actions"`
 }

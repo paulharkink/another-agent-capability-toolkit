@@ -57,6 +57,22 @@ func TestLoadBundle(t *testing.T) {
 		t.Fatalf("bad bundle: %#v", p)
 	}
 }
+
+func TestRegistrationTimeoutMetadata(t *testing.T) {
+	p, err := Load(writeManifest(t, plainManifest+`[mcp]
+name = "plain"
+registration_timeout_ms = 60000
+`))
+	if err != nil || p.MCP == nil || p.MCP.RegistrationTimeoutMS != 60000 {
+		t.Fatalf("registration timeout metadata: %#v, %v", p.MCP, err)
+	}
+	if _, err := Load(writeManifest(t, plainManifest+`[mcp]
+name = "plain"
+registration_timeout_ms = -1
+`)); err == nil {
+		t.Fatal("negative registration timeout accepted")
+	}
+}
 func TestLoadExclusiveInputGroup(t *testing.T) {
 	p, err := Load(writeManifest(t, plainManifest+`[[inputs]]
 name = "token"
