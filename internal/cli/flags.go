@@ -7,10 +7,10 @@ import (
 )
 
 type flags struct {
-	args, agents, homes                                           []string
-	sets                                                          map[string][]string
-	config, envroot, state, environment, target, url              string
-	interactive, json, dryrun, apply, help, version, updateSource bool
+	args, agents, homes                                                       []string
+	sets                                                                      map[string][]string
+	config, envroot, state, environment, target, url                          string
+	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
 }
 
 func parse(args []string) (flags, error) {
@@ -29,6 +29,8 @@ func parse(args []string) (flags, error) {
 		switch name {
 		case "--interactive":
 			f.interactive = true
+		case "--skills-only":
+			f.skillsOnly = true
 		case "--update-source":
 			f.updateSource = true
 		case "--json":
