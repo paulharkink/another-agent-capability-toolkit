@@ -87,7 +87,7 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/source-kubeconfig"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view = m.View().Content
-	if strings.Contains(view, "old-token") || !strings.Contains(view, "/tmp/source-kubeconfig") {
+	if strings.Contains(view, "old-token") || !strings.Contains(view, "Active method · imported") {
 		t.Fatalf("typing Source kubeconfig did not activate it and clear Token:\n%s", view)
 	}
 }

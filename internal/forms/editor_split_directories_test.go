@@ -35,10 +35,10 @@ func TestSplitDirectoryFormCanEditAndRemoveSavedRows(t *testing.T) {
 	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
 	firstLine, secondLine := -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "/"+filepath.Base(one)) {
+		if strings.Contains(line, string(os.PathSeparator)+filepath.Base(one)) {
 			firstLine = i
 		}
-		if strings.Contains(line, "/"+filepath.Base(two)) {
+		if strings.Contains(line, string(os.PathSeparator)+filepath.Base(two)) {
 			secondLine = i
 		}
 	}
@@ -155,7 +155,7 @@ func TestSplitDirectoryCanRemoveSavedRowByKeyboardOrMouse(t *testing.T) {
 	layout := m.layout()
 	viewLines := strings.Split(ansi.Strip(m.View().Content), "\n")
 	for y, line := range viewLines {
-		if !strings.Contains(line, "/"+filepath.Base(one)) || !strings.Contains(line, "[Remove]") {
+		if !strings.Contains(line, string(os.PathSeparator)+filepath.Base(one)) || !strings.Contains(line, "[Remove]") {
 			continue
 		}
 		x := lipgloss.Width(line[:strings.Index(line, "[Remove]")])
@@ -204,7 +204,7 @@ func TestSplitLongPathEditKeepsCursorVisible(t *testing.T) {
 		t.Fatalf("long path edit clipped the cursor or filename:\n%s", view)
 	}
 	m.Update(key(tea.KeyHome, ""))
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Edit: _/") || !strings.Contains(view, "…") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Edit: _"+string([]rune(path)[0])) || !strings.Contains(view, "…") {
 		t.Fatalf("moving to the start clipped the edit cursor:\n%s", view)
 	}
 }
