@@ -33,7 +33,190 @@ type FormModel struct {
 	done                        bool
 	result                      map[string]any
 	err                         error
+	sections                    []FormSection
+	sectionHeading              string
+	sectionIndex                int
+	area                        int
+	actionIndex                 int
+	exclusive                   map[string][]string
 }
+
+// FormSection groups fields into the left-hand navigation list of a split form.
+// Forms without sections keep the legacy single-column interaction.
+type FormSection struct {
+	Title  string
+	Fields []string
+}
+
+func (m *FormModel) SetSections(sections ...FormSection) {
+	m.sections = append([]FormSection(nil), sections...)
+	if len(m.sections) == 0 {
+		m.sectionIndex = 0
+		m.area = 0
+		return
+	}
+	for i := range m.sections {
+		m.sections[i].Fields = append([]string(nil), sections[i].Fields...)
+	}
+	m.sectionIndex = 0
+	m.area = 0
+	m.selectSectionField()
+}
+
+func (m *FormModel) SetSectionHeading(heading string) { m.sectionHeading = heading }
+
+func (m *FormModel) SelectSection(title string) {
+	for i, section := range m.sections {
+		if section.Title == title {
+			m.sectionIndex = i
+			m.selectSectionField()
+			return
+		}
+	}
+}
+
+// SetExclusiveFields makes edits to one named field clear the other fields in
+// the group while leaving every field directly focusable.
+func (m *FormModel) SetExclusiveFields(names ...string) {
+	values := m.editor.Values()
+	active := ""
+	for _, name := range names {
+		if value, ok := values[name].(string); ok && strings.TrimSpace(value) != "" {
+			active = name
+		}
+	}
+	for _, name := range names {
+		if m.exclusive == nil {
+			m.exclusive = map[string][]string{}
+		}
+		others := make([]string, 0, len(names)-1)
+		for _, other := range names {
+			if other != name {
+				others = append(others, other)
+			}
+		}
+		m.exclusive[name] = others
+	}
+	if active != "" {
+		m.activateExclusive(active)
+	}
+}
+
+func (m *FormModel) activateExclusive(name string) {
+	for _, other := range m.exclusive[name] {
+		m.setError(m.editor.Apply(other, ""))
+	}
+}
+
+func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string {
+	hint := m.hints[def.Name]
+	others, exclusive := m.exclusive[def.Name]
+	if !exclusive {
+		return hint
+	}
+	active := ""
+	for _, name := range append([]string{def.Name}, others...) {
+		if value, ok := values[name].(string); ok && strings.TrimSpace(value) != "" {
+			active = name
+			break
+		}
+	}
+	if def.Type == "file" {
+		if !strings.Contains(strings.ToLower(def.Name+" "+def.Label), "kubeconfig") {
+			if active == def.Name {
+				return "Active method"
+			}
+			if active == "" {
+				return "Enter a path for " + def.Label
+			}
+			return "Type a path to switch to " + def.Label
+		}
+		switch active {
+		case def.Name:
+			return "Active method · imported, not a live path · Import source; AACT uses managed credential material at runtime"
+		case "":
+			return "Enter a source kubeconfig path · Import source; AACT uses managed credential material at runtime"
+		default:
+			return "Type a path to switch to kubeconfig · Import source; AACT uses managed credential material at runtime"
+		}
+	}
+	if active == def.Name {
+		return "Active method"
+	}
+	label := def.Label
+	if label == "" {
+		label = def.Name
+	}
+	if active == "" {
+		return "Enter a " + label
+	}
+	return "Type here to switch to " + label
+}
+
+func (m *FormModel) splitFieldIndices(section int) []int {
+	if section < 0 || section >= len(m.sections) {
+		return nil
+	}
+	indices := make([]int, 0, len(m.sections[section].Fields))
+	for _, name := range m.sections[section].Fields {
+		for i, def := range m.defs {
+			if def.Name == name && m.disabledReason(name) == "" {
+				indices = append(indices, i)
+				break
+			}
+		}
+	}
+	return indices
+}
+
+func (m *FormModel) selectSectionField() {
+	indices := m.splitFieldIndices(m.sectionIndex)
+	if len(indices) > 0 {
+		m.selected = indices[0]
+	}
+}
+
+func (m *FormModel) moveSection(delta int) {
+	if len(m.sections) == 0 {
+		return
+	}
+	m.sectionIndex = (m.sectionIndex + len(m.sections) + delta) % len(m.sections)
+	m.message = ""
+	m.selectSectionField()
+}
+
+func (m *FormModel) moveSplitControl(delta int) {
+	indices := m.splitFieldIndices(m.sectionIndex)
+	if len(indices) == 0 {
+		return
+	}
+	if m.selected < len(m.defs) && isChoiceList(m.defs[m.selected]) {
+		def := m.defs[m.selected]
+		next := m.choiceIndex[def.Name] + delta
+		if next >= 0 && next < len(def.Options) {
+			m.choiceIndex[def.Name] = next
+			return
+		}
+	}
+	position := 0
+	for i, index := range indices {
+		if index == m.selected {
+			position = i
+			break
+		}
+	}
+	next := position + delta
+	if next < 0 {
+		m.selected = indices[0]
+		return
+	}
+	if next >= len(indices) {
+		m.selected = indices[len(indices)-1]
+		return
+	}
+	m.selected = indices[next]
+}
+
 type fieldCondition struct{ Selector, Choice string }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
@@ -187,6 +370,9 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			err = m.editor.Apply(msg.name, msg.path)
 		}
 		m.setError(err)
+		if err == nil && msg.action != "add" {
+			m.activateExclusive(msg.name)
+		}
 		if err == nil && msg.action == "add" {
 			m.rowIndex[msg.name] = len(collectionRows(m.editor.Values()[msg.name])) - 1
 		}
@@ -198,6 +384,12 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.cancel()
 		}
 		if stroke == "esc" && !m.editing {
+			if len(m.sections) > 0 {
+				if m.area == 1 || m.area == 2 {
+					m.area = 0
+					return m, nil
+				}
+			}
 			return m.cancel()
 		}
 		if stroke == "ctrl+s" {
@@ -241,11 +433,25 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "tab", "down", "up", "shift+tab":
 				m.commitBuffer()
 				if !m.editing {
-					delta := 1
-					if stroke == "up" || stroke == "shift+tab" {
-						delta = -1
+					if len(m.sections) > 0 && (stroke == "tab" || stroke == "shift+tab") {
+						if stroke == "tab" {
+							m.area = (m.area + 1) % 3
+						} else {
+							m.area = (m.area + 2) % 3
+						}
+					} else if len(m.sections) > 0 {
+						delta := 1
+						if stroke == "up" {
+							delta = -1
+						}
+						m.moveSplitControl(delta)
+					} else {
+						delta := 1
+						if stroke == "up" || stroke == "shift+tab" {
+							delta = -1
+						}
+						m.moveControl(delta)
 					}
-					m.moveControl(delta)
 				}
 			default:
 				if msg.Text != "" {
@@ -255,6 +461,54 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		if len(m.sections) > 0 {
+			switch stroke {
+			case "tab":
+				m.area = (m.area + 1) % 3
+				return m, nil
+			case "shift+tab":
+				m.area = (m.area + 2) % 3
+				return m, nil
+			case "left":
+				if m.area == 1 {
+					m.area = 0
+				} else if m.area == 2 {
+					m.actionIndex = (m.actionIndex + 1) % 2
+				}
+				return m, nil
+			case "right":
+				if m.area == 0 {
+					m.area = 1
+				} else if m.area == 2 {
+					m.actionIndex = (m.actionIndex + 1) % 2
+				}
+				return m, nil
+			case "up", "down":
+				delta := 1
+				if stroke == "up" {
+					delta = -1
+				}
+				if m.area == 0 {
+					m.moveSection(delta)
+				} else if m.area == 1 {
+					m.moveSplitControl(delta)
+				} else if delta < 0 {
+					m.area = 1
+				}
+				return m, nil
+			case "enter":
+				if m.area == 2 {
+					if m.actionIndex == 0 {
+						return m.save()
+					}
+					return m.cancel()
+				}
+				if m.area == 0 {
+					m.area = 1
+					return m, nil
+				}
+			}
 		}
 		switch stroke {
 		case "down", "tab":
@@ -420,6 +674,7 @@ func (m *FormModel) commitBuffer() {
 	}
 	m.setError(e)
 	if e == nil {
+		m.activateExclusive(def.Name)
 		if m.editAction == "add" {
 			m.rowIndex[def.Name] = len(collectionRows(m.editor.Values()[def.Name])) - 1
 		}
@@ -477,6 +732,30 @@ func (m *FormModel) pick(def catalog.Input, action, initial string) tea.Cmd {
 func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	mouse := msg.Mouse()
 	if _, ok := msg.(tea.MouseWheelMsg); ok {
+		if len(m.sections) > 0 {
+			if m.editing {
+				return m, nil
+			}
+			layout := m.layout()
+			bodyY := mouse.Y - layout.bodyStart
+			if bodyY < 0 || bodyY >= len(layout.splitSections) {
+				return m, nil
+			}
+			delta := 1
+			if mouse.Button == tea.MouseWheelUp {
+				delta = -1
+			} else if mouse.Button != tea.MouseWheelDown {
+				return m, nil
+			}
+			if mouse.X <= layout.splitLeftWidth+1 {
+				m.area = 0
+				m.moveSection(delta)
+			} else {
+				m.area = 1
+				m.moveSplitControl(delta)
+			}
+			return m, nil
+		}
 		if len(m.defs) == 0 || m.editing {
 			return m, nil
 		}
@@ -506,6 +785,38 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if mouse.X >= cancelStart && mouse.X < cancelStart+len("[ Cancel ]") {
 			return m.cancel()
 		}
+	}
+	if layout.split {
+		bodyY := mouse.Y - layout.bodyStart
+		if bodyY < 0 || bodyY >= len(layout.splitSections) {
+			return m, nil
+		}
+		if mouse.X <= layout.splitLeftWidth+1 {
+			section := layout.splitSections[bodyY]
+			if section >= 0 && section < len(m.sections) {
+				m.sectionIndex = section
+				m.area = 0
+				m.message = ""
+				m.selectSectionField()
+			}
+			return m, nil
+		}
+		field := layout.splitFields[bodyY]
+		if field < 0 || field >= len(m.defs) {
+			return m, nil
+		}
+		if reason := m.disabledReason(m.defs[field].Name); reason != "" {
+			m.message = reason
+			return m, nil
+		}
+		m.area = 1
+		m.selected = field
+		m.message = ""
+		if choice := layout.splitChoices[bodyY]; choice >= 0 {
+			m.choiceIndex[m.defs[field].Name] = choice
+			return m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+		}
+		return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	}
 	bodyY := mouse.Y - layout.bodyStart
 	if bodyY < 0 || bodyY >= len(layout.visibleFields) {
@@ -565,9 +876,17 @@ type formLayout struct {
 	visibleChoices []int
 	footerY        int
 	bodyStart      int
+	split          bool
+	splitLeftWidth int
+	splitFields    []int
+	splitChoices   []int
+	splitSections  []int
 }
 
 func (m *FormModel) layout() formLayout {
+	if len(m.sections) > 0 {
+		return m.splitLayout()
+	}
 	position := ""
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		position = fmt.Sprintf(" (%d/%d)", m.selected+1, len(m.defs))
@@ -707,7 +1026,7 @@ func (m *FormModel) layout() formLayout {
 				footer = "Mutually exclusive with " + strings.Join(others, ", ") + "; entering a value clears those inputs\n" + footer
 			}
 		}
-		if hint := m.hints[def.Name]; hint != "" {
+		if hint := m.displayHint(def, values); hint != "" {
 			footer = "Source: " + hint + "\n" + footer
 		}
 		if def.Multiple && len(def.Options) == 0 && def.Type != "directory" && def.Type != "file" {
@@ -782,11 +1101,231 @@ func (m *FormModel) layout() formLayout {
 	return formLayout{content: content, visibleFields: fieldLines[start:end], visibleRows: rowLines[start:end], visibleChoices: choiceLines[start:end], footerY: footerY, bodyStart: 3 + contextLines}
 }
 
+func (m *FormModel) splitLayout() formLayout {
+	innerWidth := max(18, m.width-2)
+	leftWidth := max(18, innerWidth/3)
+	rightWidth := max(18, innerWidth-leftWidth-3)
+	values := m.editor.Values()
+	sectionHeading := m.sectionHeading
+	if sectionHeading == "" {
+		sectionHeading = "Sections"
+	}
+	leftLines := []string{"── " + sectionHeading}
+	for i, section := range m.sections {
+		prefix := "› "
+		if i == m.sectionIndex {
+			prefix = "> "
+		}
+		leftLines = append(leftLines, prefix+section.Title)
+	}
+	indices := m.splitFieldIndices(m.sectionIndex)
+	rightLines := []string{"── " + m.sections[m.sectionIndex].Title}
+	rightFields := []int{-1}
+	for _, index := range indices {
+		def := m.defs[index]
+		label := def.Label
+		if label == "" {
+			label = def.Name
+		}
+		prefix := "› "
+		if index == m.selected && m.area == 1 {
+			prefix = "> "
+		}
+		display := textValue(values[def.Name])
+		if len(def.Options) > 0 && isChoiceList(def) {
+			chosen, _ := values[def.Name].([]string)
+			if isChoiceList(def) && !def.Multiple && def.Type != "multichoice" && def.Type != "multiple-choice" {
+				display = ""
+				for _, option := range def.Options {
+					if option.Value == values[def.Name] {
+						if option.Label != "" {
+							display = option.Label
+						} else {
+							display = option.Value
+						}
+					}
+				}
+			} else {
+				display = ""
+				for optionIndex, option := range def.Options {
+					mark := "[ ]"
+					for _, value := range chosen {
+						if value == option.Value {
+							mark = "[x]"
+						}
+					}
+					optionLabel := option.Label
+					if optionLabel == "" {
+						optionLabel = option.Value
+					}
+					cursor := "› "
+					if index == m.selected && m.area == 1 && m.choiceIndex[def.Name] == optionIndex {
+						cursor = "> "
+					}
+					display += "\n" + cursor + mark + " " + optionLabel
+				}
+			}
+		}
+		if reason := m.disabledReason(def.Name); reason != "" {
+			display += " — " + reason
+		}
+		rightLines = append(rightLines, prefix+label+": "+display)
+		rightFields = append(rightFields, index)
+		if hint := m.displayHint(def, values); hint != "" {
+			rightLines = append(rightLines, "    · "+hint)
+			rightFields = append(rightFields, -1)
+		}
+	}
+	if len(indices) == 0 {
+		rightLines = append(rightLines, "· No fields in this section")
+	}
+	leftSections := make([]int, len(leftLines))
+	for i := range leftSections {
+		leftSections[i] = i - 1
+	}
+	rightRows, rightRowFields, rightRowChoices := []string{}, []int{}, []int{}
+	for i, line := range rightLines {
+		for part, row := range strings.Split(line, "\n") {
+			rightRows = append(rightRows, row)
+			field, choice := -1, -1
+			if i < len(rightFields) {
+				field = rightFields[i]
+				if part > 0 && field >= 0 && isChoiceList(m.defs[field]) {
+					choice = part - 1
+				}
+			}
+			rightRowFields = append(rightRowFields, field)
+			rightRowChoices = append(rightRowChoices, choice)
+		}
+	}
+	areaLabels := []string{"Sections", "Details", "Actions"}
+	for i := range areaLabels {
+		if i == m.area {
+			areaLabels[i] = "[" + areaLabels[i] + "]"
+		}
+	}
+	actions := "[ Save ]  [ Cancel ]"
+	if m.area == 2 {
+		if m.actionIndex == 0 {
+			actions = "> [ Save ]  [ Cancel ]"
+		} else {
+			actions = "[ Save ]  > [ Cancel ]"
+		}
+	}
+	footer := strings.Join(areaLabels, " · ") + "\n↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back\n" + actions
+	if m.message != "" {
+		footer = m.message + "\n" + footer
+	}
+	footerLines := strings.Split(footer, "\n")
+	header := []string{m.title}
+	if m.contextLine != "" {
+		header = append(header, m.contextLine)
+	}
+	header = append(header, "")
+	bodyStart := 1 + len(header)
+	bodyHeight := max(1, m.height-2-len(header)-1-len(footerLines))
+	leftRows, splitSections, _ := scrollSplitPane(leftLines, leftSections, nil, m.sectionIndex+1, bodyHeight)
+	rightTarget := 0
+	for row, field := range rightRowFields {
+		if field == m.selected && (rightRowChoices[row] < 0 || rightRowChoices[row] == m.choiceIndex[m.defs[field].Name]) {
+			rightTarget = row
+		}
+	}
+	rightRows, splitFields, splitChoices := scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, bodyHeight)
+	body := make([]string, max(len(leftRows), len(rightRows)))
+	for i := range body {
+		left, right := "", ""
+		if i < len(leftRows) {
+			left = leftRows[i]
+		}
+		if i < len(rightRows) {
+			right = rightRows[i]
+		}
+		left = ansi.Truncate(left, leftWidth, "")
+		right = ansi.Truncate(right, rightWidth, "")
+		body[i] = left + strings.Repeat(" ", max(1, leftWidth-lipgloss.Width(left))) + " │ " + right
+	}
+	for len(splitSections) < len(body) {
+		splitSections = append(splitSections, -1)
+	}
+	for len(splitFields) < len(body) {
+		splitFields = append(splitFields, -1)
+		splitChoices = append(splitChoices, -1)
+	}
+	lines := append([]string{}, header...)
+	lines = append(lines, body...)
+	lines = append(lines, "")
+	lines = append(lines, footerLines...)
+	for len(lines) < m.height-2 {
+		lines = append(lines[:len(lines)-len(footerLines)], append([]string{""}, lines[len(lines)-len(footerLines):]...)...)
+	}
+	framed := []string{goldFG + "╔" + strings.Repeat("═", innerWidth) + "╗"}
+	for _, line := range lines {
+		clipped := ansi.Truncate(line, innerWidth, "")
+		framed = append(framed, goldFG+"║"+modalSGR+clipped+strings.Repeat(" ", max(0, innerWidth-lipgloss.Width(clipped)))+goldFG+"║")
+	}
+	framed = append(framed, goldFG+"╚"+strings.Repeat("═", innerWidth)+"╝")
+	content := strings.Join(framed, "\n")
+	footerY := -1
+	for y, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "[ Save ]") {
+			footerY = y
+			break
+		}
+	}
+	return formLayout{content: content, visibleFields: indices, footerY: footerY, bodyStart: bodyStart, split: true, splitLeftWidth: leftWidth, splitFields: splitFields, splitChoices: splitChoices, splitSections: splitSections}
+}
+
+func scrollSplitPane(rows []string, primary, secondary []int, target, height int) ([]string, []int, []int) {
+	if len(rows) <= height {
+		return rows, primary, secondary
+	}
+	target = max(0, min(target, len(rows)-1))
+	start, end := 0, 0
+	switch {
+	case target < height-1:
+		end = height - 1
+	case target >= len(rows)-(height-1):
+		end = len(rows)
+		start = end - (height - 1)
+	default:
+		visibleCount := max(1, height-2)
+		start = max(1, min(target-visibleCount+1, len(rows)-visibleCount-1))
+		end = start + visibleCount
+	}
+	visible := append([]string{}, rows[start:end]...)
+	ids := append([]int{}, primary[start:end]...)
+	var details []int
+	if secondary != nil {
+		details = append([]int{}, secondary[start:end]...)
+	}
+	if start > 0 {
+		visible = append([]string{"↑ more"}, visible...)
+		ids = append([]int{-1}, ids...)
+		if secondary != nil {
+			details = append([]int{-1}, details...)
+		}
+	}
+	if end < len(rows) {
+		visible = append(visible, "↓ more")
+		ids = append(ids, -1)
+		if secondary != nil {
+			details = append(details, -1)
+		}
+	}
+	return visible, ids, details
+}
+
 func (m *FormModel) View() tea.View {
 	content := m.layout().content
 	width := m.width
 	if width < 20 {
 		width = 20
+	}
+	if len(m.sections) > 0 {
+		view := tea.NewView(modalCanvas(content))
+		view.MouseMode = tea.MouseModeCellMotion
+		return view
 	}
 	view := tea.NewView(navyCanvas(content))
 	view.MouseMode = tea.MouseModeCellMotion

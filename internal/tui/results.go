@@ -9,10 +9,12 @@ import (
 )
 
 type resultState struct {
-	Action string
-	Rows   []string
-	Offset int
-	Column int
+	Action      string
+	Rows        []string
+	Offset      int
+	Column      int
+	Failed      bool
+	ActionIndex int
 }
 
 func (m *Model) showOperationResult(msg operationMsg) {
@@ -32,10 +34,29 @@ func (m *Model) showOperationResult(msg operationMsg) {
 	for i, row := range rows {
 		rows[i] = ansi.Strip(strings.TrimSuffix(row, "\r"))
 	}
-	m.result = &resultState{Action: m.action, Rows: rows}
+	m.result = &resultState{Action: m.action, Rows: rows, Failed: msg.err != nil || msg.failed}
 }
 
-func (m *Model) resultVisibleRows() int { return max(1, m.height-6) }
+func (m *Model) canEditResultAnswers() bool {
+	return m.result != nil && m.result.Failed && m.setupRetry != nil
+}
+
+func (m *Model) editResultAnswers() {
+	if !m.canEditResultAnswers() {
+		return
+	}
+	draft := m.setupRetry
+	m.result = nil
+	m.openSetupFormWithValues(draft.preview, draft.values)
+}
+
+func (m *Model) resultVisibleRows() int {
+	if m.height < 16 {
+		return max(1, m.height-6)
+	}
+	dialogHeight := min(m.height-4, max(9, min(15, len(m.result.Rows)+6)))
+	return max(1, dialogHeight-6)
+}
 
 func (m *Model) resultKey(stroke string) tea.Cmd {
 	r := m.result
@@ -46,8 +67,20 @@ func (m *Model) resultKey(stroke string) tea.Cmd {
 	switch stroke {
 	case "f10", "ctrl+c":
 		return tea.Quit
-	case "esc", "enter", "q":
+	case "esc", "q":
 		m.result = nil
+	case "enter":
+		if m.canEditResultAnswers() && r.ActionIndex == 0 {
+			m.editResultAnswers()
+		} else {
+			m.result = nil
+		}
+	case "e":
+		m.editResultAnswers()
+	case "tab", "shift+tab":
+		if m.canEditResultAnswers() {
+			r.ActionIndex = 1 - r.ActionIndex
+		}
 	case "up", "k":
 		r.Offset = max(0, r.Offset-1)
 	case "down", "j":
@@ -82,8 +115,14 @@ func (m *Model) resultMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		return nil
 	}
-	if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft && mouse.Y == m.height-2 {
-		m.result = nil
+	dialogHeight := min(m.height-4, max(9, min(15, len(r.Rows)+6)))
+	footerY := (m.height-dialogHeight)/2 + dialogHeight - 2
+	if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft && (mouse.Y == footerY || mouse.Y == m.height-2) {
+		if mouse.Y == footerY && m.canEditResultAnswers() && mouse.X < (m.width-70)/2+22 {
+			m.editResultAnswers()
+		} else {
+			m.result = nil
+		}
 	}
 	return nil
 }
@@ -100,27 +139,84 @@ func (m *Model) resultView() tea.View {
 		for i := range lines {
 			lines[i] = fit(lines[i], max(1, m.width))
 		}
-		return tea.NewView(strings.Join(lines, "\n"))
+		return tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	}
-	width, height := max(20, m.width), max(8, m.height)
+
+	// Match the approved demo's centered operation-result dialog: a darkened
+	// navy overlay, gold double border, blue dialog surface, and status-colored
+	// result text. Paint the entire viewport so no terminal-default black leaks
+	// through around the dialog.
+	width, height := m.width, m.height
+	dialogWidth := min(70, width-8)
+	dialogHeight := min(height-4, max(9, min(15, len(m.result.Rows)+6)))
+	x, y := (width-dialogWidth)/2, (height-dialogHeight)/2
+	bodyRows := m.resultVisibleRows()
 	r := m.result
-	visible := max(1, height-6)
-	r.Offset = min(r.Offset, max(0, len(r.Rows)-visible))
-	lines := make([]string, height)
-	lines[0] = "╔" + strings.Repeat("═", width-2) + "╗"
-	lines[1] = "║" + fit(" Operation result · "+r.Action, width-2) + "║"
-	lines[2] = "╠" + strings.Repeat("═", width-2) + "╣"
-	for i := 0; i < visible; i++ {
-		row := ""
-		if index := r.Offset + i; index < len(r.Rows) {
-			row = ansi.Cut(r.Rows[index], r.Column, r.Column+width-3)
-		}
-		lines[3+i] = "║" + fit(" "+row, width-2) + "║"
+	r.Offset = min(r.Offset, max(0, len(r.Rows)-bodyRows))
+
+	const (
+		overlayBG = "\x1b[48;2;6;22;74m"
+		dialogBG  = "\x1b[48;2;12;49;133m"
+		goldFG    = "\x1b[38;2;255;223;134m"
+		bodyFG    = "\x1b[38;2;233;245;255m"
+		okFG      = "\x1b[38;2;217;246;228m"
+		errFG     = "\x1b[38;2;255;220;200m"
+	)
+	statusFG := okFG
+	if r.Failed {
+		statusFG = errFG
 	}
-	lines[height-3] = "╠" + strings.Repeat("═", width-2) + "╣"
-	lines[height-2] = "║" + fit(fmt.Sprintf(" Close [Enter/Esc/click] · ↑↓/PgUp/PgDn Scroll · ←→ Pan · %d-%d/%d", min(r.Offset+1, len(r.Rows)), min(r.Offset+visible, len(r.Rows)), len(r.Rows)), width-2) + "║"
-	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
-	v := tea.NewView(strings.Join(lines, "\n"))
+	// A terminal has no alpha compositing, so show the previous screen's
+	// content in a muted foreground over the dark navy overlay as the closest
+	// equivalent to the demo's translucent backdrop.
+	result := m.result
+	m.result = nil
+	underlying := ansi.Strip(m.View().Content)
+	m.result = result
+	underRows := strings.Split(underlying, "\n")
+	const mutedFG = "\x1b[38;2;82;103;143m"
+	canvas := make([]string, height)
+	for row := range canvas {
+		text := ""
+		if row < len(underRows) {
+			text = fit(underRows[row], width)
+		}
+		canvas[row] = overlayBG + mutedFG + text
+	}
+	box := make([]string, dialogHeight)
+	box[0] = "╔" + strings.Repeat("═", dialogWidth-2) + "╗"
+	box[1] = "║" + fit(" Operation result", dialogWidth-2) + "║"
+	box[2] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
+	for i := 0; i < bodyRows; i++ {
+		text := ""
+		if index := r.Offset + i; index < len(r.Rows) {
+			text = ansi.Cut(r.Rows[index], r.Column, r.Column+dialogWidth-3)
+		}
+		rowFG := statusFG
+		if i > 0 {
+			rowFG = bodyFG
+		}
+		box[3+i] = "║" + fit(" "+text, dialogWidth-2) + "║"
+		box[3+i] = rowFG + box[3+i]
+	}
+	box[dialogHeight-3] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
+	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · %d-%d/%d", min(r.Offset+1, len(r.Rows)), min(r.Offset+bodyRows, len(r.Rows)), len(r.Rows))
+	if m.canEditResultAnswers() {
+		if r.ActionIndex == 0 {
+			footer = "> Edit answers [Enter/E]   Back [Tab/ Esc]"
+		} else {
+			footer = "  Edit answers [E]   > Back [Enter/Esc]"
+		}
+	}
+	box[dialogHeight-2] = "║" + fit(footer, dialogWidth-2) + "║"
+	box[dialogHeight-1] = "╚" + strings.Repeat("═", dialogWidth-2) + "╝"
+	for i, line := range box {
+		canvas[y+i] = overlayBG + mutedFG + strings.Repeat(" ", x) + dialogBG + goldFG + line + overlayBG + mutedFG + strings.Repeat(" ", width-x-dialogWidth)
+	}
+	content := navySGR + strings.Join(canvas, "\x1b[m\n") + "\x1b[m"
+	content = strings.ReplaceAll(content, "\x1b[m", overlayBG)
+	content = strings.TrimSuffix(content, overlayBG) + "\x1b[m"
+	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }

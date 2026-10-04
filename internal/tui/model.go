@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
@@ -49,8 +50,11 @@ type Model struct {
 	environmentError           error
 	pendingRegistration        *viewmodel.RegistrationRequest
 	pendingRegistrationRemoval bool
+	registration               *registrationState
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
+	setupRetry                 *setupRetryDraft
+	setupOperationPending      bool
 	logSession                 uint64
 	logProfile                 state.Key
 	logLabel                   string
@@ -86,6 +90,7 @@ type agentConfigMsg struct {
 type operationMsg struct {
 	origin, output string
 	err            error
+	failed         bool
 }
 type settingsSavedMsg struct{ err error }
 
@@ -157,7 +162,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = size.Height
 		m.reconcileHome()
 	}
+	if m.registration != nil {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			return m, m.registrationKey(event.String())
+		case registrationCheckMsg:
+			m.registration.Check = event.observation
+			return m, nil
+		case tea.MouseMsg:
+			return m, m.registrationMouse(event)
+		}
+	}
 	if m.form != nil {
+		if x, y, width, height, ok := m.setupOverlayBounds(); ok {
+			switch event := msg.(type) {
+			case tea.WindowSizeMsg:
+				msg = tea.WindowSizeMsg{Width: width, Height: height}
+			case tea.MouseClickMsg:
+				if event.X < x || event.X >= x+width || event.Y < y || event.Y >= y+height {
+					return m, nil
+				}
+				event.X -= x
+				event.Y -= y
+				msg = event
+			case tea.MouseWheelMsg:
+				if event.X < x || event.X >= x+width || event.Y < y || event.Y >= y+height {
+					return m, nil
+				}
+				event.X -= x
+				event.Y -= y
+				msg = event
+			}
+		}
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
 		values, e := m.form.Result()
@@ -286,6 +322,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case operationMsg:
 		m.busy = false
 		m.view = msg.origin
+		if !m.setupOperationPending || (msg.err == nil && !msg.failed) {
+			m.setupRetry = nil
+		}
+		m.setupOperationPending = false
 		m.showOperationResult(msg)
 		return m, m.load()
 	case settingsSavedMsg:
@@ -587,6 +627,27 @@ func (m *Model) cleanOutput(output string) string {
 	}
 	return output
 }
+
+func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
+	if m.pendingSetup == nil || m.view != "Catalog" || m.width < 80 || m.height < 16 {
+		return 0, 0, 0, 0, false
+	}
+	return 4, 4, m.width - 8, m.height - 6, true
+}
+
+func (m *Model) setupOverlayView() tea.View {
+	x, y, width, height, _ := m.setupOverlayBounds()
+	base := strings.Split(m.homeView().Content, "\n")
+	overlay := strings.Split(m.form.View().Content, "\n")
+	for row := 0; row < height && row < len(overlay) && y+row < len(base); row++ {
+		line := base[y+row]
+		base[y+row] = ansi.Cut(line, 0, x) + fit(overlay[row], width) + ansi.Cut(line, x+width, m.width)
+	}
+	v := tea.NewView(navyCanvas(strings.Join(base, "\n")))
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
 func (m *Model) View() tea.View {
 	if m.result != nil {
 		return m.resultView()
@@ -595,6 +656,9 @@ func (m *Model) View() tea.View {
 		return m.homeView()
 	}
 	if m.form != nil {
+		if _, _, _, _, ok := m.setupOverlayBounds(); ok {
+			return m.setupOverlayView()
+		}
 		return m.form.View()
 	}
 	if isManagementView(m.view) {

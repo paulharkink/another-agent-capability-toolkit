@@ -79,6 +79,43 @@ func TestHomeShowsWhichCheckoutAndEnvironmentRootAreInUse(t *testing.T) {
 	}
 }
 
+func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyEnter, "")
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Marked capabilities", "› View capability details", "› MCP · profile"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyEnter, "")
+	view := ansi.Strip(m.View().Content)
+	for _, unwanted := range []string{"Related MCP profiles", "No MCP profiles", "MCP ·", "related MCP profiles"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
+		}
+	}
+	for _, want := range []string{"Configure / install Plain", "View capability details", "Apply marked"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHomeMenuShowsDisabledRowsAsNonselectable(t *testing.T) {
+	m, _ := homeFixture()
+	m.openHomeMenu("actions")
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "× Apply marked (0)… — disabled:") {
+		t.Fatalf("skipped menu item lacks a disabled cue:\n%s", view)
+	}
+}
+
 func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 	m, msg := homeFixture()
 	m.Update(msg)
@@ -97,7 +134,7 @@ func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
 	v := m.View().Content
-	for _, s := range []string{"Capabilities", "MCP profiles", "production", "running", "Main menu", "F2 Actions"} {
+	for _, s := range []string{"Capabilities", "Inspector", "profile", "running", "Main menu", "F2 Open / Focus"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q: %s", s, v)
 		}
@@ -107,16 +144,19 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 			t.Errorf("unrelated profile %q visible", s)
 		}
 	}
+	if got := m.profiles(); len(got) != 1 || got[0].Key.Target != "production" {
+		t.Fatalf("related profile filtering changed: %#v", got)
+	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "skill-only capability") {
-		t.Fatal(m.View().Content)
+	if strings.Contains(m.View().Content, "Related MCP profiles") {
+		t.Fatal("skill-only context still shows MCP content", m.View().Content)
 	}
 	press(m, tea.KeyTab, "")
-	if m.view != "Catalog" {
-		t.Fatal("Tab left home")
+	if m.view != "Catalog" || m.home.Focus != ProfilesPane {
+		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "configure/install") {
+	if !strings.Contains(m.View().Content, "Configure / install Plain") {
 		t.Fatal(m.View().Content)
 	}
 }
@@ -126,32 +166,33 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 		msg.mcps = append(msg.mcps, mcp.Instance{Key: state.Key{Source: "one", Package: "inspect", Target: fmt.Sprintf("target-%02d", i)}, Status: "running"})
 	}
 	m.Update(msg)
-	press(m, tea.KeyTab, "")
-	press(m, tea.KeyEnd, "")
-	if !strings.Contains(m.View().Content, "target-29") {
-		t.Fatal("End did not scroll profile list")
+	press(m, tea.KeyEnter, "")
+	lastProfileRow := len(m.contextRows()) - 2
+	m.selectContext(lastProfileRow)
+	if m.home.Context.Index != lastProfileRow {
+		t.Fatal("could not select the last related profile")
 	}
 	press(m, tea.KeyLeft, "")
 	press(m, tea.KeyRight, "")
-	if !strings.Contains(m.View().Content, "target-29") {
-		t.Fatal("focus lost profile selection")
+	if m.home.Context.Index != lastProfileRow {
+		t.Fatal("focus lost context selection")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m.Update(msg)
-	if !strings.Contains(m.View().Content, "target-29") {
+	if m.home.Context.Index != lastProfileRow {
 		t.Fatal("resize/refresh lost selection")
 	}
 	msg.mcps = msg.mcps[:len(msg.mcps)-1]
 	m.Update(msg)
-	if !strings.Contains(m.View().Content, "target-28") || !strings.Contains(m.output, "removed") {
+	if m.home.Context.Index != lastProfileRow || !strings.Contains(m.output, "removed") {
 		t.Fatal("deleted selected profile not explained", m.View().Content)
 	}
 	press(m, tea.KeyHome, "")
-	if !strings.Contains(m.View().Content, "production") {
-		t.Fatal("Home failed")
+	if m.home.Context.Index != 0 {
+		t.Fatal("Home failed to select first context row")
 	}
 	press(m, tea.KeyPgDown, "")
-	if strings.Contains(m.View().Content, "> production") {
+	if m.home.Context.Index == 0 {
 		t.Fatal("PageDown did not move")
 	}
 }
@@ -167,7 +208,7 @@ func TestHomeMenuDestinationsAndReturn(t *testing.T) {
 			t.Fatalf("destination %d: %s", i, m.view)
 		}
 		press(m, tea.KeyEscape, "")
-		if m.view != "Catalog" || !strings.Contains(m.View().Content, "production") {
+		if m.view != "Catalog" || m.home.Focus != CapabilitiesPane || m.home.Capabilities.Index != 0 {
 			t.Fatal("Back lost home")
 		}
 	}
@@ -220,8 +261,8 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 	m.View()
 	left := m.home.Capabilities.ID
 	m.Update(tea.MouseWheelMsg{X: 60, Y: 5, Button: tea.MouseWheelDown})
-	m.Update(tea.MouseClickMsg{X: 60, Y: 5, Button: tea.MouseLeft})
-	if m.home.Capabilities.ID != left || m.home.Focus != ProfilesPane || m.home.Profiles.Index != 1 {
+	m.Update(tea.MouseClickMsg{X: 60, Y: 6, Button: tea.MouseLeft})
+	if m.home.Capabilities.ID != left || m.home.Focus != ProfilesPane || m.home.Context.Index != 1 {
 		t.Fatalf("mouse selected wrong pane/row: %#v", m.home)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
@@ -247,6 +288,7 @@ func TestHomeMouseMarksOnlyCapabilityAndModalRetainsFocus(t *testing.T) {
 		t.Fatal("mark click not applied")
 	}
 	press(m, tea.KeyTab, "")
+	m.selectContext(2)
 	id := m.home.Profiles.ID
 	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEscape, "")
@@ -273,8 +315,11 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 				t.Fatal("row exceeds width", line)
 			}
 		}
-		if !strings.Contains(v.Content, "skill-only capability") {
-			t.Fatal("empty explanation was truncated", v.Content)
+		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
+			t.Fatal("short view omitted its scroll cue", v.Content)
+		}
+		if size.Height > 16 && !strings.Contains(v.Content, "Configure / install Plain") {
+			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
 }
@@ -287,7 +332,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 				msg.catalog[0].Skill = &catalog.Skill{Name: "companion"}
 				msg.mcps[0].Ownership = ownership
 				m.Update(msg)
-				m.focusPane(ProfilesPane)
+				m.selectContext(2)
 				press(m, tea.KeyEnter, "")
 				index := -1
 				for i, entry := range m.menuEntries() {
@@ -339,14 +384,16 @@ func TestHomeMenusMatchApprovedCommands(t *testing.T) {
 	}
 	press(m, tea.KeyEscape, "")
 	press(m, tea.KeyF2, "")
-	for _, want := range []string{"Configure / install Inspector", "View capability details", "Mark for batch", "Apply marked (0)", "Back"} {
-		if !strings.Contains(strings.Join(m.menuEntries(), "\n"), want) {
-			t.Fatalf("missing %q: %v", want, m.menuEntries())
+	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
+		t.Fatal("F2 should focus the context list before opening an action")
+	}
+	for _, want := range []string{"Configure / install Inspector", "View capability details", "MCP · profile", "Apply marked (0)"} {
+		if !strings.Contains(m.View().Content, want) {
+			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
 	}
-	press(m, tea.KeyEscape, "")
-	m.focusPane(ProfilesPane)
-	press(m, tea.KeyF2, "")
+	m.selectContext(2)
+	press(m, tea.KeyEnter, "")
 	got := strings.Join(m.menuEntries(), "\n")
 	for _, want := range []string{"Restart", "Stop", "Authenticate", "Edit parameters", "Configure agent registrations", "Remove agent registrations", "Check connection", "View logs", "View details", "Back"} {
 		if !strings.Contains(got, want) {
@@ -359,8 +406,8 @@ func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
 	m.Update(msg)
-	m.focusPane(ProfilesPane)
-	press(m, tea.KeyF2, "")
+	m.selectContext(2)
+	press(m, tea.KeyEnter, "")
 	m.home.Modal.Selected = 0
 	press(m, tea.KeyEnter, "")
 	if m.home.Modal == nil || m.busy || !strings.Contains(m.output, "not locally owned") {
@@ -368,11 +415,11 @@ func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
 	}
 }
 
-func TestHomeTopControlsAndContextMenuTitle(t *testing.T) {
+func TestHomeTopControlsAndContextPaneFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Environments | Settings | Help", "F2 Actions"} {
+	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Environments | Settings | Help", "F2 Open / Focus"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home missing %q:\n%s", want, view)
 		}
@@ -392,10 +439,7 @@ func TestHomeTopControlsAndContextMenuTitle(t *testing.T) {
 	if cmd := m.homeMouse(tea.MouseClickMsg{X: x, Y: 1, Button: tea.MouseLeft}); cmd != nil {
 		t.Fatal("Actions click dispatched unexpected command")
 	}
-	if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("top Actions control not clickable")
-	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "Inspector · profile") {
-		t.Fatal("Actions menu has no selected profile title")
+	if m.home.Modal != nil || m.home.Focus != ProfilesPane {
+		t.Fatal("top Open / Focus control did not focus the context list")
 	}
 }

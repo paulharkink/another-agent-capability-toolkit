@@ -36,17 +36,18 @@ function renderHome(state) {
   const right = `<div class="list-heading">Capability</div>`
     + listRow(`Configure / install ${capability.name}…`, 'Inputs and destinations', 'homeDetail', 0, state.homeDetailIndex === 0)
     + listRow('View capability details', 'Source, package and status', 'homeDetail', 1, state.homeDetailIndex === 1)
-    + `<div class="list-heading">Related MCP profiles</div>`
-    + (related.length
-      ? related.map((item, index) => listRow(`MCP · ${item.name}`, `${item.runtime} · ${item.owner}`, 'homeDetail', index + 2, state.homeDetailIndex === index + 2, item.endpoint)).join('')
-      : `<p class="empty-list">${capability.mcp ? 'No MCP profiles yet.' : 'Skill-only capability; no MCP profile needed.'}</p>`)
+    + (capability.mcp
+      ? `<div class="list-heading">Related MCP profiles</div>` + (related.length
+        ? related.map((item, index) => listRow(`MCP · ${item.name}`, `${item.runtime} · ${item.owner}`, 'homeDetail', index + 2, state.homeDetailIndex === index + 2, item.endpoint)).join('')
+        : `<p class="empty-list">No profiles yet. Configure/install to create one.</p>`)
+      : '')
     + `<div class="list-heading">Marked capabilities</div>`
     + listRow(`Apply marked (${state.marked.length})…`, state.marked.length ? 'Review simulated batch' : 'Mark capabilities with Space first', 'homeDetail', 2 + related.length, state.homeDetailIndex === 2 + related.length);
   const status = state.focus === 'profiles' && profile
     ? `<strong>${escapeHTML(profile.name)}</strong> · ${escapeHTML(profile.endpoint)}<br>Runtime: ${escapeHTML(profile.runtime)} · Owner: ${escapeHTML(profile.owner)} · Connection: ${escapeHTML(profile.connection)}<br><span class="subtle">${escapeHTML(profile.observation)} · ${escapeHTML(profile.connectionError || profile.ownerEvidence)}</span>`
     : state.focus === 'profiles'
       ? `<strong>${escapeHTML(capability.name)}</strong> · ${state.homeDetailIndex === 0 ? 'Configure / install' : state.homeDetailIndex === 1 ? 'Capability details' : 'Marked batch'}<br><span class="subtle">${state.homeDetailIndex === 0 ? 'Enter opens the setup form for this capability.' : state.homeDetailIndex === 1 ? 'Enter opens read-only package details.' : 'Enter reviews the marked capabilities.'}</span>`
-      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}<br><span class="subtle">Enter moves into the selected capability’s details on the right.</span>`;
+      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)}${capability.mcp ? ` · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}` : ''}<br><span class="subtle">Enter moves into the selected capability’s details on the right.</span>`;
   return `<div class="panes base-panes">${pane('Capabilities · layer 1', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${3 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
 }
 
@@ -369,12 +370,10 @@ export function mount(root) {
         const selected = !last && region.querySelector('.section-row.selected, .list-row.selected, .menu-item.active');
         (selected ?? (last ? available.at(-1) : available[0]) ?? region).focus();
       };
-      const rightControls = rightPane ? [...rightPane.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')] : [];
-      const atControlEnd = area === 'right' && (rightControls.length === 0 || event.target === rightControls.at(-1));
       const command = overlayKeyCommand({
         key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, area, editing,
         atTextStart: editing && event.target.selectionStart === 0 && event.target.selectionEnd === 0,
-        atControlEnd, split: state.overlay.layout === 'split',
+        split: state.overlay.layout === 'split',
       });
       if (command === 'save') {
         event.preventDefault();
@@ -404,7 +403,7 @@ export function mount(root) {
       }
       if ((key === 'ArrowDown' || key === 'ArrowUp') && controls.length) {
         event.preventDefault();
-        if (current < 0) { focusArea(area === 'right' ? (key === 'ArrowDown' ? 'actions' : 'right') : areas[0], key === 'ArrowUp'); return; }
+        if (current < 0) { focusArea(area ?? areas[0], key === 'ArrowUp'); return; }
         const groups = controls.map(control => control.closest('.pane')?.dataset.pane ?? (control.closest('.menu-content') ? 'menu' : 'footer'));
         const index = nextOverlayControlIndex(groups, current, key === 'ArrowDown' ? 1 : -1);
         const target = controls[index];

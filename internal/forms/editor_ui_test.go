@@ -346,6 +346,31 @@ func TestMouseCanEditVisibleFieldAndSaveCurrentBuffer(t *testing.T) {
 	}
 }
 
+func TestSplitFormMouseCanSelectSectionToggleControlAndCancel(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{
+		{Name: "token", Label: "Token", Type: "secret"},
+		{Name: "destinations", Label: "Destinations", Type: "multichoice", Options: []catalog.Choice{{Value: "codex", Label: "Codex"}}},
+	}, nil)
+	m.SetSections(FormSection{Title: "Authentication", Fields: []string{"token"}}, FormSection{Title: "Destinations", Fields: []string{"destinations"}})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 22})
+	layout := m.layout()
+	m.Update(tea.MouseClickMsg{X: 2, Y: layout.bodyStart + 2, Button: tea.MouseLeft})
+	if m.sectionIndex != 1 || m.area != 0 {
+		t.Fatalf("left pane click did not select Destinations: section=%d area=%d", m.sectionIndex, m.area)
+	}
+	layout = m.layout()
+	m.Update(tea.MouseClickMsg{X: layout.splitLeftWidth + 8, Y: layout.bodyStart + 2, Button: tea.MouseLeft})
+	selected, _ := m.editor.Values()["destinations"].([]string)
+	if len(selected) != 1 || selected[0] != "codex" {
+		t.Fatalf("right-pane checkbox click did not select Codex: %v\n%s", selected, m.View().Content)
+	}
+	layout = m.layout()
+	m.Update(tea.MouseClickMsg{X: 1 + len("[ Save ]  "), Y: layout.footerY, Button: tea.MouseLeft})
+	if !m.done || m.err != picker.ErrCancelled {
+		t.Fatalf("fixed Cancel click did not close the split form: done=%t err=%v", m.done, m.err)
+	}
+}
+
 func TestMouseChoicesAndBooleanUseEditorValues(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{
 		{Name: "enabled", Label: "Enabled", Type: "boolean"},

@@ -65,7 +65,7 @@ export function nextOverlayArea(areas, current, step) {
   return areas[(index + step + areas.length) % areas.length] ?? areas[0];
 }
 
-export function overlayKeyCommand({ key, ctrlKey = false, metaKey = false, area, editing = false, atTextStart = false, atControlEnd = false, split = false }) {
+export function overlayKeyCommand({ key, ctrlKey = false, metaKey = false, area, editing = false, atTextStart = false, split = false }) {
   if ((ctrlKey || metaKey) && key.toLowerCase() === 's') return 'save';
   if (key === 'Escape') {
     if (split && area === 'right') return 'left';
@@ -74,8 +74,6 @@ export function overlayKeyCommand({ key, ctrlKey = false, metaKey = false, area,
   }
   if (key === 'ArrowLeft' && area === 'right' && (!editing || atTextStart)) return 'left';
   if (key === 'ArrowRight' && area === 'left') return 'right';
-  if (key === 'ArrowDown' && area === 'right' && atControlEnd) return 'actions';
-  if (key === 'ArrowUp' && area === 'actions') return 'right';
   return null;
 }
 export const settingsSections = ['Default agents', 'Docker backend', 'Catalog and state'];

@@ -114,8 +114,8 @@ test('save shortcut and pane-return keys coexist with text editing', () => {
   assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: false }), 'left');
   assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: true, atTextStart: true }), 'left');
   assert.equal(overlayKeyCommand({ key: 'ArrowLeft', area: 'right', editing: true, atTextStart: false }), null);
-  assert.equal(overlayKeyCommand({ key: 'ArrowDown', area: 'right', atControlEnd: true }), 'actions');
-  assert.equal(overlayKeyCommand({ key: 'ArrowUp', area: 'actions' }), 'right');
+  assert.equal(overlayKeyCommand({ key: 'ArrowDown', area: 'right', atControlEnd: true }), null);
+  assert.equal(overlayKeyCommand({ key: 'ArrowUp', area: 'actions' }), null);
   assert.equal(overlayKeyCommand({ key: 'Escape', area: 'right', split: true }), 'left');
   assert.equal(overlayKeyCommand({ key: 'Escape', area: 'actions', split: true }), 'right');
   assert.equal(overlayKeyCommand({ key: 'Escape', area: 'left', split: true }), 'cancel');
