@@ -89,6 +89,49 @@ func TestWorktreeGitFile(t *testing.T) {
 	}
 }
 
+func TestWorktreeConfigExtensionStillMapsOrigin(t *testing.T) {
+	root := t.TempDir()
+	main, worktree, _ := fixtureWorktree(t, root)
+	configPath := filepath.Join(main, ".git", "config")
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n[extensions]\n\tworktreeConfig = true\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", main}})
+}
+
+func TestDanglingWorktreeIgnored(t *testing.T) {
+	root := t.TempDir()
+	valid := fixtureRepo(t, filepath.Join(root, "valid"), "https://git.example/team/app.git")
+	stale := filepath.Join(root, "stale")
+	if err := os.Mkdir(stale, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, ".git"), []byte("gitdir: ../missing/.git/worktrees/stale\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Scan(context.Background(), []string{root}, nil)
+	if err != nil || !reflect.DeepEqual(rows, []Repository{{"git.example", "team/app", valid}}) {
+		t.Fatalf("rows=%#v err=%v", rows, err)
+	}
+}
+
+func TestArchiveMetadataIgnored(t *testing.T) {
+	root := t.TempDir()
+	valid := fixtureRepo(t, filepath.Join(root, "valid"), "https://git.example/team/app.git")
+	archive := filepath.Join(root, "__MACOSX", "copied")
+	if err := os.MkdirAll(filepath.Join(archive, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", valid}})
+}
+
 func TestPrunedDependencies(t *testing.T) {
 	root := t.TempDir()
 	visible := fixtureRepo(t, filepath.Join(root, "app"), "https://git.example/team/app.git")
@@ -144,10 +187,11 @@ func TestPermissionDeniedRootVisible(t *testing.T) {
 		t.Fatalf("missing unreadable directory diagnostic: %v", err)
 	}
 }
-func TestMalformedGitMetadataVisible(t *testing.T) {
+func TestMalformedNestedGitMetadataIgnored(t *testing.T) {
 	for _, name := range []string{"broken", "broken\\checkout"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
+			valid := fixtureRepo(t, filepath.Join(root, "valid"), "https://git.example/team/app.git")
 			repo := filepath.Join(root, name)
 			if err := os.MkdirAll(repo, 0755); err != nil {
 				t.Fatal(err)
@@ -155,10 +199,20 @@ func TestMalformedGitMetadataVisible(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("invalid git file\n"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if rows, err := Scan(context.Background(), []string{root}, nil); err == nil || !strings.Contains(err.Error(), strconv.Quote(repo)) || len(rows) != 0 {
-				t.Fatalf("missing metadata diagnostic: %v rows=%v", err, rows)
+			if rows, err := Scan(context.Background(), []string{root}, nil); err != nil || !reflect.DeepEqual(rows, []Repository{{"git.example", "team/app", valid}}) {
+				t.Fatalf("rows=%v err=%v", rows, err)
 			}
 		})
+	}
+}
+
+func TestMalformedExplicitRootVisible(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("invalid git file\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), []string{root}, nil); err == nil || !strings.Contains(err.Error(), strconv.Quote(root)) {
+		t.Fatalf("missing explicit root error: %v", err)
 	}
 }
 

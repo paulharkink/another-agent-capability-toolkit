@@ -11,6 +11,8 @@ The manager sends the JSON request to the bundled native `bin/repo-map` helper
 Scan roots must be real local directories; the example paths are placeholders.
 The helper emits exactly one JSON object on stdout and diagnostics on stderr.
 A failed or inaccessible root returns a nonzero exit and no partial JSON result.
+Invalid Git metadata found below a scan root is silently skipped, so stale
+worktrees and copied archive contents do not block mapping valid checkouts.
 
 Paths are absolute and rows are ordered by host, repository name, then path.
 Each distinct checkout is retained, even if it shares a remote with another

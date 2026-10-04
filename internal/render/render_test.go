@@ -316,3 +316,43 @@ func TestGeneratorErrorRedactsTypedSecret(t *testing.T) {
 		t.Fatalf("unredacted error %v", err)
 	}
 }
+
+type failingDiagnosticExecutor struct{ chunks []string }
+
+func (f failingDiagnosticExecutor) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, onStderr func([]byte)) ([]byte, error) {
+	for _, chunk := range f.chunks {
+		onStderr([]byte(chunk))
+	}
+	return nil, errors.New("exit status 1")
+}
+
+func TestGeneratorFailureIncludesChildStderr(t *testing.T) {
+	t.Setenv("AACT_RENDER_TEST_CHILD_FAILURE", "1")
+	var streamed bytes.Buffer
+	g := Generator{OnStderr: func(p []byte) { streamed.Write(p) }}
+	p := catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{os.Args[0], "-test.run=^TestGeneratorFailureChild$"}}}
+	_, err := g.Generate(context.Background(), p, nil, config.Target{}, "")
+	if err == nil || !strings.Contains(err.Error(), "exit status 1") || !strings.Contains(err.Error(), "repo map: missing root directory") {
+		t.Fatalf("generator error hides child stderr: %v", err)
+	}
+	if streamed.String() != "repo map: missing root directory\n" {
+		t.Fatalf("generator stopped streaming stderr: %q", streamed.String())
+	}
+}
+
+func TestGeneratorFailureChild(t *testing.T) {
+	if os.Getenv("AACT_RENDER_TEST_CHILD_FAILURE") != "1" {
+		return
+	}
+	os.Stderr.WriteString("repo map: missing root directory\n")
+	os.Exit(1)
+}
+
+func TestGeneratorFailureRedactsChildStderr(t *testing.T) {
+	g := Generator{Executor: failingDiagnosticExecutor{chunks: []string{"token prefix-value", "-suffix end\n"}}}
+	p := catalog.Package{Dir: t.TempDir(), Generator: &catalog.Command{Argv: []string{"helper"}}, Inputs: []catalog.Input{{Name: "session", Type: "secret"}}}
+	_, err := g.Generate(context.Background(), p, map[string]any{"session": "prefix-value-suffix"}, config.Target{}, "")
+	if err == nil || !strings.Contains(err.Error(), "token [redacted] end") || strings.Contains(err.Error(), "prefix-value-suffix") {
+		t.Fatalf("child stderr was omitted or leaked a secret: %v", err)
+	}
+}

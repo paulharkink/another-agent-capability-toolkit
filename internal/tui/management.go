@@ -288,6 +288,10 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 }
 
 func (m *Model) moveManagementSelection(stroke string) {
+	if m.view == "Settings" {
+		m.moveSettingsSelection(stroke)
+		return
+	}
 	count := 0
 	index := &m.selected
 	switch m.view {
@@ -330,6 +334,47 @@ func (m *Model) moveManagementSelection(stroke string) {
 	if m.view == "Environments" && index == &m.management.EnvironmentIndex {
 		m.management.TargetIndex = 0
 	}
+}
+
+func (m *Model) settingsSelectable(index int) bool {
+	option := index - 2
+	if index == 0 || (option >= 0 && option < len(m.management.SettingsOptions)) {
+		return true
+	}
+	return index >= len(m.managementSettingsRows())-2
+}
+
+func (m *Model) moveSettingsSelection(stroke string) {
+	rows := m.managementSettingsRows()
+	choices := make([]int, 0, len(m.management.SettingsOptions)+3)
+	for i := range rows {
+		if m.settingsSelectable(i) {
+			choices = append(choices, i)
+		}
+	}
+	position := 0
+	for i, index := range choices {
+		if index >= m.selected {
+			position = i
+			break
+		}
+		position = i
+	}
+	switch stroke {
+	case "up":
+		position--
+	case "down":
+		position++
+	case "pgup":
+		position -= max(1, m.height-11)
+	case "pgdown":
+		position += max(1, m.height-11)
+	case "home":
+		position = 0
+	case "end":
+		position = len(choices) - 1
+	}
+	m.selected = choices[min(max(0, position), len(choices)-1)]
 }
 
 func (m *Model) managementMenuEntries() []string {
@@ -804,23 +849,49 @@ func (m *Model) renderManagementList(lines []string, rows []string, visible int)
 		start = 0
 	}
 	start = min(start, max(0, len(rows)-visible))
+	lines[4] = "║" + managementGold.Render(managementScrollTitle(" "+m.view, len(rows), start, visible, width-2)) + "║"
 	for y := 0; y < visible; y++ {
 		i := start + y
 		if i >= len(rows) {
 			break
 		}
-		prefix := "  "
-		if i == m.selected {
-			prefix = "> "
+		selectable := m.view != "Help" && (m.view != "Settings" || m.settingsSelectable(i))
+		prefix := "· "
+		if selectable {
+			prefix = "› "
+			if i == m.selected {
+				prefix = "> "
+			}
+		} else if m.view == "Settings" && i == 1 {
+			prefix = "── "
 		}
 		row := fit(prefix+rows[i], width-2)
-		if i == m.selected {
+		if selectable && i == m.selected {
 			row = managementSelected.Render(row)
+		} else if prefix == "── " {
+			row = managementGold.Render(row)
 		}
 		lines[y+5] = "║" + row + "║"
-		m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: width - 2, Height: 1, Index: i, Control: "row"})
+		if selectable {
+			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: width - 2, Height: 1, Index: i, Control: "row"})
+		}
 	}
-	lines[4] = "║" + managementGold.Render(fit(" "+m.view, width-2)) + "║"
+}
+
+func managementScrollCue(count, start, visible int) string {
+	cue := ""
+	if start > 0 {
+		cue += " ↑ More above"
+	}
+	if count > start+visible {
+		cue += " ↓ More below"
+	}
+	return cue
+}
+
+func managementScrollTitle(title string, count, start, visible, width int) string {
+	cue := managementScrollCue(count, start, visible)
+	return fit(title, max(0, width-ansi.StringWidth(cue))) + cue
 }
 
 func (m *Model) renderSettingsManagement(lines []string, visible int) {
@@ -864,7 +935,13 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 			selectedName = row.Name
 		}
 	}
-	lines[4] = "╠" + managementGold.Render(fit(" Detected agents", left)) + "╦" + managementGold.Render(fit(" "+selectedName, right)) + "╣"
+	start := max(0, m.selected-visible+1)
+	if m.selected < visible {
+		start = 0
+	}
+	start = min(start, max(0, len(rows)-visible))
+	leftTitle := managementScrollTitle(" Detected agents", len(rows), start, visible, left)
+	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(" "+selectedName, right)) + "╣"
 	registrations := m.agentRegistrations(selectedID)
 	details := []string{"Status: Detection unavailable", "Config: location unavailable", fmt.Sprintf("AACT MCPs: %d", len(registrations))}
 	if row, ok := m.selectedAgentManagement(); ok {
@@ -901,15 +978,11 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 		details = append(details, "Registrations:")
 		details = append(details, registrations...)
 	}
-	start := max(0, m.selected-visible+1)
-	if m.selected < visible {
-		start = 0
-	}
 	for y := 0; y < visible; y++ {
 		i := start + y
 		leftText := ""
 		if i < len(rows) {
-			prefix := "  "
+			prefix := "› "
 			if i == m.selected {
 				prefix = "> "
 			}
@@ -975,14 +1048,16 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 	} else {
 		rightTitle = "►" + rightTitle
 	}
-	lines[4] = "╠" + managementGold.Render(fit(leftTitle, left)) + "╦" + managementGold.Render(fit(rightTitle, right)) + "╣"
 	leftStart := max(0, m.management.EnvironmentIndex-visible+1)
 	rightStart := max(0, m.management.TargetIndex-visible+1)
+	leftTitle = managementScrollTitle(leftTitle, len(entries), leftStart, visible, left)
+	rightTitle = managementScrollTitle(rightTitle, len(selected.Targets), rightStart, visible, right)
+	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(rightTitle) + "╣"
 	for y := 0; y < visible; y++ {
 		l, r := "", ""
 		i := leftStart + y
 		if i < len(entries) {
-			prefix := "  "
+			prefix := "› "
 			if i == m.management.EnvironmentIndex {
 				prefix = "> "
 			}
@@ -991,7 +1066,7 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 		}
 		i = rightStart + y
 		if i < len(selected.Targets) {
-			prefix := "  "
+			prefix := "› "
 			if i == m.management.TargetIndex {
 				prefix = "> "
 			}
@@ -1039,7 +1114,7 @@ func (m *Model) renderManagementModal(lines []string) {
 	}
 	box := []string{"┌" + managementGold.Render(fit(title, w-2)) + "┐"}
 	for i, entry := range entries {
-		prefix := "  "
+		prefix := "› "
 		if i == m.management.ModalSelected {
 			prefix = "> "
 		}

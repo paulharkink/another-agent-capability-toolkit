@@ -391,12 +391,13 @@ func TestManagementHelpReturnsToOrigin(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Settings")
 	press(m, tea.KeyDown, "")
+	selected := m.selected
 	press(m, tea.KeyF1, "")
 	if m.view != "Help" || !strings.Contains(m.View().Content, "default") || strings.Contains(m.View().Content, "fixed:") {
 		t.Fatal("context help not shown")
 	}
 	press(m, tea.KeyEscape, "")
-	if m.view != "Settings" || m.selected != 1 {
+	if m.view != "Settings" || m.selected != selected {
 		t.Fatalf("Help did not restore Settings selection: view=%q selected=%d", m.view, m.selected)
 	}
 }

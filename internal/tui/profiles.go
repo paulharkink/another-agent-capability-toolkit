@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
@@ -126,67 +124,14 @@ func (m *Model) registrationForm(p ProfileRow) {
 		m.output = reason
 		return
 	}
-	choices := []catalog.Choice{}
-	selected := []string{}
-	for _, agent := range m.agents {
-		if strings.EqualFold(agent, "all") {
-			continue
-		}
-		choices = append(choices, catalog.Choice{Value: agent, Label: agent})
-		for _, registered := range p.Profile.RegisteredAgents {
-			if registered == agent {
-				selected = append(selected, agent)
-				break
-			}
-		}
-	}
-	// Retain registrations absent from the current agent inventory until explicitly deselected.
-	for _, registered := range p.Profile.RegisteredAgents {
-		if strings.EqualFold(registered, "all") {
-			continue
-		}
-		found := false
-		for _, choice := range choices {
-			if choice.Value == registered {
-				found = true
-				break
-			}
-		}
-		if !found {
-			choices = append(choices, catalog.Choice{Value: registered, Label: registered + " (registered; unavailable)"})
-			selected = append(selected, registered)
-		}
-	}
-	if len(choices) == 0 {
-		m.output = "No named agents are available"
-		return
-	}
-	m.pendingRegistration = &viewmodel.RegistrationRequest{Key: p.Key, URL: p.URL, Transport: p.Profile.Transport}
-	m.pendingRegistrationRemoval = false
-	defs := []catalog.Input{{Name: "agent", Label: "Desired registrations (deselect to remove)", Type: "multichoice", Options: choices}}
-	if p.Profile.Transport == "" {
-		defs = append([]catalog.Input{{Name: "transport", Label: "Transport (select MCP protocol)", Type: "choice", Required: true, Options: []catalog.Choice{{Value: "streamable-http", Label: "Streamable HTTP"}, {Value: "sse", Label: "SSE"}}}}, defs...)
-	}
-	m.form = forms.NewForm(m.ctx, defs, map[string]any{"agent": selected})
-	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-	// Keep the originating Actions selection so cancelling returns to the same item.
+	m.openRegistrationOverlay(p, false)
 }
 func (m *Model) removeRegistrationForm(p ProfileRow) {
 	if reason := m.profileActionReason(p, "remove-registrations"); reason != "" {
 		m.output = reason
 		return
 	}
-	choices := make([]catalog.Choice, 0, len(p.Profile.RegisteredAgents))
-	for _, agent := range p.Profile.RegisteredAgents {
-		choices = append(choices, catalog.Choice{Value: agent, Label: agent})
-	}
-	m.pendingRegistration = &viewmodel.RegistrationRequest{
-		Key: p.Key, URL: p.URL, Transport: p.Profile.Transport,
-		AgentIDs: append([]string(nil), p.Profile.RegisteredAgents...),
-	}
-	m.pendingRegistrationRemoval = true
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agent", Label: "Select registrations to remove", Type: "multichoice", Options: choices}}, nil)
-	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.openRegistrationOverlay(p, true)
 }
 func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, removing bool) tea.Cmd {
 	backend, ok := m.backend.(registrationBackend)
@@ -225,11 +170,11 @@ func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, re
 }
 
 func (m *Model) profileDetails() []string {
-	rows := m.profiles()
-	if m.home.Focus != ProfilesPane || len(rows) == 0 || rows[m.home.Profiles.Index].Profile == nil {
+	row, ok := m.selectedContextProfile()
+	if m.home.Focus != ProfilesPane || !ok || row.Profile == nil {
 		return []string{m.selectedDetail(), "Enter / Esc Back"}
 	}
-	p := rows[m.home.Profiles.Index].Profile
+	p := row.Profile
 	lines := []string{p.Key.Source + " / " + p.Key.Package, p.Key.Environment + " / " + p.Key.Target, "Runtime: " + p.RuntimeStatus + " · owner: " + p.Ownership, p.URL}
 	if p.LocalLastAction != "" {
 		lines = append(lines, "Local last action: "+p.LocalLastAction+" · "+p.LocalLastActionAt.Format("2006-01-02 15:04:05"))

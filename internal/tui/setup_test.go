@@ -22,6 +22,16 @@ type setupBackendFixture struct {
 	installErr     error
 }
 
+// setupSection selects a section from the L3 navigation list and opens its
+// fields in the L4 details pane. Sections are ordered by openSetupForm.
+func setupSection(m *Model, down int) {
+	m.Update(tea.KeyPressMsg{Code: tea.KeyLeft}) // Return to L3 even when called from details.
+	for i := 0; i < down; i++ {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+}
+
 func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = q
 	preview := viewmodel.SetupPreview{
@@ -105,10 +115,21 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 		t.Fatalf("typed setup preview did not open: %+v, %v", b.previewRequest, m.form)
 	}
 	view := m.View().Content
-	for _, want := range []string{"Repository", "Mode", "Destinations", "[all]", "aact.toml"} {
+	for _, want := range []string{"Sections", "Inputs"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("single setup form missing %q:\n%s", want, view)
 		}
+	}
+	setupSection(m, 0) // Inputs is the first section when no Authentication exists.
+	view = m.View().Content
+	for _, want := range []string{"Repository", "Mode", "aact.toml"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("setup Inputs section missing %q:\n%s", want, view)
+		}
+	}
+	setupSection(m, 1) // Destinations.
+	if !strings.Contains(m.View().Content, "Destinations") || !strings.Contains(m.View().Content, "[x] All") {
+		t.Fatalf("setup Destinations section missing:\n%s", m.View().Content)
 	}
 	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil || !m.busy || m.form != nil {
@@ -134,11 +155,12 @@ func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
 		}},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/tmp/codex/config.toml", Selected: true}},
 	})
+	setupSection(m, 0) // Databases.
 	if !strings.Contains(m.View().Content, "[x] Empty saved entry — deselect to remove") {
 		t.Fatalf("saved empty entry cannot be identified or removed: %s", m.View().Content)
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Move from Plane to the saved empty entry.
+	m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	if strings.Contains(m.View().Content, "[x] Empty saved entry") {
 		t.Fatalf("saved empty entry stayed selected after Enter: %s", m.View().Content)
 	}
@@ -175,6 +197,7 @@ func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
 			ProvenancePath: "/a/very/long/checkout/path/for/a/company/private/capabilities/repository/that/exceeds/the/terminal/width/aact.toml", Editable: true}},
 		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills", Selected: true}},
 	})
+	setupSection(m, 0) // Inputs.
 	view := m.View().Content
 	if !strings.Contains(view, "Repository [source]: /repos/team") || !strings.Contains(view, "aact.toml") {
 		t.Fatalf("provenance hid the field's value: %s", view)
@@ -189,10 +212,18 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 	m.catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "company", Target: "production"}, RuntimeStatus: "never-started", Ownership: "local"}}}
 	m.reconcileHome()
-	m.focusPane(ProfilesPane)
-	m.home.Modal = &modalState{Kind: "actions"}
-	if !strings.Contains(m.menuEntries()[3], "Edit parameters") || strings.Contains(m.menuEntries()[3], "disabled") {
-		t.Fatalf("managed profile parameters unavailable: %s", m.menuEntries()[3])
+	press(m, tea.KeyEnter, "")
+	m.selectContext(m.home.Profiles.Index + 2)
+	press(m, tea.KeyEnter, "")
+	parameters := ""
+	for _, entry := range m.menuEntries() {
+		if strings.HasPrefix(entry, "Edit parameters") {
+			parameters = entry
+			break
+		}
+	}
+	if parameters == "" || strings.Contains(parameters, "disabled") {
+		t.Fatalf("managed profile parameters unavailable: %v", m.menuEntries())
 	}
 	cmd := m.homeOperation("parameters")
 	if cmd == nil || !m.busy {
@@ -254,20 +285,23 @@ func TestExclusiveCredentialsShowMethodAndInactiveBranch(t *testing.T) {
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	})
 	view := m.View().Content
-	for _, want := range []string{"Environment: company", "Target: production", "Authentication", "Token", "Source kubeconfig", "inactive", "Destinations", "Codex"} {
+	for _, want := range []string{"Environment: company", "Target: production", "Authentication", "Destinations"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup missing %q:\n%s", want, view)
 		}
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	setupSection(m, 0) // Authentication.
 	view = m.View().Content
-	if !strings.Contains(view, "Token: ") || !strings.Contains(view, "inactive while Source kubeconfig") {
-		t.Fatalf("credential selector did not disable Token:\n%s", view)
+	for _, want := range []string{"Token", "Source kubeconfig"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("authentication field %q was not visible:\n%s", want, view)
+		}
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if strings.Contains(m.View().Content, "Edit:") || !strings.Contains(m.View().Content, "inactive while Source kubeconfig") {
-		t.Fatal("inactive field opened an editor or hid its reason")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Destinations.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if !strings.Contains(m.View().Content, "Codex") {
+		t.Fatalf("setup Destinations section omitted Codex:\n%s", m.View().Content)
 	}
 }
 
@@ -291,7 +325,11 @@ func TestSwitchingAuthenticationClearsPreviouslyPrefilledCredential(t *testing.T
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
 	})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	setupSection(m, 0)                           // Authentication.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Focus Source kubeconfig.
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/new-kubeconfig"})
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatalf("switching authentication blocked Save: %s", m.View().Content)
@@ -334,9 +372,10 @@ func TestFixedTargetCredentialDisablesOtherMethod(t *testing.T) {
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
 	})
+	setupSection(m, 0) // Authentication.
 	view := m.View().Content
-	if strings.Contains(view, "Authentication") || !strings.Contains(view, "fixed by target") {
-		t.Fatalf("fixed credential offered another method: %s", view)
+	if strings.Contains(view, "Token") || strings.Contains(view, "Source kubeconfig") || !strings.Contains(view, "No fields in this section") {
+		t.Fatalf("fixed credential left an editable authentication method: %s", view)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {

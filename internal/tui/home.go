@@ -10,6 +10,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -41,6 +42,7 @@ type paneState struct {
 type modalState struct {
 	Kind     string
 	Selected int
+	Parent   *modalState
 	Label    string
 	Rows     []string
 	Offset   int
@@ -60,11 +62,97 @@ func (h hitRegion) contains(x, y int) bool {
 }
 
 type homeState struct {
-	Capabilities, Profiles paneState
-	Focus                  Pane
-	Marks                  map[string]bool
-	Modal                  *modalState
-	Hits                   []hitRegion
+	Capabilities, Profiles, Context paneState
+	ContextDisplayOffset            int
+	Focus                           Pane
+	Modal                           *modalState
+	Hits                            []hitRegion
+}
+
+type contextRow struct {
+	ID, Label, Kind string
+	ProfileIndex    int
+}
+
+func (m *Model) contextRows() []contextRow {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return nil
+	}
+	rows := []contextRow{
+		{ID: "configure", Label: "Configure / install " + c.Name + "…", Kind: "configure"},
+		{ID: "details", Label: "View capability details", Kind: "details"},
+	}
+	for i, p := range m.profiles() {
+		rows = append(rows, contextRow{ID: p.ID, Label: "MCP · " + p.Name + "  " + p.Status, Kind: "profile", ProfileIndex: i})
+	}
+	return rows
+}
+
+func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
+	if m.inventoryError != nil {
+		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
+	}
+	components := []struct{ name, kind string }{}
+	if c.Skill {
+		components = append(components, struct{ name, kind string }{"Skill", "skill"})
+	}
+	if c.MCP {
+		components = append(components, struct{ name, kind string }{"MCP registration", "mcp"})
+	}
+	if len(components) == 0 {
+		return "Unknown", []string{"No installable components in the catalog"}
+	}
+	found := 0
+	details := make([]string, 0, len(components))
+	for _, component := range components {
+		agents := map[string]bool{}
+		for _, inst := range m.inventory {
+			if inst.Key.Source != c.Source || inst.Key.Package != c.Package || inst.Component != component.kind {
+				continue
+			}
+			agent := inst.AgentID
+			if agent == "" {
+				agent = "unspecified destination"
+			}
+			agents[agent] = true
+		}
+		if len(agents) == 0 {
+			details = append(details, component.name+": no AACT record")
+			continue
+		}
+		found++
+		ids := make([]string, 0, len(agents))
+		for agent := range agents {
+			ids = append(ids, agent)
+		}
+		sort.Strings(ids)
+		details = append(details, component.name+": "+strings.Join(ids, ", "))
+	}
+	if found == 0 {
+		return "Not installed", details
+	}
+	if found < len(components) {
+		return "Partial", details
+	}
+	return "Installed", details
+}
+
+func (m *Model) selectedContextRow() (contextRow, bool) {
+	rows := m.contextRows()
+	if len(rows) == 0 {
+		return contextRow{}, false
+	}
+	return rows[min(max(m.home.Context.Index, 0), len(rows)-1)], true
+}
+
+func (m *Model) selectedContextProfile() (ProfileRow, bool) {
+	row, ok := m.selectedContextRow()
+	profiles := m.profiles()
+	if !ok || row.Kind != "profile" || row.ProfileIndex >= len(profiles) {
+		return ProfileRow{}, false
+	}
+	return profiles[row.ProfileIndex], true
 }
 
 func (m *Model) capabilities() []CapabilityRow {
@@ -169,9 +257,11 @@ func (m *Model) reconcileHome() {
 		ids = append(ids, p.ID)
 	}
 	removed = reconcilePane(&m.home.Profiles, ids, m.paneHeight()) || removed
-	if len(ps) == 0 {
-		m.home.Focus = CapabilitiesPane
+	contextIDs := make([]string, 0, len(ps)+3)
+	for _, row := range m.contextRows() {
+		contextIDs = append(contextIDs, row.ID)
 	}
+	reconcilePane(&m.home.Context, contextIDs, m.paneHeight())
 	if removed {
 		m.output = "Selected item was removed; selected the nearest surviving row."
 	}
@@ -187,6 +277,8 @@ func (m *Model) selectPane(pane Pane, index int) {
 		m.home.Focus = pane
 		m.home.Profiles.Index = min(max(index, 0), len(rows)-1)
 		m.home.Profiles.ID = rows[m.home.Profiles.Index].ID
+		m.home.Context.Index = m.home.Profiles.Index + 2
+		m.home.Context.ID = rows[m.home.Profiles.Index].ID
 	} else {
 		rows := m.capabilities()
 		if len(rows) == 0 {
@@ -195,6 +287,8 @@ func (m *Model) selectPane(pane Pane, index int) {
 		index = min(max(index, 0), len(rows)-1)
 		if m.home.Capabilities.ID != rows[index].ID {
 			m.home.Profiles = paneState{}
+			m.home.Context = paneState{}
+			m.home.ContextDisplayOffset = 0
 		}
 		m.home.Capabilities.Index = index
 		m.home.Capabilities.ID = rows[index].ID
@@ -203,18 +297,30 @@ func (m *Model) selectPane(pane Pane, index int) {
 	m.reconcileHome()
 }
 func (m *Model) focusPane(pane Pane) {
-	if pane == ProfilesPane && len(m.profiles()) == 0 {
-		m.output = m.emptyProfiles()
+	m.home.Focus = pane
+}
+
+func (m *Model) selectContext(index int) {
+	rows := m.contextRows()
+	if len(rows) == 0 {
 		return
 	}
-	m.home.Focus = pane
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = min(max(index, 0), len(rows)-1)
+	m.home.Context.ID = rows[m.home.Context.Index].ID
+	if row := rows[m.home.Context.Index]; row.Kind == "profile" {
+		profiles := m.profiles()
+		m.home.Profiles.Index = row.ProfileIndex
+		m.home.Profiles.ID = profiles[row.ProfileIndex].ID
+	}
+	m.reconcileHome()
 }
 func (m *Model) movePane(key string) {
 	p := m.home.Capabilities
 	count := len(m.capabilities())
 	if m.home.Focus == ProfilesPane {
-		p = m.home.Profiles
-		count = len(m.profiles())
+		p = m.home.Context
+		count = len(m.contextRows())
 	}
 	next := p.Index
 	switch key {
@@ -231,7 +337,11 @@ func (m *Model) movePane(key string) {
 	case "end":
 		next = count - 1
 	}
-	m.selectPane(m.home.Focus, next)
+	if m.home.Focus == ProfilesPane {
+		m.selectContext(next)
+	} else {
+		m.selectPane(CapabilitiesPane, next)
+	}
 }
 func (m *Model) emptyProfiles() string {
 	c, ok := m.selectedCapability()
@@ -253,6 +363,10 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 	switch stroke {
 	case "ctrl+c", "f10", "q":
 		return tea.Quit
+	case "esc":
+		if m.home.Focus == ProfilesPane {
+			m.home.Focus = CapabilitiesPane
+		}
 	case "m", "f9":
 		m.openHomeMenu("main")
 	case "f1", "?":
@@ -265,23 +379,28 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 		m.focusPane(ProfilesPane)
 	case "up", "down", "k", "j", "pgup", "pgdown", "home", "end":
 		m.movePane(stroke)
-	case "space", " ":
-		if m.home.Focus == CapabilitiesPane {
-			if c, ok := m.selectedCapability(); ok {
-				if m.home.Marks == nil {
-					m.home.Marks = map[string]bool{}
-				}
-				m.home.Marks[c.ID] = !m.home.Marks[c.ID]
-			}
-		}
 	case "enter", "f2":
-		if _, ok := m.selectedCapability(); ok {
-			m.openHomeMenu("actions")
+		if m.home.Focus == CapabilitiesPane {
+			m.focusPane(ProfilesPane)
+		} else {
+			return m.openContextRow()
 		}
 	case "f3":
-		m.home.Modal = &modalState{Kind: "details"}
+		if m.home.Focus == CapabilitiesPane {
+			m.selectContext(1)
+		} else if row, ok := m.selectedContextRow(); ok && row.Kind == "details" {
+			m.home.Modal = &modalState{Kind: "details"}
+		} else {
+			m.selectContext(1)
+		}
 	case "f4":
-		return m.homeOperation("parameters")
+		if m.home.Focus == CapabilitiesPane {
+			m.selectContext(0)
+		} else if row, ok := m.selectedContextRow(); ok && row.Kind == "configure" {
+			return m.homeOperation("parameters")
+		} else {
+			m.selectContext(0)
+		}
 	case "f5", "R":
 		return m.load()
 	case "u":
@@ -291,53 +410,51 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 	}
 	return nil
 }
-func (m *Model) batchCount() int {
-	n := 0
-	for _, marked := range m.home.Marks {
-		if marked {
-			n++
-		}
+
+func (m *Model) openContextRow() tea.Cmd {
+	row, ok := m.selectedContextRow()
+	if !ok {
+		return nil
 	}
-	return n
+	switch row.Kind {
+	case "configure":
+		return m.homeOperation("parameters")
+	case "details":
+		m.home.Modal = &modalState{Kind: "details"}
+	case "profile":
+		m.openHomeMenu("actions")
+	}
+	return nil
 }
 func (m *Model) homeMenuItems() []homeMenuItem {
+	if m.home.Modal == nil {
+		return nil
+	}
 	if m.home.Modal.Kind == "main" {
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.home.Focus == ProfilesPane {
-		rows := m.profiles()
-		if len(rows) == 0 {
-			return []homeMenuItem{{"Back", "back", ""}}
+		p, isProfile := m.selectedContextProfile()
+		if isProfile {
+			item := func(label, action string) homeMenuItem {
+				return homeMenuItem{label, action, m.profileActionReason(p, action)}
+			}
+			start := "Start…"
+			if strings.EqualFold(p.Status, "running") {
+				start = "Restart…"
+			}
+			return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Authenticate…", "a"), item("Edit parameters…", "parameters"), item("Configure agent registrations…", "registrations"), item("Remove agent registrations…", "remove-registrations"), item("Check connection", "check-connection"), {"Refresh observation", "refresh", ""}, item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
 		}
-		p := rows[m.home.Profiles.Index]
-		item := func(label, action string) homeMenuItem {
-			return homeMenuItem{label, action, m.profileActionReason(p, action)}
-		}
-		start := "Start…"
-		if strings.EqualFold(p.Status, "running") {
-			start = "Restart…"
-		}
-		return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Authenticate…", "a"), item("Edit parameters…", "parameters"), item("Configure agent registrations…", "registrations"), item("Remove agent registrations…", "remove-registrations"), item("Check connection", "check-connection"), item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
 	}
 	c, ok := m.selectedCapability()
 	if !ok {
 		return []homeMenuItem{{"Back", "back", ""}}
 	}
-	mark := "Mark for batch"
-	if m.home.Marks[c.ID] {
-		mark = "Unmark for batch"
-	}
 	installReason := ""
 	if c.CatalogIndex < 0 {
 		installReason = "absent from local catalog"
 	}
-	batchReason := ""
-	if m.batchCount() == 0 {
-		batchReason = "Mark at least one capability first"
-	} else {
-		batchReason = "batch setup is unavailable from the service"
-	}
-	return []homeMenuItem{{"Configure / install " + c.Name + "…", "parameters", installReason}, {"View capability details", "details", ""}, {mark, "mark", ""}, {fmt.Sprintf("Apply marked (%d)…", m.batchCount()), "apply-marked", batchReason}, {"Back", "back", ""}}
+	return []homeMenuItem{{"Configure / install " + c.Name + "…", "parameters", installReason}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 }
 func (m *Model) menuEntries() []string {
 	items := m.homeMenuItems()
@@ -365,12 +482,12 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 		return m.logKey(stroke)
 	}
 	if stroke == "esc" {
-		m.home.Modal = nil
+		m.home.Modal = m.home.Modal.Parent
 		return nil
 	}
 	if m.home.Modal.Kind == "details" {
 		if stroke == "enter" {
-			m.home.Modal = nil
+			m.home.Modal = m.home.Modal.Parent
 		}
 		return nil
 	}
@@ -424,20 +541,15 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 		switch item.Action {
 		case "back":
 			m.home.Modal = nil
+		case "refresh":
+			m.home.Modal = nil
+			return m.load()
 		case "details":
-			m.home.Modal = &modalState{Kind: "details"}
-		case "mark":
-			if c, ok := m.selectedCapability(); ok {
-				if m.home.Marks == nil {
-					m.home.Marks = map[string]bool{}
-				}
-				m.home.Marks[c.ID] = !m.home.Marks[c.ID]
-			}
-			m.home.Modal = nil
-		case "apply-marked":
-			m.output = "Batch setup is unavailable from the service"
+			m.home.Modal = &modalState{Kind: "details", Parent: m.home.Modal}
 		default:
-			m.home.Modal = nil
+			if item.Action != "registrations" && item.Action != "remove-registrations" {
+				m.home.Modal = nil
+			}
 			return m.homeOperation(item.Action)
 		}
 	}
@@ -449,44 +561,42 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		return nil
 	}
 	if m.home.Focus == ProfilesPane {
-		rows := m.profiles()
-		if len(rows) == 0 {
-			return nil
-		}
-		p := rows[m.home.Profiles.Index]
-		if action == "remove-registrations" {
-			m.removeRegistrationForm(p)
-			return nil
-		}
-		if action == "check-connection" {
-			return m.checkProfileConnection(p)
-		}
-		if action == "registrations" {
-			m.registrationForm(p)
-			return nil
-		}
-		if action == "l" {
-			return m.openProfileLogs(p)
-		}
-		if action == "parameters" {
+		p, isProfile := m.selectedContextProfile()
+		if isProfile {
+			if action == "remove-registrations" {
+				m.removeRegistrationForm(p)
+				return nil
+			}
+			if action == "check-connection" {
+				return m.checkProfileConnection(p)
+			}
+			if action == "registrations" {
+				m.registrationForm(p)
+				return nil
+			}
+			if action == "l" {
+				return m.openProfileLogs(p)
+			}
+			if action == "parameters" {
+				if reason := m.profileActionReason(p, action); reason != "" {
+					m.output = reason
+					return nil
+				}
+				return m.beginSetup(p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target)
+			}
+			actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
+			kind := actions[action]
+			if kind == "" {
+				return nil
+			}
 			if reason := m.profileActionReason(p, action); reason != "" {
 				m.output = reason
 				return nil
 			}
-			return m.beginSetup(p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target)
+			m.home.Modal = nil
+			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target}
+			return m.run(op)
 		}
-		actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
-		kind := actions[action]
-		if kind == "" {
-			return nil
-		}
-		if reason := m.profileActionReason(p, action); reason != "" {
-			m.output = reason
-			return nil
-		}
-		m.home.Modal = nil
-		op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target}
-		return m.run(op)
 	}
 	if c.CatalogIndex < 0 {
 		m.output = "Package is absent from the local catalog; use profile Actions for registrations."
@@ -557,15 +667,14 @@ func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		switch h.Control {
 		case "row":
-			m.selectPane(h.Pane, h.Index)
-			if h.Pane == CapabilitiesPane && mouse.X >= 3 && mouse.X <= 5 {
-				return m.homeKey("space")
+			if h.Pane == ProfilesPane {
+				m.selectContext(h.Index)
+			} else {
+				m.selectPane(h.Pane, h.Index)
 			}
 			return nil
 		case "panes":
 			return m.homeKey("tab")
-		case "mark":
-			return m.homeKey("space")
 		case "main":
 			return m.homeKey("m")
 		case "actions":
@@ -598,10 +707,11 @@ func (m *Model) selectedDetail() string {
 		return "No capabilities in this catalog"
 	}
 	if m.home.Focus == ProfilesPane {
-		ps := m.profiles()
-		if len(ps) > 0 {
-			p := ps[m.home.Profiles.Index]
+		if p, ok := m.selectedContextProfile(); ok {
 			return fmt.Sprintf("%s / %s / %s / %s · %s · %s", p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target, p.Name, p.URL) + " · owner: " + p.Instance.Ownership
+		}
+		if row, ok := m.selectedContextRow(); ok {
+			return c.Name + " · " + row.Label
 		}
 	}
 	components := []string{}
@@ -611,7 +721,13 @@ func (m *Model) selectedDetail() string {
 	if c.MCP {
 		components = append(components, "MCP")
 	}
-	return fmt.Sprintf("%s · %s · %s · %d related MCP profiles", m.label(c.Source), c.Name, strings.Join(components, " + "), len(m.profiles()))
+	detail := fmt.Sprintf("%s · %s · %s", m.label(c.Source), c.Name, strings.Join(components, " + "))
+	if c.MCP {
+		detail += fmt.Sprintf(" · %d related MCP profiles", len(m.profiles()))
+	}
+	status, _ := m.installationDetails(c)
+	detail += " · AACT records: " + status
+	return detail
 }
 func (m *Model) homeView() tea.View {
 	m.home.Hits = nil
@@ -627,6 +743,45 @@ func (m *Model) homeView() tea.View {
 	cs := m.capabilities()
 	ps := m.profiles()
 	c, _ := m.selectedCapability()
+	type displayRow struct {
+		text         string
+		contextIndex int
+		kind         string
+	}
+	contextDisplay := []displayRow{{text: "Capability", contextIndex: -1, kind: "heading"}}
+	contextRows := m.contextRows()
+	for i := 0; i < min(2, len(contextRows)); i++ {
+		contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+	}
+	if c.MCP {
+		contextDisplay = append(contextDisplay, displayRow{text: "Related MCP profiles", contextIndex: -1, kind: "heading"})
+		if len(ps) == 0 {
+			contextDisplay = append(contextDisplay, displayRow{text: "No profiles yet — configure/install to create one", contextIndex: -1, kind: "empty"})
+		} else {
+			for i, p := range ps {
+				contextDisplay = append(contextDisplay, displayRow{text: "MCP · " + p.Name + "  " + p.Status, contextIndex: i + 2, kind: "action"})
+			}
+		}
+	}
+	installStatus, installDetails := m.installationDetails(c)
+	contextDisplay = append(contextDisplay, displayRow{text: "Installation · AACT records: " + installStatus, contextIndex: -1, kind: "heading"})
+	for _, detail := range installDetails {
+		contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
+	}
+	selectedDisplay := 0
+	for i, row := range contextDisplay {
+		if row.contextIndex == m.home.Context.Index {
+			selectedDisplay = i
+			break
+		}
+	}
+	if selectedDisplay < m.home.ContextDisplayOffset {
+		m.home.ContextDisplayOffset = selectedDisplay
+	}
+	if selectedDisplay >= m.home.ContextDisplayOffset+visible {
+		m.home.ContextDisplayOffset = selectedDisplay - visible + 1
+	}
+	m.home.ContextDisplayOffset = min(max(0, m.home.ContextDisplayOffset), max(0, len(contextDisplay)-visible))
 	shortPath := func(path string) string {
 		if path == "" {
 			return "none"
@@ -634,27 +789,28 @@ func (m *Model) homeView() tea.View {
 		return filepath.Base(path)
 	}
 	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
-	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Actions"
+	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
 	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"
-	rtitle := "MCP profiles · " + c.Name
+	rtitle := "Selected capability · " + c.Name
 	if m.home.Focus == CapabilitiesPane {
 		ltitle = "► " + ltitle
 	} else {
 		rtitle = "► " + rtitle
 	}
+	if m.home.ContextDisplayOffset > 0 {
+		rtitle = "↑ More above · " + rtitle
+	}
 	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
 	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	lines = append(lines, "╠"+gold.Render(fit(ltitle, left))+"╦"+gold.Render(fit(rtitle, right))+"╣")
 	for row := 0; row < visible; row++ {
 		l, r := "", ""
 		i := m.home.Capabilities.Offset + row
 		if i < len(cs) {
-			mark := "[ ]"
-			if m.home.Marks[cs[i].ID] {
-				mark = "[x]"
-			}
-			cursor := " "
+			installationStatus, _ := m.installationDetails(cs[i])
+			cursor := "›"
 			if i == m.home.Capabilities.Index {
 				cursor = ">"
 			}
@@ -665,29 +821,39 @@ func (m *Model) homeView() tea.View {
 					kind = "skill + MCP"
 				}
 			}
-			l = cursor + " " + mark + " " + cs[i].Name + "  " + kind
+			l = cursor + " " + installationStatus + " · " + cs[i].Name + "  " + kind
 			m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 4 + row, Width: left, Height: 1, Pane: CapabilitiesPane, Index: i, Control: "row"})
 		}
-		i = m.home.Profiles.Offset + row
-		if i < len(ps) {
-			cursor := " "
-			if i == m.home.Profiles.Index {
-				cursor = ">"
+		i = m.home.ContextDisplayOffset + row
+		if i < len(contextDisplay) {
+			item := contextDisplay[i]
+			if item.contextIndex >= 0 {
+				cursor := "›"
+				if item.contextIndex == m.home.Context.Index {
+					cursor = ">"
+				}
+				r = cursor + " " + item.text
+				m.home.Hits = append(m.home.Hits, hitRegion{X: left + 2, Y: 4 + row, Width: right, Height: 1, Pane: ProfilesPane, Index: item.contextIndex, Control: "row"})
+			} else if item.kind == "heading" {
+				r = "── " + item.text
+			} else {
+				r = "· " + item.text
 			}
-			r = cursor + " " + ps[i].Key.Environment + " / " + ps[i].Key.Target + "  " + ps[i].Status
-			if ps[i].Instance.Ownership != "" {
-				r += " · " + ps[i].Instance.Ownership
-			}
-			m.home.Hits = append(m.home.Hits, hitRegion{X: left + 2, Y: 4 + row, Width: right, Height: 1, Pane: ProfilesPane, Index: i, Control: "row"})
-		} else if row == 0 && len(ps) == 0 {
-			r = m.emptyProfiles()
 		}
 		l = fit(l, left)
 		r = fit(r, right)
+		if i := m.home.ContextDisplayOffset + row; i < len(contextDisplay) {
+			switch contextDisplay[i].kind {
+			case "heading":
+				r = gold.Render(r)
+			case "empty":
+				r = muted.Render(r)
+			}
+		}
 		if i := m.home.Capabilities.Offset + row; i < len(cs) && i == m.home.Capabilities.Index && m.home.Focus == CapabilitiesPane {
 			l = selected.Render(l)
 		}
-		if i := m.home.Profiles.Offset + row; i < len(ps) && i == m.home.Profiles.Index && m.home.Focus == ProfilesPane {
+		if i := m.home.ContextDisplayOffset + row; i < len(contextDisplay) && contextDisplay[i].contextIndex == m.home.Context.Index && m.home.Focus == ProfilesPane {
 			r = selected.Render(r)
 		}
 		lines = append(lines, "║"+l+"║"+r+"║")
@@ -709,8 +875,12 @@ func (m *Model) homeView() tea.View {
 		}
 		status = "Docker: " + m.profileSnapshot.DockerError + "; last observed " + observed + " · " + status
 	}
-	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(pos(m.home.Profiles, len(ps)), right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║", "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
-	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F2 Actions", "actions"}, {"F3 Details", "details"}, {"F4 Parameters", "parameters"}, {"F5 Refresh", "refresh"}}
+	contextPosition := pos(m.home.Context, len(contextRows))
+	if m.home.ContextDisplayOffset+visible < len(contextDisplay) {
+		contextPosition += "  ↓ More below"
+	}
+	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(contextPosition, right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║", "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
+	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F2 Open / Focus", "actions"}, {"F3 Details", "details"}, {"F4 Parameters", "parameters"}, {"F5 Refresh", "refresh"}}
 	x := 2
 	f := " "
 	fy := len(lines)
@@ -720,7 +890,7 @@ func (m *Model) homeView() tea.View {
 		x += len(b.text) + 2
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║")
-	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Actions", "actions"}, {"Space Mark", "mark"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
+	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open / Focus", "actions"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
 	f = " "
 	x = 2
 	fy = len(lines)
@@ -734,10 +904,13 @@ func (m *Model) homeView() tea.View {
 		x += lipgloss.Width(b.text)
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║", "╚"+strings.Repeat("═", width-2)+"╝")
-	actionsStart := strings.Index(menubar, "F2 Actions")
-	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Actions"), Height: 1, Control: "actions"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
-	if m.home.Modal != nil {
+	actionsStart := strings.Index(menubar, "F2 Open / Focus")
+	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Open / Focus"), Height: 1, Control: "actions"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
+	if m.home.Modal != nil && m.registration == nil {
 		lines = m.overlay(lines)
+	}
+	if m.registration != nil {
+		lines = m.registrationOverlay(lines)
 	}
 	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	v.MouseMode = tea.MouseModeCellMotion
@@ -763,26 +936,39 @@ func (m *Model) overlay(lines []string) []string {
 		}
 	}
 	entries := []string{}
+	menuItems := []homeMenuItem{}
 	if m.home.Modal.Kind == "details" {
 		title = "Details"
 		entries = m.profileDetails()
 	} else {
+		menuItems = m.homeMenuItems()
 		entries = m.menuEntries()
 	}
 	w := min(m.width-6, 64)
 	x := (m.width - w) / 2
 	y := max(3, (len(lines)-len(entries)-4)/2)
 	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
 	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	box := []string{"┌" + gold.Render(fit(" "+title, w-2)) + "┐"}
 	for i, e := range entries {
-		prefix := "  "
+		prefix := "› "
+		disabled := i < len(menuItems) && menuItems[i].Reason != ""
+		if m.home.Modal.Kind == "details" {
+			prefix = "· "
+		} else if disabled {
+			prefix = "× "
+		}
 		if i == m.home.Modal.Selected {
-			prefix = "> "
+			if m.home.Modal.Kind != "details" {
+				prefix = "> "
+			}
 		}
 		item := fit(prefix+e, w-2)
-		if i == m.home.Modal.Selected && m.home.Modal.Kind != "details" {
+		if i == m.home.Modal.Selected && m.home.Modal.Kind != "details" && !disabled {
 			item = selected.Render(item)
+		} else if disabled {
+			item = muted.Render(item)
 		}
 		box = append(box, "│"+item+"│")
 		if m.home.Modal.Kind != "details" {

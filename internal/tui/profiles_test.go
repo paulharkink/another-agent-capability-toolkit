@@ -109,8 +109,11 @@ func TestTypedProfilesIncludeSavedAndForeignRows(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected only related saved and foreign profiles, got %#v", rows)
 	}
+	if rows[1].Profile.Ownership != "other-aact" {
+		t.Fatalf("foreign ownership was lost: %#v", rows[1].Profile)
+	}
 	view := m.View().Content
-	for _, word := range []string{"never-started", "other-aact"} {
+	for _, word := range []string{"never-started", "running"} {
 		if !strings.Contains(view, word) {
 			t.Errorf("missing %s: %s", word, view)
 		}
@@ -138,14 +141,16 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 			m.focusPane(ProfilesPane)
 			m.selectPane(ProfilesPane, 1)
 			openProfileAction(t, m, "Configure agent registrations", mouse)
-			if m.form == nil {
-				t.Fatal("configure registrations did not open form")
+			if m.registration == nil {
+				t.Fatal("configure registrations did not open overlay")
 			}
 			view := m.View().Content
-			if !strings.Contains(view, "[claude]") || strings.Contains(view, "All") {
+			if !strings.Contains(view, "Claude Code") || strings.Contains(view, "All") {
 				t.Fatalf("named agents not prefilled correctly: %s", view)
 			}
-			// codex is the first choice. Add it to the already registered claude destination.
+			// Move from the independent endpoint row to Codex and mark it.
+			press(m, tea.KeyDown, "")
+			press(m, tea.KeyRight, "")
 			press(m, tea.KeySpace, " ")
 			b.result = viewmodel.OperationResult{Message: "Registrations configured", Changes: []state.Installation{{AgentID: "codex", Component: "mcp"}}, Errors: []string{"claude: endpoint rejected"}}
 			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
@@ -160,8 +165,8 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 				t.Fatal("typed registration backend not called")
 			}
 			want := b.snapshot.Profiles[1]
-			if b.request.Key != want.Key || b.request.URL != want.URL || b.request.Transport != want.Transport || !reflect.DeepEqual(b.request.AgentIDs, []string{"claude", "codex"}) {
-				t.Fatalf("wrong typed request: %#v", b.request)
+			if b.request.Key != want.Key || b.request.URL != want.URL || b.request.Transport != want.Transport || !reflect.DeepEqual(b.request.AgentIDs, []string{"codex", "claude"}) {
+				t.Fatalf("wrong typed request: got %#v want key=%#v url=%q transport=%q agents=%v", b.request, want.Key, want.URL, want.Transport, []string{"codex", "claude"})
 			}
 			if !strings.Contains(m.output, "codex") || !strings.Contains(m.output, "claude: endpoint rejected") {
 				t.Fatalf("missing per-agent results: %s", m.output)
@@ -188,10 +193,12 @@ func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	openProfileAction(t, m, "Configure agent registrations", false)
-	if m.form == nil || !strings.Contains(m.View().Content, "Transport") {
-		t.Fatal("unknown foreign transport must be selected in the registration form")
+	if m.registration == nil || !strings.Contains(m.View().Content, "Transport") {
+		t.Fatal("unknown foreign transport must be selectable in the registration overlay")
 	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyRight, "")
+	press(m, tea.KeyEnter, "")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("selected foreign transport did not submit")
@@ -216,7 +223,7 @@ func TestRegistrationCancelRestoresActions(t *testing.T) {
 	m.selectPane(ProfilesPane, 1)
 	openProfileAction(t, m, "Configure agent registrations", false)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if cmd != nil || m.form != nil || m.home.Modal != nil || m.home.Focus != ProfilesPane || b.request != nil {
+	if cmd != nil || m.registration != nil || m.home.Modal == nil || m.home.Focus != ProfilesPane || b.request != nil {
 		t.Fatal("cancel did not restore originating profile selection")
 	}
 }
@@ -226,16 +233,15 @@ func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
 	m.selectPane(ProfilesPane, 1)
 	m.agents = append(m.agents, "All", "all")
 	openProfileAction(t, m, "Configure agent registrations", false)
-	for i := 0; i < 4; i++ {
-		press(m, tea.KeyRight, "")
-		if strings.Contains(m.View().Content, "[All]") || strings.Contains(m.View().Content, "[all]") {
-			t.Fatal("All destination exposed for MCP registration")
-		}
+	if strings.Contains(m.View().Content, "All") {
+		t.Fatal("All destination exposed for MCP registration")
 	}
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeySpace, " ")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || m.form != nil || !m.busy {
+	if cmd == nil || m.registration != nil || !m.busy {
 		t.Fatal("empty desired selection must submit registration-only removal")
 	}
 	m.Update(cmd())
@@ -249,14 +255,15 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	openProfileAction(t, m, "Remove agent registrations", false)
-	if m.form == nil {
-		t.Fatalf("Remove registrations did not open a form: %s", m.output)
+	if m.registration == nil {
+		t.Fatalf("Remove registrations did not open overlay: %s", m.output)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd != nil || b.request != nil || !strings.Contains(m.output, "No registrations selected") {
+	if cmd != nil || b.request != nil || !strings.Contains(m.View().Content, "No registrations selected") {
 		t.Fatalf("unselected removal should be a no-op: %+v", b.request)
 	}
-	openProfileAction(t, m, "Remove agent registrations", false)
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyRight, "")
 	press(m, tea.KeySpace, " ")
 	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
@@ -321,7 +328,7 @@ func TestProfileDetailsSeparateLiveStatusFromLocalLastAction(t *testing.T) {
 	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	press(m, tea.KeyF3, "")
+	openProfileAction(t, m, "View details", false)
 	for _, word := range []string{"conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
 		if !strings.Contains(m.View().Content, word) {
 			t.Errorf("missing detail %s: %s", word, m.View().Content)
@@ -336,6 +343,7 @@ func TestSnapshotFailurePreservesRowsAndDisablesRuntime(t *testing.T) {
 		t.Fatal("failed refresh erased known profiles")
 	}
 	m.focusPane(ProfilesPane)
+	m.selectPane(ProfilesPane, 0)
 	cmd := openProfileAction(t, m, "Start", false)
 	if cmd != nil || m.busy || !strings.Contains(m.output, "profile store unavailable") {
 		t.Fatalf("failed refresh left runtime actions enabled: %s", m.output)
@@ -370,8 +378,9 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 		}
 	}
 	m.focusPane(ProfilesPane)
+	m.selectPane(ProfilesPane, 0)
 	openProfileAction(t, m, "Configure agent registrations", false)
-	if m.form == nil {
+	if m.registration == nil {
 		t.Fatal("foreign profile registration inaccessible")
 	}
 	press(m, tea.KeyEscape, "")

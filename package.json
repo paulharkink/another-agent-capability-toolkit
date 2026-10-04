@@ -1,0 +1,11 @@
+{
+  "name": "aact-demo-interaction-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:demo": "node --test test/demo-interaction.test.mjs"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.14.5"
+  }
+}

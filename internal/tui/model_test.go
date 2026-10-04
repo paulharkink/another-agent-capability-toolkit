@@ -70,6 +70,9 @@ func TestGlobalInventoryShowsSourceLabels(t *testing.T) {
 func TestMCPStatusAuthLogsActions(t *testing.T) {
 	m := fixtureModel(t)
 	focusFixtureProfile(m)
+	m.focusPane(CapabilitiesPane)
+	press(m, tea.KeyEnter, "")
+	m.selectContext(m.home.Profiles.Index + 2)
 	press(m, tea.KeyEnter, "")
 	text := m.View().Content
 	for _, part := range []string{"Restart", "Stop", "Authenticate", "View logs"} {

@@ -77,7 +77,25 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 			}
 		}
 	}
-	redactor := process.NewRedactor(secrets, g.OnStderr)
+	const maxDiagnosticBytes = 64 << 10
+	var stderr []byte
+	stderrTruncated := false
+	redactor := process.NewRedactor(secrets, func(p []byte) {
+		if g.OnStderr != nil {
+			g.OnStderr(p)
+		}
+		if len(p) >= maxDiagnosticBytes {
+			stderr = append(stderr[:0], p[len(p)-maxDiagnosticBytes:]...)
+			stderrTruncated = true
+			return
+		}
+		if len(stderr)+len(p) > maxDiagnosticBytes {
+			keep := maxDiagnosticBytes - len(p)
+			stderr = append(stderr[:0], stderr[len(stderr)-keep:]...)
+			stderrTruncated = true
+		}
+		stderr = append(stderr, p...)
+	})
 	output, err := runner.Run(ctx, argv, p.Dir, body, nil, redactor.Write)
 	redactor.Flush()
 	if err != nil {
@@ -86,6 +104,12 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 			if value != "" {
 				message = strings.ReplaceAll(message, value, "[redacted]")
 			}
+		}
+		if diagnostic := strings.TrimSpace(string(stderr)); diagnostic != "" {
+			if stderrTruncated {
+				diagnostic = "[earlier stderr omitted]\n" + diagnostic
+			}
+			message += "\nstderr:\n" + diagnostic
 		}
 		return nil, redactedError{err, message}
 	}

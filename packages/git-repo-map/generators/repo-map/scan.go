@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	git "github.com/go-git/go-git/v5"
 )
 
 type Repository struct {
@@ -97,20 +95,15 @@ func Scan(ctx context.Context, roots []string, hosts []string) ([]Repository, er
 				}
 				return nil
 			}
-			repo, err := openCheckout(path)
+			origins, err := checkoutOriginURLs(path)
 			if err != nil {
+				if path != absolute {
+					return nil
+				}
 				problems = append(problems, fmt.Errorf("open checkout %q: %w", path, err))
 				return nil
 			}
-			remote, err := repo.Remote("origin")
-			if errors.Is(err, git.ErrRemoteNotFound) {
-				return nil
-			}
-			if err != nil {
-				problems = append(problems, fmt.Errorf("read origin in %q: %w", path, err))
-				return nil
-			}
-			for _, origin := range remote.Config().URLs {
+			for _, origin := range origins {
 				host, name, err := NormalizeRemote(origin)
 				if err != nil {
 					continue

@@ -19,6 +19,25 @@ type logProfileBackend struct {
 	err     error
 }
 
+func openLogAction(t *testing.T, m *Model) tea.Cmd {
+	t.Helper()
+	m.home.Focus = CapabilitiesPane
+	press(m, tea.KeyEnter, "") // L1 to the contextual profile list.
+	profileIndex := m.home.Profiles.Index
+	m.selectContext(profileIndex + 2)
+	press(m, tea.KeyEnter, "") // Open that profile's actions.
+	entries := m.menuEntries()
+	for i, entry := range entries {
+		if strings.HasPrefix(entry, "View logs") {
+			m.home.Modal.Selected = i
+			_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			return cmd
+		}
+	}
+	t.Fatalf("profile action %q absent: %v", "View logs", entries)
+	return nil
+}
+
 func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, _, environment, target string) (string, error) {
 	b.actions = append(b.actions, action)
 	b.key = state.Key{Source: source, Package: packageID, Environment: environment, Target: target}
@@ -36,7 +55,7 @@ func TestOwnedProfileLogsOpenScrollableReadOnlyViewer(t *testing.T) {
 	}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	cmd := openProfileAction(t, m, "View logs", false)
+	cmd := openLogAction(t, m)
 	if cmd == nil {
 		t.Fatal("owned profile logs did not load")
 	}
@@ -69,7 +88,7 @@ func TestForeignProfileCannotFetchLogs(t *testing.T) {
 	m.backend = b
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	cmd := openProfileAction(t, m, "View logs", false)
+	cmd := openLogAction(t, m)
 	if cmd != nil || len(b.actions) != 0 || !strings.Contains(m.output, "not locally owned") {
 		t.Fatalf("foreign profile exposed local logs: cmd=%v actions=%v output=%q", cmd, b.actions, m.output)
 	}
@@ -80,7 +99,11 @@ func TestLogFollowRefreshesAndPauseStopsPolling(t *testing.T) {
 	b := &logProfileBackend{profileBackend: base, logs: "first\n"}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	m.Update(m.homeOperation("l")())
+	cmd := openLogAction(t, m)
+	if cmd == nil {
+		t.Fatal("log panel did not open")
+	}
+	m.Update(cmd())
 	if m.home.Modal == nil || !m.home.Modal.Follow {
 		t.Fatal("log panel did not start following")
 	}
@@ -108,7 +131,11 @@ func TestLateLogRefreshCannotReopenClosedPanel(t *testing.T) {
 	b := &logProfileBackend{profileBackend: base, logs: "first\n"}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	m.Update(m.homeOperation("l")())
+	cmd := openLogAction(t, m)
+	if cmd == nil {
+		t.Fatal("log panel did not open")
+	}
+	m.Update(cmd())
 	_, poll := m.Update(logPollMsg{session: m.logSession})
 	if poll == nil {
 		t.Fatal("follow tick did not start fetch")
@@ -125,7 +152,11 @@ func TestLogRefreshFailureShowsCauseAndPauses(t *testing.T) {
 	b := &logProfileBackend{profileBackend: base, logs: "first\n"}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	m.Update(m.homeOperation("l")())
+	cmd := openLogAction(t, m)
+	if cmd == nil {
+		t.Fatal("log panel did not open")
+	}
+	m.Update(cmd())
 	b.err = errors.New("Docker daemon connection refused")
 	_, poll := m.Update(logPollMsg{session: m.logSession})
 	m.Update(poll())
@@ -142,7 +173,11 @@ func TestFollowingLogsStartsAtTailAndScrollingPauses(t *testing.T) {
 	}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	m.Update(m.homeOperation("l")())
+	cmd := openLogAction(t, m)
+	if cmd == nil {
+		t.Fatal("log panel did not open")
+	}
+	m.Update(cmd())
 	if !strings.Contains(m.View().Content, "line-40") || m.home.Modal == nil || !m.home.Modal.Follow {
 		t.Fatalf("follow mode did not start at tail: %s", m.View().Content)
 	}
@@ -157,7 +192,11 @@ func TestLogFollowControlRespondsToMouse(t *testing.T) {
 	b := &logProfileBackend{profileBackend: base, logs: "line\n"}
 	m.backend = b
 	m.focusPane(ProfilesPane)
-	m.Update(m.homeOperation("l")())
+	cmd := openLogAction(t, m)
+	if cmd == nil {
+		t.Fatal("log panel did not open")
+	}
+	m.Update(cmd())
 	m.View()
 	var hit *hitRegion
 	for i := range m.home.Hits {
