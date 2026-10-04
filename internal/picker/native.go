@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ncruces/zenity"
+	"runtime"
 )
 
 // Native uses OS dialogs; Linux may fall back when its optional GUI backend is absent.
 func Native(ctx context.Context, kind, initial string) (string, error) {
+	if runtime.GOOS == "darwin" {
+		return selectMacNative(ctx, kind, initial)
+	}
 	options := []zenity.Option{zenity.Context(ctx), zenity.Title("Select " + kind), zenity.Filename(initial)}
 	if kind == "directory" {
 		options = append(options, zenity.Directory())
