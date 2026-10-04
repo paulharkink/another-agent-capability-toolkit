@@ -97,6 +97,9 @@ func Scan(ctx context.Context, roots []string, hosts []string) ([]Repository, er
 			}
 			origins, err := checkoutOriginURLs(path)
 			if err != nil {
+				if path != absolute {
+					return nil
+				}
 				problems = append(problems, fmt.Errorf("open checkout %q: %w", path, err))
 				return nil
 			}

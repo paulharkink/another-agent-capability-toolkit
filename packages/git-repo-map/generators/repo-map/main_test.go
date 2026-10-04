@@ -85,6 +85,23 @@ func TestProtocolEmptyResultIsArray(t *testing.T) {
 		t.Fatalf("got %q", stdout)
 	}
 }
+
+func TestProtocolSilentlyIgnoresInvalidNestedCheckout(t *testing.T) {
+	root := t.TempDir()
+	fixtureRepo(t, filepath.Join(root, "valid"), "https://git.example/team/app.git")
+	invalid := filepath.Join(root, "stale")
+	if err := os.Mkdir(invalid, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalid, ".git"), []byte("invalid git file\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"protocol_version": 1, "inputs": map[string]any{"scan_roots": []string{root}}})
+	stdout, stderr, err := helper(t, string(body))
+	if err != nil || !strings.Contains(stdout, `"team/app"`) || strings.Contains(stderr, invalid) {
+		t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+}
 func TestProtocolRootFailureHasNoPartialOutput(t *testing.T) {
 	root := t.TempDir()
 	fixtureRepo(t, filepath.Join(root, "ok"), "https://git.example/team/app.git")
