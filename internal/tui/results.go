@@ -200,12 +200,12 @@ func (m *Model) resultView() tea.View {
 		box[3+i] = rowFG + box[3+i]
 	}
 	box[dialogHeight-3] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
-	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · %d-%d/%d", min(r.Offset+1, len(r.Rows)), min(r.Offset+bodyRows, len(r.Rows)), len(r.Rows))
+	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · ←→ Pan · %d-%d/%d", min(r.Offset+1, len(r.Rows)), min(r.Offset+bodyRows, len(r.Rows)), len(r.Rows))
 	if m.canEditResultAnswers() {
 		if r.ActionIndex == 0 {
-			footer = "> Edit answers [Enter/E]   Back [Tab/ Esc]"
+			footer = "> Edit answers [Enter/E]   Back [Tab/ Esc] · ↑↓ Scroll · ←→ Pan"
 		} else {
-			footer = "  Edit answers [E]   > Back [Enter/Esc]"
+			footer = "  Edit answers [E]   > Back [Enter/Esc] · ↑↓ Scroll · ←→ Pan"
 		}
 	}
 	box[dialogHeight-2] = "║" + fit(footer, dialogWidth-2) + "║"

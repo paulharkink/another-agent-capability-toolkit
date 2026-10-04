@@ -55,6 +55,20 @@ func TestFailedOperationShowsConcreteCauseOnFirstPage(t *testing.T) {
 	}
 }
 
+func TestFailedInstallResultShowsChildDiagnosticAndNavigation(t *testing.T) {
+	m, _ := homeFixture()
+	m.setupRetry = &setupRetryDraft{}
+	m.setupOperationPending = true
+	m.action = "install"
+	m.Update(operationMsg{origin: "Catalog", output: "Inputs saved", err: errors.New("command repo-map failed: exit status 1\nstderr:\nrepo map: missing root directory")})
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"command repo-map failed", "repo map: missing root directory", "Edit answers", "↑↓", "←→"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("failed install hides %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestOperationResultViewerClosesByMouseWithoutOpeningUnderlyingActions(t *testing.T) {
 	m, _ := homeFixture()
 	m.action = "install"
