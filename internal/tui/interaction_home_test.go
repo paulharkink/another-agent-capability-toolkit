@@ -115,7 +115,7 @@ func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
 	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
 	focusHomeContext(t, m)
 	view := m.View().Content
-	for _, want := range []string{"Configure / install Plain", "View capability details", "Marked capabilities"} {
+	for _, want := range []string{"Configure / install Plain", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}

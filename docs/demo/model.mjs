@@ -1,20 +1,20 @@
 // Illustrative data for the public interaction mock. Nothing here reads local state.
 export const capabilities = [
-  { id: 'cluster-inspector', name: 'Cluster Inspector', kind: 'skill + MCP', mcp: true },
-  { id: 'grafana-inspector', name: 'Grafana Inspector', kind: 'skill + MCP', mcp: true },
-  { id: 'azure-inspector', name: 'Azure Inspector', kind: 'skill + MCP', mcp: true },
-  { id: 'forgejo', name: 'Forgejo', kind: 'skill + MCP', mcp: true },
-  { id: 'find-session', name: 'Find Session', kind: 'skill', mcp: false },
-  { id: 'non-interactive-ready-planning', name: 'Non Interactive Ready Planning', kind: 'skill', mcp: false },
-  { id: 'git-repo-map', name: 'Local Git Repository Map', kind: 'skill', mcp: false },
-  { id: 'agent-skills-management', name: 'agent-skills-management', kind: 'skill', mcp: false },
-  { id: 'clean-up', name: 'clean-up', kind: 'skill', mcp: false },
-  { id: 'kinfer-platform', name: 'kinfer-platform', kind: 'skill', mcp: false },
-  { id: 'kubedock-docker', name: 'kubedock-docker', kind: 'skill', mcp: false },
-  { id: 'gitops-triage', name: 'pms15-gitops-triage', kind: 'skill', mcp: false },
-  { id: 'live-cluster-diagnostics', name: 'pms15-live-cluster-diagnostics', kind: 'skill', mcp: false },
-  { id: 'cluster-inspector-skill', name: 'cluster-inspector', kind: 'skill', mcp: false },
-  { id: 'grafana-inspector-skill', name: 'grafana-inspector', kind: 'skill', mcp: false },
+  { id: 'cluster-inspector', name: 'Cluster Inspector', kind: 'skill + MCP', mcp: true, installation: 'Partial', installationDetails: ['Skill: codex', 'MCP registration: no AACT record'] },
+  { id: 'grafana-inspector', name: 'Grafana Inspector', kind: 'skill + MCP', mcp: true, installation: 'Installed', installationDetails: ['Skill: codex', 'MCP registration: codex'] },
+  { id: 'azure-inspector', name: 'Azure Inspector', kind: 'skill + MCP', mcp: true, installation: 'Not installed' },
+  { id: 'forgejo', name: 'Forgejo', kind: 'skill + MCP', mcp: true, installation: 'Not installed' },
+  { id: 'find-session', name: 'Find Session', kind: 'skill', mcp: false, installation: 'Installed', installationDetails: ['Skill: all'] },
+  { id: 'non-interactive-ready-planning', name: 'Non Interactive Ready Planning', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'git-repo-map', name: 'Local Git Repository Map', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'agent-skills-management', name: 'agent-skills-management', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'clean-up', name: 'clean-up', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'kinfer-platform', name: 'kinfer-platform', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'kubedock-docker', name: 'kubedock-docker', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'gitops-triage', name: 'pms15-gitops-triage', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'live-cluster-diagnostics', name: 'pms15-live-cluster-diagnostics', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'cluster-inspector-skill', name: 'cluster-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'grafana-inspector-skill', name: 'grafana-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
 ];
 
 export const profiles = [
@@ -85,7 +85,6 @@ export function createInitialState() {
     view: 'home', focus: 'capabilities', capabilityIndex: 0, homeDetailIndex: 0,
     agentIndex: 0, environmentIndex: 0, targetIndex: 0, settingsIndex: 0, helpIndex: 0,
     menuIndex: 0, overlay: null, toast: 'Interactive design sample — no files or containers are changed.',
-    marked: [],
     setup: {
       section: 'Authentication', authMode: 'token', token: '', kubeconfig: '',
       listenAddress: '127.0.0.1', listenPort: '18766',
@@ -157,7 +156,7 @@ export function transition(state, action) {
       };
     }
     case 'selectHomeDetail':
-      return { ...state, homeDetailIndex: Math.max(0, Math.min(2 + visibleProfiles(state).length, action.index)), focus: 'profiles' };
+      return { ...state, homeDetailIndex: Math.max(0, Math.min(1 + visibleProfiles(state).length, action.index)), focus: 'profiles' };
     case 'focusPane':
       return { ...state, focus: action.pane };
     case 'backHome':
@@ -166,11 +165,6 @@ export function transition(state, action) {
       if (state.focus === 'capabilities') return { ...state, focus: 'profiles' };
       if (state.homeDetailIndex === 0) return transition(state, { type: 'openSetup', kind: 'new' });
       if (state.homeDetailIndex === 1) return transition(state, { type: 'openDetails' });
-      if (state.homeDetailIndex === 2 + visibleProfiles(state).length) {
-        return transition(state, { type: 'showResult', message: state.marked.length
-          ? `${state.marked.length} marked capabilities would be configured. This mock does not change the machine.`
-          : 'Mark capabilities with Space in the left pane before applying a batch.' });
-      }
       return transition(state, { type: 'openActions' });
     case 'setView':
       return { ...state, view: action.view, overlay: null, focus: action.view === 'home' ? 'capabilities' : state.focus };
@@ -302,13 +296,6 @@ export function transition(state, action) {
       if (defaultAgents.has(action.id)) defaultAgents.delete(action.id);
       else defaultAgents.add(action.id);
       return { ...state, settings: { ...state.settings, defaultAgents: [...defaultAgents] } };
-    }
-    case 'toggleMark': {
-      const marks = new Set(state.marked);
-      const id = selectedCapability(state).id;
-      if (marks.has(id)) marks.delete(id);
-      else marks.add(id);
-      return { ...state, marked: [...marks] };
     }
     default:
       return state;

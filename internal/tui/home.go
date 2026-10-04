@@ -10,6 +10,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -64,7 +65,6 @@ type homeState struct {
 	Capabilities, Profiles, Context paneState
 	ContextDisplayOffset            int
 	Focus                           Pane
-	Marks                           map[string]bool
 	Modal                           *modalState
 	Hits                            []hitRegion
 }
@@ -86,8 +86,56 @@ func (m *Model) contextRows() []contextRow {
 	for i, p := range m.profiles() {
 		rows = append(rows, contextRow{ID: p.ID, Label: "MCP · " + p.Name + "  " + p.Status, Kind: "profile", ProfileIndex: i})
 	}
-	rows = append(rows, contextRow{ID: "batch", Label: fmt.Sprintf("Apply marked (%d)…", m.batchCount()), Kind: "batch"})
 	return rows
+}
+
+func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
+	if m.inventoryError != nil {
+		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
+	}
+	components := []struct{ name, kind string }{}
+	if c.Skill {
+		components = append(components, struct{ name, kind string }{"Skill", "skill"})
+	}
+	if c.MCP {
+		components = append(components, struct{ name, kind string }{"MCP registration", "mcp"})
+	}
+	if len(components) == 0 {
+		return "Unknown", []string{"No installable components in the catalog"}
+	}
+	found := 0
+	details := make([]string, 0, len(components))
+	for _, component := range components {
+		agents := map[string]bool{}
+		for _, inst := range m.inventory {
+			if inst.Key.Source != c.Source || inst.Key.Package != c.Package || inst.Component != component.kind {
+				continue
+			}
+			agent := inst.AgentID
+			if agent == "" {
+				agent = "unspecified destination"
+			}
+			agents[agent] = true
+		}
+		if len(agents) == 0 {
+			details = append(details, component.name+": no AACT record")
+			continue
+		}
+		found++
+		ids := make([]string, 0, len(agents))
+		for agent := range agents {
+			ids = append(ids, agent)
+		}
+		sort.Strings(ids)
+		details = append(details, component.name+": "+strings.Join(ids, ", "))
+	}
+	if found == 0 {
+		return "Not installed", details
+	}
+	if found < len(components) {
+		return "Partial", details
+	}
+	return "Installed", details
 }
 
 func (m *Model) selectedContextRow() (contextRow, bool) {
@@ -331,15 +379,6 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 		m.focusPane(ProfilesPane)
 	case "up", "down", "k", "j", "pgup", "pgdown", "home", "end":
 		m.movePane(stroke)
-	case "space", " ":
-		if m.home.Focus == CapabilitiesPane {
-			if c, ok := m.selectedCapability(); ok {
-				if m.home.Marks == nil {
-					m.home.Marks = map[string]bool{}
-				}
-				m.home.Marks[c.ID] = !m.home.Marks[c.ID]
-			}
-		}
 	case "enter", "f2":
 		if m.home.Focus == CapabilitiesPane {
 			m.focusPane(ProfilesPane)
@@ -384,23 +423,8 @@ func (m *Model) openContextRow() tea.Cmd {
 		m.home.Modal = &modalState{Kind: "details"}
 	case "profile":
 		m.openHomeMenu("actions")
-	case "batch":
-		if m.batchCount() == 0 {
-			m.output = "Mark capabilities with Space in the left pane before applying a batch."
-		} else {
-			m.output = fmt.Sprintf("%d marked capabilities would be configured; this preview does not change the machine.", m.batchCount())
-		}
 	}
 	return nil
-}
-func (m *Model) batchCount() int {
-	n := 0
-	for _, marked := range m.home.Marks {
-		if marked {
-			n++
-		}
-	}
-	return n
 }
 func (m *Model) homeMenuItems() []homeMenuItem {
 	if m.home.Modal == nil {
@@ -426,21 +450,11 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 	if !ok {
 		return []homeMenuItem{{"Back", "back", ""}}
 	}
-	mark := "Mark for batch"
-	if m.home.Marks[c.ID] {
-		mark = "Unmark for batch"
-	}
 	installReason := ""
 	if c.CatalogIndex < 0 {
 		installReason = "absent from local catalog"
 	}
-	batchReason := ""
-	if m.batchCount() == 0 {
-		batchReason = "Mark at least one capability first"
-	} else {
-		batchReason = "batch setup is unavailable from the service"
-	}
-	return []homeMenuItem{{"Configure / install " + c.Name + "…", "parameters", installReason}, {"View capability details", "details", ""}, {mark, "mark", ""}, {fmt.Sprintf("Apply marked (%d)…", m.batchCount()), "apply-marked", batchReason}, {"Back", "back", ""}}
+	return []homeMenuItem{{"Configure / install " + c.Name + "…", "parameters", installReason}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 }
 func (m *Model) menuEntries() []string {
 	items := m.homeMenuItems()
@@ -532,16 +546,6 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 			return m.load()
 		case "details":
 			m.home.Modal = &modalState{Kind: "details", Parent: m.home.Modal}
-		case "mark":
-			if c, ok := m.selectedCapability(); ok {
-				if m.home.Marks == nil {
-					m.home.Marks = map[string]bool{}
-				}
-				m.home.Marks[c.ID] = !m.home.Marks[c.ID]
-			}
-			m.home.Modal = nil
-		case "apply-marked":
-			m.output = "Batch setup is unavailable from the service"
 		default:
 			if item.Action != "registrations" && item.Action != "remove-registrations" {
 				m.home.Modal = nil
@@ -668,14 +672,9 @@ func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 			} else {
 				m.selectPane(h.Pane, h.Index)
 			}
-			if h.Pane == CapabilitiesPane && mouse.X >= 3 && mouse.X <= 5 {
-				return m.homeKey("space")
-			}
 			return nil
 		case "panes":
 			return m.homeKey("tab")
-		case "mark":
-			return m.homeKey("space")
 		case "main":
 			return m.homeKey("m")
 		case "actions":
@@ -726,6 +725,8 @@ func (m *Model) selectedDetail() string {
 	if c.MCP {
 		detail += fmt.Sprintf(" · %d related MCP profiles", len(m.profiles()))
 	}
+	status, _ := m.installationDetails(c)
+	detail += " · AACT records: " + status
 	return detail
 }
 func (m *Model) homeView() tea.View {
@@ -762,7 +763,11 @@ func (m *Model) homeView() tea.View {
 			}
 		}
 	}
-	contextDisplay = append(contextDisplay, displayRow{text: "Marked capabilities", contextIndex: -1, kind: "heading"}, displayRow{text: fmt.Sprintf("Apply marked (%d)…", m.batchCount()), contextIndex: len(ps) + 2, kind: "action"})
+	installStatus, installDetails := m.installationDetails(c)
+	contextDisplay = append(contextDisplay, displayRow{text: "Installation · AACT records: " + installStatus, contextIndex: -1, kind: "heading"})
+	for _, detail := range installDetails {
+		contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
+	}
 	selectedDisplay := 0
 	for i, row := range contextDisplay {
 		if row.contextIndex == m.home.Context.Index {
@@ -804,10 +809,7 @@ func (m *Model) homeView() tea.View {
 		l, r := "", ""
 		i := m.home.Capabilities.Offset + row
 		if i < len(cs) {
-			mark := "[ ]"
-			if m.home.Marks[cs[i].ID] {
-				mark = "[x]"
-			}
+			installationStatus, _ := m.installationDetails(cs[i])
 			cursor := "›"
 			if i == m.home.Capabilities.Index {
 				cursor = ">"
@@ -819,7 +821,7 @@ func (m *Model) homeView() tea.View {
 					kind = "skill + MCP"
 				}
 			}
-			l = cursor + " " + mark + " " + cs[i].Name + "  " + kind
+			l = cursor + " " + installationStatus + " · " + cs[i].Name + "  " + kind
 			m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 4 + row, Width: left, Height: 1, Pane: CapabilitiesPane, Index: i, Control: "row"})
 		}
 		i = m.home.ContextDisplayOffset + row
@@ -888,7 +890,7 @@ func (m *Model) homeView() tea.View {
 		x += len(b.text) + 2
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║")
-	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open / Focus", "actions"}, {"Space Mark", "mark"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
+	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open / Focus", "actions"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
 	f = " "
 	x = 2
 	fy = len(lines)

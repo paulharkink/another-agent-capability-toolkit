@@ -29,6 +29,16 @@ test('Mac sample starts in the two-pane home view with only related MCP profiles
   assert.equal(state.capabilityIndex, 0);
 });
 
+test('sample home has explicit installation status and no batch selection state', () => {
+  const state = createInitialState();
+  assert.equal(Object.hasOwn(state, 'marked'), false);
+  assert.ok(capabilities.every(capability => ['Installed', 'Partial', 'Not installed'].includes(capability.installation)));
+  assert.equal(transition(state, { type: 'toggleMark' }), state);
+  const focused = transition(state, { type: 'focusPane', pane: 'profiles' });
+  const last = transition(focused, { type: 'selectHomeDetail', index: 99 });
+  assert.equal(last.homeDetailIndex, 2 + visibleProfiles(last).length - 1);
+});
+
 test('home Enter moves from layer 1 to layer 2 before opening deeper content', () => {
   let state = createInitialState();
   state = transition(state, { type: 'enterHome' });

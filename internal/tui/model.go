@@ -46,6 +46,7 @@ type Model struct {
 	mcps                       []mcp.Instance
 	profileSnapshot            *viewmodel.ProfileSnapshot
 	profileError               error
+	inventoryError             error
 	environmentSnapshot        *viewmodel.EnvironmentSnapshot
 	environmentError           error
 	pendingRegistration        *viewmodel.RegistrationRequest
@@ -73,6 +74,7 @@ type operation struct{ action, source, packageID, agent, environment, target str
 type loadedMsg struct {
 	catalog             []catalog.Package
 	inventory           []state.Installation
+	inventoryError      error
 	mcps                []mcp.Instance
 	profileSnapshot     *viewmodel.ProfileSnapshot
 	profileError        error
@@ -109,6 +111,7 @@ func (m *Model) load() tea.Cmd {
 			errs = append(errs, e)
 		}
 		msg.inventory, e = m.backend.UIInventory(m.ctx)
+		msg.inventoryError = e
 		if e != nil {
 			errs = append(errs, e)
 		}
@@ -284,6 +287,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		m.catalog = msg.catalog
 		m.inventory = msg.inventory
+		m.inventoryError = msg.inventoryError
 		m.mcps = msg.mcps
 		m.profileError = msg.profileError
 		m.environmentError = msg.environmentError
@@ -451,7 +455,7 @@ func (m *Model) rows() []string {
 	case "Environments":
 		rows = append(rows, "Environment root: "+m.environmentRoot(), "Target browsing awaits the environment service.")
 	case "Help":
-		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Space: mark capability; mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
+		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
 	case "Settings":
 		rows = append(rows, "Environment root: "+m.environmentRoot())
 		keys := []string{}

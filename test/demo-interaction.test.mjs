@@ -115,9 +115,21 @@ test("skill-only L2 contains only skill actions and distinct noninteractive head
   const detail = root.querySelector('[data-pane="profiles"]');
   assert.equal(detail.textContent.includes('Related MCP profiles'), false);
   assert.equal(detail.textContent.includes('No MCP profiles'), false);
-  assert.equal(detail.querySelectorAll('[data-select="homeDetail"]').length, 3);
+  assert.equal(detail.querySelectorAll('[data-select="homeDetail"]').length, 2);
   assert.ok(detail.querySelector('.list-heading'));
   assert.equal(detail.querySelector('.list-heading').matches('button'), false);
+});
+
+test("home shows installation status without capability checkboxes or batch action", () => {
+  const { root, key } = createDemo();
+  const home = root.querySelector('.base-panes');
+  assert.match(home.textContent, /Installed|Partial|Not installed/);
+  assert.doesNotMatch(home.textContent, /Apply marked|Marked capabilities|\[ \]|\[x\]/);
+  assert.match(home.textContent, /AACT records/);
+  const selected = root.querySelector('[data-select="capability"].selected');
+  const before = selected.textContent;
+  key(selected, ' ');
+  assert.equal(root.querySelector('[data-select="capability"].selected').textContent, before);
 });
 
 test("setup Up and Down stay in the focused overlay pane", () => {

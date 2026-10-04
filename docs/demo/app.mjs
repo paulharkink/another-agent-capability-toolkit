@@ -30,8 +30,7 @@ function renderHome(state) {
   const related = visibleProfiles(state);
   const profile = selectedProfile(state);
   const left = capabilities.map((item, index) => {
-    const mark = state.marked.includes(item.id) ? '[x]' : '[ ]';
-    return listRow(`${mark} ${item.name}`, item.kind, 'capability', index, index === state.capabilityIndex, item.name);
+    return listRow(`${item.installation} · ${item.name}`, item.kind, 'capability', index, index === state.capabilityIndex, item.name);
   }).join('');
   const right = `<div class="list-heading">Capability</div>`
     + listRow(`Configure / install ${capability.name}…`, 'Inputs and destinations', 'homeDetail', 0, state.homeDetailIndex === 0)
@@ -41,14 +40,15 @@ function renderHome(state) {
         ? related.map((item, index) => listRow(`MCP · ${item.name}`, `${item.runtime} · ${item.owner}`, 'homeDetail', index + 2, state.homeDetailIndex === index + 2, item.endpoint)).join('')
         : `<p class="empty-list">No profiles yet. Configure/install to create one.</p>`)
       : '')
-    + `<div class="list-heading">Marked capabilities</div>`
-    + listRow(`Apply marked (${state.marked.length})…`, state.marked.length ? 'Review simulated batch' : 'Mark capabilities with Space first', 'homeDetail', 2 + related.length, state.homeDetailIndex === 2 + related.length);
+    + `<div class="list-heading">Installation · AACT records: ${escapeHTML(capability.installation)} <span class="subtle">(sample)</span></div>`
+    + (capability.installationDetails ?? [capability.mcp ? 'Skill and MCP registration: no AACT record' : 'Skill: no AACT record'])
+      .map(detail => `<p class="empty-list">· ${escapeHTML(detail)}</p>`).join('');
   const status = state.focus === 'profiles' && profile
     ? `<strong>${escapeHTML(profile.name)}</strong> · ${escapeHTML(profile.endpoint)}<br>Runtime: ${escapeHTML(profile.runtime)} · Owner: ${escapeHTML(profile.owner)} · Connection: ${escapeHTML(profile.connection)}<br><span class="subtle">${escapeHTML(profile.observation)} · ${escapeHTML(profile.connectionError || profile.ownerEvidence)}</span>`
     : state.focus === 'profiles'
-      ? `<strong>${escapeHTML(capability.name)}</strong> · ${state.homeDetailIndex === 0 ? 'Configure / install' : state.homeDetailIndex === 1 ? 'Capability details' : 'Marked batch'}<br><span class="subtle">${state.homeDetailIndex === 0 ? 'Enter opens the setup form for this capability.' : state.homeDetailIndex === 1 ? 'Enter opens read-only package details.' : 'Enter reviews the marked capabilities.'}</span>`
-      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)}${capability.mcp ? ` · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}` : ''}<br><span class="subtle">Enter moves into the selected capability’s details on the right.</span>`;
-  return `<div class="panes base-panes">${pane('Capabilities · layer 1', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${3 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
+      ? `<strong>${escapeHTML(capability.name)}</strong> · ${state.homeDetailIndex === 0 ? 'Configure / install' : 'Capability details'}<br><span class="subtle">${state.homeDetailIndex === 0 ? 'Enter opens the setup form for this capability.' : 'Enter opens read-only package details.'}</span>`
+      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · AACT records: ${escapeHTML(capability.installation)}${capability.mcp ? ` · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}` : ''}<br><span class="subtle">Enter moves into the selected capability’s details on the right. Installation labels here are illustrative sample data.</span>`;
+  return `<div class="panes base-panes">${pane('Capabilities · layer 1', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${2 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
 }
 
 function renderAgents(state) {
@@ -287,8 +287,6 @@ export function mount(root) {
         send({ type: 'setToast', message: 'The real TUI exits with F10. Close this browser tab when finished.' });
         break;
       case 'agents': case 'environments': case 'settings': case 'help': send({ type: 'setView', view: action }); break;
-      case 'mark': send({ type: 'toggleMark' }); break;
-      case 'batch': show(`${state.marked.length} marked capabilities would be configured. This mock does not change the machine.`); break;
       case 'check':
         if (state.overlay?.kind === 'registrations') send({ type: 'checkRegistrationEndpoint' }, '[data-action="check"]');
         else show(`${selectedProfile(state)?.endpoint ?? 'Sample endpoint'}: unreachable · connect: connection refused (sample observation)`, 'error');
@@ -428,7 +426,6 @@ export function mount(root) {
       else focusBaseRight();
       return;
     }
-    if (key === ' ' && state.view === 'home' && state.focus === 'capabilities') { event.preventDefault(); perform('mark'); return; }
     const basePane = event.target.closest('.base-panes .pane');
     if ((basePane || event.target === root) && (key === 'Tab' || key === 'ArrowLeft' || key === 'ArrowRight')) {
       event.preventDefault();

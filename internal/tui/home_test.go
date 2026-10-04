@@ -83,7 +83,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Marked capabilities", "› View capability details", "› MCP · profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› MCP · profile"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -100,19 +100,19 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Configure / install Plain", "View capability details", "Apply marked"} {
+	for _, want := range []string{"Configure / install Plain", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
 	}
 }
 
-func TestHomeMenuShowsDisabledRowsAsNonselectable(t *testing.T) {
+func TestHomeMenuHasOnlySingleCapabilityActions(t *testing.T) {
 	m, _ := homeFixture()
 	m.openHomeMenu("actions")
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "× Apply marked (0)… — disabled:") {
-		t.Fatalf("skipped menu item lacks a disabled cue:\n%s", view)
+	if strings.Contains(view, "Apply marked") || strings.Contains(view, "Mark for batch") {
+		t.Fatalf("actions menu still contains batch controls:\n%s", view)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	}
 	m.Update(msg)
 	press(m, tea.KeyEnter, "")
-	lastProfileRow := len(m.contextRows()) - 2
+	lastProfileRow := len(m.contextRows()) - 1
 	m.selectContext(lastProfileRow)
 	if m.home.Context.Index != lastProfileRow {
 		t.Fatal("could not select the last related profile")
@@ -184,7 +184,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	}
 	msg.mcps = msg.mcps[:len(msg.mcps)-1]
 	m.Update(msg)
-	if m.home.Context.Index != lastProfileRow || !strings.Contains(m.output, "removed") {
+	if m.home.Context.Index != lastProfileRow-1 || !strings.Contains(m.output, "removed") {
 		t.Fatal("deleted selected profile not explained", m.View().Content)
 	}
 	press(m, tea.KeyHome, "")
@@ -280,12 +280,12 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 		t.Fatal("wrong footer action")
 	}
 }
-func TestHomeMouseMarksOnlyCapabilityAndModalRetainsFocus(t *testing.T) {
+func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.View()
 	m.Update(tea.MouseClickMsg{X: 4, Y: 4, Button: tea.MouseLeft})
-	if !m.home.Marks[m.home.Capabilities.ID] {
-		t.Fatal("mark click not applied")
+	if strings.Contains(ansi.Strip(m.View().Content), "[x]") {
+		t.Fatal("capability click marked a batch")
 	}
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
@@ -296,8 +296,8 @@ func TestHomeMouseMarksOnlyCapabilityAndModalRetainsFocus(t *testing.T) {
 		t.Fatal("modal changed origin")
 	}
 	press(m, tea.KeySpace, " ")
-	if len(m.home.Marks) != 1 {
-		t.Fatal("profile got a batch mark")
+	if strings.Contains(ansi.Strip(m.View().Content), "Apply marked") {
+		t.Fatal("Space exposed batch controls")
 	}
 }
 func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
@@ -387,7 +387,7 @@ func TestHomeMenusMatchApprovedCommands(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatal("F2 should focus the context list before opening an action")
 	}
-	for _, want := range []string{"Configure / install Inspector", "View capability details", "MCP · profile", "Apply marked (0)"} {
+	for _, want := range []string{"Configure / install Inspector", "View capability details", "MCP · profile", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
