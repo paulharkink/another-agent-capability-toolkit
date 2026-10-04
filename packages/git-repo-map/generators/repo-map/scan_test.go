@@ -89,6 +89,23 @@ func TestWorktreeGitFile(t *testing.T) {
 	}
 }
 
+func TestWorktreeConfigExtensionStillMapsOrigin(t *testing.T) {
+	root := t.TempDir()
+	main, worktree, _ := fixtureWorktree(t, root)
+	configPath := filepath.Join(main, ".git", "config")
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("\n[extensions]\n\tworktreeConfig = true\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", main}})
+}
+
 func TestPrunedDependencies(t *testing.T) {
 	root := t.TempDir()
 	visible := fixtureRepo(t, filepath.Join(root, "app"), "https://git.example/team/app.git")

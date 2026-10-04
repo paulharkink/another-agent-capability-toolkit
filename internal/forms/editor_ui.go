@@ -198,6 +198,15 @@ func (m *FormModel) moveSplitControl(delta int) {
 			return
 		}
 	}
+	if m.selected < len(m.defs) && isEditableCollection(m.defs[m.selected]) {
+		def := m.defs[m.selected]
+		last := len(collectionRows(m.editor.Values()[def.Name])) // The final row adds an item.
+		next := m.rowIndex[def.Name] + delta
+		if next >= 0 && next <= last {
+			m.rowIndex[def.Name] = next
+			return
+		}
+	}
 	position := 0
 	for i, index := range indices {
 		if index == m.selected {
@@ -306,6 +315,10 @@ func (m *FormModel) moveFocus(delta int) {
 
 func isChoiceList(def catalog.Input) bool {
 	return len(def.Options) > 0 && (def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice")
+}
+
+func isEditableCollection(def catalog.Input) bool {
+	return def.Multiple && len(def.Options) == 0
 }
 
 func (m *FormModel) moveControl(delta int) {
@@ -559,10 +572,12 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.rowIndex[def.Name] = (m.rowIndex[def.Name] + len(paths) + delta) % len(paths)
 			}
-		case "r":
+		case "r", "delete", "backspace":
 			if scalarDefinition(def).Multiple {
-				m.setError(m.editor.RemoveValue(def.Name, m.rowIndex[def.Name]))
-				m.rowIndex[def.Name] = 0
+				if m.rowIndex[def.Name] < len(collectionRows(value)) {
+					m.setError(m.editor.RemoveValue(def.Name, m.rowIndex[def.Name]))
+					m.rowIndex[def.Name] = min(m.rowIndex[def.Name], len(collectionRows(m.editor.Values()[def.Name])))
+				}
 			}
 		case "a":
 			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
@@ -576,20 +591,20 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
-				if paths, ok := value.([]string); ok && len(paths) > 0 {
-					index := m.rowIndex[def.Name] % len(paths)
+				if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
+					index := m.rowIndex[def.Name]
 					return m, m.pick(def, "edit", paths[index])
 				}
 			} else if def.Multiple && len(def.Options) == 0 {
-				if rows := collectionRows(value); len(rows) > 0 {
-					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]%len(rows)]))
+				if rows := collectionRows(value); m.rowIndex[def.Name] < len(rows) {
+					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]]))
 				}
 			}
 		case "m":
 			if def.Type == "directory" || def.Type == "file" {
 				if def.Multiple {
-					if paths, ok := value.([]string); ok && len(paths) > 0 {
-						index := m.rowIndex[def.Name] % len(paths)
+					if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
+						index := m.rowIndex[def.Name]
 						m.beginEdit("edit", paths[index])
 					} else {
 						m.beginEdit("add", "")
@@ -608,11 +623,18 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choose(def, value)
 			} else if def.Type == "directory" || def.Type == "file" {
 				if def.Multiple {
+					if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
+						return m, m.pick(def, "edit", paths[m.rowIndex[def.Name]])
+					}
 					return m, m.pick(def, "add", "")
 				}
 				return m, m.pick(def, "apply", textValue(value))
 			} else if def.Multiple {
-				m.beginEdit("add", "")
+				if rows := collectionRows(value); m.rowIndex[def.Name] < len(rows) {
+					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]]))
+				} else {
+					m.beginEdit("add", "")
+				}
 			} else {
 				m.beginEdit("apply", textValue(value))
 			}
@@ -812,6 +834,16 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.area = 1
 		m.selected = field
 		m.message = ""
+		if isEditableCollection(m.defs[field]) {
+			if row := layout.splitChoices[bodyY]; row >= 0 {
+				m.rowIndex[m.defs[field].Name] = row
+				if bodyY < len(layout.splitRemoveX) && layout.splitRemoveX[bodyY] >= 0 && mouse.X >= layout.splitRemoveX[bodyY] && mouse.X < layout.splitRemoveX[bodyY]+len("[Remove]") {
+					return m.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
+				}
+				return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			}
+			return m, nil
+		}
 		if choice := layout.splitChoices[bodyY]; choice >= 0 {
 			m.choiceIndex[m.defs[field].Name] = choice
 			return m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -881,6 +913,7 @@ type formLayout struct {
 	splitFields    []int
 	splitChoices   []int
 	splitSections  []int
+	splitRemoveX   []int
 }
 
 func (m *FormModel) layout() formLayout {
@@ -1132,6 +1165,37 @@ func (m *FormModel) splitLayout() formLayout {
 			prefix = "> "
 		}
 		display := textValue(values[def.Name])
+		if isEditableCollection(def) {
+			rows := collectionRows(values[def.Name])
+			unit := "items"
+			if len(rows) == 1 {
+				unit = "item"
+			}
+			display = fmt.Sprintf("%d %s", len(rows), unit)
+			for row, value := range rows {
+				cursor := "›"
+				if index == m.selected && m.area == 1 && m.rowIndex[def.Name] == row {
+					cursor = ">"
+				}
+				shown := textValue(value)
+				limit := max(8, rightWidth-14)
+				if lipgloss.Width(shown) > limit {
+					shown = ansi.TruncateLeft(shown, lipgloss.Width(shown)-limit+1, "…")
+				}
+				display += "\n  " + cursor + " " + shown + "  [Remove]"
+			}
+			addLabel := "Add item…"
+			if def.Type == "directory" {
+				addLabel = "Add directory…"
+			} else if def.Type == "file" {
+				addLabel = "Add file…"
+			}
+			cursor := "›"
+			if index == m.selected && m.area == 1 && m.rowIndex[def.Name] == len(rows) {
+				cursor = ">"
+			}
+			display += "\n  " + cursor + " + " + addLabel
+		}
 		if len(def.Options) > 0 && isChoiceList(def) {
 			chosen, _ := values[def.Name].([]string)
 			if isChoiceList(def) && !def.Multiple && def.Type != "multichoice" && def.Type != "multiple-choice" {
@@ -1190,7 +1254,7 @@ func (m *FormModel) splitLayout() formLayout {
 			field, choice := -1, -1
 			if i < len(rightFields) {
 				field = rightFields[i]
-				if part > 0 && field >= 0 && isChoiceList(m.defs[field]) {
+				if part > 0 && field >= 0 && (isChoiceList(m.defs[field]) || isEditableCollection(m.defs[field])) {
 					choice = part - 1
 				}
 			}
@@ -1213,6 +1277,18 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	footer := strings.Join(areaLabels, " · ") + "\n↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back\n" + actions
+	if m.selected < len(m.defs) && isEditableCollection(m.defs[m.selected]) {
+		if def := m.defs[m.selected]; def.Type == "directory" || def.Type == "file" {
+			footer = "Enter choose/edit · a Add · Backspace/Del Remove · m Type path\n" + footer
+		} else {
+			footer = "Enter edit/add · a Add · Backspace/Del Remove\n" + footer
+		}
+	}
+	if m.editing {
+		runes := []rune(m.buffer)
+		cursor := min(m.cursor, len(runes))
+		footer = "Edit: " + string(runes[:cursor]) + "_" + string(runes[cursor:]) + "\nEnter applies; Ctrl+U clears; Esc cancels edit\n" + footer
+	}
 	if m.message != "" {
 		footer = m.message + "\n" + footer
 	}
@@ -1227,13 +1303,23 @@ func (m *FormModel) splitLayout() formLayout {
 	leftRows, splitSections, _ := scrollSplitPane(leftLines, leftSections, nil, m.sectionIndex+1, bodyHeight)
 	rightTarget := 0
 	for row, field := range rightRowFields {
-		if field == m.selected && (rightRowChoices[row] < 0 || rightRowChoices[row] == m.choiceIndex[m.defs[field].Name]) {
+		if field != m.selected {
+			continue
+		}
+		def := m.defs[field]
+		if isEditableCollection(def) {
+			if rightRowChoices[row] == m.rowIndex[def.Name] {
+				rightTarget = row
+			}
+		} else if rightRowChoices[row] < 0 || rightRowChoices[row] == m.choiceIndex[def.Name] {
 			rightTarget = row
 		}
 	}
 	rightRows, splitFields, splitChoices := scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, bodyHeight)
 	body := make([]string, max(len(leftRows), len(rightRows)))
+	removeX := make([]int, len(body))
 	for i := range body {
+		removeX[i] = -1
 		left, right := "", ""
 		if i < len(leftRows) {
 			left = leftRows[i]
@@ -1243,6 +1329,11 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 		left = ansi.Truncate(left, leftWidth, "")
 		right = ansi.Truncate(right, rightWidth, "")
+		if i < len(splitFields) && splitFields[i] >= 0 && i < len(splitChoices) && splitChoices[i] >= 0 && isEditableCollection(m.defs[splitFields[i]]) {
+			if index := strings.Index(right, "[Remove]"); index >= 0 {
+				removeX[i] = 1 + leftWidth + 3 + lipgloss.Width(right[:index])
+			}
+		}
 		body[i] = left + strings.Repeat(" ", max(1, leftWidth-lipgloss.Width(left))) + " │ " + right
 	}
 	for len(splitSections) < len(body) {
@@ -1273,7 +1364,7 @@ func (m *FormModel) splitLayout() formLayout {
 			break
 		}
 	}
-	return formLayout{content: content, visibleFields: indices, footerY: footerY, bodyStart: bodyStart, split: true, splitLeftWidth: leftWidth, splitFields: splitFields, splitChoices: splitChoices, splitSections: splitSections}
+	return formLayout{content: content, visibleFields: indices, footerY: footerY, bodyStart: bodyStart, split: true, splitLeftWidth: leftWidth, splitFields: splitFields, splitChoices: splitChoices, splitSections: splitSections, splitRemoveX: removeX}
 }
 
 func scrollSplitPane(rows []string, primary, secondary []int, target, height int) ([]string, []int, []int) {
