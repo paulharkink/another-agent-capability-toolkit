@@ -743,6 +743,35 @@ func textValue(value any) string {
 	}
 	return fmt.Sprint(value)
 }
+
+func editViewport(buffer string, cursor, width int) string {
+	runes := []rune(buffer)
+	cursor = max(0, min(cursor, len(runes)))
+	width = max(1, width)
+	start, end := 0, len(runes)
+	render := func() string {
+		left, right := "", ""
+		if start > 0 {
+			left = "…"
+		}
+		if end < len(runes) {
+			right = "…"
+		}
+		return left + string(runes[start:cursor]) + "_" + string(runes[cursor:end]) + right
+	}
+	for lipgloss.Width(render()) > width {
+		leftWidth := lipgloss.Width(string(runes[start:cursor]))
+		rightWidth := lipgloss.Width(string(runes[cursor:end]))
+		if start < cursor && (leftWidth >= rightWidth || end == cursor) {
+			start++
+		} else if end > cursor {
+			end--
+		} else {
+			break
+		}
+	}
+	return render()
+}
 func (m *FormModel) pick(def catalog.Input, action, initial string) tea.Cmd {
 	runner := &pickerExec{ctx: m.ctx, kind: def.Type, initial: initial}
 	index := m.rowIndex[def.Name]
@@ -1285,9 +1314,7 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	if m.editing {
-		runes := []rune(m.buffer)
-		cursor := min(m.cursor, len(runes))
-		footer = "Edit: " + string(runes[:cursor]) + "_" + string(runes[cursor:]) + "\nEnter applies; Ctrl+U clears; Esc cancels edit\n" + footer
+		footer = "Edit: " + editViewport(m.buffer, m.cursor, innerWidth-lipgloss.Width("Edit: ")) + "\nEnter applies; Ctrl+U clears; Esc cancels edit\n" + footer
 	}
 	if m.message != "" {
 		footer = m.message + "\n" + footer

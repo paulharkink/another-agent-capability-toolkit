@@ -53,7 +53,7 @@ func TestSplitDirectoryFormCanEditAndRemoveSavedRows(t *testing.T) {
 	if !m.editing || m.buffer != two {
 		t.Fatalf("manual edit did not open selected directory: editing=%v buffer=%q", m.editing, m.buffer)
 	}
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Edit: "+two+"_") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Edit: ") || !strings.Contains(view, filepath.Base(two)+"_") {
 		t.Fatalf("existing directory is not visible while editing:\n%s", view)
 	}
 	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
@@ -186,5 +186,25 @@ func TestSplitDirectoryBackspaceEditsTextWhileTyping(t *testing.T) {
 	}
 	if !m.editing || m.buffer != one[:len(one)-1] {
 		t.Fatalf("Backspace did not edit the path text: %q", m.buffer)
+	}
+}
+
+func TestSplitLongPathEditKeepsCursorVisible(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, strings.Repeat("long-segment-", 10), "leaf")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	m := NewForm(context.Background(), []catalog.Input{{Name: "scan_roots", Type: "directory", Multiple: true}}, map[string]any{"scan_roots": []string{path}})
+	m.SetSections(FormSection{Title: "Inputs", Fields: []string{"scan_roots"}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.Update(key(tea.KeyRight, ""))
+	m.Update(key('m', "m"))
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "leaf_") || !strings.Contains(view, "…") {
+		t.Fatalf("long path edit clipped the cursor or filename:\n%s", view)
+	}
+	m.Update(key(tea.KeyHome, ""))
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Edit: _/") || !strings.Contains(view, "…") {
+		t.Fatalf("moving to the start clipped the edit cursor:\n%s", view)
 	}
 }
