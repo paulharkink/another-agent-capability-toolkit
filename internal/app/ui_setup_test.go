@@ -113,11 +113,11 @@ func TestFixedTargetInputWinsSavedAnswersAndRejectsOverride(t *testing.T) {
 	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "target" {
 		t.Fatalf("fixed preview: %+v %v", preview, err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, false, false)
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, false, false, false)
 	if err != nil || values["api_server"] != "https://fixed.example" {
 		t.Fatalf("resolved: %+v %v", values, err)
 	}
-	if _, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"api_server": "https://other.example"}, false, false); err == nil || !strings.Contains(err.Error(), "fixed") {
+	if _, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"api_server": "https://other.example"}, false, false, false); err == nil || !strings.Contains(err.Error(), "fixed") {
 		t.Fatalf("override accepted: %v", err)
 	}
 }
@@ -144,7 +144,7 @@ func TestTargetOnlyPolicyDoesNotLockSourceDefault(t *testing.T) {
 	if err != nil || len(preview.Inputs) != 1 || !preview.Inputs[0].Editable {
 		t.Fatalf("source default locked input: %+v %v", preview, err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "", "", map[string]any{"api_server": "https://override.example"}, false, false)
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "", "", map[string]any{"api_server": "https://override.example"}, false, false, false)
 	if err != nil || values["api_server"] != "https://override.example" {
 		t.Fatalf("source default was fixed: %+v %v", values, err)
 	}
@@ -195,7 +195,7 @@ func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
 		values["local_port"] = int64(9000)
 		return values, nil
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false)
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false, false)
 	if err != nil || !called || values["api_server"] != "https://fixed.example" || values["local_port"] != int64(9000) {
 		t.Fatalf("interactive fixed values: %+v %v", values, err)
 	}
@@ -215,7 +215,7 @@ func TestInteractiveResolveSkipsEmptyFormWhenEveryInputFixed(t *testing.T) {
 		t.Fatal("empty interactive form opened")
 		return nil, nil
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false)
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false, false)
 	if err != nil || values["api_server"] != "https://fixed.example" {
 		t.Fatalf("fixed-only resolve: %+v %v", values, err)
 	}

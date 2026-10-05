@@ -71,6 +71,7 @@ type InstallRequest struct {
 	Agents                       []agents.Environment
 	Inputs                       map[string]any
 	Interactive                  bool
+	SkillsOnly                   bool
 	ExternalURL                  string
 	UpdateSource                 bool
 }
@@ -112,7 +113,7 @@ func (s *Service) key(p, env, target string) state.Key {
 	}
 	return state.Key{Source: s.Source.ID, Package: p, Environment: env, Target: target}
 }
-func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target string, cli map[string]any, interactive, prepare bool) (map[string]any, config.Target, state.Key, error) {
+func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target string, cli map[string]any, interactive, prepare, skillsOnly bool) (map[string]any, config.Target, state.Key, error) {
 	if env == "" && target == "default" {
 		target = ""
 	}
@@ -178,7 +179,7 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 		if s.Options.Editor == nil {
 			return nil, t, k, invalid(errors.New("interactive editor is unavailable"))
 		}
-		seedDefs := append([]catalog.Input{}, p.Inputs...)
+		seedDefs := skillInstallInputs(p, skillsOnly)
 		if prepare && p.MCP != nil {
 			if _, ok := p.MCP.Actions["prepare"]; ok {
 				for n, d := range seedDefs {
@@ -236,13 +237,30 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 			}
 		}
 	}
-	values, e = forms.Resolve(p.Inputs, values)
+	values, e = forms.Resolve(skillInstallInputs(p, skillsOnly), values)
 	if e != nil {
 		return nil, t, k, invalid(fmt.Errorf("%w; provide --set values or use --interactive", e))
 	}
 	return values, t, k, nil
 }
-func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]any) error {
+
+// skillInstallInputs keeps MCP-only target inputs optional when a package is
+// installed solely for its skill. Skill templates may still consume configured
+// values, but a skill install does not need an MCP endpoint or credentials.
+func skillInstallInputs(p catalog.Package, skillsOnly bool) []catalog.Input {
+	defs := append([]catalog.Input{}, p.Inputs...)
+	if !skillsOnly || p.MCP == nil {
+		return defs
+	}
+	for n := range defs {
+		if defs[n].ConfigKey != "" || defs[n].ExclusiveGroup != "" {
+			defs[n].Required = false
+			defs[n].MinItems = nil
+		}
+	}
+	return defs
+}
+func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool) error {
 	safe := map[string]any{}
 	for _, d := range p.Inputs {
 		if d.Type != "secret" {
@@ -254,7 +272,7 @@ func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]
 	if err := s.Store.SaveAnswers(k, safe); err != nil {
 		return err
 	}
-	if p.MCP != nil {
+	if p.MCP != nil && !skillsOnly {
 		return s.Store.RecordProfile(state.ProfileRecord{Key: k})
 	}
 	return nil
@@ -288,10 +306,13 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e != nil {
 		return out, e
 	}
+	if q.SkillsOnly && p.Skill == nil {
+		return out, invalid(errors.New("package has no skill to install with --skills-only"))
+	}
 	if e := validateGlobalSkillDestination(p, q.Agents); e != nil {
 		return out, invalid(e)
 	}
-	if p.MCP != nil {
+	if p.MCP != nil && !q.SkillsOnly {
 		for _, env := range q.Agents {
 			if _, e := agents.For(env.Kind, s.Options.Runner); e != nil {
 				return out, invalid(fmt.Errorf("agent %s: %w", env.ID, e))
@@ -309,14 +330,14 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			}
 		}
 	}
-	values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.ExternalURL == "")
+	values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.ExternalURL == "" && !q.SkillsOnly, q.SkillsOnly)
 	if e != nil {
 		return out, e
 	}
 	// Save the requested configuration before applying it. An apply failure
 	// leaves these answers available for correction and retry; installation
 	// records below still describe only effects that actually succeeded.
-	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswers(k, p, values) }); e != nil {
+	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswers(k, p, values, q.SkillsOnly) }); e != nil {
 		return out, e
 	}
 	out.Saved = true
@@ -346,7 +367,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		applied := false
 		succeeded := map[string]bool{}
 		url := q.ExternalURL
-		if p.MCP != nil && url == "" {
+		if p.MCP != nil && url == "" && !q.SkillsOnly {
 			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
 			if e != nil {
 				return e
@@ -368,7 +389,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 					succeeded[env.ID+"\x00skill"] = true
 				}
 			}
-			if agentErr == nil && p.MCP != nil {
+			if agentErr == nil && p.MCP != nil && !q.SkillsOnly {
 				if env.ConfigPath == "" && agents.IsManual(env.Kind) {
 					env.ConfigPath = s.manualConfigPath(env)
 				}
@@ -560,7 +581,7 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 		out.Logs = string(b)
 		return out, e
 	case "start", "authenticate", "prepare":
-		values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.Action == "start" || q.Action == "prepare")
+		values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.Action == "start" || q.Action == "prepare", false)
 		if e != nil {
 			return out, e
 		}
@@ -584,7 +605,7 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 					return errors.New("authentication required; provide credentials or use --interactive")
 				}
 			}
-			return s.saveAnswers(k, p, values)
+			return s.saveAnswers(k, p, values, false)
 		})
 		return out, err
 	default:

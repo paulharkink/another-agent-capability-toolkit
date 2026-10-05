@@ -51,6 +51,8 @@ func ResolveEnvironment(id, kind, home string) (Environment, error) {
 			}
 		}
 		e.ConfigPath = filepath.Join(configRoot, ".claude.json")
+	case "hermes":
+		e.SkillsDir = filepath.Join(home, ".hermes", "skills")
 	case "generic", "generic-mcp":
 		e.SkillsDir = filepath.Join(home, ".agents", "skills")
 	default:

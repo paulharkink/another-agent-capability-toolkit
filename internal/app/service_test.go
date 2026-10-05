@@ -500,7 +500,7 @@ func TestExplicitCredentialSwitchOverridesEnvironmentPrefill(t *testing.T) {
 	if err := os.WriteFile(targetPath, []byte("kubeconfig = './source.yaml'\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"token": "new-token", "kubeconfig": ""}, false, false)
+	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"token": "new-token", "kubeconfig": ""}, false, false, false)
 	if err != nil || values["token"] != "new-token" || values["kubeconfig"] != "" {
 		t.Fatalf("explicit switch did not clear target kubeconfig: %#v, %v", values, err)
 	}

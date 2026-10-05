@@ -26,6 +26,7 @@ const usage = `Another Agent Capability Toolkit (aact)
 aact                                     Open Catalog / MCPs / Agents / Settings
 aact catalog [--json]                     List this checkout's capabilities
 aact install PACKAGE --agent AGENT       Install skill and register its MCP
+aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
 aact mcp list|status [--json]             Show MCPs from every source
 aact mcp start|stop|logs|prepare|authenticate PACKAGE
@@ -36,7 +37,7 @@ aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 Flags: --config PATH --state-dir PATH --environment-root PATH
        --environment NAME --target NAME --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
-       --external-url URL --update-source --json --help --version
+       --external-url URL --skills-only --update-source --json --help --version
 
 Docker is required for container capabilities. Plain skills need no host runtime.
 `
@@ -233,6 +234,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, "install/uninstall requires one package ID")
 			return 2
 		}
+		if f.skillsOnly && f.args[0] != "install" {
+			fmt.Fprintln(errOut, "--skills-only is only supported by install")
+			return 2
+		}
 		inputs, e := inputValues(src, f.args[1], f.sets)
 		if e != nil {
 			fmt.Fprintln(errOut, e)
@@ -250,7 +255,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, ExternalURL: f.url, UpdateSource: f.updateSource}
+		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, SkillsOnly: f.skillsOnly, ExternalURL: f.url, UpdateSource: f.updateSource}
 		var r app.Result
 		if f.args[0] == "install" {
 			r, e = svc.Install(ctx, q)
