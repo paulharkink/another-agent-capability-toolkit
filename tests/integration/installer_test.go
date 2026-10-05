@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -78,8 +79,14 @@ func fixtureServer(t *testing.T, corrupt bool) *httptest.Server {
 		hash = strings.Repeat("0", 64)
 	}
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha256") {
-			fmt.Fprintf(w, "%s  fixture.tar.gz\n", hash)
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			version := strings.TrimPrefix(path.Base(path.Dir(r.URL.Path)), "v")
+			extension := "tar.gz"
+			if installerPlatform() == "windows" {
+				extension = "zip"
+			}
+			filename := fmt.Sprintf("aact_%s_%s_amd64.%s", version, installerPlatform(), extension)
+			fmt.Fprintf(w, "%s  %s\n", hash, filename)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, ".tar.gz") || strings.HasSuffix(r.URL.Path, ".zip") {
