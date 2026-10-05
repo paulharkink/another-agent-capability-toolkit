@@ -7,6 +7,9 @@ on:
       - 'cmd/**'
       - 'packages/**'
       - 'tools/**'
+      - '.goreleaser.yaml'
+      - 'install.sh'
+      - 'install.ps1'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/artifacts.yml'
@@ -19,9 +22,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./internal/release ./tests/integration -count=1
-      - run: go run ./tools/release --version 0.1.0-dev --out dist
-      - run: go run ./tools/release --version 0.1.0-dev --out dist --verify-only
+      - run: go test ./... -count=1
+      - uses: goreleaser/goreleaser-action@v6.2.1
+        with:
+          version: v2.18.2
+          args: release --snapshot --clean --skip=publish
       - uses: actions/upload-artifact@v4
         with:
           name: aact-development-archives

@@ -7,11 +7,11 @@ ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 PRINT_TARGET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --version) [ "$#" -ge 2 ] || { echo '--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
+    -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
     --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; shift 2 ;;
     --print-target) PRINT_TARGET=1; shift ;;
-    --help) echo 'Usage: install.sh [--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
+    --help) echo 'Usage: install.sh [-v|--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -35,8 +35,8 @@ work=$(mktemp -d "$ROOT/releases/.install-XXXXXX")
 launcher="$ROOT/bin/.aact-next-$$"
 trap 'rm -rf "$work"; rm -f "$launcher"' EXIT HUP INT TERM
 download "${BASE%/}/v${VERSION}/${filename}" "$work/$filename"
-download "${BASE%/}/v${VERSION}/${filename}.sha256" "$work/checksum"
-expected=$(sed -n '1s/[[:space:]].*//p' "$work/checksum")
+download "${BASE%/}/v${VERSION}/checksums.txt" "$work/checksum"
+expected=$(awk -v name="$filename" '$2 == name { print $1; exit }' "$work/checksum")
 case "$expected" in *[!a-fA-F0-9]*|'') echo 'Invalid release checksum' >&2; exit 1 ;; esac
 [ "${#expected}" = 64 ] || { echo 'Invalid release checksum length' >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$work/$filename" | sed 's/[[:space:]].*//')
@@ -66,7 +66,7 @@ else
 fi
 binary=aact
 [ "$platform" != windows ] || binary=aact.exe
-[ -f "$work/tree/bin/$binary" ] && [ -d "$work/tree/packages" ] && [ -f "$work/tree/release.json" ] || { echo 'Release archive is incomplete' >&2; exit 1; }
+[ -f "$work/tree/bin/$binary" ] && [ -d "$work/tree/packages" ] || { echo 'Release archive is incomplete' >&2; exit 1; }
 release="$ROOT/releases/${VERSION}-${platform}-${arch}"
 printf '%s\n' "$expected" > "$work/tree/.archive-sha256"
 if [ -e "$release" ]; then

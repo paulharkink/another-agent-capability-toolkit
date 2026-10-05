@@ -32,8 +32,11 @@ try {
   $archive = Join-Path $work $filename
   Invoke-WebRequest -UseBasicParsing -Uri "$($BaseUrl.TrimEnd('/'))/v$Version/$filename" -OutFile $archive
   $checksumFile = Join-Path $work 'checksum'
-  Invoke-WebRequest -UseBasicParsing -Uri "$($BaseUrl.TrimEnd('/'))/v$Version/$filename.sha256" -OutFile $checksumFile
-  $expected = ((Get-Content -LiteralPath $checksumFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+  Invoke-WebRequest -UseBasicParsing -Uri "$($BaseUrl.TrimEnd('/'))/v$Version/checksums.txt" -OutFile $checksumFile
+  $checksumPattern = '^([a-fA-F0-9]{64})\s+' + [regex]::Escape($filename) + '$'
+  $checksumMatch = Select-String -LiteralPath $checksumFile -Pattern $checksumPattern | Select-Object -First 1
+  if (-not $checksumMatch) { throw "No checksum found for $filename" }
+  $expected = $checksumMatch.Matches[0].Groups[1].Value.ToLowerInvariant()
   if ($expected -notmatch '^[a-f0-9]{64}$') { throw 'Invalid release checksum' }
   $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($expected -ne $actual) { throw 'Release checksum mismatch; existing installation preserved' }
@@ -49,7 +52,7 @@ try {
   } finally { $zip.Dispose() }
   $tree = Join-Path $work 'tree'
   Expand-Archive -LiteralPath $archive -DestinationPath $tree
-  if (-not (Test-Path -LiteralPath (Join-Path $tree 'bin/aact.exe') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $tree 'packages') -PathType Container) -or -not (Test-Path -LiteralPath (Join-Path $tree 'release.json') -PathType Leaf)) { throw 'Release archive is incomplete' }
+  if (-not (Test-Path -LiteralPath (Join-Path $tree 'bin/aact.exe') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $tree 'packages') -PathType Container)) { throw 'Release archive is incomplete' }
   [IO.File]::WriteAllText((Join-Path $tree '.archive-sha256'), $expected + "`n", [Text.UTF8Encoding]::new($false))
   $release = Join-Path $releases "$Version-windows-$arch"
   if (Test-Path -LiteralPath $release) {

@@ -14,32 +14,9 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 
 ## Install a published release
 
-Download the bootstrap installer from this repository and run it with the
-published version you want:
-
 ```sh
-sh install.sh --version VERSION
+curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.1.3
 ```
-
-For native Windows, use PowerShell:
-
-```powershell
-.\install.ps1 -Version VERSION
-```
-
-The shell installer selects macOS/Linux archives, Linux under WSL, and Windows
-ZIP archives under MinGW/MSYS. Native Windows uses install.ps1. Both verify the
-archive's SHA256 before activation, retain older versions, and print PATH
-instructions without changing shell profiles. MinGW bootstrap requires unzip;
-Unix bootstrap uses curl or wget, tar, and sha256sum or shasum. Native Windows
-uses PowerShell's download, hash, and archive facilities.
-
-Defaults are `~/.local/share/aact` on Unix and `%LOCALAPPDATA%\aact` on native
-Windows. Override with `--install-dir` / `-InstallDir` or `AACT_INSTALL_DIR`.
-`AACT_VERSION` selects a version and `AACT_DOWNLOAD_BASE` replaces the release
-base URL. URLs follow `BASE/vVERSION/aact_VERSION_OS_ARCH.tar.gz` (ZIP on
-Windows), with a matching `.sha256` file. Development builds are created locally;
-these URLs become available when a version tag is published.
 
 ## Use the manager
 
@@ -181,16 +158,14 @@ build releases, rather than to run an installed release.
 ```sh
 go test ./...
 go test -race ./...
-go run ./tools/release --version 0.1.0-dev --out dist
-go run ./tools/release --version 0.1.0-dev --out dist --verify-only
+goreleaser release --snapshot --clean
 ```
 
-The release tool builds all six platform/architecture combinations with
-`CGO_ENABLED=0`. Use `--target darwin/arm64` for one target, or `--go /path/to/go`
-for a task-local toolchain. Archives contain `bin/aact`, all package resources
-and templates, the matching native per-package helpers, release metadata, and
-license notices. Each archive has a matching SHA256 file. Unpack a development
-archive and run its `bin/aact`; keep the `packages` directory next to `bin`.
+GoReleaser builds all six platform/architecture combinations with
+`CGO_ENABLED=0`, packages the manager, helpers, package resources, and license
+notices, and generates `checksums.txt`. Use `--snapshot` to build without
+publishing. Unpack an archive and run its `bin/aact`; keep the `packages`
+directory next to `bin`.
 `AACT_BUNDLED_ROOT` can override the package directory during development.
 
 Docker verification uses synthetic fixtures, no live service credentials:
