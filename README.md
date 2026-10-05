@@ -158,16 +158,14 @@ build releases, rather than to run an installed release.
 ```sh
 go test ./...
 go test -race ./...
-go run ./tools/release --version 0.1.0-dev --out dist
-go run ./tools/release --version 0.1.0-dev --out dist --verify-only
+goreleaser release --snapshot --clean
 ```
 
-The release tool builds all six platform/architecture combinations with
-`CGO_ENABLED=0`. Use `--target darwin/arm64` for one target, or `--go /path/to/go`
-for a task-local toolchain. Archives contain `bin/aact`, all package resources
-and templates, the matching native per-package helpers, release metadata, and
-license notices. Each archive has a matching SHA256 file. Unpack a development
-archive and run its `bin/aact`; keep the `packages` directory next to `bin`.
+GoReleaser builds all six platform/architecture combinations with
+`CGO_ENABLED=0`, packages the manager, helpers, package resources, and license
+notices, and generates `checksums.txt`. Use `--snapshot` to build without
+publishing. Unpack an archive and run its `bin/aact`; keep the `packages`
+directory next to `bin`.
 `AACT_BUNDLED_ROOT` can override the package directory during development.
 
 Docker verification uses synthetic fixtures, no live service credentials:

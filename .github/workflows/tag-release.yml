@@ -1,10 +1,13 @@
 name: Tag merged release request
+
 on:
   pull_request:
     types: [closed]
+
 permissions:
   actions: write
   contents: write
+
 jobs:
   tag:
     if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
@@ -13,7 +16,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
-      - name: Tag README version and start release build
+          fetch-depth: 0
+
+      - name: Tag the README version and start GoReleaser
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -26,7 +31,7 @@ jobs:
           version="${tag#v}"
           expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v $version"
           if ! grep -Fqx "$expected" README.md; then
-            echo "README.md must contain '$expected' before creating $tag." >&2
+            echo "README.md does not name $tag; refusing to create the tag." >&2
             exit 1
           fi
           git config user.name "github-actions[bot]"

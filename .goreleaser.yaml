@@ -1,0 +1,110 @@
+version: 2
+project_name: aact
+
+builds:
+  - id: aact
+    main: ./cmd/aact
+    binary: bin/aact
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/cli.Version={{ .Version }}
+
+  - id: inspector-helper
+    main: ./cmd/inspector-helper
+    binary: bin/inspector-helper
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: find-session
+    main: ./cmd/find-session
+    binary: bin/find-session
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: repo-map
+    main: ./packages/git-repo-map/generators/repo-map
+    binary: bin/repo-map
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: cluster-inspector-helper
+    main: ./cmd/inspector-helper
+    binary: packages/cluster-inspector/bin/inspector-helper
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: grafana-inspector-helper
+    main: ./cmd/inspector-helper
+    binary: packages/grafana-inspector/bin/inspector-helper
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: azure-inspector-helper
+    main: ./cmd/inspector-helper
+    binary: packages/azure-inspector/bin/inspector-helper
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: forgejo-helper
+    main: ./cmd/inspector-helper
+    binary: packages/forgejo/bin/inspector-helper
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: find-session-helper
+    main: ./cmd/find-session
+    binary: packages/find-session/bin/find-session
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+  - id: repo-map-helper
+    main: ./packages/git-repo-map/generators/repo-map
+    binary: packages/git-repo-map/bin/repo-map
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+
+archives:
+  - ids:
+      - aact
+      - inspector-helper
+      - find-session
+      - repo-map
+      - cluster-inspector-helper
+      - grafana-inspector-helper
+      - azure-inspector-helper
+      - forgejo-helper
+      - find-session-helper
+      - repo-map-helper
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    wrap_in_directory: false
+    strip_binary_directory: false
+    files:
+      - README.md
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - packages/**
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  extra_files:
+    - glob: install.sh
+    - glob: install.ps1
+  replace_existing_artifacts: true
