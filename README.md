@@ -14,11 +14,22 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 
 ## Install a published release
 
-Download the bootstrap installer from this repository and run it with the
-published version you want:
+Latest published release: v0.1.3
+
+Update this line whenever publishing a new release. The release workflow checks
+that the README names the version being published. On macOS, Linux, WSL, or
+MinGW/MSYS, the command below selects the latest published version and pipes its
+version-matched installer to `sh`:
 
 ```sh
-sh install.sh --version VERSION
+version=$(curl -fsSL https://api.github.com/repos/paulharkink/another-agent-capability-toolkit/releases/latest \
+  | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"v\([^"]*\)".*/\1/p')
+if [ -n "$version" ]; then
+  curl -fsSL "https://github.com/paulharkink/another-agent-capability-toolkit/releases/download/v${version}/install.sh" \
+    | AACT_VERSION="$version" sh
+else
+  printf 'Could not determine the latest AACT release from GitHub.\n' >&2
+fi
 ```
 
 For native Windows, use PowerShell:

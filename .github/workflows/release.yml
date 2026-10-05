@@ -9,6 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Require README to name this release
+        shell: bash
+        run: |
+          expected="Latest published release: ${GITHUB_REF_NAME}"
+          if ! grep -Fqx "$expected" README.md; then
+            echo "README.md must contain '$expected' before publishing this release." >&2
+            exit 1
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
