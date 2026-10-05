@@ -29,6 +29,8 @@ jobs:
             echo "README.md must contain '$expected' before creating $tag." >&2
             exit 1
           fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag"
           git push origin "refs/tags/$tag"
           gh workflow run release.yml --repo paulharkink/another-agent-capability-toolkit --ref "$tag"
