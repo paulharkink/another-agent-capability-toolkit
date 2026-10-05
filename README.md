@@ -14,43 +14,9 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 
 ## Install a published release
 
-Latest published release: v0.1.3
-
-Update this line whenever publishing a new release. The release workflow checks
-that the README names the version being published. On macOS, Linux, WSL, or
-MinGW/MSYS, the command below selects the latest published version and pipes its
-version-matched installer to `sh`:
-
 ```sh
-version=$(curl -fsSL https://api.github.com/repos/paulharkink/another-agent-capability-toolkit/releases/latest \
-  | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"v\([^"]*\)".*/\1/p')
-if [ -n "$version" ]; then
-  curl -fsSL "https://github.com/paulharkink/another-agent-capability-toolkit/releases/download/v${version}/install.sh" \
-    | AACT_VERSION="$version" sh
-else
-  printf 'Could not determine the latest AACT release from GitHub.\n' >&2
-fi
+curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.1.3
 ```
-
-For native Windows, use PowerShell:
-
-```powershell
-.\install.ps1 -Version VERSION
-```
-
-The shell installer selects macOS/Linux archives, Linux under WSL, and Windows
-ZIP archives under MinGW/MSYS. Native Windows uses install.ps1. Both verify the
-archive's SHA256 before activation, retain older versions, and print PATH
-instructions without changing shell profiles. MinGW bootstrap requires unzip;
-Unix bootstrap uses curl or wget, tar, and sha256sum or shasum. Native Windows
-uses PowerShell's download, hash, and archive facilities.
-
-Defaults are `~/.local/share/aact` on Unix and `%LOCALAPPDATA%\aact` on native
-Windows. Override with `--install-dir` / `-InstallDir` or `AACT_INSTALL_DIR`.
-`AACT_VERSION` selects a version and `AACT_DOWNLOAD_BASE` replaces the release
-base URL. URLs follow `BASE/vVERSION/aact_VERSION_OS_ARCH.tar.gz` (ZIP on
-Windows), with a matching `.sha256` file. Development builds are created locally;
-these URLs become available when a version tag is published.
 
 ## Use the manager
 

@@ -1,0 +1,52 @@
+name: Request release
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version component to increment
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify release tooling
+        run: go test ./... -count=1
+      - name: Bump README install command
+        id: bump
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: |
+          version=$(go run ./tools/release-version --bump "$RELEASE_BUMP" --readme README.md)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Open version update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.bump.outputs.version }}"
+          branch="release/$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add README.md
+          git commit -m "docs: prepare release $version"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Prepare release $version" \
+            --body "Updates the README install command to AACT $version. Merging this PR creates the release tag and starts the existing release build."

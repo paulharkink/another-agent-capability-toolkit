@@ -2,6 +2,7 @@ name: Publish versioned release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -12,7 +13,7 @@ jobs:
       - name: Require README to name this release
         shell: bash
         run: |
-          expected="Latest published release: ${GITHUB_REF_NAME}"
+          expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v ${GITHUB_REF_NAME#v}"
           if ! grep -Fqx "$expected" README.md; then
             echo "README.md must contain '$expected' before publishing this release." >&2
             exit 1

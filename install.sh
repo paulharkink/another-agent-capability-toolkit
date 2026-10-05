@@ -7,11 +7,11 @@ ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 PRINT_TARGET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --version) [ "$#" -ge 2 ] || { echo '--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
+    -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
     --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; shift 2 ;;
     --print-target) PRINT_TARGET=1; shift ;;
-    --help) echo 'Usage: install.sh [--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
+    --help) echo 'Usage: install.sh [-v|--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
