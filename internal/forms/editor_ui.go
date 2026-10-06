@@ -16,6 +16,10 @@ import (
 
 var ErrNotSubmitted = errors.New("form has not been submitted")
 
+// BackMsg asks the parent workspace to return to the previous layer while
+// carrying the current form draft. It is not a submission or cancellation.
+type BackMsg struct{ Draft map[string]any }
+
 type FormModel struct {
 	ctx                         context.Context
 	editor                      *Editor
@@ -25,12 +29,15 @@ type FormModel struct {
 	selected, width, height     int
 	editing                     bool
 	buffer, editAction, message string
+	editOriginal                string
+	fieldErrors                 map[string]string
 	cursor                      int
 	choiceIndex, rowIndex       map[string]int
 	hints                       map[string]string
 	conditions                  map[string]fieldCondition
 	disabled                    map[string]string
 	done                        bool
+	backNavigation              bool
 	result                      map[string]any
 	err                         error
 	sections                    []FormSection
@@ -50,6 +57,9 @@ type FormSection struct {
 
 func (m *FormModel) SetSections(sections ...FormSection) {
 	m.sections = append([]FormSection(nil), sections...)
+	if len(sections) > 0 {
+		m.backNavigation = true
+	}
 	if len(m.sections) == 0 {
 		m.sectionIndex = 0
 		m.area = 0
@@ -65,6 +75,10 @@ func (m *FormModel) SetSections(sections ...FormSection) {
 
 func (m *FormModel) SetSectionHeading(heading string) { m.sectionHeading = heading }
 
+// SetBackNavigation enables Escape as a parent-navigation signal for a
+// single-pane TUI editor. Standalone RunEditor keeps Escape cancellation by default.
+func (m *FormModel) SetBackNavigation(enabled bool) { m.backNavigation = enabled }
+
 func (m *FormModel) SelectSection(title string) {
 	for i, section := range m.sections {
 		if section.Title == title {
@@ -72,6 +86,24 @@ func (m *FormModel) SelectSection(title string) {
 			m.selectSectionField()
 			return
 		}
+	}
+}
+
+// Values returns a copy of the current editable draft.
+func (m *FormModel) Values() map[string]any { return m.editor.Values() }
+
+// SectionTitle returns the title of the currently selected section, if any.
+func (m *FormModel) SectionTitle() string {
+	if m.sectionIndex < 0 || m.sectionIndex >= len(m.sections) {
+		return ""
+	}
+	return m.sections[m.sectionIndex].Title
+}
+
+// FocusSection returns keyboard focus to the section list.
+func (m *FormModel) FocusSection() {
+	if len(m.sections) > 0 {
+		m.area = 0
 	}
 }
 
@@ -135,9 +167,9 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 		case def.Name:
 			return "Active method · imported, not a live path · Import source; AACT uses managed credential material at runtime"
 		case "":
-			return "Enter a source kubeconfig path · Import source; AACT uses managed credential material at runtime"
+			return "Inactive method · enter a source kubeconfig path · Import source; AACT uses managed credential material at runtime"
 		default:
-			return "Type a path to switch to kubeconfig · Import source; AACT uses managed credential material at runtime"
+			return "Inactive method · type a path to switch to Source kubeconfig · Import source; AACT uses managed credential material at runtime"
 		}
 	}
 	if active == def.Name {
@@ -148,9 +180,19 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 		label = def.Name
 	}
 	if active == "" {
-		return "Enter a " + label
+		return "Inactive method · enter a " + label + " to select it"
 	}
-	return "Type here to switch to " + label
+	return "Inactive method · type here to switch to " + label
+}
+
+func (m *FormModel) emptyChoicesText(def catalog.Input) string {
+	message := "No choices available in selected target · database access is optional"
+	if hint := m.hints[def.Name]; hint != "" {
+		message += " · choices supplied by " + hint
+	} else {
+		message += " · choices come from the selected target TOML"
+	}
+	return message
 }
 
 func (m *FormModel) splitFieldIndices(section int) []int {
@@ -360,7 +402,19 @@ type pickedMsg struct {
 }
 
 func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.done {
+		return m, nil
+	}
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		if m.editing {
+			runes := []rune(m.buffer)
+			m.buffer = string(runes[:m.cursor]) + msg.Content + string(runes[m.cursor:])
+			m.cursor += utf8.RuneCountInString(msg.Content)
+		}
+		return m, nil
+	case tea.PasteStartMsg, tea.PasteEndMsg:
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -402,6 +456,13 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.area = 0
 					return m, nil
 				}
+				if m.backNavigation {
+					return m, func() tea.Msg { return BackMsg{Draft: m.Values()} }
+				}
+				return m.cancel()
+			}
+			if m.backNavigation {
+				return m, func() tea.Msg { return BackMsg{Draft: m.Values()} }
 			}
 			return m.cancel()
 		}
@@ -418,6 +479,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch stroke {
 			case "esc":
 				m.editing = false
+				m.buffer = m.editOriginal
+				delete(m.fieldErrors, m.defs[m.selected].Name)
 				m.message = "Edit cancelled"
 			case "ctrl+u":
 				m.buffer = ""
@@ -592,13 +655,22 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			if def.Multiple && (def.Type == "directory" || def.Type == "file") {
 				if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
-					index := m.rowIndex[def.Name]
-					return m, m.pick(def, "edit", paths[index])
+					m.beginEdit("edit", paths[m.rowIndex[def.Name]])
 				}
 			} else if def.Multiple && len(def.Options) == 0 {
 				if rows := collectionRows(value); m.rowIndex[def.Name] < len(rows) {
 					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]]))
 				}
+			}
+		case "b":
+			if def.Type == "directory" || def.Type == "file" {
+				if def.Multiple {
+					if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
+						return m, m.pick(def, "edit", paths[m.rowIndex[def.Name]])
+					}
+					return m, m.pick(def, "add", "")
+				}
+				return m, m.pick(def, "apply", textValue(value))
 			}
 		case "m":
 			if def.Type == "directory" || def.Type == "file" {
@@ -618,17 +690,19 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				current, _ := value.(bool)
 				m.setError(m.editor.Apply(def.Name, !current))
 			} else if def.OptionsFrom != "" && len(def.Options) == 0 {
-				m.message = "No choices available in selected target"
+				m.message = m.emptyChoicesText(def)
 			} else if len(def.Options) > 0 {
 				m.choose(def, value)
 			} else if def.Type == "directory" || def.Type == "file" {
 				if def.Multiple {
 					if paths, ok := value.([]string); ok && m.rowIndex[def.Name] < len(paths) {
-						return m, m.pick(def, "edit", paths[m.rowIndex[def.Name]])
+						m.beginEdit("edit", paths[m.rowIndex[def.Name]])
+					} else {
+						m.beginEdit("add", "")
 					}
-					return m, m.pick(def, "add", "")
+				} else {
+					m.beginEdit("apply", textValue(value))
 				}
-				return m, m.pick(def, "apply", textValue(value))
 			} else if def.Multiple {
 				if rows := collectionRows(value); m.rowIndex[def.Name] < len(rows) {
 					m.beginEdit("edit", textValue(rows[m.rowIndex[def.Name]]))
@@ -655,8 +729,19 @@ func (m *FormModel) save() (tea.Model, tea.Cmd) {
 	if err != nil {
 		m.message = err.Error()
 		for i, def := range m.defs {
-			if m.editor.initialErrors[def.Name] != nil || Validate([]catalog.Input{def}, m.editor.Values()) != nil {
+			validationErr := Validate([]catalog.Input{def}, m.editor.Values())
+			if m.editor.initialErrors[def.Name] != nil || validationErr != nil {
 				m.selected = i
+				if m.fieldErrors == nil {
+					m.fieldErrors = map[string]string{}
+				}
+				if initialErr := m.editor.initialErrors[def.Name]; initialErr != nil {
+					validationErr = initialErr
+				}
+				if validationErr != nil {
+					m.fieldErrors[def.Name] = m.validationMessage(def, validationErr)
+					m.message = m.fieldErrors[def.Name]
+				}
 				if def.Required && isChoiceList(def) && len(collectionRows(m.editor.Values()[def.Name])) == 0 {
 					label := def.Label
 					if label == "" {
@@ -680,6 +765,7 @@ func (m *FormModel) beginEdit(action, buffer string) {
 	m.editing = true
 	m.editAction = action
 	m.buffer = buffer
+	m.editOriginal = buffer
 	m.cursor = utf8.RuneCountInString(buffer)
 	m.message = ""
 }
@@ -696,12 +782,35 @@ func (m *FormModel) commitBuffer() {
 	}
 	m.setError(e)
 	if e == nil {
+		delete(m.fieldErrors, def.Name)
 		m.activateExclusive(def.Name)
 		if m.editAction == "add" {
 			m.rowIndex[def.Name] = len(collectionRows(m.editor.Values()[def.Name])) - 1
 		}
 		m.editing = false
+	} else {
+		if m.fieldErrors == nil {
+			m.fieldErrors = map[string]string{}
+		}
+		m.fieldErrors[def.Name] = m.validationMessage(def, e)
 	}
+}
+
+func (m *FormModel) validationMessage(def catalog.Input, err error) string {
+	message := err.Error()
+	prefix := "input " + def.Name + ": "
+	message = strings.TrimPrefix(message, prefix)
+	if strings.HasPrefix(message, "input "+def.Name+" is ") {
+		message = "is " + strings.TrimPrefix(message, "input "+def.Name+" is ")
+	}
+	label := def.Label
+	if label == "" {
+		label = def.Name
+	}
+	if strings.HasPrefix(message, "must be at least ") {
+		return label + " must be at least " + strings.TrimPrefix(message, "must be at least ") + "."
+	}
+	return label + ": " + message
 }
 func (m *FormModel) choose(def catalog.Input, current any) {
 	option := def.Options[m.choiceIndex[def.Name]%len(def.Options)].Value
@@ -974,7 +1083,7 @@ func (m *FormModel) layout() formLayout {
 		value := values[def.Name]
 		display := textValue(value)
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
-			display = "No choices available in selected target"
+			display = m.emptyChoicesText(def)
 		} else if def.OptionsFrom != "" && len(def.Options) > 0 {
 			selected, _ := value.([]string)
 			if len(selected) == 0 {
@@ -994,8 +1103,27 @@ func (m *FormModel) layout() formLayout {
 					mark = ">"
 				}
 				row := textValue(path)
-				display += "\n    " + mark + " " + row
+				if m.editing && i == m.selected && index == m.rowIndex[def.Name] && m.editAction == "edit" {
+					row = "Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-30))
+				}
+				if def.Type == "directory" || def.Type == "file" {
+					display += "\n    " + mark + " " + row + "  [Edit] [Remove]"
+				} else {
+					display += "\n    " + mark + " " + row
+				}
 			}
+			if m.editing && i == m.selected && m.editAction == "add" {
+				display += "\n    > + Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-30))
+			}
+		}
+		if m.editing && i == m.selected && !scalarDefinition(def).Multiple && def.OptionsFrom == "" {
+			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-lipgloss.Width(label)-14))
+		}
+		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
+			display += "  [Browse]"
+		}
+		if validation := m.fieldErrors[def.Name]; validation != "" {
+			display += "\n    ! " + validation
 		}
 		if i == m.selected && len(def.Options) > 0 && def.Type != "multichoice" && def.Type != "multiple-choice" && !def.Multiple {
 			option := def.Options[m.choiceIndex[def.Name]%len(def.Options)]
@@ -1060,13 +1188,7 @@ func (m *FormModel) layout() formLayout {
 		rowLines = []int{-1}
 		choiceLines = []int{-1}
 	}
-	editInfo := ""
-	if m.editing {
-		runes := []rune(m.buffer)
-		cursor := min(m.cursor, len(runes))
-		editInfo = "\n\nEdit: " + string(runes[:cursor]) + "_" + string(runes[cursor:]) + "\nEnter applies; Ctrl+U clears; Esc cancels edit"
-	}
-	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc cancel"
+	footer := "[ Save ]  [ Cancel ]\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · Esc back"
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
 		if isChoiceList(def) {
@@ -1096,22 +1218,18 @@ func (m *FormModel) layout() formLayout {
 		}
 		if def.Type == "directory" || def.Type == "file" {
 			if def.Multiple {
-				footer += "\na Add · e Edit · r Remove · [/] row · A manual Add · m manual Edit"
+				footer += "\na Add (picker) · e Edit · Backspace Remove · m type path · b Browse"
 			} else {
-				footer += "\nm enter path manually"
+				footer += "\nEnter type path · b Browse"
 			}
 		}
 	}
 	footerLines := len(strings.Split(footer, "\n"))
-	editLines := 0
-	if editInfo != "" {
-		editLines = strings.Count(editInfo, "\n") + 1
-	}
 	contextLines := 0
 	if m.contextLine != "" {
 		contextLines = 1
 	}
-	visible := max(1, m.height-6-footerLines-editLines-contextLines)
+	visible := max(1, m.height-6-footerLines-contextLines)
 	start := max(0, selectedLine-visible+1)
 	if m.selected >= len(m.defs) {
 		start = max(0, len(bodyLines)-visible)
@@ -1123,7 +1241,7 @@ func (m *FormModel) layout() formLayout {
 	if m.contextLine != "" {
 		heading = title + "\n" + m.contextLine + "\n\n"
 	}
-	head := strings.Split(heading+body+editInfo, "\n")
+	head := strings.Split(heading+body, "\n")
 	actions := "[ Save ]  [ Cancel ]"
 	if m.selected == len(m.defs) {
 		actions = "> [ Save ]  [ Cancel ]"
@@ -1194,6 +1312,9 @@ func (m *FormModel) splitLayout() formLayout {
 			prefix = "> "
 		}
 		display := textValue(values[def.Name])
+		if def.OptionsFrom != "" && len(def.Options) == 0 {
+			display = m.emptyChoicesText(def)
+		}
 		if isEditableCollection(def) {
 			rows := collectionRows(values[def.Name])
 			unit := "items"
@@ -1207,11 +1328,14 @@ func (m *FormModel) splitLayout() formLayout {
 					cursor = ">"
 				}
 				shown := textValue(value)
-				limit := max(8, rightWidth-14)
-				if lipgloss.Width(shown) > limit {
+				if index == m.selected && m.editing && m.editAction == "edit" && m.rowIndex[def.Name] == row {
+					shown = "Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-27))
+				}
+				limit := max(8, rightWidth-30)
+				if !m.editing && lipgloss.Width(shown) > limit {
 					shown = ansi.TruncateLeft(shown, lipgloss.Width(shown)-limit+1, "…")
 				}
-				display += "\n  " + cursor + " " + shown + "  [Remove]"
+				display += "\n  " + cursor + " " + shown + "  [Edit] [Remove]"
 			}
 			addLabel := "Add item…"
 			if def.Type == "directory" {
@@ -1223,7 +1347,20 @@ func (m *FormModel) splitLayout() formLayout {
 			if index == m.selected && m.area == 1 && m.rowIndex[def.Name] == len(rows) {
 				cursor = ">"
 			}
-			display += "\n  " + cursor + " + " + addLabel
+			if m.editing && index == m.selected && m.editAction == "add" {
+				display += "\n  > + Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-20))
+			} else {
+				display += "\n  " + cursor + " + " + addLabel
+			}
+		}
+		if m.editing && index == m.selected && !isEditableCollection(def) && def.OptionsFrom == "" {
+			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-lipgloss.Width(label)-14))
+		}
+		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
+			display += "  [Browse]"
+		}
+		if validation := m.fieldErrors[def.Name]; validation != "" {
+			display += "\n    ! " + validation
 		}
 		if len(def.Options) > 0 && isChoiceList(def) {
 			chosen, _ := values[def.Name].([]string)
@@ -1308,13 +1445,13 @@ func (m *FormModel) splitLayout() formLayout {
 	footer := strings.Join(areaLabels, " · ") + "\n↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back\n" + actions
 	if m.selected < len(m.defs) && isEditableCollection(m.defs[m.selected]) {
 		if def := m.defs[m.selected]; def.Type == "directory" || def.Type == "file" {
-			footer = "Enter choose/edit · a Add · Backspace/Del Remove · m Type path\n" + footer
+			footer = "Enter edit · a Add (picker) · Backspace Remove · m Type path · b Browse\n" + footer
 		} else {
-			footer = "Enter edit/add · a Add · Backspace/Del Remove\n" + footer
+			footer = "Enter edit/add · a Add · Backspace Remove\n" + footer
 		}
 	}
 	if m.editing {
-		footer = "Edit: " + editViewport(m.buffer, m.cursor, innerWidth-lipgloss.Width("Edit: ")) + "\nEnter applies; Ctrl+U clears; Esc cancels edit\n" + footer
+		footer = "Editing in place · Enter finish · Esc restore · Ctrl+U clear\n" + footer
 	}
 	if m.message != "" {
 		footer = m.message + "\n" + footer
