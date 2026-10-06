@@ -33,6 +33,9 @@ type FormModel struct {
 	fieldErrors                 map[string]string
 	cursor                      int
 	choiceIndex, rowIndex       map[string]int
+	browser                     *picker.BrowserModel
+	pickerPending               pickedMsg
+	nativePicker                func(context.Context, string, string) (string, error)
 	hints                       map[string]string
 	conditions                  map[string]fieldCondition
 	disabled                    map[string]string
@@ -299,6 +302,7 @@ type fieldCondition struct{ Selector, Choice string }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
 	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}}
+	m.nativePicker = picker.TryNative
 	values := m.editor.Values()
 	for _, def := range defs {
 		if def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice" {
@@ -424,6 +428,7 @@ func RunEditor(ctx context.Context, defs []catalog.Input, prefill map[string]any
 
 type pickedMsg struct {
 	name, path, action string
+	kind, initial      string
 	index              int
 	err                error
 }
@@ -431,6 +436,22 @@ type pickedMsg struct {
 func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.done {
 		return m, nil
+	}
+	if m.browser != nil {
+		if size, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = size.Width, size.Height
+			m.resizeBrowser()
+			return m, nil
+		}
+		_, cmd := m.browser.Update(msg)
+		if _, err := m.browser.Result(); !errors.Is(err, picker.ErrNotSubmitted) {
+			result, resultErr := m.browser.Result()
+			pending := m.pickerPending
+			m.browser = nil
+			pending.path, pending.err = result, resultErr
+			m.applyPicked(pending)
+		}
+		return m, cmd
 	}
 	switch msg := msg.(type) {
 	case tea.PasteMsg:
@@ -446,30 +467,14 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case pickedMsg:
-		if errors.Is(msg.err, picker.ErrCancelled) {
-			m.message = "Selection cancelled"
+		if errors.Is(msg.err, picker.ErrUnavailable) {
+			msg = m.pickerMetadata(msg)
+			m.pickerPending = msg
+			m.browser = picker.NewBrowser(m.ctx, msg.kind, msg.initial)
+			m.resizeBrowser()
 			return m, nil
 		}
-		if msg.err != nil {
-			m.message = msg.err.Error()
-			return m, nil
-		}
-		var err error
-		switch msg.action {
-		case "add":
-			err = m.editor.AddPath(msg.name, msg.path)
-		case "edit":
-			err = m.editor.EditPath(msg.name, msg.index, msg.path)
-		default:
-			err = m.editor.Apply(msg.name, msg.path)
-		}
-		m.setError(err)
-		if err == nil && msg.action != "add" {
-			m.activateExclusive(msg.name)
-		}
-		if err == nil && msg.action == "add" {
-			m.rowIndex[msg.name] = len(collectionRows(m.editor.Values()[msg.name])) - 1
-		}
+		m.applyPicked(msg)
 	case tea.MouseMsg:
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
@@ -909,11 +914,9 @@ func editViewport(buffer string, cursor, width int) string {
 	return render()
 }
 func (m *FormModel) pick(def catalog.Input, action, initial string) tea.Cmd {
-	runner := &pickerExec{ctx: m.ctx, kind: def.Type, initial: initial}
 	index := m.rowIndex[def.Name]
-	return tea.Exec(runner, func(e error) tea.Msg {
-		return pickedMsg{name: def.Name, path: runner.path, action: action, index: index, err: e}
-	})
+	runner, complete := m.pickerCommand(def.Name, def.Type, action, initial, index)
+	return tea.Exec(runner, complete)
 }
 
 func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -1053,12 +1056,13 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 type pickerExec struct {
 	ctx                 context.Context
 	kind, initial, path string
+	native              func(context.Context, string, string) (string, error)
 	in                  io.Reader
 	out, err            io.Writer
 }
 
 func (e *pickerExec) Run() error {
-	path, err := (picker.Picker{Native: picker.Native, Reader: e.in, Writer: e.out}).Select(e.ctx, e.kind, e.initial)
+	path, err := e.native(e.ctx, e.kind, e.initial)
 	e.path = path
 	return err
 }
@@ -1606,6 +1610,9 @@ func scrollSplitPane(rows []string, primary, secondary []int, target, height int
 }
 
 func (m *FormModel) View() tea.View {
+	if m.browser != nil {
+		return m.pickerView()
+	}
 	content := m.layout().content
 	width := m.width
 	if width < 20 {
