@@ -44,6 +44,8 @@ type FormModel struct {
 	result                      map[string]any
 	err                         error
 	sections                    []FormSection
+	sectionContent              map[string][]string
+	sectionOffset               int
 	sectionHeading              string
 	sectionIndex                int
 	area                        int
@@ -77,6 +79,43 @@ func (m *FormModel) SetSections(sections ...FormSection) {
 }
 
 func (m *FormModel) SetSectionHeading(heading string) { m.sectionHeading = heading }
+
+// Sections returns a copy of the current navigation metadata.
+func (m *FormModel) Sections() []FormSection {
+	sections := append([]FormSection(nil), m.sections...)
+	for i := range sections {
+		sections[i].Fields = append([]string(nil), sections[i].Fields...)
+	}
+	return sections
+}
+
+// HasSection reports whether the form has a section with this title.
+func (m *FormModel) HasSection(title string) bool {
+	for _, section := range m.sections {
+		if section.Title == title {
+			return true
+		}
+	}
+	return false
+}
+
+// Definitions returns a copy of the field definitions used to build sections.
+func (m *FormModel) Definitions() []catalog.Input { return append([]catalog.Input(nil), m.defs...) }
+
+// PaneWidth returns the current overall form width.
+func (m *FormModel) PaneWidth() int { return m.width }
+
+// SetSectionContent adds read-only information to the right pane of a section.
+// It may be combined with editable fields in that section.
+func (m *FormModel) SetSectionContent(title string, lines []string) {
+	if m.sectionContent == nil {
+		m.sectionContent = map[string][]string{}
+	}
+	m.sectionContent[title] = append([]string(nil), lines...)
+	if title == m.SectionTitle() {
+		m.sectionOffset = 0
+	}
+}
 
 // SetBackNavigation enables Escape as a parent-navigation signal for a
 // single-pane TUI editor. Standalone RunEditor keeps Escape cancellation by default.
@@ -193,6 +232,10 @@ func wrapHint(text string, width int) []string {
 	width = max(1, width)
 	lines := []string{}
 	clauses := strings.Split(text, " · ")
+	if len(clauses) > 1 && clauses[1] == "editable" {
+		clauses[0] += " · " + clauses[1]
+		clauses = append(clauses[:1], clauses[2:]...)
+	}
 	if len(clauses) > 1 && clauses[0] == "Active method" && strings.HasPrefix(clauses[1], "imported,") {
 		clauses = append([]string{clauses[0] + " · " + clauses[1]}, clauses[2:]...)
 	}
@@ -245,6 +288,8 @@ func (m *FormModel) selectSectionField() {
 	indices := m.splitFieldIndices(m.sectionIndex)
 	if len(indices) > 0 {
 		m.selected = indices[0]
+	} else {
+		m.selected = len(m.defs)
 	}
 }
 
@@ -253,6 +298,7 @@ func (m *FormModel) moveSection(delta int) {
 		return
 	}
 	m.sectionIndex = (m.sectionIndex + len(m.sections) + delta) % len(m.sections)
+	m.sectionOffset = 0
 	m.message = ""
 	m.selectSectionField()
 }
@@ -260,6 +306,10 @@ func (m *FormModel) moveSection(delta int) {
 func (m *FormModel) moveSplitControl(delta int) {
 	indices := m.splitFieldIndices(m.sectionIndex)
 	if len(indices) == 0 {
+		if m.sectionIndex >= 0 && m.sectionIndex < len(m.sections) {
+			content := m.sectionContent[m.sections[m.sectionIndex].Title]
+			m.sectionOffset = min(max(0, m.sectionOffset+delta), max(0, len(content)-1))
+		}
 		return
 	}
 	if m.selected < len(m.defs) && isChoiceList(m.defs[m.selected]) {
@@ -614,6 +664,9 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.area == 0 {
 					m.area = 1
+					return m, nil
+				}
+				if m.area == 1 && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
 					return m, nil
 				}
 			}
@@ -1332,6 +1385,11 @@ func (m *FormModel) splitLayout() formLayout {
 	indices := m.splitFieldIndices(m.sectionIndex)
 	rightLines := []string{"── " + m.sections[m.sectionIndex].Title}
 	rightFields := []int{-1}
+	sectionContent := m.sectionContent[m.sections[m.sectionIndex].Title]
+	for _, line := range sectionContent {
+		rightLines = append(rightLines, "· "+line)
+		rightFields = append(rightFields, -1)
+	}
 	for _, index := range indices {
 		def := m.defs[index]
 		label := def.Label
@@ -1445,7 +1503,10 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	if len(indices) == 0 {
-		rightLines = append(rightLines, "· No fields in this section")
+		if len(sectionContent) == 0 {
+			rightLines = append(rightLines, "· No fields in this section")
+			rightFields = append(rightFields, -1)
+		}
 	}
 	leftSections := make([]int, len(leftLines))
 	for i := range leftSections {
@@ -1504,6 +1565,9 @@ func (m *FormModel) splitLayout() formLayout {
 	bodyHeight := max(1, m.height-2-len(header)-1-len(footerLines))
 	leftRows, splitSections, _ := scrollSplitPane(leftLines, leftSections, nil, m.sectionIndex+1, bodyHeight)
 	rightTarget := 0
+	if len(indices) == 0 && len(sectionContent) > 0 {
+		rightTarget = min(max(0, m.sectionOffset+1), len(rightRows)-1)
+	}
 	for row, field := range rightRowFields {
 		if field != m.selected {
 			continue

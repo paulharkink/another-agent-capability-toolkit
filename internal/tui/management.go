@@ -578,7 +578,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				return m.beginSetup(capability.Source, capability.Package, "", "")
 			}
 			target := selected.TargetDefs[m.management.TargetIndex]
-			return m.beginSetup(target.SourceID, target.PackageID, target.Environment, target.Name)
+			return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: target.SourceID, PackageID: target.PackageID, Environment: target.Environment, Target: target.Name}, "Overview")
 		}
 		if entries[i] == "Environment root" || entries[i] == "Edit environment root" {
 			m.management.Modal = ""

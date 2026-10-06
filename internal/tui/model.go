@@ -54,6 +54,7 @@ type Model struct {
 	registration               *registrationState
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
+	workspace                  *workspaceState
 	setupRetry                 *setupRetryDraft
 	setupInformation           bool
 	setupInfoOffset            int
@@ -95,6 +96,8 @@ type operationMsg struct {
 	origin, output string
 	err            error
 	failed         bool
+	step, target   string
+	result         *viewmodel.OperationResult
 }
 type settingsSavedMsg struct{ err error }
 
@@ -198,10 +201,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.form != nil {
+		if result, ok := msg.(operationMsg); ok {
+			return m, m.handleOperationResult(result)
+		}
 		if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "f3" && m.pendingSetup != nil {
+			if m.workspace != nil && m.workspace.Active {
+				m.workspace.Section = "Information"
+				m.form.SelectSection("Information")
+				m.form.FocusSection()
+				return m, nil
+			}
 			m.setupInformation = true
 			m.setupInfoOffset = 0
 			return m, nil
+		}
+		if back, ok := msg.(forms.BackMsg); ok && m.workspace != nil && m.workspace.Active {
+			m.workspace.cacheDraft(back.Draft)
+			m.workspace.Active = false
+			m.form = nil
+			m.pendingSetup = nil
+			m.pendingSetupField = ""
+			m.output = "Back · draft kept for this target"
+			return m, nil
+		}
+		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.form.SectionTitle() == "Overview" {
+			if handled, cmd := m.workspaceOverviewAction(key.String()); handled {
+				return m, cmd
+			}
 		}
 		if x, y, width, height, ok := m.setupOverlayBounds(); ok {
 			switch event := msg.(type) {
@@ -236,6 +262,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
 			m.pendingDefaultAgents = false
+			m.workspace = nil
 			m.output = "Cancelled"
 			return m, nil
 		}
@@ -317,7 +344,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name = msg.preview.Key.Package
 		}
 		title := "New setup · " + name
-		if msg.preview.Configured {
+		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
 			title = "Configure · " + name
 		}
 		if msg.preview.Key.Environment != "" && msg.preview.Key.Target != "" {
@@ -364,14 +391,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.management.ViewerHorizontal = 0
 		m.management.Modal = "viewer"
 	case operationMsg:
-		m.busy = false
-		m.view = msg.origin
-		if !m.setupOperationPending || (msg.err == nil && !msg.failed) {
-			m.setupRetry = nil
-		}
-		m.setupOperationPending = false
-		m.showOperationResult(msg)
-		return m, m.load()
+		return m, m.handleOperationResult(msg)
 	case settingsSavedMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -427,6 +447,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
+	m.busy = false
+	cancelOnly := errors.Is(msg.err, picker.ErrCancelled) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
+	if cancelOnly {
+		m.setupOperationPending = false
+		m.setupRetry = nil
+		m.output = strings.TrimSpace(msg.output)
+		m.result = nil
+		return m.load()
+	}
+	m.view = msg.origin
+	if !m.setupOperationPending || (msg.err == nil && !msg.failed) {
+		m.setupRetry = nil
+	}
+	m.setupOperationPending = false
+	if msg.err != nil && m.workspace != nil && m.workspace.Active && m.pending.action == "start" {
+		message := strings.ToLower(msg.err.Error())
+		if strings.Contains(message, "missing") || strings.Contains(message, "required") || strings.Contains(message, "not configured") {
+			section := "Connection"
+			if strings.Contains(message, "auth") || strings.Contains(message, "credential") || strings.Contains(message, "token") {
+				section = "Authentication"
+			}
+			m.workspace.Section = section
+			if m.form != nil {
+				m.form.SelectSection(section)
+				m.form.FocusSection()
+			}
+		}
+	}
+	m.showOperationResult(msg)
+	return m.load()
 }
 func (m *Model) navigate(view string) {
 	if view == "Help" && m.view != "Help" {
@@ -673,16 +726,24 @@ func (m *Model) cleanOutput(output string) string {
 }
 
 func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
-	if m.pendingSetup == nil || m.view != "Catalog" || m.width < 80 || m.height < 16 {
+	if m.pendingSetup == nil || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
 		return 0, 0, 0, 0, false
 	}
 	return 4, 4, m.width - 8, m.height - 6, true
 }
 
 func (m *Model) setupOverlayView() tea.View {
+	return m.setupOverlayViewContent(m.form.View().Content)
+}
+
+func (m *Model) setupOverlayViewContent(content string) tea.View {
 	x, y, width, height, _ := m.setupOverlayBounds()
-	base := strings.Split(m.homeView().Content, "\n")
-	overlay := strings.Split(m.form.View().Content, "\n")
+	baseView := m.homeView()
+	if isManagementView(m.view) {
+		baseView = m.managementView()
+	}
+	base := strings.Split(baseView.Content, "\n")
+	overlay := strings.Split(content, "\n")
 	for row := 0; row < height && row < len(overlay) && y+row < len(base); row++ {
 		line := base[y+row]
 		base[y+row] = ansi.Cut(line, 0, x) + fit(overlay[row], width) + ansi.Cut(line, x+width, m.width)
@@ -698,6 +759,16 @@ func (m *Model) View() tea.View {
 	}
 	if m.setupInformation {
 		return m.setupInformationView()
+	}
+	if m.registration != nil && m.form != nil && m.workspace != nil && m.workspace.Active {
+		parent := m.homeView()
+		if isManagementView(m.view) {
+			parent = m.managementView()
+		}
+		lines := m.registrationOverlay(strings.Split(parent.Content, "\n"))
+		v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
+		v.MouseMode = tea.MouseModeCellMotion
+		return v
 	}
 	if m.form == nil && (m.view == "Catalog" || m.width < 80 || m.height < 16) {
 		return m.homeView()

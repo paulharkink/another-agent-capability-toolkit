@@ -9,11 +9,29 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+type homeWorkspaceSetupBackend struct {
+	Backend
+	setup *setupBackendFixture
+}
+
+func (b *homeWorkspaceSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	b.setup.previewRequest = request
+	return viewmodel.SetupPreview{
+		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		PackageName: request.PackageID, Configured: true,
+	}, nil
+}
+
+func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstall(ctx, request)
+}
 
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
@@ -282,6 +300,7 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 }
 func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
 	m, _ := homeFixture()
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.View()
 	m.Update(tea.MouseClickMsg{X: 4, Y: 4, Button: tea.MouseLeft})
 	if strings.Contains(ansi.Strip(m.View().Content), "[x]") {
@@ -290,8 +309,11 @@ func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
 	id := m.home.Profiles.ID
-	press(m, tea.KeyF2, "")
-	press(m, tea.KeyEscape, "")
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil {
+		t.Fatal("F2 did not open the selected target workspace")
+	}
+	pressAndRun(m, tea.KeyEscape)
 	if m.home.Focus != ProfilesPane || m.home.Profiles.ID != id {
 		t.Fatal("modal changed origin")
 	}
@@ -326,57 +348,23 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 
 func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 	for _, ownership := range []string{"local", "foreign"} {
-		for _, input := range []string{"keyboard", "mouse"} {
-			t.Run(ownership+"/"+input, func(t *testing.T) {
-				m, msg := homeFixture()
-				msg.catalog[0].Skill = &catalog.Skill{Name: "companion"}
-				msg.mcps[0].Ownership = ownership
-				m.Update(msg)
-				m.selectContext(2)
-				press(m, tea.KeyF2, "")
-				index := -1
-				for i, entry := range m.menuEntries() {
-					if strings.Contains(entry, "Remove agent registrations") {
-						index = i
-						break
-					}
-				}
-				if index < 0 {
-					t.Fatal("remove registrations row missing")
-				}
-				m.home.Modal.Selected = index
-				var cmd tea.Cmd
-				if input == "keyboard" {
-					_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				} else {
-					m.View()
-					found := false
-					for _, hit := range m.home.Hits {
-						if hit.Control == "menu" && hit.Index == index {
-							found = true
-							_, cmd = m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
-							break
-						}
-					}
-					if !found {
-						t.Fatal("remove registrations menu hit region missing")
-					}
-				}
-				if cmd != nil || m.form != nil || m.busy || m.pending.action == "uninstall" {
-					t.Fatalf("registration removal dispatched or opened uninstall: form=%v busy=%v pending=%q", m.form != nil, m.busy, m.pending.action)
-				}
-				if m.home.Modal == nil || !strings.Contains(m.menuEntries()[index], "disabled") {
-					t.Fatal("registration removal must remain visibly disabled")
-				}
-				if !strings.Contains(m.output, "registration-only") {
-					t.Fatal("disabled action must explain missing registration-only service support")
-				}
-			})
-		}
+		t.Run(ownership, func(t *testing.T) {
+			m, backend := typedProfileFixture()
+			backend.snapshot.Profiles[1].Ownership = ownership
+			backend.snapshot.Profiles[1].RegisteredAgents = []string{"claude"}
+			m.Update(m.load()())
+			openRegistrationWorkspaceAction(t, m, true)
+			if m.registration == nil || !m.registration.Remove || m.busy || backend.request != nil || m.pending.action == "uninstall" {
+				t.Fatalf("focused removal opened a capability uninstall or dispatched early: registration=%+v busy=%v pending=%q", m.registration, m.busy, m.pending.action)
+			}
+			if strings.Contains(m.View().Content, "Uninstall capability") {
+				t.Fatal("focused removal offered capability uninstall")
+			}
+		})
 	}
 }
 
-func TestHomeMenusMatchApprovedCommands(t *testing.T) {
+func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyF9, "")
 	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Environments", "Settings", "Help", "Back"}) {
@@ -393,25 +381,31 @@ func TestHomeMenusMatchApprovedCommands(t *testing.T) {
 		}
 	}
 	m.selectContext(2)
-	press(m, tea.KeyF2, "")
-	got := strings.Join(m.menuEntries(), "\n")
-	for _, want := range []string{"Restart", "Stop", "Authenticate", "Edit parameters", "Configure agent registrations", "Remove agent registrations", "Check connection", "View logs", "View details", "Back"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("profile menu missing %q: %s", want, got)
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil || m.form.SectionTitle() != "Overview" {
+		t.Fatalf("F2 on a target did not open the shared Overview workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	}
+	for _, want := range []string{"Configure ·", "Overview", "Connection", "Authentication", "Agents", "Logs", "Information"} {
+		if !strings.Contains(ansi.Strip(m.View().Content), want) {
+			t.Fatalf("shared target workspace omitted %q:\n%s", want, ansi.Strip(m.View().Content))
 		}
 	}
 }
 
-func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
+func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
 	m.Update(msg)
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)
-	press(m, tea.KeyF2, "")
-	m.home.Modal.Selected = 0
-	press(m, tea.KeyEnter, "")
-	if m.home.Modal == nil || m.busy || !strings.Contains(m.output, "not locally owned") {
-		t.Fatalf("disabled start activated or hid reason: modal=%v busy=%t output=%q", m.home.Modal, m.busy, m.output)
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil {
+		t.Fatalf("F2 did not open the shared workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	}
+	handled, cmd := m.workspaceOverviewAction("s")
+	if !handled || cmd != nil || m.busy || !strings.Contains(strings.ToLower(m.output), "another installation") {
+		t.Fatalf("disabled Start activated or hid reason: handled=%t cmd=%v busy=%t output=%q", handled, cmd != nil, m.busy, m.output)
 	}
 }
 

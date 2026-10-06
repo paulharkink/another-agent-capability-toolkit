@@ -3,28 +3,17 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
-// The route is deliberately driven by keys: a profile belongs to a capability's
-// layer-2 list, and its actions are one layer deeper.
+// The route is deliberately driven by keys: the exact profile opens its target
+// workspace, then the visible registration action opens the paired editor.
 func openForeignRegistrationInteraction(t *testing.T) (*Model, *profileBackend) {
 	t.Helper()
-	m, b := typedProfileFixture()
-	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ { // details, saved profile, foreign profile
-		press(m, tea.KeyDown, "")
-	}
-	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Configure agent registrations") {
-		t.Fatalf("profile Enter did not open its action layer:\n%s", m.View().Content)
-	}
-	if item := m.homeMenuItems()[m.home.Modal.Selected]; item.Action != "registrations" {
-		t.Fatalf("first enabled action should configure registrations, got %q", item.Label)
-	}
-	press(m, tea.KeyEnter, "")
-	return m, b
+	return openRegistrationActionForUX(t)
 }
 
 func TestInteractionRegistrationEndpointIsOwnLayerThreeItem(t *testing.T) {
@@ -52,8 +41,8 @@ func TestInteractionRegistrationBackRestoresProfileActions(t *testing.T) {
 	m, b := openForeignRegistrationInteraction(t)
 	press(m, tea.KeyEscape, "")
 	view := m.View().Content
-	if !strings.Contains(view, "Configure agent registrations") || !strings.Contains(view, "View details") {
-		t.Fatalf("Esc did not restore the selected profile action layer:\n%s", view)
+	if m.registration != nil || m.workspace == nil || !m.workspace.Active || !strings.Contains(view, "Manage agent registrations") {
+		t.Fatalf("Esc did not restore the originating target workspace:\n%s", view)
 	}
 	if b.request != nil {
 		t.Fatal("Back applied a registration change")
@@ -72,8 +61,8 @@ func TestInteractionRegistrationEscapeWalksRightThenLeft(t *testing.T) {
 		t.Fatal("Esc from detail did not return to its selected agent row")
 	}
 	press(m, tea.KeyEscape, "")
-	if m.registration != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("second Esc did not restore the parent action menu")
+	if m.registration != nil || m.workspace == nil || !m.workspace.Active {
+		t.Fatal("second Esc did not restore the target workspace")
 	}
 }
 
@@ -159,27 +148,42 @@ func TestInteractionRegistrationActionsAreKeyboardReachable(t *testing.T) {
 	press(m, tea.KeyTab, "")   // Detail.
 	press(m, tea.KeyTab, "")   // Fixed action bar.
 	press(m, tea.KeyEnter, "") // Cancel, the first action.
-	if m.registration != nil || b.request != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("Tab/Enter did not activate Cancel and restore profile actions")
+	if m.registration != nil || b.request != nil || m.workspace == nil || !m.workspace.Active {
+		t.Fatal("Tab/Enter did not activate Cancel and restore the target workspace")
 	}
 }
 
-func TestInteractionProfileDetailsBackRestoresActions(t *testing.T) {
+func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testing.T) {
 	m, _ := typedProfileFixture()
-	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ {
-		press(m, tea.KeyDown, "")
+	profile := &m.backend.(*profileBackend).snapshot.Profiles[1]
+	profile.RuntimeStatus = "conflict"
+	profile.LocalLastAction = "stop"
+	profile.LocalLastActionAt = time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	profile.ObservedAt = time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+	profile.RegistrationDisabledReason = "Multiple runtime endpoints"
+	m.Update(m.load()())
+	base := m.backend.(*profileBackend)
+	m.backend = &registrationWorkspaceBackend{Backend: base, profileBackend: base, setupBackendFixture: &setupBackendFixture{}}
+	m.selectPane(ProfilesPane, 1)
+	_, open := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if open == nil {
+		t.Fatal("selected profile did not open its target workspace")
 	}
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnd, "") // Back.
-	press(m, tea.KeyUp, "")  // View details.
-	press(m, tea.KeyEnter, "")
-	if m.home.Modal == nil || m.home.Modal.Kind != "details" {
-		t.Fatalf("profile details did not open:\n%s", m.View().Content)
+	m.Update(open())
+	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	view := m.View().Content
+	for _, want := range []string{"Endpoint URI: http://127.0.0.1:8765/mcp", "Live runtime status: conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("workspace Information omitted %q:\n%s", want, view)
+		}
 	}
-	press(m, tea.KeyEscape, "")
-	if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatalf("Esc from profile details skipped its parent action layer:\n%s", m.View().Content)
+	_, back := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if back == nil {
+		t.Fatal("Escape from workspace Information did not dispatch parent Back")
+	}
+	m.Update(back())
+	if m.workspace == nil || m.workspace.Active || m.workspace.Key != profile.Key || m.form != nil || m.home.Context.ID == "" {
+		t.Fatalf("Back from profile Information did not restore its exact parent selection:\n%s", m.View().Content)
 	}
 }
 
@@ -202,36 +206,32 @@ func TestInteractionUnknownOwnerStillOffersDiagnosisAndLocalRegistration(t *test
 	m, b := typedProfileFixture()
 	b.snapshot.Profiles[1].Ownership = "unknown"
 	m.Update(m.load()())
-	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ {
-		press(m, tea.KeyDown, "")
-	}
-	press(m, tea.KeyEnter, "")
-	items := m.homeMenuItems()
-	refresh := -1
-	for i, item := range items {
-		if item.Action == "refresh" {
-			refresh = i
-		}
-		if item.Action == "registrations" || item.Action == "check-connection" {
-			if item.Reason != "" {
-				t.Fatalf("unknown runtime owner blocked local diagnosis %q: %s", item.Action, item.Reason)
-			}
-		}
-	}
-	if refresh < 0 {
-		t.Fatalf("unknown-owner actions offer no Refresh observation: %#v", items)
-	}
-	for m.home.Modal.Selected < refresh {
-		press(m, tea.KeyDown, "")
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	setup := &workspaceRouteBackend{}
+	m.backend = profileWorkspaceBackend{profileBackend: b, workspaceRouteBackend: setup}
+	key := b.snapshot.Profiles[1].Key
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
 	if cmd == nil {
-		t.Fatal("Refresh observation action did not request a new snapshot")
+		t.Fatal("unknown-owner target did not load its Overview")
 	}
 	m.Update(cmd())
-	if m.home.Modal != nil {
-		t.Fatal("Refresh left a stale profile action menu covering the observation")
+	if m.workspace == nil || m.workspace.Profile == nil || m.workspace.Profile.Ownership != "unknown" {
+		t.Fatalf("Overview lost the unknown ownership observation: %+v", m.workspace)
+	}
+	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Profile: &b.snapshot.Profiles[1], Status: "foreign"}
+	for _, action := range []string{"registrations", "check-connection"} {
+		if reason := m.profileActionReason(row, action); reason != "" {
+			t.Fatalf("unknown owner blocked local diagnosis %q: %s", action, reason)
+		}
+	}
+	startReason := m.profileActionReason(row, "s")
+	if startReason == "" {
+		t.Fatal("unknown owner unexpectedly permits Start")
+	}
+	if handled, cmd := m.workspaceOverviewAction("s"); !handled || cmd != nil || !strings.Contains(m.output, startReason) {
+		t.Fatalf("unknown-owner Start was available or lost its reason: handled=%t cmd=%v output=%q", handled, cmd != nil, m.output)
+	}
+	if handled, _ := m.workspaceOverviewAction("g"); !handled || m.registration == nil || m.registration.Profile.Key != key {
+		t.Fatalf("unknown-owner Overview did not offer local agent registration: handled=%t registration=%+v", handled, m.registration)
 	}
 }
 

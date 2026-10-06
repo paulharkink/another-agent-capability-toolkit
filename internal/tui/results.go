@@ -50,11 +50,20 @@ func (m *Model) editResultAnswers() {
 	m.openSetupFormWithValues(draft.preview, draft.values)
 }
 
+func resultBodyWidth(viewportWidth int) int {
+	width := min(70, viewportWidth-8)
+	if viewportWidth >= 80 {
+		width = viewportWidth - 8
+	}
+	return max(1, width-4)
+}
+
 func (m *Model) resultVisibleRows() int {
 	if m.height < 16 {
 		return max(1, m.height-6)
 	}
-	dialogHeight := min(m.height-4, max(9, min(15, len(m.result.Rows)+6)))
+	visualRows := wrapResultRows(m.result.Rows, resultBodyWidth(m.width))
+	dialogHeight := min(m.height-4, max(9, min(15, len(visualRows)+6)))
 	return max(1, dialogHeight-6)
 }
 
@@ -63,7 +72,7 @@ func (m *Model) resultKey(stroke string) tea.Cmd {
 	if r == nil {
 		return nil
 	}
-	limit := max(0, len(r.Rows)-m.resultVisibleRows())
+	limit := max(0, len(wrapResultRows(r.Rows, resultBodyWidth(m.width)))-m.resultVisibleRows())
 	switch stroke {
 	case "f10", "ctrl+c":
 		return tea.Quit
@@ -111,7 +120,7 @@ func (m *Model) resultMouse(msg tea.MouseMsg) tea.Cmd {
 		if mouse.Button == tea.MouseWheelUp {
 			r.Offset = max(0, r.Offset-1)
 		} else if mouse.Button == tea.MouseWheelDown {
-			r.Offset = min(max(0, len(r.Rows)-m.resultVisibleRows()), r.Offset+1)
+			r.Offset = min(max(0, len(wrapResultRows(r.Rows, resultBodyWidth(m.width)))-m.resultVisibleRows()), r.Offset+1)
 		}
 		return nil
 	}
@@ -148,11 +157,16 @@ func (m *Model) resultView() tea.View {
 	// through around the dialog.
 	width, height := m.width, m.height
 	dialogWidth := min(70, width-8)
-	dialogHeight := min(height-4, max(9, min(15, len(m.result.Rows)+6)))
+	if width >= 80 {
+		dialogWidth = width - 8
+	}
+	bodyWidth := max(1, dialogWidth-4)
+	visualRows := wrapResultRows(m.result.Rows, bodyWidth)
+	dialogHeight := min(height-4, max(9, min(15, len(visualRows)+6)))
 	x, y := (width-dialogWidth)/2, (height-dialogHeight)/2
-	bodyRows := m.resultVisibleRows()
+	bodyRows := max(1, dialogHeight-6)
 	r := m.result
-	r.Offset = min(r.Offset, max(0, len(r.Rows)-bodyRows))
+	r.Offset = min(r.Offset, max(0, len(visualRows)-bodyRows))
 
 	const (
 		overlayBG = "\x1b[48;2;6;22;74m"
@@ -189,8 +203,8 @@ func (m *Model) resultView() tea.View {
 	box[2] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
 	for i := 0; i < bodyRows; i++ {
 		text := ""
-		if index := r.Offset + i; index < len(r.Rows) {
-			text = ansi.Cut(r.Rows[index], r.Column, r.Column+dialogWidth-3)
+		if index := r.Offset + i; index < len(visualRows) {
+			text = ansi.Cut(visualRows[index], r.Column, r.Column+dialogWidth-3)
 		}
 		rowFG := statusFG
 		if i > 0 {
@@ -200,7 +214,10 @@ func (m *Model) resultView() tea.View {
 		box[3+i] = rowFG + box[3+i]
 	}
 	box[dialogHeight-3] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
-	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · ←→ Pan · %d-%d/%d", min(r.Offset+1, len(r.Rows)), min(r.Offset+bodyRows, len(r.Rows)), len(r.Rows))
+	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · ←→ Pan · %d-%d/%d", min(r.Offset+1, len(visualRows)), min(r.Offset+bodyRows, len(visualRows)), len(visualRows))
+	if len(visualRows) > bodyRows {
+		footer = strings.Replace(footer, "Back", "↑ above · ↓ below · Back", 1)
+	}
 	if m.canEditResultAnswers() {
 		if r.ActionIndex == 0 {
 			footer = "> Edit answers [Enter/E]   Back [Tab/ Esc] · ↑↓ Scroll · ←→ Pan"

@@ -34,6 +34,14 @@ func setupKey(m *Model, code rune, text string) tea.Cmd {
 	return cmd
 }
 
+func enableWorkspaceBackForTest(m *Model) {
+	if m.pendingSetup == nil || m.form == nil {
+		return
+	}
+	m.workspace = &workspaceState{Key: m.pendingSetup.Key, InvokingView: m.view, Active: true}
+	m.form.SetBackNavigation(true)
+}
+
 func TestInteractionSetupUsesSectionListAndMatchingDetailsPane(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	view := m.View().Content
@@ -110,14 +118,22 @@ func TestInteractionSetupTabActionCancelAndEscBack(t *testing.T) {
 		t.Fatal("Enter on Cancel did not close the form without applying")
 	}
 	m, backend = openSetupInteraction(t)
+	enableWorkspaceBackForTest(m)
 	setupKey(m, tea.KeyRight, "")
-	setupKey(m, tea.KeyEscape, "")
+	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
+		m.Update(cmd())
+	}
 	if m.form == nil || !strings.Contains(m.View().Content, "[Sections]") {
 		t.Fatalf("Esc from details should return to the section list:\n%s", m.View().Content)
 	}
-	setupKey(m, tea.KeyEscape, "")
-	if m.form != nil || backend.installRequest != nil {
-		t.Fatal("Esc from the section list should cancel without applying")
+	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
+		m.Update(cmd())
+	}
+	if m.form != nil || backend.installRequest != nil || m.workspace == nil || m.workspace.Active {
+		t.Fatal("Esc from the section list should return to the parent without applying")
+	}
+	if len(m.workspace.cachedDraft()) == 0 {
+		t.Fatal("Back from the section list discarded the target draft")
 	}
 }
 
@@ -145,12 +161,18 @@ func TestInteractionSetupShowsDatabaseAndNamedMCPDestinationsInRightPane(t *test
 
 func TestInteractionSetupEscapeCancelsWithoutApplying(t *testing.T) {
 	m, backend := openSetupInteraction(t)
-	setupKey(m, tea.KeyEscape, "")
-	if m.form != nil {
-		t.Fatalf("Esc from the section list should close the setup form: %s", m.View().Content)
+	enableWorkspaceBackForTest(m)
+	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
+		m.Update(cmd())
+	}
+	if m.form != nil || m.workspace == nil || m.workspace.Active {
+		t.Fatalf("Esc from the section list should return to the parent: %s", m.View().Content)
 	}
 	if backend.installRequest != nil {
 		t.Fatalf("Esc applied setup changes: %+v", backend.installRequest)
+	}
+	if len(m.workspace.cachedDraft()) == 0 {
+		t.Fatal("Esc from the section list discarded the target draft")
 	}
 }
 

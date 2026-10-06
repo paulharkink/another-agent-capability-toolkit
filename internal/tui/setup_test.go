@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -20,6 +21,34 @@ type setupBackendFixture struct {
 	extraInputs    []viewmodel.SetupInput
 	installResult  *viewmodel.OperationResult
 	installErr     error
+}
+
+func TestSetupFailureBeforeLaterCancellationRemainsForeground(t *testing.T) {
+	failure := errors.New("claude registration failed")
+	b := &setupBackendFixture{
+		installResult: &viewmodel.OperationResult{
+			Saved: true, Message: "Registration update completed with errors", Step: "registration", Target: "plain / dev / prod",
+			Changes: []state.Installation{{AgentID: "codex", Component: "mcp"}}, Errors: []string{failure.Error()},
+		},
+		installErr: errors.Join(failure, picker.ErrCancelled),
+	}
+	m := NewContext(context.Background(), b)
+	m.pendingSetup = &viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "prod"}}
+	m.pendingSetupField = "__aact_destinations"
+	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex", "claude"}})
+	if cmd == nil {
+		t.Fatal("mixed registration operation was not submitted")
+	}
+	m.Update(cmd())
+	if m.result == nil || !m.result.Failed {
+		t.Fatalf("earlier failure was hidden by later cancellation: output=%q result=%+v", m.output, m.result)
+	}
+	joined := strings.Join(m.result.Rows, "\n")
+	for _, want := range []string{"Inputs saved", "codex: mcp configured", "Step: registration", "Target: plain / dev / prod", failure.Error()} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("foreground result omitted %q: %s", want, joined)
+		}
+	}
 }
 
 // setupSection selects a section from the L3 navigation list and opens its
@@ -73,7 +102,7 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 		t.Fatal("setup form did not save")
 	}
 	m.Update(cmd())
-	if b.installRequest == nil || b.installRequest.Inputs["destination"] != "/output" || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) {
+	if b.installRequest == nil || b.installRequest.Inputs["destination"] != "/output" || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) || b.installRequest.ExternalURL != "" {
 		t.Fatalf("package destination collided with installer destination field: %+v", b.installRequest)
 	}
 }
@@ -102,6 +131,41 @@ func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	m.Update(cmd())
 	if !strings.Contains(m.output, "Inputs saved") || !strings.Contains(m.output, "port 9000 is already allocated") || strings.Contains(m.output, "configured") {
 		t.Fatalf("result hid save/apply distinction: %q", m.output)
+	}
+}
+
+func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T) {
+	for _, owner := range []string{"other-aact", "unknown"} {
+		t.Run(owner, func(t *testing.T) {
+			m, profiles := typedProfileFixture()
+			profiles.snapshot.Profiles[1].Ownership = owner
+			m.Update(m.load()())
+			backend := &registrationWorkspaceBackend{Backend: profiles, profileBackend: profiles, setupBackendFixture: &setupBackendFixture{}}
+			m.backend = backend
+			m.focusPane(ProfilesPane)
+			foreignKey := profiles.snapshot.Profiles[1].Key
+			m.selectPane(ProfilesPane, 1)
+			_, open := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if open == nil {
+				t.Fatal("selected foreign profile did not open its target workspace")
+			}
+			m.Update(open())
+			if m.workspace == nil || m.workspace.Key != foreignKey || m.workspace.Profile == nil || m.workspace.Profile.URL != "http://127.0.0.1:8765/mcp" {
+				t.Fatalf("explicitly selected foreign target facts changed: %+v", m.workspace)
+			}
+			setupSection(m, 4)
+			press(m, tea.KeyRight, "")
+			press(m, tea.KeySpace, " ")
+			_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if save == nil {
+				t.Fatal("foreign workspace Save did not submit named agent registrations")
+			}
+			m.Update(save())
+			request := backend.installRequest
+			if request == nil || request.SetupRequest.Target != foreignKey.Target || request.ExternalURL != "http://127.0.0.1:8765/mcp" || !containsString(request.DestinationIDs, "codex") {
+				t.Fatalf("Save did not forward the selected foreign endpoint and destinations: %+v", request)
+			}
+		})
 	}
 }
 
@@ -220,26 +284,26 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 	m.catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "company", Target: "production"}, RuntimeStatus: "never-started", Ownership: "local"}}}
 	m.reconcileHome()
-	press(m, tea.KeyEnter, "")
-	m.selectContext(m.home.Profiles.Index + 2)
-	press(m, tea.KeyEnter, "")
-	parameters := ""
-	for _, entry := range m.menuEntries() {
-		if strings.HasPrefix(entry, "Edit parameters") {
-			parameters = entry
+	m.focusPane(ProfilesPane)
+	key := m.profileSnapshot.Profiles[0].Key
+	for index, row := range m.contextRows() {
+		if row.Kind == "profile" && row.Key == key {
+			m.selectContext(index)
 			break
 		}
 	}
-	if parameters == "" || strings.Contains(parameters, "disabled") {
-		t.Fatalf("managed profile parameters unavailable: %v", m.menuEntries())
-	}
 	cmd := m.homeOperation("parameters")
 	if cmd == nil || !m.busy {
-		t.Fatal("Parameters did not request the setup form")
+		t.Fatal("Edit parameters did not request the shared workspace")
 	}
 	m.Update(cmd())
-	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "company", Target: "production"}) || m.form == nil {
-		t.Fatalf("wrong profile target or missing form: %+v form=%v", b.previewRequest, m.form)
+	if b.previewRequest != (viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}) || m.form == nil || m.form.SectionTitle() != "Connection" {
+		t.Fatalf("wrong profile target or missing shared editor: %+v section=%q form=%v", b.previewRequest, func() string {
+			if m.form == nil {
+				return ""
+			}
+			return m.form.SectionTitle()
+		}(), m.form != nil)
 	}
 }
 

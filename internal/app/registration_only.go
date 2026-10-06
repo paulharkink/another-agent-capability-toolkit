@@ -17,6 +17,10 @@ type RegistrationRequest struct {
 	URL       string
 	Transport string
 	Agents    []agents.Environment
+
+	// preserve contains existing ineligible MCP entries carried through UI
+	// desired-state updates without rewriting their config or endpoint.
+	preserve []agents.Environment
 }
 
 func (s *Service) registrationTimeoutForKey(key state.Key) int {
@@ -47,13 +51,20 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 		}
 		desired[env.ID+"\x00"+env.ConfigPath] = env
 	}
+	preserved := make(map[string]bool, len(q.preserve))
+	for _, env := range q.preserve {
+		if env.ID != "" && env.ConfigPath != "" {
+			preserved[env.ID+"\x00"+env.ConfigPath] = true
+		}
+	}
 	err = s.Store.WithLock(ctx, func() error {
 		rows, err := s.Store.Installations()
 		if err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if row.Key != q.Key || row.Component != "mcp" || desired[row.AgentID+"\x00"+row.Destination].ID != "" {
+			registrationKey := row.AgentID + "\x00" + row.Destination
+			if row.Key != q.Key || row.Component != "mcp" || desired[registrationKey].ID != "" || preserved[registrationKey] {
 				continue
 			}
 			if err := ctx.Err(); err != nil {
@@ -140,6 +151,81 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 		}
 		return nil
 	})
+	return out, err
+}
+
+// removeUIRegistrations removes only selected, currently recorded MCP entries.
+// It is separate from desired-state reconciliation because removal must not
+// require or observe the external endpoint and must preserve every other row.
+func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, agentIDs []string) (out Result, err error) {
+	out.Changes = []state.Installation{}
+	out.Errors = []string{}
+	if key.Source == "" || key.Package == "" {
+		return out, invalid(errors.New("MCP source and package are required"))
+	}
+	selected := make(map[string]bool, len(agentIDs))
+	for _, id := range agentIDs {
+		if id != "" {
+			selected[id] = true
+		}
+	}
+	if len(selected) == 0 {
+		return out, invalid(errors.New("select at least one recorded MCP registration to remove"))
+	}
+	err = s.Store.WithLock(ctx, func() error {
+		rows, readErr := s.Store.Installations()
+		if readErr != nil {
+			return readErr
+		}
+		matched := make(map[string]bool, len(selected))
+		for _, row := range rows {
+			if row.Key != key || row.Component != "mcp" || !selected[row.AgentID] {
+				continue
+			}
+			matched[row.AgentID] = true
+			if contextErr := ctx.Err(); contextErr != nil {
+				return contextErr
+			}
+			kind := row.AgentKind
+			if kind == "" {
+				kind, _, _ = strings.Cut(row.AgentID, ":")
+			}
+			env := agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination}
+			env = s.ownedEnvironment(env, rows)
+			adapter, adapterErr := agents.For(env.Kind, s.Options.Runner)
+			var files []registrationFile
+			if adapterErr == nil {
+				files, adapterErr = snapshotRegistration(env)
+			}
+			if adapterErr == nil {
+				adapterErr = adapter.Unregister(ctx, env, row.RegistrationName)
+			}
+			if adapterErr == nil {
+				adapterErr = s.removeRegistration(row)
+			}
+			if adapterErr != nil {
+				adapterErr = errors.Join(adapterErr, restoreRegistration(files))
+				out.Errors = append(out.Errors, row.AgentID+": "+adapterErr.Error())
+				continue
+			}
+			out.Changes = append(out.Changes, row)
+		}
+		for id := range selected {
+			if !matched[id] {
+				out.Errors = append(out.Errors, id+": no recorded local MCP registration was found")
+			}
+		}
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("registration removal failed: %s", strings.Join(out.Errors, "; "))
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && len(out.Errors) == 0 {
+		out.Errors = append(out.Errors, err.Error())
+	}
+	if err == nil {
+		out.Message = "Selected local MCP registrations removed"
+	}
 	return out, err
 }
 

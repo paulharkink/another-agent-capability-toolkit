@@ -7,11 +7,21 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"strings"
 	"testing"
 )
 
 type fixtureBackend struct{}
+
+type modelWorkspaceBackend struct{ *setupBackendFixture }
+
+func (b *modelWorkspaceBackend) UISetupPreview(ctx context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	preview, err := b.setupBackendFixture.UISetupPreview(ctx, request)
+	preview.Key = state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
+	preview.PackageName = "Inspector"
+	return preview, err
+}
 
 func (fixtureBackend) UICatalog(context.Context) ([]catalog.Package, error) {
 	return []catalog.Package{{ID: "plain", Name: "Plain", Dir: "/catalog/plain", Skill: &catalog.Skill{Name: "plain"}}}, nil
@@ -69,16 +79,24 @@ func TestGlobalInventoryShowsSourceLabels(t *testing.T) {
 }
 func TestMCPStatusAuthLogsActions(t *testing.T) {
 	m := fixtureModel(t)
+	m.backend = &modelWorkspaceBackend{setupBackendFixture: &setupBackendFixture{}}
 	focusFixtureProfile(m)
 	m.focusPane(CapabilitiesPane)
 	press(m, tea.KeyEnter, "")
 	m.selectContext(m.home.Profiles.Index + 2)
-	press(m, tea.KeyEnter, "")
+	_, open := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if open == nil {
+		t.Fatal("selected MCP target did not open its workspace")
+	}
+	m.Update(open())
 	text := m.View().Content
-	for _, part := range []string{"Restart", "Stop", "Authenticate", "View logs"} {
+	for _, part := range []string{"MCP runtime: running", "Endpoint: http://127.0.0.1:8765/mcp", "Authentication", "Logs", "Information"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("missing %s: %s", part, text)
 		}
+	}
+	if m.workspace == nil || m.workspace.Key.Target != "production" || m.form == nil || m.form.SectionTitle() != "Overview" {
+		t.Fatalf("MCP status workspace lost the selected target: workspace=%+v form=%v", m.workspace, m.form != nil)
 	}
 }
 func TestCancelledFormDoesNotInstall(t *testing.T) {

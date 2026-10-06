@@ -439,8 +439,6 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 	case "f2":
 		if m.home.Focus == CapabilitiesPane {
 			m.focusPane(ProfilesPane)
-		} else if row, ok := m.selectedContextRow(); ok && row.Kind == "profile" {
-			m.openHomeMenu("actions")
 		} else {
 			return m.openContextRow()
 		}
@@ -487,9 +485,9 @@ func (m *Model) openContextRow() tea.Cmd {
 	case "details":
 		m.home.Modal = &modalState{Kind: "details"}
 	case "profile":
-		m.openHomeMenu("actions")
+		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
 	case "target":
-		return m.beginSetup(row.Key.Source, row.Key.Package, row.Key.Environment, row.Key.Target)
+		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
 	}
 	return nil
 }
@@ -717,7 +715,10 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 					m.output = reason
 					return nil
 				}
-				return m.beginSetup(p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target)
+				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Connection")
+			}
+			if action == "a" {
+				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Authentication")
 			}
 			actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
 			kind := actions[action]

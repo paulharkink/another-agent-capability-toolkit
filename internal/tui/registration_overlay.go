@@ -31,13 +31,16 @@ type registrationState struct {
 }
 
 func (r *registrationState) agentStart() int {
+	if r.Remove {
+		return 0
+	}
 	if r.NeedsTransport {
 		return 2
 	}
 	return 1
 }
 
-func (r *registrationState) lastRow() int { return r.agentStart() + len(r.Agents) - 1 }
+func (r *registrationState) lastRow() int { return max(0, r.agentStart()+len(r.Agents)-1) }
 
 func (r *registrationState) selectedAgent() (string, bool) {
 	i := r.Row - r.agentStart()
@@ -82,7 +85,15 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 	rows := make([]string, 0, len(m.agents))
 	seen := map[string]bool{}
 	add := func(id string) {
-		if id == "" || strings.EqualFold(id, "all") || seen[id] {
+		kind, _, _ := strings.Cut(id, ":")
+		if id == "" || strings.EqualFold(id, "all") || strings.EqualFold(kind, "generic") || strings.EqualFold(kind, "generic-mcp") || seen[id] {
+			return
+		}
+		rows = append(rows, id)
+		seen[id] = true
+	}
+	addRecorded := func(id string) {
+		if strings.TrimSpace(id) == "" || seen[id] {
 			return
 		}
 		rows = append(rows, id)
@@ -90,7 +101,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 	}
 	if removing {
 		for _, id := range p.Profile.RegisteredAgents {
-			add(id)
+			addRecorded(id)
 		}
 	} else {
 		for _, id := range m.agents {
@@ -106,7 +117,11 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 			marked[id] = true
 		}
 	}
-	m.registration = &registrationState{Profile: p, Agents: rows, Marked: marked, Remove: removing, NeedsTransport: p.Profile.Transport == "", Transport: p.Profile.Transport, Message: "Not checked in this session"}
+	message := "Not checked in this session"
+	if removing {
+		message = ""
+	}
+	m.registration = &registrationState{Profile: p, Agents: rows, Marked: marked, Remove: removing, NeedsTransport: p.Profile.Transport == "", Transport: p.Profile.Transport, Message: message}
 }
 
 func (m *Model) registrationKey(stroke string) tea.Cmd {
@@ -178,7 +193,12 @@ func (m *Model) registrationKey(stroke string) tea.Cmd {
 			r.Area = 1
 		} else if r.Area == 1 {
 			if r.Row == 0 {
-				return m.checkRegistrationEndpoint()
+				if !r.Remove {
+					return m.checkRegistrationEndpoint()
+				}
+				if id, ok := r.selectedAgent(); ok {
+					r.Marked[id] = !r.Marked[id]
+				}
 			}
 			if r.onTransport() {
 				r.selectTransport()
@@ -213,7 +233,7 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 	if r == nil {
 		return nil
 	}
-	if r.Transport == "" {
+	if !r.Remove && r.Transport == "" {
 		r.Message = "Select an MCP transport before applying registrations."
 		return nil
 	}
@@ -229,15 +249,7 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 			r.Message = "No registrations selected for removal"
 			return nil
 		}
-		removed := map[string]bool{}
-		for _, id := range selected {
-			removed[id] = true
-		}
-		for _, id := range r.Profile.Profile.RegisteredAgents {
-			if !removed[id] {
-				request.AgentIDs = append(request.AgentIDs, id)
-			}
-		}
+		request.RemoveAgentIDs = selected
 	} else {
 		request.AgentIDs = selected
 	}
@@ -252,6 +264,10 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	}
 	w := min(m.width-8, 100)
 	h := min(m.height-6, 18)
+	if r.Remove {
+		w = min(m.width-8, 78)
+		h = min(m.height-8, max(10, len(r.Agents)+7))
+	}
 	x, y := (m.width-w)/2, max(4, (len(lines)-h)/2)
 	if y+h > len(lines) {
 		y = len(lines) - h
@@ -267,8 +283,11 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	if r.Row >= r.Offset+visible {
 		r.Offset = r.Row - visible + 1
 	}
-	rows := []string{"Endpoint URI"}
-	if r.NeedsTransport {
+	rows := []string{}
+	if !r.Remove {
+		rows = append(rows, "Endpoint URI")
+	}
+	if r.NeedsTransport && !r.Remove {
 		choice := "Select MCP transport"
 		if r.Transport != "" {
 			choice = r.Transport
@@ -282,15 +301,25 @@ func (m *Model) registrationOverlay(lines []string) []string {
 		}
 		rows = append(rows, mark+" "+m.registrationAgentName(id))
 	}
-	leftTitle := "Endpoint and agents"
+	leftTitle := "Named agents"
+	if !r.Remove {
+		leftTitle = "Endpoint and agents"
+	}
 	if r.Remove {
-		leftTitle = "Endpoint and removals"
+		leftTitle = "Registrations to remove"
 	}
 	if r.Area == 0 {
 		leftTitle = "► " + leftTitle
 	}
 	rightTitle, details := "Endpoint", []string{"Endpoint URI", r.Profile.URL, "Check connection", "Last check: " + r.Message}
-	if !r.Check.CheckedAt.IsZero() {
+	if r.Remove {
+		rightTitle = "Removal effect"
+		details = []string{"Only selected local agent files and ledger entries are removed", "The MCP endpoint is left running"}
+		if r.Message != "" {
+			details = append([]string{r.Message}, details...)
+		}
+	}
+	if !r.Remove && !r.Check.CheckedAt.IsZero() {
 		result := "unreachable"
 		if r.Check.Reachable {
 			result = "reachable"
@@ -300,7 +329,7 @@ func (m *Model) registrationOverlay(lines []string) []string {
 			details = append(details, r.Check.Error)
 		}
 	}
-	if r.onTransport() {
+	if !r.Remove && r.onTransport() {
 		rightTitle = "Transport"
 		first, second := "[ ]", "[ ]"
 		if r.Transport == "streamable-http" {
@@ -312,11 +341,14 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	} else if id, ok := r.selectedAgent(); ok {
 		rightTitle = m.registrationAgentName(id)
 		config, detection, note := "Adapter lookup", "Not detected", ""
+		effective, home := "", ""
 		for _, agent := range m.agentManagement {
 			if agent.ID == id {
 				detection = agent.Detection
 				note = agent.Note
-				if len(agent.ConfigFiles) > 0 {
+				config = agent.WriteConfigPath
+				effective, home = agent.EffectiveConfigPath, agent.Home
+				if config == "" && len(agent.ConfigFiles) > 0 {
 					config = agent.ConfigFiles[0].Path
 				}
 				break
@@ -330,7 +362,22 @@ func (m *Model) registrationOverlay(lines []string) []string {
 		if r.Remove {
 			verb = "Remove this registration from "
 		}
-		details = []string{"Agent detection: " + detection, "Config file: " + config, "Planned effect: local MCP registration", mark + " " + verb + m.registrationAgentName(id)}
+		details = []string{"Agent detection: " + detection, "Config file to change: " + config, "Planned effect: local MCP registration", "Desired registration: " + mark + " " + verb + m.registrationAgentName(id)}
+		if effective != "" && effective != config {
+			details = append(details, "Effective config: "+effective)
+		}
+		if home != "" {
+			details = append(details, "Agent home: "+home)
+		}
+		registered := false
+		for _, registeredID := range r.Profile.Profile.RegisteredAgents {
+			registered = registered || registeredID == id
+		}
+		achieved := "not registered"
+		if registered {
+			achieved = "registered"
+		}
+		details = append(details, "Achieved registration: "+achieved)
 		if note != "" {
 			details = append(details, wrapRegistrationNote(note, rightW-3)...)
 		}
@@ -365,13 +412,20 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	if r.Offset > 0 {
 		cue += " · ↑ More above"
 	}
-	box = append(box, "├"+strings.Repeat("─", leftW)+"┴"+strings.Repeat("─", rightW)+"┤", "│"+fit(cue+" · Tab areas · Ctrl-S Apply · Esc Back", w-2)+"│")
-	actions := " Cancel    Apply changes "
+	shortcut := "Ctrl-S Save"
+	if r.Remove {
+		shortcut = "Ctrl-S Remove selected registrations"
+	}
+	box = append(box, "├"+strings.Repeat("─", leftW)+"┴"+strings.Repeat("─", rightW)+"┤", "│"+fit(cue+" · Tab areas · "+shortcut+" · Esc Back", w-2)+"│")
+	actions := " Cancel    Save "
+	if r.Remove {
+		actions = " Cancel    Remove selected registrations "
+	}
 	if r.Area == 2 {
 		if r.Action == 0 {
-			actions = " [Cancel]   Apply changes "
+			actions = " [Cancel]   " + strings.TrimSpace(strings.TrimPrefix(actions, " Cancel   "))
 		} else {
-			actions = " Cancel   [Apply changes] "
+			actions = " Cancel   [" + strings.TrimSpace(strings.TrimPrefix(actions, " Cancel   ")) + "]"
 		}
 	}
 	box = append(box, "│"+fit(actions, w-2)+"│", "└"+strings.Repeat("─", w-2)+"┘")

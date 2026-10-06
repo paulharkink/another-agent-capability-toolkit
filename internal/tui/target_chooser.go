@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
@@ -56,43 +57,7 @@ func (m *Model) targetChooserItems() []homeMenuItem {
 func (m *Model) setupInformationView() tea.View {
 	width := max(40, m.width)
 	height := max(12, m.height)
-	inner := max(20, width-4)
-	lines := []string{
-		"Capability: " + m.pendingSetup.PackageName + " · Source: " + m.pendingSetup.Key.Source,
-		"Environment: " + m.pendingSetup.Key.Environment + " · Target: " + m.pendingSetup.Key.Target,
-		"Exact TOML: " + m.pendingSetup.TargetPath,
-		"Source checkout: " + m.pendingSetup.SourceRoot,
-	}
-	if m.pendingSetup.TargetPath == "" {
-		lines[2] = "Exact TOML: no environment preset is selected"
-	}
-	for _, destination := range m.pendingSetup.Destinations {
-		if destination.ConfigPath != "" {
-			lines = append(lines, fmt.Sprintf("Destination %s config: %s", destination.ID, destination.ConfigPath))
-		}
-		if destination.SkillsPath != "" {
-			lines = append(lines, fmt.Sprintf("Destination %s skills: %s", destination.ID, destination.SkillsPath))
-		}
-	}
-	lines = append(lines, "Resolved inputs and value origins")
-	for _, input := range m.pendingSetup.Inputs {
-		if !input.HasValue {
-			continue
-		}
-		label := input.Definition.Label
-		if label == "" {
-			label = input.Definition.Name
-		}
-		lines = append(lines, splitDisplayLine(fmt.Sprintf("%s: %v · from %s · %s", label, input.Value, input.Provenance, input.ProvenancePath), inner)...)
-	}
-	if m.pendingSetup.TargetTOML != "" {
-		lines = append(lines, "Raw TOML")
-		for _, rawLine := range strings.Split(strings.TrimSuffix(m.pendingSetup.TargetTOML, "\n"), "\n") {
-			lines = append(lines, splitDisplayLine(rawLine, inner)...)
-		}
-	} else {
-		lines = append(lines, "Raw TOML: (empty)")
-	}
+	lines := workspaceInformationLines(*m.pendingSetup, width-4)
 	visible := max(1, height-8)
 	start := min(max(0, m.setupInfoOffset), max(0, len(lines)-visible))
 	m.setupInfoOffset = start
@@ -116,14 +81,20 @@ func (m *Model) setupInformationView() tea.View {
 }
 
 func splitDisplayLine(line string, width int) []string {
-	runes := []rune(line)
-	if len(runes) == 0 {
+	if line == "" {
 		return []string{""}
 	}
-	var out []string
-	for len(runes) > width {
-		out = append(out, string(runes[:width]))
-		runes = runes[width:]
+	width = max(1, width)
+	out := []string{}
+	current := ""
+	for _, r := range line {
+		candidate := current + string(r)
+		if current != "" && lipgloss.Width(candidate) > width {
+			out = append(out, current)
+			current = string(r)
+		} else {
+			current = candidate
+		}
 	}
-	return append(out, string(runes))
+	return append(out, current)
 }

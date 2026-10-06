@@ -51,15 +51,15 @@ func TestCheckConnectionActionObservesSelectedEndpoint(t *testing.T) {
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	cmd := openProfileAction(t, m, "Check connection", false)
-	if cmd == nil || !m.busy {
+	if cmd == nil || m.registration == nil {
 		t.Fatal("Check connection did not run")
 	}
 	m.Update(cmd())
 	if b.checkedURL != "http://127.0.0.1:8765/mcp" || b.checkedType != "streamable-http" || b.request != nil {
 		t.Fatalf("wrong connection observation: url=%q transport=%q registration=%+v", b.checkedURL, b.checkedType, b.request)
 	}
-	if !strings.Contains(m.output, "reachable") || !strings.Contains(m.output, b.checkedURL) {
-		t.Fatalf("connection result is missing: %s", m.output)
+	if m.registration.Check.URL != b.checkedURL || !m.registration.Check.Reachable {
+		t.Fatalf("connection result is missing from endpoint details: %+v", m.registration.Check)
 	}
 }
 func typedProfileFixture() (*Model, *profileBackend) {
@@ -75,30 +75,86 @@ func typedProfileFixture() (*Model, *profileBackend) {
 }
 func openProfileAction(t *testing.T, m *Model, label string, mouse bool) tea.Cmd {
 	t.Helper()
-	press(m, tea.KeyEnter, "")
-	index := -1
-	for i, entry := range m.menuEntries() {
-		if strings.HasPrefix(entry, label) {
-			index = i
+	_ = mouse // Profile actions now use the target workspace's visible controls.
+	rows := m.profiles()
+	if len(rows) == 0 {
+		t.Fatal("profile target list is empty")
+	}
+	index := m.home.Profiles.Index
+	if index < 0 || index >= len(rows) {
+		index = 0
+	}
+	profile := rows[index]
+	b, ok := m.backend.(*profileBackend)
+	if !ok {
+		t.Fatalf("expected profile fixture backend, got %T", m.backend)
+	}
+	m.backend = &registrationWorkspaceBackend{Backend: b, profileBackend: b, setupBackendFixture: &setupBackendFixture{}}
+	m.selectPane(ProfilesPane, index)
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: profile.Key.Source, PackageID: profile.Key.Package, Environment: profile.Key.Environment, Target: profile.Key.Target}, "Overview")
+	if cmd == nil {
+		t.Fatalf("target workspace did not open for exact key %+v", profile.Key)
+	}
+	m.Update(cmd())
+	if m.workspace == nil || m.workspace.Key != profile.Key {
+		t.Fatalf("workspace changed selected profile identity: got %+v want %+v", m.workspace, profile.Key)
+	}
+	switch label {
+	case "Configure agent registrations":
+		m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+		return nil
+	case "Check connection":
+		m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		return cmd
+	case "View details":
+		m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+		return nil
+	case "Start":
+		_, cmd := m.workspaceOverviewAction("s")
+		return cmd
+	case "Stop", "Restart":
+		_, cmd := m.workspaceOverviewAction("x")
+		return cmd
+	default:
+		t.Fatalf("unmapped target workspace action %q", label)
+		return nil
+	}
+}
+
+func openRegistrationWorkspaceAction(t *testing.T, m *Model, removing bool) {
+	t.Helper()
+	profileBackend, ok := m.backend.(*profileBackend)
+	if !ok {
+		t.Fatalf("expected profile fixture backend, got %T", m.backend)
+	}
+	m.backend = &registrationWorkspaceBackend{Backend: profileBackend, profileBackend: profileBackend, setupBackendFixture: &setupBackendFixture{}}
+	m.focusPane(ProfilesPane)
+	selected := false
+	for index, row := range m.contextRows() {
+		if row.Kind == "profile" && row.Key.Target == "foreign" {
+			m.selectContext(index)
+			selected = true
 			break
 		}
 	}
-	if index < 0 {
-		t.Fatalf("profile action %q absent: %v", label, m.menuEntries())
+	if !selected {
+		t.Fatal("foreign profile row is missing")
 	}
-	if mouse {
-		m.View()
-		for _, hit := range m.home.Hits {
-			if hit.Control == "menu" && hit.Index == index {
-				_, cmd := m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
-				return cmd
-			}
-		}
-		t.Fatal("menu hit region absent")
-	}
-	m.home.Modal.Selected = index
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	return cmd
+	if cmd == nil {
+		t.Fatalf("profile Enter did not open the shared target workspace: %s", m.View().Content)
+	}
+	m.Update(cmd())
+	key := rune('g')
+	if removing {
+		key = 'r'
+	}
+	m.Update(tea.KeyPressMsg{Code: key, Text: string(key)})
+	if m.registration == nil {
+		t.Fatalf("workspace registration action did not open its editor: %s", m.View().Content)
+	}
 }
 func TestTypedProfilesIncludeSavedAndForeignRows(t *testing.T) {
 	m, b := typedProfileFixture()
@@ -140,7 +196,7 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 			m, b := typedProfileFixture()
 			m.focusPane(ProfilesPane)
 			m.selectPane(ProfilesPane, 1)
-			openProfileAction(t, m, "Configure agent registrations", mouse)
+			openRegistrationWorkspaceAction(t, m, false)
 			if m.registration == nil {
 				t.Fatal("configure registrations did not open overlay")
 			}
@@ -157,8 +213,8 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 			if cmd == nil || !m.busy {
 				t.Fatal("save did not schedule registration operation")
 			}
-			if !strings.Contains(m.View().Content, "Running configure registrations") {
-				t.Error("foreground operation progress missing")
+			if !m.busy || m.registration != nil {
+				t.Error("registration save did not transition into its foreground operation")
 			}
 			m.Update(cmd())
 			if b.request == nil {
@@ -221,10 +277,10 @@ func TestRegistrationCancelRestoresActions(t *testing.T) {
 	m, b := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, "Configure agent registrations", false)
+	openRegistrationWorkspaceAction(t, m, false)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if cmd != nil || m.registration != nil || m.home.Modal == nil || m.home.Focus != ProfilesPane || b.request != nil {
-		t.Fatal("cancel did not restore originating profile selection")
+	if cmd != nil || m.registration != nil || m.workspace == nil || !m.workspace.Active || b.request != nil {
+		t.Fatal("cancel did not restore originating workspace")
 	}
 }
 func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
@@ -232,7 +288,7 @@ func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	m.agents = append(m.agents, "All", "all")
-	openProfileAction(t, m, "Configure agent registrations", false)
+	openRegistrationWorkspaceAction(t, m, false)
 	if strings.Contains(m.View().Content, "All") {
 		t.Fatal("All destination exposed for MCP registration")
 	}
@@ -254,13 +310,13 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 	m, b := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, "Remove agent registrations", false)
+	openRegistrationWorkspaceAction(t, m, true)
 	if m.registration == nil {
 		t.Fatalf("Remove registrations did not open overlay: %s", m.output)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd != nil || b.request != nil || !strings.Contains(m.View().Content, "No registrations selected") {
-		t.Fatalf("unselected removal should be a no-op: %+v", b.request)
+	if cmd != nil || b.request != nil || m.registration.Message != "No registrations selected for removal" {
+		t.Fatalf("unselected removal should be a no-op: request=%+v message=%q view=%s", b.request, m.registration.Message, m.View().Content)
 	}
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
@@ -270,18 +326,18 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 		t.Fatal("selected removal was not submitted")
 	}
 	m.Update(cmd())
-	if b.request == nil || len(b.request.AgentIDs) != 0 {
-		t.Fatalf("remove selection did not produce empty desired registration state: %+v", b.request)
+	if b.request == nil || !reflect.DeepEqual(b.request.RemoveAgentIDs, []string{"claude"}) || len(b.request.AgentIDs) != 0 {
+		t.Fatalf("remove selection did not identify only the selected registration: %+v", b.request)
 	}
 }
 func TestRegistrationPreservesUnavailableRegisteredAgent(t *testing.T) {
 	m, b := typedProfileFixture()
-	b.snapshot.Profiles[1].RegisteredAgents = append(b.snapshot.Profiles[1].RegisteredAgents, "generic:old")
+	b.snapshot.Profiles[1].RegisteredAgents = append(b.snapshot.Profiles[1].RegisteredAgents, "opencode:old")
 	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openProfileAction(t, m, "Configure agent registrations", false)
-	if !strings.Contains(m.View().Content, "generic:old") {
+	openRegistrationWorkspaceAction(t, m, false)
+	if !strings.Contains(m.View().Content, "opencode:old") {
 		t.Fatal("unavailable existing registration was silently removed from selection")
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
@@ -289,7 +345,7 @@ func TestRegistrationPreservesUnavailableRegisteredAgent(t *testing.T) {
 		t.Fatal("prefilled registration selection could not submit")
 	}
 	m.Update(cmd())
-	if !reflect.DeepEqual(b.request.AgentIDs, []string{"claude", "generic:old"}) {
+	if !reflect.DeepEqual(b.request.AgentIDs, []string{"claude", "opencode:old"}) {
 		t.Fatalf("existing registration lost: %#v", b.request)
 	}
 }
@@ -302,7 +358,7 @@ func TestRegistrationConnectionObservationIsVisible(t *testing.T) {
 		if reachable {
 			b.result.Connection.Error = ""
 		}
-		openProfileAction(t, m, "Configure agent registrations", false)
+		openRegistrationWorkspaceAction(t, m, false)
 		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 		if cmd == nil {
 			t.Fatal("no save command")

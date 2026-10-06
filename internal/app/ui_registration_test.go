@@ -14,16 +14,20 @@ import (
 func TestUIConfigureRegistrationsTargetsCurrentEnvironmentOnly(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	svc, _, store := fixture(t)
-	svc.Options.Runtime = &fakeRuntime{}
+	runtime := &changedRuntime{}
+	svc.Options.Runtime = runtime
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
-		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"generic:work"},
+		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
 	if err != nil || len(result.Changes) != 1 || result.Changes[0].Key != key {
 		t.Fatalf("foreign registration failed: %+v, %v", result, err)
 	}
+	if runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("foreign endpoint registration changed the MCP runtime: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
 	rows, err := store.Installations()
-	if err != nil || len(rows) != 1 || rows[0].AgentID != "generic:work" {
+	if err != nil || len(rows) != 1 || rows[0].AgentID != "claude" {
 		t.Fatalf("current environment registration missing: %+v, %v", rows, err)
 	}
 }
@@ -37,7 +41,7 @@ func TestUIConfigureRegistrationsReportsUnreachableEndpointWithoutClaimingRuntim
 	server.Close()
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"},
-		URL: url, Transport: "streamable-http", AgentIDs: []string{"generic:work"},
+		URL: url, Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
 	if err != nil || len(result.Changes) != 1 || result.Connection.Reachable || result.Connection.Error == "" {
 		t.Fatalf("unreachable endpoint warning absent: %+v, %v", result, err)
@@ -50,7 +54,7 @@ func TestUIConfigureRegistrationsRejectsAmbiguousAgentConfigPaths(t *testing.T) 
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
 	home := t.TempDir()
 	for _, name := range []string{"first.json", "second.json"} {
-		if err := store.Record(state.Installation{Key: key, AgentID: "generic:work", AgentKind: "generic", AgentHome: home, Component: "mcp", Destination: filepath.Join(home, name), RegistrationName: "demo", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
+		if err := store.Record(state.Installation{Key: key, AgentID: "claude", AgentKind: "claude", AgentHome: home, Component: "mcp", Destination: filepath.Join(home, name), RegistrationName: "demo", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -58,7 +62,7 @@ func TestUIConfigureRegistrationsRejectsAmbiguousAgentConfigPaths(t *testing.T) 
 	if err != nil || len(before) != 2 {
 		t.Fatalf("fixture lost one config path: %+v, %v", before, err)
 	}
-	_, err = svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"generic:work"}})
+	_, err = svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"}})
 	if err == nil {
 		t.Fatal("ambiguous config paths were silently collapsed")
 	}

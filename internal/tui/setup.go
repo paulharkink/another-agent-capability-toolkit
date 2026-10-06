@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
@@ -23,18 +24,128 @@ type setupPreviewMsg struct {
 }
 
 func (m *Model) beginSetup(sourceID, packageID, environment, target string) tea.Cmd {
+	return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: sourceID, PackageID: packageID, Environment: environment, Target: target}, "Connection")
+}
+
+func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSection string) tea.Cmd {
 	backend, ok := m.backend.(setupBackend)
 	if !ok {
 		m.output = "Unified setup service unavailable"
 		return nil
 	}
+	key := state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
+	priorDraft := map[string]any(nil)
+	if m.workspace != nil && m.workspace.Key == key {
+		priorDraft = m.workspace.cachedDraft()
+	}
+	workspace := &workspaceState{
+		Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
+		InvokingSelection: m.workspaceInvokingSelection(), Draft: priorDraft,
+		Profile: m.profileForWorkspace(key), ProfileSnapshot: copyProfileSnapshot(m.profileSnapshot),
+	}
+	workspace.Existing = workspace.Profile != nil || m.targetHasSavedRecord(key)
+	workspace.Installed = m.targetHasInstallRecord(key)
+	m.workspace = workspace
+	m.home.Modal = nil
+	m.management.Modal = ""
 	m.busy = true
 	m.action = "load setup"
-	request := viewmodel.SetupRequest{SourceID: sourceID, PackageID: packageID, Environment: environment, Target: target}
 	return func() tea.Msg {
 		preview, err := backend.UISetupPreview(m.ctx, request)
 		return setupPreviewMsg{preview: preview, err: err}
 	}
+}
+
+func (m *Model) workspaceInvokingSelection() int {
+	if m.view == "Environments" {
+		return m.management.TargetIndex
+	}
+	if m.view == "Catalog" {
+		return m.home.Context.Index
+	}
+	return m.selected
+}
+
+func (m *Model) targetHasSavedRecord(key state.Key) bool {
+	for _, installation := range m.inventory {
+		if installation.Key == key && installation.Component != "runtime" && installation.Component != "skill" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) targetHasInstallRecord(key state.Key) bool {
+	for _, installation := range m.inventory {
+		if installation.Key == key && (installation.Component == "runtime" || installation.Component == "skill") {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
+	if m.profileSnapshot != nil {
+		for index := range m.profileSnapshot.Profiles {
+			profile := m.profileSnapshot.Profiles[index]
+			if profile.Key == key {
+				profile.RegisteredAgents = append([]string(nil), profile.RegisteredAgents...)
+				return &profile
+			}
+		}
+	}
+	profile := &viewmodel.Profile{Key: key, RuntimeStatus: "unknown", Ownership: "unknown"}
+	for _, installation := range m.inventory {
+		if installation.Key == key && installation.Component == "mcp" && installation.AgentID != "" {
+			profile.RegisteredAgents = append(profile.RegisteredAgents, installation.AgentID)
+			if profile.URL == "" {
+				profile.URL = installation.URL
+			}
+		}
+	}
+	if len(profile.RegisteredAgents) > 0 || profile.URL != "" {
+		return profile
+	}
+	for _, candidate := range m.profiles() {
+		if candidate.Key == key {
+			if candidate.Profile != nil {
+				return candidate.Profile
+			}
+			profile := &viewmodel.Profile{Key: key, Name: candidate.Name, URL: candidate.URL, RuntimeStatus: candidate.Status, Ownership: candidate.Instance.Ownership}
+			if profile.Ownership == "local" {
+				switch strings.ToLower(profile.RuntimeStatus) {
+				case "never-started", "missing", "exited":
+					profile.CanStart = true
+				case "running":
+					profile.CanStop = true
+				default:
+					profile.StartDisabledReason = "Runtime state does not permit Start"
+					profile.StopDisabledReason = "Runtime state does not permit Stop"
+				}
+			} else if profile.Ownership != "" {
+				profile.StartDisabledReason = "Runtime belongs to another installation"
+				profile.StopDisabledReason = "Runtime belongs to another installation"
+			} else {
+				profile.Ownership = "unknown"
+				profile.StartDisabledReason = "Runtime owner is unknown"
+				profile.StopDisabledReason = "Runtime owner is unknown"
+			}
+			return profile
+		}
+	}
+	return nil
+}
+
+func copyProfileSnapshot(snapshot *viewmodel.ProfileSnapshot) *viewmodel.ProfileSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	copySnapshot := *snapshot
+	copySnapshot.Profiles = append([]viewmodel.Profile(nil), snapshot.Profiles...)
+	for index := range copySnapshot.Profiles {
+		copySnapshot.Profiles[index].RegisteredAgents = append([]string(nil), snapshot.Profiles[index].RegisteredAgents...)
+	}
+	return &copySnapshot
 }
 
 type setupRetryDraft struct {
@@ -100,6 +211,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 				def.Label = "Listen port"
 			}
 		}
+		if preview.Key.Package == "grafana-inspector" && def.Name == "auth_mode" {
+			def.Label = "Authentication mode"
+		}
 		if def.OptionsFrom != "" && input.HasValue {
 			def = withUnavailableSavedChoices(def, input.Value)
 		}
@@ -152,9 +266,18 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 	for name, value := range overrides {
 		values[name] = value
 	}
+	if m.workspace != nil && m.workspace.Key == preview.Key {
+		for name, value := range m.workspace.cachedDraft() {
+			values[name] = value
+		}
+	}
 	m.pendingSetup = &preview
 	m.pendingSetupField = destinationField
 	m.form = forms.NewForm(m.ctx, defs, values)
+	if m.workspace != nil && m.workspace.Key == preview.Key {
+		m.form.SetBackNavigation(true)
+	}
+	configureWorkspaceAuthentication(m.form, preview)
 	name := preview.PackageName
 	if name == "" {
 		name = preview.Key.Package
@@ -169,7 +292,6 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 	}
 	m.form.SetTitle(title)
 	sections := []forms.FormSection{}
-	sectionFields := map[string][]string{}
 	hasClusterAuth := false
 	for _, input := range preview.Inputs {
 		name := strings.ToLower(input.Definition.Name + " " + input.Definition.Label)
@@ -184,31 +306,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 	}
 	isClusterInspector := preview.Key.Package == "cluster-inspector" && hasClusterAuth
-	for _, def := range defs {
-		name := strings.ToLower(def.Name + " " + def.Label)
-		section := "Inputs"
-		switch {
-		case def.Name == destinationField:
-			section = "Destinations"
-		case strings.Contains(name, "auth") || strings.Contains(name, "token") || strings.Contains(name, "kubeconfig") || def.ExclusiveGroup != "":
-			section = "Authentication"
-		case strings.Contains(name, "database") || strings.Contains(name, "dbms") || strings.Contains(def.OptionsFrom, "dbms"):
-			section = "Databases"
-		}
-		if isClusterInspector && section == "Inputs" {
-			section = "Connection"
-		}
-		sectionFields[section] = append(sectionFields[section], def.Name)
-	}
-	orderedSections := []string{"Authentication", "Inputs", "Databases", "Destinations"}
-	if isClusterInspector {
-		orderedSections = []string{"Connection", "Authentication", "Databases", "Destinations"}
-	}
-	for _, section := range orderedSections {
-		if len(sectionFields[section]) > 0 || (isClusterInspector && section == "Connection") {
-			sections = append(sections, forms.FormSection{Title: section, Fields: sectionFields[section]})
-		}
-	}
+	sections = workspaceSections(preview.Key.Package, defs, destinationField)
 	m.form.SetSections(sections...)
 	if isClusterInspector {
 		m.form.SetSectionHeading("Setup sections")
@@ -272,6 +370,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 			}
 			m.form.SetHint(input.Definition.Name, cue)
 		}
+	}
+	if m.workspace != nil && m.workspace.Key == preview.Key {
+		m.configureWorkspaceForm(preview)
 	}
 	_, _, width, height, ok := m.setupOverlayBounds()
 	if !ok {
@@ -361,12 +462,19 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		SetupRequest: viewmodel.SetupRequest{SourceID: preview.Key.Source, PackageID: preview.Key.Package, Environment: preview.Key.Environment, Target: preview.Key.Target},
 		Inputs:       inputs, DestinationIDs: destinations,
 	}
+	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key && workspace.Profile != nil && workspace.Profile.Ownership != "local" {
+		// Selecting an observed foreign/unknown profile is the user's explicit
+		// choice of registration endpoint. Preserve that endpoint for the
+		// registration-only install path; never derive one from runtime inventory.
+		request.ExternalURL = strings.TrimSpace(workspace.Profile.URL)
+	}
 	m.busy = true
 	m.action = "install"
 	m.home.Modal = nil
 	origin := m.view
 	return func() tea.Msg {
 		result, err := backend.UIInstall(m.ctx, request)
+		structured := result
 		lines := []string{}
 		if result.Saved {
 			lines = append(lines, "Inputs saved")
@@ -374,11 +482,19 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		if result.Message != "" {
 			lines = append(lines, result.Message)
 		}
+		if len(result.Errors) > 0 || err != nil {
+			if result.Step != "" {
+				lines = append(lines, "Step: "+result.Step)
+			}
+			if result.Target != "" {
+				lines = append(lines, "Target: "+result.Target)
+			}
+		}
 		for _, change := range result.Changes {
 			lines = append(lines, fmt.Sprintf("%s: %s configured", change.AgentID, change.Component))
 		}
 		lines = append(lines, result.Errors...)
-		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0}
+		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &structured}
 	}
 }
 

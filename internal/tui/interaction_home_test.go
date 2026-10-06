@@ -61,7 +61,8 @@ func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
 func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 	t.Run("setup", func(t *testing.T) {
 		m, _ := homeFixture()
-		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: &setupBackendFixture{}}
+		setup := &setupBackendFixture{}
+		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 		focusHomeContext(t, m)
 		pressAndRun(m, tea.KeyEnter) // Set up another target opens the chooser.
 		if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
@@ -85,12 +86,14 @@ func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 
 	t.Run("related profile actions", func(t *testing.T) {
 		m, _ := homeFixture()
+		setup := &setupBackendFixture{}
+		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 		focusHomeContext(t, m)
 		press(m, tea.KeyDown, "")
 		press(m, tea.KeyDown, "") // Related MCP profile.
 		pressAndRun(m, tea.KeyEnter)
-		if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-			t.Fatalf("Enter on a server profile should open its operation actions: %#v", m.home.Modal)
+		if m.form == nil || setup.previewRequest.Target != "production" || setup.previewRequest.Environment != "dev" {
+			t.Fatalf("Enter on a server profile should open its exact shared workspace: form=%v request=%+v", m.form != nil, setup.previewRequest)
 		}
 	})
 }
