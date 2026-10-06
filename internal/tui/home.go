@@ -94,7 +94,7 @@ func (m *Model) contextRows() []contextRow {
 			if target == "" {
 				target = "default"
 			}
-			rows = append(rows, contextRow{ID: p.ID, Label: p.Key.Environment + " / " + target + " · " + p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i})
+			rows = append(rows, contextRow{ID: p.ID, Label: p.Key.Environment + " / " + target + " · " + p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
 		}
 		return rows
 	}
@@ -485,6 +485,12 @@ func (m *Model) openContextRow() tea.Cmd {
 	case "details":
 		m.home.Modal = &modalState{Kind: "details"}
 	case "profile":
+		if c, ok := m.selectedCapability(); ok && c.CatalogIndex < 0 {
+			if profile, found := m.selectedContextProfile(); found && profile.Key == row.Key {
+				m.openObservedProfileWorkspace(profile)
+				return nil
+			}
+		}
 		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
 	case "target":
 		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
@@ -492,11 +498,40 @@ func (m *Model) openContextRow() tea.Cmd {
 	return nil
 }
 
+func (m *Model) openObservedProfileWorkspace(p ProfileRow) {
+	if p.Profile == nil || p.Profile.Key != p.Key {
+		m.output = "Observed target facts are unavailable; refresh this profile before opening its workspace."
+		return
+	}
+	profile := *p.Profile
+	profile.RegisteredAgents = append([]string(nil), p.Profile.RegisteredAgents...)
+	sections := []forms.FormSection{{Title: "Overview"}, {Title: "Endpoint"}, {Title: "Agents"}, {Title: "Information"}}
+	form := forms.NewForm(m.ctx, nil, nil)
+	form.SetTitle("Observed · " + p.Name)
+	form.SetBackNavigation(true)
+	form.SetReadOnly(true)
+	form.SetSections(sections...)
+	form.SelectSection("Overview")
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m.workspace = &workspaceState{
+		Key: p.Key, Section: "Overview", InvokingView: m.view, InvokingSelection: m.home.Context.Index,
+		Active: true, ObservedOnly: true, Existing: true, Profile: &profile, ProfileSnapshot: copyProfileSnapshot(m.profileSnapshot),
+	}
+	m.form = form
+	m.refreshObservedWorkspaceFacts()
+	m.pendingSetup = nil
+	m.home.Modal = nil
+}
+
 func (m *Model) locateSelectedSource() {
 	m.pending = operation{action: "locate-source", source: m.selectedCapabilitySource()}
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Source checkout directory", Type: "directory", Required: true}}, map[string]any{})
 	m.form.SetTitle("Locate source · " + m.selectedCapabilitySource())
-	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.form.SetBackNavigation(true)
+	m.management.FormOverlay = true
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
 
 func (m *Model) showSavedCapabilityInformation() {
@@ -696,6 +731,8 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 	if m.home.Focus == ProfilesPane {
 		p, isProfile := m.selectedContextProfile()
 		if isProfile {
+			capability, capabilityOK := m.selectedCapability()
+			packageUnavailable := capabilityOK && capability.CatalogIndex < 0
 			if action == "remove-registrations" {
 				m.removeRegistrationForm(p)
 				return nil
@@ -711,6 +748,10 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 				return m.openProfileLogs(p)
 			}
 			if action == "parameters" {
+				if packageUnavailable {
+					m.output = "Package configuration is unavailable. Enter on this observed target opens its read-only workspace; use Locate source… to restore package settings."
+					return nil
+				}
 				if reason := m.profileActionReason(p, action); reason != "" {
 					m.output = reason
 					return nil
@@ -718,6 +759,10 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Connection")
 			}
 			if action == "a" {
+				if packageUnavailable {
+					m.output = "Authentication inputs are unavailable because this package is absent from the local catalog. Enter opens the observed endpoint workspace; use Locate source… for package authentication settings."
+					return nil
+				}
 				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Authentication")
 			}
 			actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
@@ -735,7 +780,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		}
 	}
 	if c.CatalogIndex < 0 {
-		m.output = "Package is absent from the local catalog; use profile Actions for registrations."
+		m.output = "Package is absent from the local catalog; Enter a saved target to open its observed workspace, or choose Locate source… to restore package settings."
 		return nil
 	}
 	m.selected = c.CatalogIndex
@@ -857,7 +902,17 @@ func (m *Model) selectedDetail() string {
 func (m *Model) homeView() tea.View {
 	m.home.Hits = nil
 	if m.width < 80 || m.height < 16 {
-		v := tea.NewView(fmt.Sprintf("AACT needs at least 80×16; current %d×%d.\nF10 / q Quit", m.width, m.height))
+		lines := []string{
+			"┌" + strings.Repeat("─", max(0, m.width-2)) + "┐",
+			"│" + fit("AACT needs at least 80×16; current "+fmt.Sprintf("%d×%d", m.width, m.height), max(0, m.width-2)) + "│",
+			"│" + fit("Resize to continue. Your current draft is retained.", max(0, m.width-2)) + "│",
+			"│" + fit("F10 / q Quit", max(0, m.width-2)) + "│",
+			"└" + strings.Repeat("─", max(0, m.width-2)) + "┘",
+		}
+		for len(lines) < m.height {
+			lines = append(lines, strings.Repeat(" ", m.width))
+		}
+		v := tea.NewView(navyCanvas(strings.Join(lines[:min(m.height, len(lines))], "\n")))
 		return v
 	}
 	m.reconcileHome()

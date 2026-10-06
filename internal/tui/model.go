@@ -184,6 +184,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = size.Height
 		m.reconcileHome()
 	}
+	// Inventory refreshes are lifecycle events. A retained workspace form must
+	// not consume them as ordinary form input after an operation completes.
+	if loaded, ok := msg.(loadedMsg); ok {
+		m.applyLoaded(loaded)
+		return m, nil
+	}
+	// A below-minimum resize replaces an active form with a recovery screen.
+	// Keep the underlying draft, but don't let ordinary input reach controls
+	// that are no longer visible. Only the recovery screen's quit keys remain.
+	if m.form != nil && (m.width < 80 || m.height < 16) {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			switch event.String() {
+			case "f10", "q", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg, tea.MouseMsg:
+			return m, nil
+		}
+	}
 	// Foreground overlays own human input before any hidden form or modal gets
 	// a chance to consume it. Lifecycle messages still pass through below.
 	if m.result != nil {
@@ -255,7 +276,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if result, ok := msg.(operationMsg); ok {
 			return m, m.handleOperationResult(result)
 		}
-		if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "f3" && m.pendingSetup != nil {
+		if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "f3" && m.pendingSetup != nil && !m.form.PickerActive() {
 			if m.workspace != nil && m.workspace.Active {
 				m.workspace.Section = "Information"
 				m.form.SelectSection("Information")
@@ -275,7 +296,40 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = "Back · draft kept for this target"
 			return m, nil
 		}
-		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.form.SectionTitle() == "Overview" {
+		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.workspace.ObservedOnly {
+			profile := m.workspace.Profile
+			row := ProfileRow{Key: m.workspace.Key, URL: "", Name: m.workspace.Key.Package, Status: "unknown", Profile: profile}
+			if profile != nil {
+				row.URL, row.Name, row.Status = profile.URL, profile.Name, profile.RuntimeStatus
+			}
+			switch key.String() {
+			case "g":
+				m.workspace.Section = "Agents"
+				m.form.SelectSection("Agents")
+				m.form.FocusSection()
+				m.registrationForm(row)
+				return m, nil
+			case "c":
+				m.workspace.Section = "Endpoint"
+				m.form.SelectSection("Endpoint")
+				m.form.FocusSection()
+				return m, m.checkProfileConnection(row)
+			case "enter":
+				if m.form.FocusArea() == 1 {
+					switch m.form.SectionTitle() {
+					case "Endpoint":
+						return m, m.checkProfileConnection(row)
+					case "Agents":
+						m.registrationForm(row)
+						return m, nil
+					}
+				}
+			case "s", "x":
+				m.output = "Runtime lifecycle actions are unavailable from this observed profile workspace."
+				return m, nil
+			}
+		}
+		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.form.SectionTitle() == "Overview" && !m.form.PickerActive() {
 			if handled, cmd := m.workspaceOverviewAction(key.String()); handled {
 				return m, cmd
 			}
@@ -420,25 +474,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.form.SetTitle(title + " · F3 Target information")
 	case loadedMsg:
-		m.catalog = msg.catalog
-		m.inventory = msg.inventory
-		m.inventoryError = msg.inventoryError
-		m.mcps = msg.mcps
-		m.profileError = msg.profileError
-		m.environmentError = msg.environmentError
-		m.environmentSnapshot = msg.environmentSnapshot
-		if msg.profileSnapshot != nil {
-			m.profileSnapshot = msg.profileSnapshot
-		}
-		m.agents = msg.agents
-		m.agentManagement = msg.agentManagement
-		m.settings = msg.settings
-		m.sourceLabels = msg.labels
-		if msg.err != nil {
-			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "load"})
-			m.result.CanRetry = true
-		}
-		m.reconcileHome()
+		m.applyLoaded(msg)
 	case agentConfigMsg:
 		if msg.err != nil {
 			m.action = "load agent configuration"
@@ -518,6 +554,40 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) applyLoaded(msg loadedMsg) {
+	if m.action == "load" {
+		m.busy = false
+	}
+	m.catalog = msg.catalog
+	m.inventory = msg.inventory
+	m.inventoryError = msg.inventoryError
+	m.mcps = msg.mcps
+	m.profileError = msg.profileError
+	m.environmentError = msg.environmentError
+	m.environmentSnapshot = msg.environmentSnapshot
+	if msg.profileSnapshot != nil {
+		m.profileSnapshot = msg.profileSnapshot
+		if m.workspace != nil {
+			m.workspace.ProfileSnapshot = copyProfileSnapshot(m.profileSnapshot)
+			m.workspace.Profile = m.profileForWorkspace(m.workspace.Key)
+			if m.workspace.ObservedOnly {
+				m.refreshObservedWorkspaceFacts()
+			} else if m.workspace.Preview != nil && m.form != nil {
+				m.configureWorkspaceForm(*m.workspace.Preview)
+			}
+		}
+	}
+	m.agents = msg.agents
+	m.agentManagement = msg.agentManagement
+	m.settings = msg.settings
+	m.sourceLabels = msg.labels
+	if msg.err != nil {
+		m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "load"})
+		m.result.CanRetry = true
+	}
+	m.reconcileHome()
 }
 
 func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
@@ -832,11 +902,20 @@ func (m *Model) cleanOutput(output string) string {
 }
 
 func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
+	if m.workspace != nil && m.workspace.Active && m.workspace.ObservedOnly {
+		return managementFormOverlayBounds(m.width, m.height)
+	}
 	if m.management.FormOverlay {
 		return managementFormOverlayBounds(m.width, m.height)
 	}
 	if m.pendingSetup == nil || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
 		return 0, 0, 0, 0, false
+	}
+	// At the supported minimum, reclaim the navigation margins so the form's
+	// fixed actions remain inside the parent frame.
+	if m.height-6 < 12 {
+		width, height := m.width-8, m.height-4
+		return (m.width - width) / 2, 4, width, height, true
 	}
 	return 4, 4, m.width - 8, m.height - 6, true
 }
@@ -863,6 +942,11 @@ func (m *Model) setupOverlayViewContent(content string) tea.View {
 }
 
 func (m *Model) View() tea.View {
+	if m.form != nil && (m.width < 80 || m.height < 16) {
+		// The resize recovery screen owns the terminal until the main-screen
+		// minimum is restored. Keep any pending result/lifecycle state intact.
+		return m.homeView()
+	}
 	if m.result != nil {
 		return m.resultView()
 	}
@@ -889,8 +973,11 @@ func (m *Model) View() tea.View {
 		return m.homeView()
 	}
 	if m.form != nil {
-		if m.management.FormOverlay && (m.width < 80 || m.height < 16) {
-			return m.managementView()
+		if m.width < 80 || m.height < 16 {
+			if isManagementView(m.view) {
+				return m.managementView()
+			}
+			return m.homeView()
 		}
 		if _, _, _, _, ok := m.setupOverlayBounds(); ok {
 			return m.setupOverlayView()

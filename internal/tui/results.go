@@ -36,7 +36,7 @@ func (m *Model) showOperationResult(msg operationMsg) {
 	if msg.err != nil {
 		msg.err = errors.New(m.cleanOutput(msg.err.Error()))
 	}
-	result := resultStateFromOperation(m.action, m.cleanOutput(msg.output), msg.err, structured)
+	result := resultStateFromOperationOutcome(m.action, m.cleanOutput(msg.output), msg.err, structured, msg.result != nil)
 	result.Failed = result.Failed || msg.failed
 	result.Origin = msg.origin
 	result.CanReturn = m.setupRetry != nil

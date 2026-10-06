@@ -41,7 +41,7 @@ func TestUXResultShowsExactLongChildErrorWrappedWithoutBlackRows(t *testing.T) {
 
 func TestUXResultReportsSavedAndActualPerAgentAchievements(t *testing.T) {
 	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
-		Target: "dev", Step: "register", Saved: true,
+		Target: "dev", Step: "register", Saved: true, SavedApplicable: true,
 		Changes: []state.Installation{{AgentID: "codex", Component: "mcp", Destination: "/tmp/codex.json"}},
 		Errors:  []string{"claude: endpoint rejected registration"},
 	})
@@ -325,10 +325,13 @@ func TestUXRegistrationResultListsOnlyStructuredAchievedEffectsAndKeepsMixedFail
 		t.Fatalf("mixed failure/cancellation was hidden: result=%+v output=%q", m.result, m.output)
 	}
 	joined := strings.Join(m.result.Rows, "\n")
-	for _, want := range []string{"Saved: yes", "Applied effects: 1 reported", "codex", "plain-dev", "http://127.0.0.1:8765/mcp", "Failed · claude: endpoint rejected registration", "partial failure"} {
+	for _, want := range []string{"Applied effects: 1 reported", "codex", "plain-dev", "http://127.0.0.1:8765/mcp", "Failed · claude: endpoint rejected registration", "partial failure"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("registration result omitted %q:\n%s", want, joined)
 		}
+	}
+	if strings.Contains(joined, "Saved:") {
+		t.Fatalf("registration-only operation claimed package inputs were saved:\n%s", joined)
 	}
 	if strings.Contains(joined, "claude registered") || strings.Contains(joined, "claude · mcp ·") {
 		t.Fatalf("failed agent was claimed as applied:\n%s", joined)

@@ -23,10 +23,45 @@ type workspaceState struct {
 	Active            bool
 	Existing          bool
 	Installed         bool
+	ObservedOnly      bool
 	Preview           *viewmodel.SetupPreview
 	Profile           *viewmodel.Profile
 	ProfileSnapshot   *viewmodel.ProfileSnapshot
 	Draft             map[string]any
+}
+
+func (m *Model) refreshObservedWorkspaceFacts() {
+	if m.workspace == nil || !m.workspace.ObservedOnly || m.workspace.Profile == nil || m.form == nil {
+		return
+	}
+	profile := m.workspace.Profile
+	key := m.workspace.Key
+	registered := "none observed"
+	if len(profile.RegisteredAgents) > 0 {
+		registered = strings.Join(profile.RegisteredAgents, ", ")
+	}
+	m.form.SetSectionContent("Overview", []string{
+		"Package configuration unavailable: this package is absent from the local catalog.",
+		"Source: " + key.Source + " · Package: " + key.Package,
+		"Runtime: " + nonempty(profile.RuntimeStatus, "unknown") + " · Ownership: " + nonempty(profile.Ownership, "unknown"),
+		"No package settings or install action are available for this observation.",
+		"g · Manage named agent registrations",
+	})
+	m.form.SetSectionContent("Endpoint", []string{
+		"Observed endpoint: " + nonempty(profile.URL, "not reported"),
+		"Transport: " + nonempty(profile.Transport, "not reported"),
+		"› Check connection · Enter (or c)",
+	})
+	m.form.SetSectionContent("Agents", []string{
+		"Registered named agents: " + registered,
+		"› Configure named registrations · Enter (or g)",
+	})
+	m.form.SetSectionContent("Information", []string{
+		"Observed target identity: " + key.Source + " / " + key.Package + " / " + nonempty(key.Environment, "(none)") + " / " + nonempty(key.Target, "default"),
+		"Runtime status: " + nonempty(profile.RuntimeStatus, "unknown"),
+		"Runtime ownership: " + nonempty(profile.Ownership, "unknown"),
+		"This workspace reflects observed profile facts; it does not imply package installation or local runtime ownership.",
+	})
 }
 
 func (s *workspaceState) cacheDraft(draft map[string]any) { s.Draft = cloneSetupValues(draft) }
@@ -109,8 +144,8 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 		"Target configuration: " + configuration,
 		"Package installation: " + installation,
 	}
-	lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
 	if profile == nil {
+		lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
 		lines = append(lines, "MCP runtime: not observed", "Ownership: unknown", "Endpoint: not configured", "Reachability: not checked", "Agent registration: none")
 		lines = append(lines, "Next: review configuration, then save and apply.")
 		return lines
@@ -130,6 +165,7 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 	}
 	lines = append(lines, "MCP runtime: "+runtime, "Ownership: "+owner, "Endpoint: "+profile.URL)
 	lines = append(lines, "Reachability: not checked")
+	lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
 	if len(profile.RegisteredAgents) == 0 {
 		lines = append(lines, "Agent registration: none")
 	} else {

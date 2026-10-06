@@ -1,0 +1,67 @@
+--- FAIL: TestUXFocusedPaneShowsOffscreenCueAndBoundedButtonsAtAllSupportedSizes (0.00s)
+    ux_journeys_test.go:104: 80x16 workspace hides action "[ Save ]":
+        ╔ AACT · Another Agent Capability Toolkit                                      ╗
+        ║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus      ║
+        ║ Checkout: none · Managing: darwin/arm64 · Source:  · Env: none               ║
+        ╠► Capabilities                        ╦Selected capability · cluster-inspector╣
+        ║> N╔══════════════════════════════════════════════════════════════════════╗   ║
+        ║   ║Install · Cluster Inspector · home / pms15                            ║   ║
+        ║   ║Environment: home · Target: pms15 · Runtime: New setup                ║   ║
+        ║   ║                                                                      ║   ║
+        ║1/1║↑ more                  │ ↑ more                                      ║   ║
+        ╠═══║> Authentication        │ › Token [saved]: old-token                  ║═══╣
+        ║cur║↓ more                  │ ↓ more                                      ║ec…║
+        ║   ║                                                                      ║   ║
+        ╠═══║[Sections] · Details · Actions                                        ║═══╣
+        ║ F1║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back           ║   ║
+        ║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                 ║
+        ╚══════════════════════════════════════════════════════════════════════════════╝
+    ux_journeys_test.go:104: 80x16 workspace hides action "[ Cancel ]":
+        ╔ AACT · Another Agent Capability Toolkit                                      ╗
+        ║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus      ║
+        ║ Checkout: none · Managing: darwin/arm64 · Source:  · Env: none               ║
+        ╠► Capabilities                        ╦Selected capability · cluster-inspector╣
+        ║> N╔══════════════════════════════════════════════════════════════════════╗   ║
+        ║   ║Install · Cluster Inspector · home / pms15                            ║   ║
+        ║   ║Environment: home · Target: pms15 · Runtime: New setup                ║   ║
+        ║   ║                                                                      ║   ║
+        ║1/1║↑ more                  │ ↑ more                                      ║   ║
+        ╠═══║> Authentication        │ › Token [saved]: old-token                  ║═══╣
+        ║cur║↓ more                  │ ↓ more                                      ║ec…║
+        ║   ║                                                                      ║   ║
+        ╠═══║[Sections] · Details · Actions                                        ║═══╣
+        ║ F1║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back           ║   ║
+        ║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                 ║
+        ╚══════════════════════════════════════════════════════════════════════════════╝
+    ux_journeys_test.go:109: active workspace below minimum does not explain resize recovery:
+        ╔═════════════════════════════════════════════════════════════════════════════╗
+        ║Install · Cluster Inspector · home / pms15                                   ║
+        ║Environment: home · Target: pms15 · Runtime: New setup                       ║
+        ║                                                                             ║
+        ║── Setup sections         │ ── Authentication                                ║
+        ║> Authentication          │ › Token [saved]: old-token                       ║
+        ║› Databases               │     · Active method                              ║
+        ║› Destinations            │ › Source kubeconfig:   [Browse]                  ║
+        ║                          │     · Type a path to switch to kubeconfig        ║
+        ║                          │ ↓ more                                           ║
+        ║                                                                             ║
+        ║[Sections] · Details · Actions                                               ║
+        ║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                  ║
+        ║[ Save ]  [ Cancel ]                                                         ║
+        ╚═════════════════════════════════════════════════════════════════════════════╝
+--- FAIL: TestUXSaveErrorRecoveryPreservesActualAchievements (0.04s)
+    ux_journeys_test.go:204: refreshed achievements do not match actual agent config effects: snapshot=&{Profiles:[{Key:{Source:journey-source Package:demo Environment:dev Target:foreign} Name:demo URL:http://127.0.0.1:1/mcp Transport:streamable-http RuntimeStatus:never-started Ownership:local LastAction: LastActionAt:0001-01-01 00:00:00 +0000 UTC LocalLastAction: LocalLastActionAt:0001-01-01 00:00:00 +0000 UTC ObservedAt:0001-01-01 00:00:00 +0000 UTC ObservationStale:false RegisteredAgents:[] CanStart:true CanStop:false CanConfigureRegistrations:true StartDisabledReason: StopDisabledReason:Runtime is not running RegistrationDisabledReason:}] DockerError: ObservedAt:2026-10-06 23:47:02.499823 +0200 CEST m=+0.042733876 ObservationStale:false} serviceSnapshot={Profiles:[{Key:{Source:journey-source Package:demo Environment:dev Target:foreign} Name:demo URL:http://127.0.0.1:1/mcp Transport:streamable-http RuntimeStatus:never-started Ownership:local LastAction: LastActionAt:0001-01-01 00:00:00 +0000 UTC LocalLastAction: LocalLastActionAt:0001-01-01 00:00:00 +0000 UTC ObservedAt:0001-01-01 00:00:00 +0000 UTC ObservationStale:false RegisteredAgents:[opencode] CanStart:true CanStop:false CanConfigureRegistrations:true StartDisabledReason: StopDisabledReason:Runtime is not running RegistrationDisabledReason:}] DockerError: ObservedAt:2026-10-06 23:47:02.512928 +0200 CEST m=+0.055839210 ObservationStale:false} serviceSnapshotErr=<nil> stored=[{Key:{Source:journey-source Package:demo Environment:dev Target:foreign} AgentID:runtime AgentHome: AgentKind: Component:runtime Destination: SourcePath: Mode: ReleaseID: Digest: RegistrationName: URL:http://127.0.0.1:1/mcp Transport:streamable-http TimeoutMS:0 LastAction: LastActionAt:0001-01-01 00:00:00 +0000 UTC} {Key:{Source:journey-source Package:demo Environment:dev Target:foreign} AgentID:opencode AgentHome:/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001 AgentKind:opencode Component:mcp Destination:/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.config/opencode/opencode.json SourcePath: Mode:registration ReleaseID: Digest: RegistrationName:demo-dev-foreign-ae7a73e3f839e14d URL:http://127.0.0.1:1/mcp Transport:streamable-http TimeoutMS:30000 LastAction: LastActionAt:0001-01-01 00:00:00 +0000 UTC}] storeErr=<nil> result=&{Action:configure registrations Rows:[Operation: configure registrations Target: foreign Failed step: register agent Saved: no Applied effects: 1 reported Applied · opencode · mcp · registration demo-dev-foreign-ae7a73e3f839e14d · destination /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.config/opencode/opencode.json · http://127.0.0.1:1/mcp · streamable-http Failed · claude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory Failed: registration failed: claude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory Connection warning: Post "http://127.0.0.1:1/mcp": dial tcp 127.0.0.1:1: connect: connection refused
+        
+        opencode: mcp registration configured
+        claude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory] Offset:0 Column:0 Failed:true ActionIndex:0 Origin:Catalog CanRetry:true CanReturn:false} output="Operation: configure registrations\nTarget: foreign\nFailed step: register agent\nSaved: no\nApplied effects: 1 reported\nApplied · opencode · mcp · registration demo-dev-foreign-ae7a73e3f839e14d · destination /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.config/opencode/opencode.json · http://127.0.0.1:1/mcp · streamable-http\nFailed · claude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory\nFailed: registration failed: claude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory\nConnection warning: Post \"http://127.0.0.1:1/mcp\": dial tcp 127.0.0.1:1: connect: connection refused\n\nopencode: mcp registration configured\nclaude: read /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXSaveErrorRecoveryPreservesActualAchievements3362076098/001/.claude.json: is a directory"
+FAIL
+FAIL	github.com/paulharkink/another-agent-capability-toolkit/internal/tui	0.386s
+FAIL
+
+Real-service absent-catalog foreign-profile route RED (before fallback):
+`go test ./internal/tui -run '^TestUXObservedForeignProfileWithoutCatalogPackageRegistersNamedAgent$' -count=1`
+failed after actual `Service.UIProfileSnapshot` returned the exact external-runtime key, endpoint and `other-aact` ownership. Enter on the selected L2 profile passed an empty `state.Key` to `UISetupPreview`, which produced foreground error `unknown package ""`; the named-registration controls were unreachable from this route. The test is retained as the desired green service-backed journey after the fallback.
+
+Below-minimum workspace ownership RED (before warning/input guard):
+`go test ./internal/tui -run '^TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft$' -count=1`
+failed because 79x15 exposed an unstyled text-only warning and ordinary `q` / field input still reached the hidden form instead of the shown quit action.

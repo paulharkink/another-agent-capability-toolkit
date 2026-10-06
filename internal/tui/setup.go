@@ -252,6 +252,8 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 		name := destination.ID
 		switch strings.ToLower(name) {
+		case "all":
+			name = "All"
 		case "codex":
 			name = "Codex"
 		case "opencode":
@@ -259,9 +261,13 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		case "claude", "claude-code":
 			name = "Claude Code"
 		}
-		label := name + " — " + destination.Path
-		if destination.ID == "all" {
-			label = "All — " + destination.Path
+		path := destination.ConfigPath
+		if path == "" {
+			path = destination.Path
+		}
+		label := name
+		if path != "" {
+			label += " — " + path
 		}
 		choices = append(choices, catalog.Choice{Value: destination.ID, Label: label})
 		if destination.Selected {
@@ -494,6 +500,7 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	return func() tea.Msg {
 		result, err := backend.UIInstall(ctx, request)
 		structured := result
+		structured.SavedApplicable = true
 		lines := []string{}
 		if result.Saved {
 			lines = append(lines, "Inputs saved")

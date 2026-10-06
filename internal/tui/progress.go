@@ -48,6 +48,10 @@ func operationProgressRows(action, target, step string, width int) []string {
 // Changes and Errors are the service-reported effects; no success is inferred
 // from a requested destination or from the operation name.
 func resultStateFromOperation(action, output string, err error, operation viewmodel.OperationResult) *resultState {
+	return resultStateFromOperationOutcome(action, output, err, operation, true)
+}
+
+func resultStateFromOperationOutcome(action, output string, err error, operation viewmodel.OperationResult, outcomeKnown bool) *resultState {
 	var rows []string
 	if action != "" {
 		rows = append(rows, "Operation: "+action)
@@ -58,17 +62,21 @@ func resultStateFromOperation(action, output string, err error, operation viewmo
 	if operation.Step != "" && (err != nil || len(operation.Errors) > 0) {
 		rows = append(rows, "Failed step: "+operation.Step)
 	}
-	if operation.Saved {
-		rows = append(rows, "Saved: yes")
-	} else {
-		rows = append(rows, "Saved: no")
+	if outcomeKnown && operation.SavedApplicable {
+		if operation.Saved {
+			rows = append(rows, "Saved: yes")
+		} else {
+			rows = append(rows, "Saved: no")
+		}
 	}
-	if len(operation.Changes) == 0 {
-		rows = append(rows, "Applied effects: none reported")
-	} else {
-		rows = append(rows, fmt.Sprintf("Applied effects: %d reported", len(operation.Changes)))
-		for _, change := range operation.Changes {
-			rows = append(rows, "Applied · "+operationEffectText(change))
+	if outcomeKnown {
+		if len(operation.Changes) == 0 {
+			rows = append(rows, "Applied effects: none reported")
+		} else {
+			rows = append(rows, fmt.Sprintf("Applied effects: %d reported", len(operation.Changes)))
+			for _, change := range operation.Changes {
+				rows = append(rows, "Applied · "+operationEffectText(change))
+			}
 		}
 	}
 	for _, failure := range operation.Errors {

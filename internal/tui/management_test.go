@@ -552,6 +552,9 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Environment source · Edit environment root") {
 		t.Fatalf("editor replaced its management origin or lost its task title:\n%s", view)
 	}
+	if !strings.Contains(view, "Esc cancel") || strings.Contains(view, "Esc back") {
+		t.Fatalf("Settings editor advertises the wrong Escape action:\n%s", view)
+	}
 	if got := len(strings.Split(view, "\n")); got != 30 {
 		t.Fatalf("overlay changed terminal height: %d", got)
 	}

@@ -1,0 +1,14 @@
+Command: go test ./internal/tui -run "^(TestUXCaptureProductionViewsForReview|TestUXFormSplitPaneFocusHasStrongTitlesAndSelectedRows)$" -count=1
+Observed exit: 1 (behavioral assertions)
+--- FAIL: TestUXFormSplitPaneFocusHasStrongTitlesAndSelectedRows (0.00s)
+    ux_journeys_test.go:134: focused L3 pane title is not explicit:
+--- FAIL: TestUXCaptureProductionViewsForReview (0.05s)
+        ux_journeys_test.go:294: rendered view truncates or omits a required path/explanation "Managed credential material is missing at /var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAuthentication1042483070/004/instances/6f1b3b29e0d665e3b4863a8836ac6961a8935c71c5928f33524bef14666082f7/auth/kubeconfig.":
+        ux_journeys_test.go:291: rendered view truncates or omits a required path/explanation "/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAgents_destinations4136747084/001/.codex/config.toml":
+        ux_journeys_test.go:291: rendered view truncates or omits a required path/explanation "/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAgents_destinations4136747084/001/.config/opencode/opencode.jsonc":
+        ux_journeys_test.go:291: rendered view truncates or omits a required path/explanation "/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAgents_destinations4136747084/001/.claude.json":
+        ux_journeys_test.go:291: rendered view truncates or omits a required path/explanation "/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAgents_destinations4136747084/001/.copilot/mcp-config.json":
+        ux_journeys_test.go:291: rendered view truncates or omits a required path/explanation "/var/folders/p3/jh5sy3cs4lq9fvygth_g36fr0000gn/T/TestUXCaptureProductionViewsForReviewAgents_destinations4136747084/001/.config/github-copilot/intellij/mcp.json":
+FAIL
+FAIL	github.com/paulharkink/another-agent-capability-toolkit/internal/tui	0.433s
+FAIL

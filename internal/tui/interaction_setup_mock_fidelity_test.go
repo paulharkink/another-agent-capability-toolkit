@@ -30,7 +30,7 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	})
 
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Setup sections") {
+	if !strings.Contains(view, "L3 Sections · FOCUSED") {
 		t.Fatalf("section navigation heading should match the mock:\n%s", view)
 	}
 	sections := []string{"Connection", "Authentication", "Databases", "Destinations"}

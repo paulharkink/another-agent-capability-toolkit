@@ -1028,7 +1028,7 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 			label := details[detailIndex]
 			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-action"})
 			rightCell = managementGold.Render(fit(label, right))
-			if m.management.Focus == ProfilesPane {
+			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
 				rightCell = managementSelected.Render(fit(label, right))
 			}
 		} else if detailIndex < len(details) {

@@ -420,7 +420,7 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		Inputs: inputs, Interactive: false, ExternalURL: q.ExternalURL,
 	})
 	return viewmodel.OperationResult{
-		Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message,
+		Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, SavedApplicable: true, Message: result.Message,
 		Step: result.Step, Target: result.Target,
 	}, err
 }
