@@ -15,6 +15,7 @@ import (
 type profileRuntime struct {
 	instances []mcp.Instance
 	listErr   error
+	logsCalls int
 }
 
 func (*profileRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
@@ -24,7 +25,8 @@ func (*profileRuntime) Stop(context.Context, state.Key) error {
 	return errors.New("unexpected stop")
 }
 func (r *profileRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.listErr }
-func (*profileRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+func (r *profileRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	r.logsCalls++
 	return nil, errors.New("unexpected logs")
 }
 

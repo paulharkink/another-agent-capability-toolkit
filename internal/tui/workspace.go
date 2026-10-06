@@ -109,7 +109,7 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 		"Target configuration: " + configuration,
 		"Package installation: " + installation,
 	}
-	lines = append(lines, "Actions: [c] Connection · [a] Authentication · [l] Logs · [i] Information")
+	lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
 	if profile == nil {
 		lines = append(lines, "MCP runtime: not observed", "Ownership: unknown", "Endpoint: not configured", "Reachability: not checked", "Agent registration: none")
 		lines = append(lines, "Next: review configuration, then save and apply.")
@@ -227,6 +227,15 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 		m.workspace.Section = "Information"
 	case "l":
 		m.workspace.Section = "Logs"
+		m.form.SelectSection(m.workspace.Section)
+		m.form.FocusSection()
+		profile := m.workspace.Profile
+		if profile == nil {
+			m.output = "Runtime observation is unavailable; refresh this target before viewing logs."
+			return true, nil
+		}
+		m.workspace.cacheDraft(m.form.Values())
+		return true, m.openProfileLogs(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
 	case "g", "r":
 		profile := m.workspace.Profile
 		if profile == nil {
@@ -246,8 +255,9 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			m.output = "MCP runtime action is unavailable without an observed profile"
 			return true, nil
 		}
-		action := strings.ToLower(stroke)
-		reason := m.profileActionReason(ProfileRow{Key: m.workspace.Key, Profile: m.workspace.Profile, URL: m.workspace.Profile.URL, Status: m.workspace.Profile.RuntimeStatus}, action)
+		shortcut := strings.ToLower(stroke)
+		action := map[string]string{"s": "start", "x": "stop"}[shortcut]
+		reason := m.profileActionReason(ProfileRow{Key: m.workspace.Key, Profile: m.workspace.Profile, URL: m.workspace.Profile.URL, Status: m.workspace.Profile.RuntimeStatus}, shortcut)
 		if reason != "" {
 			m.output = reason
 			return true, nil

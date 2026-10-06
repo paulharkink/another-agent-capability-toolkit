@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -9,6 +11,31 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
+
+// UIProfileLogs revalidates the selected profile's runtime immediately before
+// asking the runtime for logs. A stale UI row can therefore never turn a
+// not-yet-created target into a Docker logs request.
+func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, error) {
+	source, err := s.forSource(key.Source)
+	if err != nil {
+		return "", err
+	}
+	instances, err := source.Options.Runtime.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("refresh runtime observation before reading logs: %w", err)
+	}
+	for _, instance := range instances {
+		if instance.Key != key || instance.Status != "running" {
+			continue
+		}
+		if instance.Ownership != "local" {
+			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
+		}
+		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target})
+		return result.Logs, err
+	}
+	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
+}
 
 // UIProfileSnapshot merges configured profiles and registrations with a Docker
 // observation. A Docker failure leaves configured rows and the last successful

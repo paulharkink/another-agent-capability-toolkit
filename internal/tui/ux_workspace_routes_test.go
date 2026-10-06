@@ -188,6 +188,9 @@ func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T)
 		RegisteredAgents: []string{"codex"},
 	}
 	lines := workspaceOverviewLines(preview, true, profile)
+	if !strings.Contains(strings.Join(lines, "\n"), "[d] Databases") {
+		t.Error("Overview shortcut legend omitted the Databases section")
+	}
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{"Target configuration: saved", "Package installation: recorded", "MCP runtime: running", "Ownership: unknown", "Reachability: not checked", "Agent registration: codex", "Observation: stale"} {
 		if !strings.Contains(joined, want) {
