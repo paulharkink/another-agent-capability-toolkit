@@ -10,6 +10,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/install"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -87,8 +88,18 @@ type Result struct {
 	Instances []mcp.Instance       `json:"instances,omitempty"`
 	Logs      string               `json:"logs,omitempty"`
 	Message   string               `json:"message,omitempty"`
+	Step      string               `json:"step,omitempty"`
+	Target    string               `json:"target,omitempty"`
 }
 type InvalidInput struct{ Err error }
+
+type operationFailure struct {
+	step string
+	err  error
+}
+
+func (e operationFailure) Error() string { return e.err.Error() }
+func (e operationFailure) Unwrap() error { return e.err }
 
 func (e *InvalidInput) Error() string { return e.Err.Error() }
 func (e *InvalidInput) Unwrap() error { return e.Err }
@@ -277,6 +288,29 @@ func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]
 	}
 	return nil
 }
+
+func hasSubmittedAuthentication(s *Service, p catalog.Package, k state.Key, submitted, previous map[string]any) bool {
+	for _, input := range p.Inputs {
+		if input.Type == "secret" && submitted[input.Name] != nil && submitted[input.Name] != "" {
+			return true
+		}
+		if input.Type == "file" && (input.Name == "kubeconfig" || strings.Contains(strings.ToLower(input.Label), "kubeconfig")) {
+			value, ok := submitted[input.Name].(string)
+			if !ok || value == "" {
+				continue
+			}
+			oldValue, _ := previous[input.Name].(string)
+			if value == oldValue {
+				state, _ := s.credentialObservation(p, k)
+				if state == "present" {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
 func registrationName(k state.Key) string {
 	parts := []string{k.Package}
 	if k.Environment != "" {
@@ -287,6 +321,19 @@ func registrationName(k state.Key) string {
 	}
 	return strings.Join(parts, "-") + "-" + k.ID()[:16]
 }
+
+func operationTarget(k state.Key) string {
+	target := k.Target
+	if target == "" {
+		target = "default"
+	}
+	identity := k.Source + "/" + k.Package
+	if k.Environment != "" {
+		return identity + " — " + k.Environment + "/" + target
+	}
+	return identity + " — " + target
+}
+
 func (s *Service) ownedEnvironment(e agents.Environment, rows []state.Installation) agents.Environment {
 	e.Owned = map[string]agents.Registration{}
 	for _, r := range rows {
@@ -334,6 +381,10 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e != nil {
 		return out, e
 	}
+	previousAnswers, e := s.Store.Answers(k)
+	if e != nil {
+		return out, e
+	}
 	// Save the requested configuration before applying it. An apply failure
 	// leaves these answers available for correction and retry; installation
 	// records below still describe only effects that actually succeeded.
@@ -343,6 +394,8 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	out.Saved = true
 	generated := ""
 	if p.Skill != nil && (len(p.Templates) > 0 || p.Generator != nil) {
+		out.Step = "generate"
+		out.Target = operationTarget(k)
 		r := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
 		stage, e := r.Stage(ctx, p, values, t, s.Store.GeneratedDir(k))
 		if e != nil {
@@ -368,8 +421,29 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		succeeded := map[string]bool{}
 		url := q.ExternalURL
 		if p.MCP != nil && url == "" && !q.SkillsOnly {
+			if _, hasAuthenticate := p.MCP.Actions["authenticate"]; hasAuthenticate && hasSubmittedAuthentication(s, p, k, q.Inputs, previousAnswers) {
+				out.Step = "authenticate"
+				out.Target = operationTarget(k)
+				runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
+				auth, authErr := runner.Run(ctx, p, mcp.ActionRequest{Action: "authenticate", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: false})
+				if authErr != nil {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return picker.ErrCancelled
+					}
+					return authErr
+				}
+				if auth.AuthRequired {
+					return fmt.Errorf("%s authentication action still requires authentication", p.ID)
+				}
+			}
+			out.Step = "start"
+			out.Target = operationTarget(k)
 			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
 			if e != nil {
+				var failure operationFailure
+				if errors.As(e, &failure) {
+					out.Step = failure.step
+				}
 				return e
 			}
 			applied = true
@@ -378,6 +452,11 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		skills := install.NewSkills(s.Store)
 		skills.AllowSourceUpdate = q.UpdateSource
 		for _, env := range q.Agents {
+			out.Step = "register"
+			if p.Skill != nil {
+				out.Step = "install"
+			}
+			out.Target = operationTarget(k)
 			if e = ctx.Err(); e != nil {
 				return e
 			}
@@ -390,6 +469,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				}
 			}
 			if agentErr == nil && p.MCP != nil && !q.SkillsOnly {
+				out.Step = "register"
 				if env.ConfigPath == "" && agents.IsManual(env.Kind) {
 					env.ConfigPath = s.manualConfigPath(env)
 				}
@@ -534,27 +614,30 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
 		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
 		if e != nil {
-			return mcp.Instance{}, e
+			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}
 		if result.AuthRequired {
-			return mcp.Instance{}, fmt.Errorf("%s authentication required; run aact mcp authenticate %s with credentials or --interactive", p.ID, p.ID)
+			return mcp.Instance{}, operationFailure{step: "prepare", err: fmt.Errorf("%s authentication required; run aact mcp authenticate %s with credentials or --interactive", p.ID, p.ID)}
 		}
 		if e = forms.Validate(withChoices(p.Inputs, result.Choices), values); e != nil {
-			return mcp.Instance{}, invalid(e)
+			return mcp.Instance{}, operationFailure{step: "prepare", err: invalid(e)}
 		}
 		if result.Runtime == nil {
-			return mcp.Instance{}, errors.New("prepare action did not return runtime settings")
+			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
 	}
 	instance, err := s.Options.Runtime.Start(ctx, k, spec)
 	if errors.Is(err, mcp.ErrRunningWithDifferentSettings) {
 		if stopErr := s.Options.Runtime.Stop(ctx, k); stopErr != nil {
-			return mcp.Instance{}, fmt.Errorf("apply changed MCP settings: stop old instance: %w", stopErr)
+			return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("apply changed MCP settings: stop old instance: %w", stopErr)}
 		}
-		return s.Options.Runtime.Start(ctx, k, spec)
+		instance, err = s.Options.Runtime.Start(ctx, k, spec)
 	}
-	return instance, err
+	if err != nil {
+		return instance, operationFailure{step: "start", err: err}
+	}
+	return instance, nil
 }
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error) {
 	switch q.Action {

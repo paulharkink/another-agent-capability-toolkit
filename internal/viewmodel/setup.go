@@ -28,18 +28,21 @@ type SetupDestination struct {
 }
 
 type SetupPreview struct {
-	Key          state.Key
-	PackageName  string
-	SourceRoot   string
-	TargetPath   string
-	TargetTOML   string
-	Configured   bool
-	Inputs       []SetupInput
-	Destinations []SetupDestination
+	Key             state.Key
+	PackageName     string
+	SourceRoot      string
+	TargetPath      string
+	TargetTOML      string
+	Configured      bool
+	CredentialState string
+	CredentialNote  string
+	Inputs          []SetupInput
+	Destinations    []SetupDestination
 }
 
 type SetupInstallRequest struct {
 	SetupRequest
 	Inputs         map[string]any
 	DestinationIDs []string
+	ExternalURL    string
 }

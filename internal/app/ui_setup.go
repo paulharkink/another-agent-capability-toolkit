@@ -113,7 +113,11 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	for i := range defs {
 		defs[i].Default = nil
 	}
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path, Configured: attempted}
+	credentialState, credentialNote := s.credentialObservation(p, key)
+	preview := viewmodel.SetupPreview{
+		Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path, Configured: attempted,
+		CredentialState: credentialState, CredentialNote: credentialNote,
+	}
 	if target.Path != "" {
 		b, readErr := os.ReadFile(target.Path)
 		if readErr != nil {
@@ -411,6 +415,12 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 	for name, value := range q.Inputs {
 		inputs[name] = value
 	}
-	result, err := s.Install(ctx, InstallRequest{Package: q.PackageID, Environment: q.Environment, Target: q.Target, Agents: envs, Inputs: inputs, Interactive: false})
-	return viewmodel.OperationResult{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message}, err
+	result, err := s.Install(ctx, InstallRequest{
+		Package: q.PackageID, Environment: q.Environment, Target: q.Target, Agents: envs,
+		Inputs: inputs, Interactive: false, ExternalURL: q.ExternalURL,
+	})
+	return viewmodel.OperationResult{
+		Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message,
+		Step: result.Step, Target: result.Target,
+	}, err
 }

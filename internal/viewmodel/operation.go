@@ -14,5 +14,7 @@ type OperationResult struct {
 	Errors     []string
 	Saved      bool
 	Message    string
+	Step       string
+	Target     string
 	Connection ConnectionObservation
 }
