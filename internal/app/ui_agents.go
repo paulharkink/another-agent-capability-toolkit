@@ -40,22 +40,68 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 		}
 		seen[id] = true
 		kind, _, _ := strings.Cut(id, ":")
+		for _, record := range installed {
+			if record.AgentID == id && record.AgentKind != "" {
+				kind = record.AgentKind
+				break
+			}
+		}
 		discovery := agents.DiscoverAgent(ctx, kind, probe)
+		native, nativeErr := agents.ResolveEnvironment(id, kind, probe.Home)
+		if nativeErr != nil {
+			continue
+		}
+		native, nativeErr = agents.ApplyNativeConfigOverrides(native)
+		if nativeErr != nil {
+			return nil, nativeErr
+		}
+		writePath, pathErr := agents.ResolveConfigWritePath(native)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		effectivePath := writePath
+		if kind == "opencode" {
+			for _, file := range discovery.ConfigFiles {
+				if file.Exists && file.Path == writePath {
+					effectivePath = file.Path
+				}
+			}
+		}
 		row := viewmodel.AgentManagementRow{
 			ID: id, Name: discovery.Name, Detection: discovery.Detection,
-			Evidence: discovery.Evidence, Note: discovery.Note,
+			Evidence: discovery.Evidence, Note: discovery.Note, Home: native.Home,
+			EffectiveConfigPath: effectivePath, WriteConfigPath: writePath,
+		}
+		if override := nativeConfigOverride(kind, native); override != "" {
+			if row.Note != "" {
+				row.Note += "; "
+			}
+			row.Note += override
 		}
 		if kind != id {
 			row.Name = id
 		}
-		paths := map[string]bool{}
 		registrations := map[string]bool{}
+		recordedHomes := map[string]bool{}
+		recordedPaths := map[string]bool{}
+		recordedProfilePaths := map[string]bool{}
 		for _, file := range discovery.ConfigFiles {
-			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile(file))
-			paths[filepath.Clean(file.Path)] = true
+			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Exists: file.Exists})
 		}
 		for _, record := range installed {
-			if record.AgentID != id || record.Component != "mcp" {
+			if record.AgentID != id || (record.Component != "mcp" && record.Component != "skill") {
+				continue
+			}
+			if record.AgentHome != "" {
+				recordedHomes[filepath.Clean(record.AgentHome)] = true
+			}
+			if record.Component != "mcp" {
+				if filepath.Clean(record.Destination) == filepath.Clean(native.SkillsDir) {
+					if row.Note != "" {
+						row.Note += "; "
+					}
+					row.Note += "Recorded skill destination shares native skill directory " + native.SkillsDir
+				}
 				continue
 			}
 			profile := strings.Join([]string{record.Key.Source, record.Key.Package, record.Key.Environment, record.Key.Target}, " / ")
@@ -63,15 +109,45 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 				row.Registrations = append(row.Registrations, profile)
 				registrations[profile] = true
 			}
-			if record.Destination == "" || paths[filepath.Clean(record.Destination)] {
+			if record.Destination == "" {
 				continue
 			}
-			paths[filepath.Clean(record.Destination)] = true
+			cleanPath := filepath.Clean(record.Destination)
+			recordedPaths[cleanPath] = true
+			profilePath := profile + "\x00" + cleanPath
+			if recordedProfilePaths[profilePath] {
+				continue
+			}
+			recordedProfilePaths[profilePath] = true
 			_, statErr := os.Stat(record.Destination)
 			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{
 				Path: record.Destination, Scope: "AACT registration", Precedence: "recorded",
-				Evidence: "AACT installation ledger", Exists: statErr == nil,
+				Evidence: "AACT installation ledger", Profile: profile, Exists: statErr == nil,
 			})
+		}
+		if len(recordedHomes) == 1 {
+			for home := range recordedHomes {
+				if home != filepath.Clean(native.Home) {
+					row.Home = home
+					if row.Note != "" {
+						row.Note += "; "
+					}
+					row.Note += "AACT has profile-specific records using custom home " + home + "; effective config shown above is the process-native candidate"
+				}
+			}
+		}
+		if len(recordedPaths) == 1 {
+			for path := range recordedPaths {
+				row.WriteConfigPath = path
+				if path != writePath {
+					if row.Note != "" {
+						row.Note += "; "
+					}
+					row.Note += "Recorded AACT registration path differs from the process-native planned write file"
+				}
+			}
+		} else if len(recordedPaths) > 1 {
+			row.Note += "; multiple recorded MCP paths are listed below by AACT registration"
 		}
 		sort.Strings(row.Registrations)
 		rows = append(rows, row)

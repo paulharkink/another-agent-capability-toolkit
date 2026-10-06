@@ -177,10 +177,10 @@ func (s *Service) UISetDefaultAgents(ctx context.Context, ids []string) error {
 	}
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		if id == "" || id == "all" || !known[id] || seen[id] {
+		kind, _, _ := strings.Cut(id, ":")
+		if id == "" || id == "all" || !known[id] || seen[id] || agents.IsManual(kind) {
 			return invalid(fmt.Errorf("invalid default MCP agent %q", id))
 		}
-		kind, _, _ := strings.Cut(id, ":")
 		if _, err := agents.For(kind, s.Options.Runner); err != nil {
 			return invalid(fmt.Errorf("default MCP agent %q: %w", id, err))
 		}
@@ -221,8 +221,10 @@ func (s *Service) UIAgentDefaultOptions(ctx context.Context) ([]string, error) {
 			continue
 		}
 		kind, _, _ := strings.Cut(id, ":")
-		if _, err := agents.For(kind, s.Options.Runner); err == nil {
-			options = append(options, id)
+		if !agents.IsManual(kind) {
+			if _, err := agents.For(kind, s.Options.Runner); err == nil {
+				options = append(options, id)
+			}
 		}
 	}
 	return options, nil

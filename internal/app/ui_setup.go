@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -164,6 +165,9 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		if id == "all" && (p.Skill == nil || p.MCP != nil) {
 			continue
 		}
+		if p.MCP != nil && isManualAgentID(id) {
+			continue
+		}
 		env, envErr := s.uiEnvironment(id, key)
 		if envErr != nil {
 			return viewmodel.SetupPreview{}, envErr
@@ -173,17 +177,97 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 				continue
 			}
 		}
+		writePath := env.ConfigPath
+		if p.MCP != nil {
+			var pathErr error
+			writePath, pathErr = agents.ResolveConfigWritePath(env)
+			if pathErr != nil {
+				return viewmodel.SetupPreview{}, pathErr
+			}
+		}
+		detection := "shared"
+		if id != "all" {
+			detection = agents.DiscoverAgent(ctx, env.Kind, uiDiscoveryProbe()).Detection
+		}
 		path := env.SkillsDir
 		if p.MCP != nil {
-			path = env.ConfigPath
+			path = writePath
 		}
 		selected := id == "all" || defaultAgents[id]
 		if attempted {
 			selected = (p.Skill == nil || installed[id]["skill"]) && (p.MCP == nil || installed[id]["mcp"])
 		}
-		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{ID: id, Path: path, Selected: selected})
+		note := ""
+		if filepath.Clean(env.Home) != filepath.Clean(currentUserHome()) {
+			note = "Uses recorded custom home override " + env.Home
+		} else if override := nativeConfigOverride(env.Kind, env); override != "" {
+			note = override
+		}
+		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{
+			ID: id, Kind: env.Kind, Home: env.Home, SkillsPath: env.SkillsDir,
+			ConfigPath: writePath, Detection: detection, Note: note,
+			Path: path, Selected: selected,
+		})
+	}
+	shared := map[string][]int{}
+	for i, destination := range preview.Destinations {
+		if destination.SkillsPath != "" {
+			shared[filepath.Clean(destination.SkillsPath)] = append(shared[filepath.Clean(destination.SkillsPath)], i)
+		}
+	}
+	for path, indexes := range shared {
+		if len(indexes) < 2 {
+			continue
+		}
+		for _, index := range indexes {
+			message := "Shares skill directory " + path + " with "
+			names := []string{}
+			for _, other := range indexes {
+				if index != other {
+					names = append(names, preview.Destinations[other].ID)
+				}
+			}
+			preview.Destinations[index].Note = strings.TrimSpace(preview.Destinations[index].Note + "; " + message + strings.Join(names, ", "))
+		}
 	}
 	return preview, nil
+}
+
+func isManualAgentID(id string) bool {
+	kind, _, _ := strings.Cut(id, ":")
+	return agents.IsManual(kind)
+}
+
+func currentUserHome() string {
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+func uiDiscoveryProbe() agents.DiscoveryProbe {
+	probe, err := agents.DefaultDiscoveryProbe()
+	if err != nil {
+		return agents.DiscoveryProbe{}
+	}
+	return probe
+}
+
+func nativeConfigOverride(kind string, env agents.Environment) string {
+	var variable string
+	switch kind {
+	case "codex":
+		variable = "CODEX_HOME"
+	case "opencode":
+		variable = "XDG_CONFIG_HOME"
+	case "claude":
+		variable = "CLAUDE_CONFIG_DIR"
+	}
+	if variable == "" {
+		return ""
+	}
+	if value := os.Getenv(variable); value != "" {
+		return "Uses process-native " + variable + " for agent config paths: " + value
+	}
+	return ""
 }
 
 // targetInputChoices turns wildcard table keys in a target TOML into stable
@@ -264,6 +348,13 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 			return viewmodel.OperationResult{}, invalid(fmt.Errorf("duplicate or empty destination %q", id))
 		}
 		seen[id] = true
+		kind, _, _ := strings.Cut(id, ":")
+		if p.MCP != nil && id == "all" {
+			return viewmodel.OperationResult{}, invalid(errors.New("global All is a skill-only destination and is not a named MCP agent"))
+		}
+		if p.MCP != nil && agents.IsManual(kind) {
+			return viewmodel.OperationResult{}, invalid(fmt.Errorf("destination %q is not a named MCP agent", id))
+		}
 		env, envErr := s.uiEnvironment(id, key)
 		if envErr != nil {
 			return viewmodel.OperationResult{}, envErr

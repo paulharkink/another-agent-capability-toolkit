@@ -22,9 +22,9 @@ type SetupInput struct {
 }
 
 type SetupDestination struct {
-	ID       string
-	Path     string
-	Selected bool
+	ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
+	Path                                                    string
+	Selected                                                bool
 }
 
 type SetupPreview struct {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type Environment struct {
@@ -89,6 +90,40 @@ func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
 		}
 	}
 	return env, nil
+}
+
+// ResolveConfigWritePath returns the file the existing adapter will mutate.
+// OpenCode's adapter writes JSONC when it exists, otherwise JSON when it
+// exists, and defaults to JSONC when neither sibling exists.
+func ResolveConfigWritePath(env Environment) (string, error) {
+	path := env.ConfigPath
+	if path == "" {
+		resolved, err := ResolveEnvironment(env.ID, env.Kind, env.Home)
+		if err != nil {
+			return "", err
+		}
+		path = resolved.ConfigPath
+	}
+	if env.Kind != "opencode" {
+		return path, nil
+	}
+	ext := filepath.Ext(path)
+	if ext != ".json" && ext != ".jsonc" {
+		return path, nil
+	}
+	jsonPath := strings.TrimSuffix(path, ext) + ".json"
+	jsoncPath := strings.TrimSuffix(path, ext) + ".jsonc"
+	if _, err := os.Stat(jsoncPath); err == nil {
+		return jsoncPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if _, err := os.Stat(jsonPath); err == nil {
+		return jsonPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return jsoncPath, nil
 }
 
 type Registration struct {
