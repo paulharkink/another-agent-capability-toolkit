@@ -38,6 +38,13 @@ func (e uxFailExecutor) Run(context.Context, []string, string, []byte, map[strin
 	return nil, errors.New(e.message)
 }
 
+type uxCancelExecutor struct{ cancel context.CancelFunc }
+
+func (e uxCancelExecutor) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	e.cancel()
+	return nil, context.Canceled
+}
+
 func (e *uxActionExecutor) Run(_ context.Context, argv []string, _ string, input []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
 	var call uxActionCall
 	if err := json.Unmarshal(input, &call); err != nil {
@@ -79,6 +86,43 @@ func (*uxForeignRuntime) List(context.Context) ([]mcp.Instance, error) { return 
 func (*uxForeignRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
 }
+
+type uxCancelRuntime struct {
+	starts int
+	cancel context.CancelFunc
+}
+
+func (r *uxCancelRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
+	r.starts++
+	r.cancel()
+	return mcp.Instance{}, context.Canceled
+}
+func (*uxCancelRuntime) Stop(context.Context, state.Key) error        { return nil }
+func (*uxCancelRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (*uxCancelRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+type uxCancelAtErrContext struct {
+	context.Context
+	errCalls  int
+	cancelAt  int
+	done      chan struct{}
+	cancelled bool
+}
+
+func (c *uxCancelAtErrContext) Err() error {
+	c.errCalls++
+	if c.errCalls >= c.cancelAt {
+		if !c.cancelled {
+			close(c.done)
+			c.cancelled = true
+		}
+		return context.Canceled
+	}
+	return nil
+}
+func (c *uxCancelAtErrContext) Done() <-chan struct{} { return c.done }
 
 func (r uxOrderedRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
 	*r.order = append(*r.order, "start")
@@ -187,6 +231,116 @@ func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
 	if readErr != nil || answers["kubeconfig"] != kubeconfig {
 		t.Fatalf("cancelled auth discarded submitted path: %#v %v", answers, readErr)
+	}
+}
+
+func TestUXCancelledGenerationIsNotFailed(t *testing.T) {
+	svc, env, store := fixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Options.Runner = uxCancelExecutor{cancel: cancel}
+	svc.Source.Catalog[0].Generator = &catalog.Command{Argv: []string{"fixture-generator"}}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	if !errors.Is(err, picker.ErrCancelled) {
+		t.Fatalf("generation cancellation became an operation failure: %v", err)
+	}
+	if !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 0 {
+		t.Fatalf("cancelled generation reported failed or applied effects: %#v", result)
+	}
+	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if readErr != nil || len(answers) != 0 {
+		t.Fatalf("cancelled generation lost saved configuration: %#v, %v", answers, readErr)
+	}
+}
+
+func TestUXCancelledPrepareIsNotFailed(t *testing.T) {
+	svc, env, store := fixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := &uxActionExecutor{failOn: "prepare", cancel: cancel}
+	svc.Options.Runner = exec
+	svc.Options.Runtime = &fakeRuntime{}
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	if !errors.Is(err, picker.ErrCancelled) {
+		t.Fatalf("prepare cancellation became an operation failure: %v", err)
+	}
+	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if readErr != nil || answers["port"] != json.Number("9000") || !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 0 {
+		t.Fatalf("cancelled prepare lost saved state or reported failed effects: result=%#v answers=%#v err=%v", result, answers, readErr)
+	}
+}
+
+func TestUXCancelledStartIsNotFailed(t *testing.T) {
+	svc, env, store := fixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := &uxCancelRuntime{cancel: cancel}
+	svc.Options.Runtime = runtime
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	if !errors.Is(err, picker.ErrCancelled) {
+		t.Fatalf("start cancellation became an operation failure: %v", err)
+	}
+	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if readErr != nil || answers["port"] != json.Number("9000") || !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 0 || runtime.starts != 1 {
+		t.Fatalf("cancelled start lost saved state or claimed effects: result=%#v answers=%#v starts=%d err=%v", result, answers, runtime.starts, readErr)
+	}
+}
+
+func TestUXCancelledRegistrationAfterSuccessRetainsChanges(t *testing.T) {
+	svc, first, store := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
+	svc.Options.Runtime = &fakeRuntime{}
+	first.Kind, first.ID, first.ConfigPath = "generic", "first-agent", t.TempDir()+"/first.json"
+	second := first
+	second.ID, second.ConfigPath = "second-agent", t.TempDir()+"/second.json"
+	ctx := &uxCancelAtErrContext{Context: context.Background(), cancelAt: 4, done: make(chan struct{})}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{first, second}, ExternalURL: "http://fixture.example/mcp"})
+	if !errors.Is(err, picker.ErrCancelled) {
+		t.Fatalf("registration cancellation became an operation failure: %v", err)
+	}
+	if !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 1 || result.Changes[0].AgentID != first.ID {
+		t.Fatalf("cancelled second registration lost actual first effect: %#v", result)
+	}
+	rows, readErr := store.Installations()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	registered := map[string]bool{}
+	for _, row := range rows {
+		if row.Component == "mcp" {
+			registered[row.AgentID] = true
+		}
+	}
+	if !registered[first.ID] || registered[second.ID] {
+		t.Fatalf("registration ledger disagrees with cancellation effects: %#v", rows)
+	}
+}
+
+func TestUXCancellationDoesNotHideEarlierRegistrationFailure(t *testing.T) {
+	svc, first, _ := fixture(t)
+	svc.Source.Catalog[0].Skill = nil
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
+	svc.Options.Runtime = &fakeRuntime{}
+	first.Kind, first.ID, first.ConfigPath = "generic", "bad-agent", t.TempDir()+"/bad.json"
+	if err := os.WriteFile(first.ConfigPath, []byte(`{"servers":{},"servers":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.ID, second.ConfigPath = "cancelled-agent", t.TempDir()+"/cancelled.json"
+	ctx := &uxCancelAtErrContext{Context: context.Background(), cancelAt: 4, done: make(chan struct{})}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{first, second}, ExternalURL: "http://fixture.example/mcp"})
+	if err == nil || !errors.Is(err, picker.ErrCancelled) || !strings.Contains(err.Error(), "duplicate agent config key") {
+		t.Fatalf("cancellation hid prior registration failure: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "duplicate agent config key") || len(result.Changes) != 0 {
+		t.Fatalf("prior failure or actual effects were misreported: %#v", result)
 	}
 }
 

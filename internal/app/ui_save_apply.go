@@ -1,13 +1,41 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
+
+// ordinaryCancellation recognizes cancellation returned directly by an
+// operation, plus the ActionRunner's textual wrapper when its context has
+// actually been canceled. It does not hide unrelated failures that race with
+// cancellation.
+func ordinaryCancellation(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, picker.ErrCancelled) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	return ctx.Err() != nil && strings.Contains(err.Error(), ": context canceled:")
+}
+
+func cancellationResult(ctx context.Context, result Result, err error) (Result, error) {
+	if !ordinaryCancellation(ctx, err) {
+		return result, err
+	}
+	if len(result.Errors) == 0 {
+		return result, picker.ErrCancelled
+	}
+	return result, errors.Join(errors.New(strings.Join(result.Errors, "; ")), picker.ErrCancelled)
+}
 
 // credentialObservation reports the presence of package-managed material only.
 // It deliberately does not interpret configured source paths as evidence that

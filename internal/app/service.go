@@ -399,12 +399,12 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		r := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
 		stage, e := r.Stage(ctx, p, values, t, s.Store.GeneratedDir(k))
 		if e != nil {
-			return out, e
+			return cancellationResult(ctx, out, e)
 		}
 		generated = filepath.Join(filepath.Dir(stage), "output-"+strings.TrimPrefix(filepath.Base(stage), ".aact-stage-"))
 		if e = render.Publish(stage, generated); e != nil {
 			os.RemoveAll(stage)
-			return out, e
+			return cancellationResult(ctx, out, e)
 		}
 		defer func() {
 			rows, _ := s.Store.Installations()
@@ -419,6 +419,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	err = s.Store.WithLock(ctx, func() error {
 		applied := false
 		succeeded := map[string]bool{}
+		var cancellation error
 		url := q.ExternalURL
 		if p.MCP != nil && url == "" && !q.SkillsOnly {
 			if _, hasAuthenticate := p.MCP.Actions["authenticate"]; hasAuthenticate && hasSubmittedAuthentication(s, p, k, q.Inputs, previousAnswers) {
@@ -427,7 +428,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
 				auth, authErr := runner.Run(ctx, p, mcp.ActionRequest{Action: "authenticate", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: false})
 				if authErr != nil {
-					if errors.Is(ctx.Err(), context.Canceled) {
+					if ordinaryCancellation(ctx, authErr) {
 						return picker.ErrCancelled
 					}
 					return authErr
@@ -458,7 +459,8 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			}
 			out.Target = operationTarget(k)
 			if e = ctx.Err(); e != nil {
-				return e
+				cancellation = e
+				break
 			}
 			agentErr := error(nil)
 			if p.Skill != nil {
@@ -505,6 +507,10 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				}
 			}
 			if agentErr != nil {
+				if ordinaryCancellation(ctx, agentErr) {
+					cancellation = agentErr
+					break
+				}
 				out.Errors = append(out.Errors, env.ID+": "+agentErr.Error())
 			}
 		}
@@ -523,11 +529,18 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			}
 		}
 		if len(out.Errors) > 0 {
-			return errors.New(strings.Join(out.Errors, "; "))
+			applyErr := errors.New(strings.Join(out.Errors, "; "))
+			if cancellation != nil {
+				return errors.Join(applyErr, picker.ErrCancelled)
+			}
+			return applyErr
+		}
+		if cancellation != nil {
+			return picker.ErrCancelled
 		}
 		return nil
 	})
-	return out, err
+	return cancellationResult(ctx, out, err)
 }
 func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, err error) {
 	out.Changes = []state.Installation{}
