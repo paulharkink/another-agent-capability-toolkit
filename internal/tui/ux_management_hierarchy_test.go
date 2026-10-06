@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,21 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
+
+type uxAgentPathBackend struct {
+	fixtureBackend
+	rows          []viewmodel.AgentManagementRow
+	requestedPath string
+}
+
+func (b *uxAgentPathBackend) UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error) {
+	return b.rows, nil
+}
+
+func (b *uxAgentPathBackend) UIAgentConfig(_ context.Context, _ string, path string) (string, error) {
+	b.requestedPath = path
+	return "contents from " + path, nil
+}
 
 func TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution(t *testing.T) {
 	m := fixtureModel(t)
@@ -71,6 +87,121 @@ func TestUXUnmaskedExactConfigViewerReturnsSameAgent(t *testing.T) {
 	press(m, tea.KeyEscape, "")
 	if m.view != "Agents" || m.selected != 0 || m.management.Focus != ProfilesPane {
 		t.Fatalf("viewer did not return to the same agent details: view=%s selected=%d focus=%v", m.view, m.selected, m.management.Focus)
+	}
+}
+
+func TestUXAgentSecondConfigControlOpensSecondCandidate(t *testing.T) {
+	b := &uxAgentPathBackend{rows: []viewmodel.AgentManagementRow{{
+		ID: "codex", Name: "Codex", Detection: "detected",
+		ConfigFiles: []viewmodel.AgentConfigFile{
+			{Path: "/home/test/effective.json", Scope: "user", Exists: true},
+			{Path: "/home/test/project.json", Scope: "project", Exists: true},
+		},
+	}}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.agentManagement = b.rows
+	m.navigate("Agents")
+	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyDown, "")
+	if cmd := m.managementKey("enter"); cmd == nil {
+		t.Fatal("second exact configuration control did not request its viewer")
+	} else {
+		_, _ = m.Update(cmd())
+	}
+	if b.requestedPath != "/home/test/project.json" || m.management.ViewerPath != b.requestedPath {
+		t.Fatalf("second candidate opened the wrong config: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
+	}
+}
+
+func TestUXAgentMouseOpensClickedConfigCandidate(t *testing.T) {
+	b := &uxAgentPathBackend{rows: []viewmodel.AgentManagementRow{{
+		ID: "codex", Name: "Codex", Detection: "detected",
+		ConfigFiles: []viewmodel.AgentConfigFile{
+			{Path: "/home/test/effective.json", Scope: "user", Exists: true},
+			{Path: "/home/test/project.json", Scope: "project", Exists: true},
+		},
+	}}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.agentManagement = b.rows
+	m.navigate("Agents")
+	m.management.Focus = ProfilesPane
+	_, _, firstControl := m.agentManagementDisplayLines()
+	m.View()
+	var candidate hitRegion
+	for _, hit := range m.management.Hits {
+		if hit.Control == "agent-config" && hit.Index == firstControl+1 {
+			candidate = hit
+			break
+		}
+	}
+	if candidate.Control == "" {
+		t.Fatal("second candidate has no visible mouse control")
+	}
+	_, cmd := m.Update(tea.MouseClickMsg{X: candidate.X + 1, Y: candidate.Y, Button: tea.MouseLeft})
+	if cmd != nil {
+		_, _ = m.Update(cmd())
+	}
+	if b.requestedPath != "/home/test/project.json" || m.management.ViewerPath != b.requestedPath {
+		t.Fatalf("mouse opened the wrong config candidate: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
+	}
+}
+
+func TestUXAgentFactSelectionDoesNotOpenAnyConfig(t *testing.T) {
+	b := &uxAgentPathBackend{rows: []viewmodel.AgentManagementRow{{
+		ID: "codex", Detection: "detected", Evidence: "binary: /opt/codex",
+		ConfigFiles: []viewmodel.AgentConfigFile{{Path: "/home/test/config.json", Exists: true}},
+	}}}
+	m := New(b).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.agentManagement = b.rows
+	m.navigate("Agents")
+	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyHome, "")
+	if cmd := m.managementKey("enter"); cmd != nil {
+		t.Fatal("Enter on a fact requested a configuration viewer")
+	}
+	if m.management.Modal == "viewer" || b.requestedPath != "" {
+		t.Fatalf("fact selection opened a config: modal=%q path=%q", m.management.Modal, b.requestedPath)
+	}
+}
+
+func TestUXSettingsFactEnterDoesNotActivateOffscreenAction(t *testing.T) {
+	m := fixtureModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m.navigate("Settings")
+	press(m, tea.KeyEnter, "") // Focus the details pane at its first fact.
+	if cmd := m.managementKey("enter"); cmd != nil || m.form != nil {
+		t.Fatal("Enter on the Environment source fact activated the offscreen edit action")
+	}
+	if m.management.Focus != ProfilesPane || m.view != "Settings" {
+		t.Fatalf("non-action activation changed navigation: view=%q focus=%v", m.view, m.management.Focus)
+	}
+}
+
+func TestUXSettingsActionRequiresHighlightedControl(t *testing.T) {
+	m := fixtureModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m.navigate("Settings")
+	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyHome, "")
+	if cmd := m.managementKey("enter"); cmd != nil {
+		_, _ = m.Update(cmd())
+	}
+	if m.form != nil {
+		t.Fatal("a non-action Environment source fact opened a Settings editor")
+	}
+	press(m, tea.KeyEnd, "")
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "Edit environment root") || !strings.Contains(view, "More above") {
+		t.Fatalf("focused Settings action is not visible with its scroll cue:\n%s", view)
+	}
+	if cmd := m.managementKey("enter"); cmd != nil {
+		_, _ = m.Update(cmd())
+	}
+	if m.form == nil {
+		t.Fatal("Enter on the highlighted Settings action did not open its editor")
 	}
 }
 

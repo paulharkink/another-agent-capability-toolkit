@@ -34,6 +34,7 @@ type managementState struct {
 	TargetIndex          int
 	AgentDetailIndex     int
 	SettingsDetailOffset int
+	SettingsDetailIndex  int
 	SettingsOptions      []string // retained for source compatibility with legacy test fixtures; no longer drives UI state
 	HelpOrigin           string
 	HelpSelected         int
@@ -239,9 +240,10 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			if m.management.Focus == CapabilitiesPane {
 				m.management.Focus = ProfilesPane
 				m.management.SettingsDetailOffset = 0
+				m.management.SettingsDetailIndex = 0
 				return nil
 			}
-			return m.activateSettingsCategory()
+			return m.activateSettingsDetail()
 		}
 		fallthrough
 	case "f2":
@@ -251,10 +253,12 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
 			} else if m.view == "Settings" && m.management.Focus == CapabilitiesPane {
 				m.management.Focus = ProfilesPane
+				m.management.SettingsDetailOffset = 0
+				m.management.SettingsDetailIndex = 0
 			} else if m.view == "Agents" {
 				return m.activateAgentDetail()
 			} else if m.view == "Settings" {
-				return m.activateSettingsCategory()
+				return m.activateSettingsDetail()
 			} else if m.view == "Environments" {
 				m.management.Modal = "actions"
 				m.management.ModalSelected = 0
@@ -304,7 +308,8 @@ func (m *Model) moveManagementSelection(stroke string) {
 	if m.view == "Settings" && m.management.Focus == ProfilesPane {
 		_, right := managementPaneWidths(m.width)
 		details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
-		m.management.SettingsDetailOffset = moveBounded(m.management.SettingsDetailOffset, len(details), stroke, max(1, m.height-11))
+		m.management.SettingsDetailIndex = moveBounded(m.management.SettingsDetailIndex, len(details), stroke, max(1, m.height-12))
+		m.keepSettingsDetailVisible(len(details))
 		return
 	}
 	if m.view == "Settings" {
@@ -312,6 +317,7 @@ func (m *Model) moveManagementSelection(stroke string) {
 		m.selected = moveBounded(m.selected, len(m.managementSettingsRows()), stroke, max(1, m.height-11))
 		if m.selected != previous {
 			m.management.SettingsDetailOffset = 0
+			m.management.SettingsDetailIndex = 0
 		}
 		return
 	}
@@ -452,27 +458,72 @@ func (m *Model) activateAgentDetail() tea.Cmd {
 	if index < 0 || index >= len(controls) {
 		return nil
 	}
-	index = 0
-	for _, file := range row.ConfigFiles {
+	candidateIndex := -1
+	for i, file := range row.ConfigFiles {
 		if !file.Exists {
 			continue
 		}
 		if index == 0 {
-			backend, ok := m.backend.(agentManagementBackend)
-			if !ok {
-				m.output = "Exact configuration viewer unavailable from service"
-				return nil
-			}
-			m.management.ViewerReturn = ""
-			return func() tea.Msg {
-				content, err := backend.UIAgentConfig(m.ctx, row.ID, file.Path)
-				return agentConfigMsg{path: file.Path, content: content, err: err}
-			}
+			candidateIndex = i
+			break
 		}
 		index--
 	}
-	m.output = "Agent location editing is unavailable: no supported location editor is exposed by this backend."
-	return nil
+	if candidateIndex < 0 {
+		return nil
+	}
+	backend, ok := m.backend.(agentManagementBackend)
+	if !ok {
+		m.output = "Exact configuration viewer unavailable from service"
+		return nil
+	}
+	path := row.ConfigFiles[candidateIndex].Path
+	m.management.ViewerReturn = ""
+	return func() tea.Msg {
+		content, err := backend.UIAgentConfig(m.ctx, row.ID, path)
+		return agentConfigMsg{path: path, content: content, err: err}
+	}
+}
+
+func (m *Model) settingsActionIndex(details []string) (int, bool) {
+	if len(details) == 0 {
+		return 0, false
+	}
+	switch m.selected {
+	case 0:
+		return len(details) - 1, true
+	case 1:
+		if _, ok := m.backend.(defaultAgentsBackend); ok {
+			return len(details) - 1, true
+		}
+	}
+	return 0, false
+}
+
+func (m *Model) activateSettingsDetail() tea.Cmd {
+	_, right := managementPaneWidths(max(80, m.width))
+	details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+	actionIndex, hasAction := m.settingsActionIndex(details)
+	visible := max(1, m.height-12)
+	m.keepSettingsDetailVisible(len(details))
+	if !hasAction || m.management.SettingsDetailIndex != actionIndex ||
+		m.management.SettingsDetailIndex < m.management.SettingsDetailOffset ||
+		m.management.SettingsDetailIndex >= m.management.SettingsDetailOffset+visible {
+		return nil
+	}
+	return m.activateSettingsCategory()
+}
+
+func (m *Model) keepSettingsDetailVisible(detailCount int) {
+	visible := max(1, m.height-12)
+	maxStart := max(0, detailCount-visible)
+	start := min(max(0, m.management.SettingsDetailOffset), maxStart)
+	if m.management.SettingsDetailIndex < start {
+		start = m.management.SettingsDetailIndex
+	} else if m.management.SettingsDetailIndex >= start+visible {
+		start = m.management.SettingsDetailIndex - visible + 1
+	}
+	m.management.SettingsDetailOffset = min(max(0, start), maxStart)
 }
 
 func (m *Model) activateSettingsCategory() tea.Cmd {
@@ -944,6 +995,7 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 		leftTitle = "►" + leftTitle
 	}
 	details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+	m.keepSettingsDetailVisible(len(details))
 	detailStart := min(m.management.SettingsDetailOffset, max(0, len(details)-visible))
 	detailTitle := " Details · " + rows[min(max(0, m.selected), len(rows)-1)]
 	if m.management.Focus == ProfilesPane {
@@ -971,19 +1023,19 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 			leftCell = managementSelected.Render(leftCell)
 		}
 		rightCell := fit(rightText, right)
-		canEditDefaults := false
-		if _, ok := m.backend.(defaultAgentsBackend); ok {
-			canEditDefaults = true
-		}
-		if detailIndex == len(details)-1 && (m.selected == 0 || (m.selected == 1 && canEditDefaults)) {
+		actionIndex, hasAction := m.settingsActionIndex(details)
+		if hasAction && detailIndex == actionIndex {
 			label := details[detailIndex]
-			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: m.selected, Control: "settings-action"})
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-action"})
 			rightCell = managementGold.Render(fit(label, right))
 			if m.management.Focus == ProfilesPane {
 				rightCell = managementSelected.Render(fit(label, right))
 			}
 		} else if detailIndex < len(details) {
 			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-detail"})
+			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
+				rightCell = managementSelected.Render(fit(rightText, right))
+			}
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
@@ -1281,6 +1333,10 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 				m.selected = hit.Index
 				if m.view == "Agents" || m.view == "Settings" {
 					m.management.Focus = CapabilitiesPane
+					if m.view == "Settings" {
+						m.management.SettingsDetailOffset = 0
+						m.management.SettingsDetailIndex = 0
+					}
 				}
 			}
 			return nil
@@ -1294,13 +1350,19 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 				m.management.AgentDetailIndex = hit.Index
 			}
 			if hit.Control == "settings-detail" {
-				m.management.SettingsDetailOffset = hit.Index
+				m.management.SettingsDetailIndex = hit.Index
+				_, right := managementPaneWidths(max(80, m.width))
+				details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+				m.keepSettingsDetailVisible(len(details))
 			}
 			return nil
 		case "settings-action":
-			m.selected = hit.Index
+			m.management.SettingsDetailIndex = hit.Index
 			m.management.Focus = ProfilesPane
-			return m.activateSettingsCategory()
+			_, right := managementPaneWidths(max(80, m.width))
+			details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+			m.keepSettingsDetailVisible(len(details))
+			return m.activateSettingsDetail()
 		case "help":
 			return m.managementKey("f1")
 		case "actions":

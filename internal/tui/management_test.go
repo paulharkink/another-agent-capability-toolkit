@@ -524,6 +524,7 @@ func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
 	m.navigate("Settings")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyF2, "")
+	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
 	if m.form == nil || !strings.Contains(m.View().Content, "Default named agents") || !strings.Contains(m.View().Content, "[claude]") {
 		t.Fatalf("default-agent form missing or not prefilled: %s", m.View().Content)
@@ -542,6 +543,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Settings")
 	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
 	if m.form == nil || !m.management.FormOverlay {
 		t.Fatal("Environment root editor did not open as a management overlay")
@@ -571,6 +573,7 @@ func TestManagementDefaultAgentEditorUsesNamedOverlayTitle(t *testing.T) {
 	m.navigate("Settings")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
 	if m.form == nil || !m.management.FormOverlay || !strings.Contains(view, "Agent defaults · Edit future MCP destinations") || !strings.Contains(view, "F9 Main menu: Agents") {
