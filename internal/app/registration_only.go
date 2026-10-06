@@ -154,22 +154,30 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 	return out, err
 }
 
+type registrationIdentity struct {
+	AgentID     string
+	Destination string
+}
+
+func registrationIdentityKey(agentID, destination string) string {
+	return agentID + "\x00" + destination
+}
+
 // removeUIRegistrations removes only selected, currently recorded MCP entries.
 // It is separate from desired-state reconciliation because removal must not
 // require or observe the external endpoint and must preserve every other row.
-func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, agentIDs []string) (out Result, err error) {
+// Legacy agent-ID requests are resolved up front and rejected if they match
+// more than one destination, before any config or ledger is changed.
+func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, identities []registrationIdentity, legacyAgentIDs []string) (out Result, err error) {
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
 	if key.Source == "" || key.Package == "" {
 		return out, invalid(errors.New("MCP source and package are required"))
 	}
-	selected := make(map[string]bool, len(agentIDs))
-	for _, id := range agentIDs {
-		if id != "" {
-			selected[id] = true
-		}
+	if len(identities) > 0 && len(legacyAgentIDs) > 0 {
+		return out, invalid(errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both"))
 	}
-	if len(selected) == 0 {
+	if len(identities) == 0 && len(legacyAgentIDs) == 0 {
 		return out, invalid(errors.New("select at least one recorded MCP registration to remove"))
 	}
 	err = s.Store.WithLock(ctx, func() error {
@@ -177,12 +185,65 @@ func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, agen
 		if readErr != nil {
 			return readErr
 		}
-		matched := make(map[string]bool, len(selected))
+		byAgent := make(map[string]map[string]state.Installation)
 		for _, row := range rows {
-			if row.Key != key || row.Component != "mcp" || !selected[row.AgentID] {
+			if row.Key != key || row.Component != "mcp" || strings.TrimSpace(row.Destination) == "" {
 				continue
 			}
-			matched[row.AgentID] = true
+			if byAgent[row.AgentID] == nil {
+				byAgent[row.AgentID] = make(map[string]state.Installation)
+			}
+			byAgent[row.AgentID][row.Destination] = row
+		}
+		selected := make(map[string]bool, len(identities)+len(legacyAgentIDs))
+		for _, identity := range identities {
+			if strings.TrimSpace(identity.AgentID) == "" || strings.TrimSpace(identity.Destination) == "" {
+				out.Errors = append(out.Errors, "exact registration identity requires an agent ID and destination")
+				continue
+			}
+			key := registrationIdentityKey(identity.AgentID, identity.Destination)
+			if selected[key] {
+				out.Errors = append(out.Errors, identity.AgentID+": duplicate registration identity")
+				continue
+			}
+			if _, exists := byAgent[identity.AgentID][identity.Destination]; !exists {
+				out.Errors = append(out.Errors, identity.AgentID+": no recorded local MCP registration was found at "+identity.Destination)
+				continue
+			}
+			selected[key] = true
+		}
+		legacySeen := map[string]bool{}
+		for _, id := range legacyAgentIDs {
+			if id == "" || legacySeen[id] {
+				continue
+			}
+			legacySeen[id] = true
+			matches := byAgent[id]
+			if len(matches) == 0 {
+				out.Errors = append(out.Errors, id+": no recorded local MCP registration was found")
+				continue
+			}
+			if len(matches) > 1 {
+				out.Errors = append(out.Errors, id+": ambiguous removal; choose an exact config destination")
+				continue
+			}
+			for destination := range matches {
+				selected[registrationIdentityKey(id, destination)] = true
+			}
+		}
+		// Resolve and validate the entire request before touching any agent
+		// file. A typo or ambiguous legacy ID must not partially remove a
+		// different, valid selection in the same request.
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("registration removal failed: %s", strings.Join(out.Errors, "; "))
+		}
+		matched := make(map[string]bool, len(selected))
+		for _, row := range rows {
+			if row.Key != key || row.Component != "mcp" || !selected[registrationIdentityKey(row.AgentID, row.Destination)] {
+				continue
+			}
+			matchKey := registrationIdentityKey(row.AgentID, row.Destination)
+			matched[matchKey] = true
 			if contextErr := ctx.Err(); contextErr != nil {
 				return contextErr
 			}
@@ -210,9 +271,9 @@ func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, agen
 			}
 			out.Changes = append(out.Changes, row)
 		}
-		for id := range selected {
-			if !matched[id] {
-				out.Errors = append(out.Errors, id+": no recorded local MCP registration was found")
+		for identityKey := range selected {
+			if !matched[identityKey] {
+				out.Errors = append(out.Errors, "selected local MCP registration was not removed")
 			}
 		}
 		if len(out.Errors) > 0 {

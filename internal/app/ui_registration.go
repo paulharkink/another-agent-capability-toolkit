@@ -16,11 +16,19 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return viewmodel.OperationResult{}, picker.ErrCancelled
 	}
-	if len(q.AgentIDs) > 0 && len(q.RemoveAgentIDs) > 0 {
+	hasRemoval := len(q.RemoveAgentIDs) > 0 || len(q.RemoveRegistrations) > 0
+	if len(q.AgentIDs) > 0 && hasRemoval {
 		return viewmodel.OperationResult{}, errors.New("choose Save desired agent registrations or Remove selected registrations, not both")
 	}
-	if len(q.RemoveAgentIDs) > 0 {
-		result, err := s.removeUIRegistrations(ctx, q.Key, q.RemoveAgentIDs)
+	if len(q.RemoveAgentIDs) > 0 && len(q.RemoveRegistrations) > 0 {
+		return viewmodel.OperationResult{}, errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both")
+	}
+	if hasRemoval {
+		identities := make([]registrationIdentity, 0, len(q.RemoveRegistrations))
+		for _, identity := range q.RemoveRegistrations {
+			identities = append(identities, registrationIdentity{AgentID: identity.AgentID, Destination: identity.Destination})
+		}
+		result, err := s.removeUIRegistrations(ctx, q.Key, identities, q.RemoveAgentIDs)
 		step, target := result.Step, result.Target
 		if step == "" {
 			step = "remove agent registration"

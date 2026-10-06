@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 type registrationState struct {
 	Profile        ProfileRow
 	Agents         []string
+	Choices        []registrationChoice
 	Marked         map[string]bool
 	Remove         bool
 	NeedsTransport bool
@@ -30,6 +32,18 @@ type registrationState struct {
 	H, LeftW       int
 }
 
+type registrationChoice struct {
+	AgentID     string
+	Destination string
+}
+
+func (choice registrationChoice) key() string {
+	if choice.Destination == "" {
+		return choice.AgentID
+	}
+	return choice.AgentID + "\x00" + choice.Destination
+}
+
 func (r *registrationState) agentStart() int {
 	if r.Remove {
 		return 0
@@ -40,14 +54,30 @@ func (r *registrationState) agentStart() int {
 	return 1
 }
 
-func (r *registrationState) lastRow() int { return max(0, r.agentStart()+len(r.Agents)-1) }
+func (r *registrationState) lastRow() int {
+	if r.Remove {
+		return max(0, len(r.Choices)-1)
+	}
+	return max(0, r.agentStart()+len(r.Agents)-1)
+}
 
 func (r *registrationState) selectedAgent() (string, bool) {
+	if r.Remove {
+		choice, ok := r.selectedChoice()
+		return choice.AgentID, ok
+	}
 	i := r.Row - r.agentStart()
 	if i < 0 || i >= len(r.Agents) {
 		return "", false
 	}
 	return r.Agents[i], true
+}
+
+func (r *registrationState) selectedChoice() (registrationChoice, bool) {
+	if !r.Remove || r.Row < 0 || r.Row >= len(r.Choices) {
+		return registrationChoice{}, false
+	}
+	return r.Choices[r.Row], true
 }
 
 func (r *registrationState) onTransport() bool { return r.NeedsTransport && r.Row == 1 }
@@ -92,17 +122,35 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 		rows = append(rows, id)
 		seen[id] = true
 	}
-	addRecorded := func(id string) {
-		if strings.TrimSpace(id) == "" || seen[id] {
-			return
-		}
-		rows = append(rows, id)
-		seen[id] = true
-	}
 	if removing {
-		for _, id := range p.Profile.RegisteredAgents {
-			addRecorded(id)
+		choices := []registrationChoice{}
+		seenChoices := map[string]bool{}
+		recordedAgents := map[string]bool{}
+		for _, row := range m.inventory {
+			if row.Key != p.Profile.Key || row.Component != "mcp" || row.AgentID == "" || row.Destination == "" {
+				continue
+			}
+			choice := registrationChoice{AgentID: row.AgentID, Destination: row.Destination}
+			if seenChoices[choice.key()] {
+				continue
+			}
+			choices = append(choices, choice)
+			seenChoices[choice.key()] = true
+			recordedAgents[row.AgentID] = true
 		}
+		for _, id := range p.Profile.RegisteredAgents {
+			if strings.TrimSpace(id) == "" || recordedAgents[id] {
+				continue
+			}
+			choice := registrationChoice{AgentID: id}
+			if seenChoices[choice.key()] {
+				continue
+			}
+			choices = append(choices, choice)
+			seenChoices[choice.key()] = true
+		}
+		m.registration = &registrationState{Profile: p, Choices: choices, Marked: map[string]bool{}, Remove: true, Transport: p.Profile.Transport}
+		return
 	} else {
 		for _, id := range m.agents {
 			add(id)
@@ -184,6 +232,8 @@ func (m *Model) registrationKey(stroke string) tea.Cmd {
 		if r.Area == 1 {
 			if r.onTransport() {
 				r.selectTransport()
+			} else if choice, ok := r.selectedChoice(); ok {
+				r.Marked[choice.key()] = !r.Marked[choice.key()]
 			} else if id, ok := r.selectedAgent(); ok {
 				r.Marked[id] = !r.Marked[id]
 			}
@@ -192,15 +242,13 @@ func (m *Model) registrationKey(stroke string) tea.Cmd {
 		if r.Area == 0 {
 			r.Area = 1
 		} else if r.Area == 1 {
-			if r.Row == 0 {
-				if !r.Remove {
-					return m.checkRegistrationEndpoint()
+			if r.Remove {
+				if choice, ok := r.selectedChoice(); ok {
+					r.Marked[choice.key()] = !r.Marked[choice.key()]
 				}
-				if id, ok := r.selectedAgent(); ok {
-					r.Marked[id] = !r.Marked[id]
-				}
-			}
-			if r.onTransport() {
+			} else if r.Row == 0 {
+				return m.checkRegistrationEndpoint()
+			} else if r.onTransport() {
 				r.selectTransport()
 			} else if id, ok := r.selectedAgent(); ok {
 				r.Marked[id] = !r.Marked[id]
@@ -237,20 +285,37 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 		r.Message = "Select an MCP transport before applying registrations."
 		return nil
 	}
-	selected := []string{}
-	for _, id := range r.Agents {
-		if r.Marked[id] {
-			selected = append(selected, id)
-		}
-	}
 	request := viewmodel.RegistrationRequest{Key: r.Profile.Key, URL: r.Profile.URL, Transport: r.Transport}
 	if r.Remove {
-		if len(selected) == 0 {
+		exact := []viewmodel.RegistrationIdentity{}
+		legacy := []string{}
+		for _, choice := range r.Choices {
+			if !r.Marked[choice.key()] {
+				continue
+			}
+			if choice.Destination == "" {
+				legacy = append(legacy, choice.AgentID)
+			} else {
+				exact = append(exact, viewmodel.RegistrationIdentity{AgentID: choice.AgentID, Destination: choice.Destination})
+			}
+		}
+		if len(exact) > 0 && len(legacy) > 0 {
+			r.Message = "Choose exact-path registrations or entries with unavailable paths in separate removals."
+			return nil
+		}
+		request.RemoveRegistrations = exact
+		request.RemoveAgentIDs = legacy
+		if len(exact)+len(legacy) == 0 {
 			r.Message = "No registrations selected for removal"
 			return nil
 		}
-		request.RemoveAgentIDs = selected
 	} else {
+		selected := []string{}
+		for _, id := range r.Agents {
+			if r.Marked[id] {
+				selected = append(selected, id)
+			}
+		}
 		request.AgentIDs = selected
 	}
 	m.registration = nil
@@ -266,7 +331,7 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	h := min(m.height-6, 18)
 	if r.Remove {
 		w = min(m.width-8, 78)
-		h = min(m.height-8, max(10, len(r.Agents)+7))
+		h = min(m.height-8, max(12, len(r.Choices)+10))
 	}
 	x, y := (m.width-w)/2, max(4, (len(lines)-h)/2)
 	if y+h > len(lines) {
@@ -294,12 +359,28 @@ func (m *Model) registrationOverlay(lines []string) []string {
 		}
 		rows = append(rows, "Transport · "+choice)
 	}
-	for _, id := range r.Agents {
-		mark := "[ ]"
-		if r.Marked[id] {
-			mark = "[x]"
+	if r.Remove {
+		for _, choice := range r.Choices {
+			mark := "[ ]"
+			if r.Marked[choice.key()] {
+				mark = "[x]"
+			}
+			label := m.registrationAgentName(choice.AgentID)
+			if choice.Destination != "" {
+				label += " · " + filepath.Base(choice.Destination)
+			} else {
+				label += " · path unavailable"
+			}
+			rows = append(rows, mark+" "+label)
 		}
-		rows = append(rows, mark+" "+m.registrationAgentName(id))
+	} else {
+		for _, id := range r.Agents {
+			mark := "[ ]"
+			if r.Marked[id] {
+				mark = "[x]"
+			}
+			rows = append(rows, mark+" "+m.registrationAgentName(id))
+		}
 	}
 	leftTitle := "Named agents"
 	if !r.Remove {
@@ -338,6 +419,22 @@ func (m *Model) registrationOverlay(lines []string) []string {
 			second = "[x]"
 		}
 		details = []string{"MCP transport", first + " Streamable HTTP", second + " SSE", "Enter or Space changes selection"}
+	} else if id, ok := r.selectedAgent(); ok && r.Remove {
+		choice, _ := r.selectedChoice()
+		rightTitle = m.registrationAgentName(id)
+		details = []string{"Agent ID: " + id}
+		if choice.Destination == "" {
+			details = append(details, "Recorded config path is unavailable.", "Removal will proceed only if this ID resolves to one recorded path.")
+		} else {
+			details = append(details, "Config file to remove:")
+			details = append(details, wrapRegistrationPath(choice.Destination, rightW-3)...)
+		}
+		mark := "[ ]"
+		if r.Marked[choice.key()] {
+			mark = "[x]"
+		}
+		details = append(details, "Selected removal: "+mark+" "+m.registrationAgentName(id))
+		details = append(details, "Only this local registration is removed", "The MCP endpoint is left running")
 	} else if id, ok := r.selectedAgent(); ok {
 		rightTitle = m.registrationAgentName(id)
 		config, detection, note := "Adapter lookup", "Not detected", ""
@@ -355,7 +452,12 @@ func (m *Model) registrationOverlay(lines []string) []string {
 			}
 		}
 		mark := "[ ]"
-		if r.Marked[id] {
+		markKey := id
+		if r.Remove {
+			choice, _ := r.selectedChoice()
+			markKey = choice.key()
+		}
+		if r.Marked[markKey] {
 			mark = "[x]"
 		}
 		verb := "Register this endpoint for "
@@ -456,6 +558,30 @@ func wrapRegistrationNote(note string, width int) []string {
 	}
 	if line != "" {
 		lines = append(lines, line)
+	}
+	return lines
+}
+
+func wrapRegistrationPath(path string, width int) []string {
+	width = max(1, width)
+	lines := []string{}
+	var line strings.Builder
+	lineWidth := 0
+	for _, char := range path {
+		charWidth := lipgloss.Width(string(char))
+		if lineWidth > 0 && lineWidth+charWidth > width {
+			lines = append(lines, line.String())
+			line.Reset()
+			lineWidth = 0
+		}
+		line.WriteRune(char)
+		lineWidth += charWidth
+	}
+	if line.Len() > 0 {
+		lines = append(lines, line.String())
+	}
+	if len(lines) == 0 {
+		return []string{"(empty)"}
 	}
 	return lines
 }
