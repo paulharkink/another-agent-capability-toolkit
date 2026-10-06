@@ -283,6 +283,26 @@ func TestUXBrowserResizeBoundsUnicodeContentAndActions(t *testing.T) {
 	}
 }
 
+func TestUXBrowserLongUnicodePathViewportPreservesCursorContext(t *testing.T) {
+	path := strings.Repeat("左", 20) + "LEFT" + "RIGHT" + strings.Repeat("右", 20)
+	m := NewBrowser(context.Background(), "file", "")
+	m.Update(tea.WindowSizeMsg{Width: 30, Height: 12})
+	browserKey(m, tea.KeyTab, "")
+	m.Update(tea.PasteMsg{Content: path})
+	for i := 0; i < 25; i++ {
+		browserKey(m, tea.KeyLeft, "")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "LEFT▏RIGHT") {
+		t.Fatalf("bounded path viewport must preserve text on both sides of the cursor:\n%s", view)
+	}
+	for lineNumber, line := range strings.Split(view, "\n") {
+		if got := ansi.StringWidth(line); got > 30 {
+			t.Fatalf("line %d renders %d cells at width 30:\n%s", lineNumber+1, got, view)
+		}
+	}
+}
+
 func TestUXTryNativeUnavailableDoesNotReadTerminal(t *testing.T) {
 	calls := 0
 	native := func(_ context.Context, kind, initial string) (string, error) {

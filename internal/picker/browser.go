@@ -373,8 +373,10 @@ func (m *BrowserModel) View() tea.View {
 	pathLabel := "Path: " + m.pathText
 	if m.focus == 1 {
 		pathLabel = browserFocus.Render(activePathLine(m.pathText, m.pathCursor, m.width))
+		lines = append(lines, pathLabel)
+	} else {
+		lines = append(lines, fitPickerLine(pathLabel, m.width))
 	}
-	lines = append(lines, fitPickerLine(pathLabel, m.width))
 	rows := m.visibleRows()
 	start := m.offset
 	if start < 0 {
@@ -473,20 +475,66 @@ func activePathLine(path string, cursor, width int) string {
 	if room < 0 {
 		return ansi.Truncate(full, width, "…")
 	}
-	before := string(chars[:cursor])
-	if ansi.StringWidth(before) > room {
-		budget := room
-		for {
-			before = ansi.TruncateLeft(string(chars[:cursor]), max(0, budget-1), "…")
-			if ansi.StringWidth(before) <= room {
-				break
-			}
-			budget -= ansi.StringWidth(before) - room
-			if budget <= 1 {
-				before = ""
-				break
-			}
+	before, after := string(chars[:cursor]), string(chars[cursor:])
+	leftBudget, rightBudget := room/2, room-room/2
+	if before == "" {
+		leftBudget, rightBudget = 0, room
+	} else if after == "" {
+		leftBudget, rightBudget = room, 0
+	}
+	left := suffixWithin(before, leftBudget)
+	right := prefixWithin(after, rightBudget)
+	// Reclaim space when one side of the cursor has less text than its share.
+	if extra := leftBudget - ansi.StringWidth(left); extra > 0 {
+		rightBudget += extra
+		right = prefixWithin(after, rightBudget)
+	}
+	if extra := rightBudget - ansi.StringWidth(right); extra > 0 {
+		leftBudget += extra
+		left = suffixWithin(before, leftBudget)
+	}
+	line := label + left + "▏" + right
+	for ansi.StringWidth(line) > width {
+		if right != "" && (left == "" || ansi.StringWidth(right) > ansi.StringWidth(left)) {
+			right = prefixWithin(right, ansi.StringWidth(right)-1)
+		} else if left != "" {
+			left = suffixWithin(left, ansi.StringWidth(left)-1)
+		} else {
+			break
+		}
+		line = label + left + "▏" + right
+	}
+	return line
+}
+
+func suffixWithin(text string, width int) string {
+	if width <= 0 || text == "" {
+		return ""
+	}
+	if ansi.StringWidth(text) <= width {
+		return text
+	}
+	for remove := 1; remove <= ansi.StringWidth(text); remove++ {
+		candidate := ansi.TruncateLeft(text, remove, "…")
+		if ansi.StringWidth(candidate) <= width {
+			return candidate
 		}
 	}
-	return label + before + "▏"
+	return "…"
+}
+
+func prefixWithin(text string, width int) string {
+	if width <= 0 || text == "" {
+		return ""
+	}
+	if ansi.StringWidth(text) <= width {
+		return text
+	}
+	for keep := width - 1; keep > 0; keep-- {
+		candidate := ansi.Truncate(text, keep, "…")
+		if ansi.StringWidth(candidate) <= width {
+			return candidate
+		}
+	}
+	return "…"
 }
