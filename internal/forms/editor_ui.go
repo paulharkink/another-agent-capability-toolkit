@@ -163,13 +163,14 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 			}
 			return "Type a path to switch to " + def.Label
 		}
+		imported := " · Import source; not a live path · AACT uses managed credential material at runtime"
 		switch active {
 		case def.Name:
 			return "Active method · imported, not a live path · Import source; AACT uses managed credential material at runtime"
 		case "":
-			return "Inactive method · enter a source kubeconfig path · Import source; AACT uses managed credential material at runtime"
+			return "Enter a source kubeconfig path" + imported
 		default:
-			return "Inactive method · type a path to switch to Source kubeconfig · Import source; AACT uses managed credential material at runtime"
+			return "Type a path to switch to kubeconfig" + imported
 		}
 	}
 	if active == def.Name {
@@ -180,9 +181,35 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 		label = def.Name
 	}
 	if active == "" {
-		return "Inactive method · enter a " + label + " to select it"
+		return "Enter a " + label
 	}
-	return "Inactive method · type here to switch to " + label
+	return "Type here to switch to " + label
+}
+
+func wrapHint(text string, width int) []string {
+	width = max(1, width)
+	lines := []string{}
+	clauses := strings.Split(text, " · ")
+	if len(clauses) > 1 && clauses[0] == "Active method" && strings.HasPrefix(clauses[1], "imported,") {
+		clauses = append([]string{clauses[0] + " · " + clauses[1]}, clauses[2:]...)
+	}
+	for _, clause := range clauses {
+		words := strings.Fields(clause)
+		if len(words) == 0 {
+			continue
+		}
+		line := words[0]
+		for _, word := range words[1:] {
+			if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
+				lines = append(lines, line)
+				line = word
+			} else {
+				line += " " + word
+			}
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func (m *FormModel) emptyChoicesText(def catalog.Input) string {
@@ -1402,8 +1429,15 @@ func (m *FormModel) splitLayout() formLayout {
 		rightLines = append(rightLines, prefix+label+": "+display)
 		rightFields = append(rightFields, index)
 		if hint := m.displayHint(def, values); hint != "" {
-			rightLines = append(rightLines, "    · "+hint)
-			rightFields = append(rightFields, -1)
+			wrapped := wrapHint(hint, max(1, rightWidth-6))
+			for line, part := range wrapped {
+				if line == 0 {
+					rightLines = append(rightLines, "    · "+part)
+				} else {
+					rightLines = append(rightLines, "      "+part)
+				}
+				rightFields = append(rightFields, -1)
+			}
 		}
 	}
 	if len(indices) == 0 {
