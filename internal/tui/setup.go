@@ -51,8 +51,9 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	m.management.Modal = ""
 	m.busy = true
 	m.action = "load setup"
+	ctx := m.ctx
 	return func() tea.Msg {
-		preview, err := backend.UISetupPreview(m.ctx, request)
+		preview, err := backend.UISetupPreview(ctx, request)
 		return setupPreviewMsg{preview: preview, err: err}
 	}
 }
@@ -485,8 +486,13 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	m.busy = true
 	m.action = "install"
 	m.home.Modal = nil
+	m.setupOperationID++
+	setupID := m.setupOperationID
+	ctx := m.ctx
+	request.Inputs = cloneSetupValues(request.Inputs)
+	request.DestinationIDs = append([]string(nil), request.DestinationIDs...)
 	return func() tea.Msg {
-		result, err := backend.UIInstall(m.ctx, request)
+		result, err := backend.UIInstall(ctx, request)
 		structured := result
 		lines := []string{}
 		if result.Saved {
@@ -507,17 +513,7 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 			lines = append(lines, fmt.Sprintf("%s: %s configured", change.AgentID, change.Component))
 		}
 		lines = append(lines, result.Errors...)
-		failure := ""
-		if err != nil {
-			failure = err.Error()
-		} else if len(result.Errors) > 0 {
-			failure = strings.Join(result.Errors, "\n")
-		}
-		if m.setupRetry != nil {
-			m.setupRetry.step = result.Step
-			m.setupRetry.failure = failure
-		}
-		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &structured}
+		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, setupID: setupID, result: &structured}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -117,6 +118,107 @@ func TestUXReturnToConfigurationPreservesSubmittedDraftAndOrigin(t *testing.T) {
 	}
 	if got := m.form.Values()["repo"]; got != "/repos/submitted" {
 		t.Fatalf("submitted draft lost on return: repo=%v", got)
+	}
+}
+
+func TestUXSetupWorkerReturnsFailureMetadataForEventLoop(t *testing.T) {
+	backend := &setupBackendFixture{
+		installResult: &viewmodel.OperationResult{Saved: true, Step: "registration", Target: "plain/dev"},
+		installErr:    errors.New("endpoint rejected registration"),
+	}
+	m := NewContext(context.Background(), backend)
+	m.view = "Catalog"
+	m.pendingSetup = &viewmodel.SetupPreview{Key: state.Key{Package: "plain", Environment: "dev"}}
+	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
+	if cmd == nil {
+		t.Fatal("setup operation was not submitted")
+	}
+	draft := m.setupRetry
+	msg, ok := cmd().(operationMsg)
+	if !ok {
+		t.Fatalf("setup command returned %T, want operationMsg", cmd())
+	}
+	if draft.step != "" || draft.failure != "" {
+		t.Fatalf("worker mutated model-owned retry draft before Update: step=%q failure=%q", draft.step, draft.failure)
+	}
+	if msg.step != "registration" || msg.err == nil || msg.err.Error() != "endpoint rejected registration" {
+		t.Fatalf("failure metadata missing from completion message: %+v", msg)
+	}
+	m.Update(msg)
+	if draft.step != "registration" || draft.failure != "endpoint rejected registration" {
+		t.Fatalf("Update did not retain failure metadata: step=%q failure=%q", draft.step, draft.failure)
+	}
+}
+
+func TestUXStaleSetupCompletionDoesNotRewriteNewRetryDraft(t *testing.T) {
+	backend := &setupBackendFixture{
+		installResult: &viewmodel.OperationResult{Step: "registration"},
+		installErr:    errors.New("old request failed"),
+	}
+	m := NewContext(context.Background(), backend)
+	m.pendingSetup = &viewmodel.SetupPreview{Key: state.Key{Package: "plain", Environment: "dev"}}
+	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
+	staleID := m.setupOperationID
+	newDraft := &setupRetryDraft{preview: viewmodel.SetupPreview{Key: state.Key{Package: "plain", Environment: "dev"}}, values: map[string]any{"repo": "/new"}}
+	m.setupOperationID++
+	m.setupRetry = newDraft
+	m.Update(cmd())
+	if m.setupOperationID == staleID {
+		t.Fatal("test did not advance the active operation identity")
+	}
+	if newDraft.step != "" || newDraft.failure != "" {
+		t.Fatalf("stale completion rewrote the newer retry draft: step=%q failure=%q", newDraft.step, newDraft.failure)
+	}
+}
+
+type gatedSetupBackend struct {
+	*setupBackendFixture
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *gatedSetupBackend) UIInstall(_ context.Context, _ viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	close(b.started)
+	<-b.release
+	return viewmodel.OperationResult{Step: "registration"}, errors.New("endpoint rejected registration")
+}
+
+func TestUXSetupWorkerCanRunWhileModelIsViewed(t *testing.T) {
+	backend := &gatedSetupBackend{setupBackendFixture: &setupBackendFixture{}, started: make(chan struct{}), release: make(chan struct{})}
+	m := NewContext(context.Background(), backend)
+	m.width, m.height = 100, 24
+	m.pendingSetup = &viewmodel.SetupPreview{Key: state.Key{Package: "plain", Environment: "dev"}}
+	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
+	draft := m.setupRetry
+	completed := make(chan tea.Msg, 1)
+	go func() { completed <- cmd() }()
+	<-backend.started
+	close(backend.release)
+	finished := make(chan struct{})
+	observerDone := make(chan struct{})
+	go func() {
+		defer close(observerDone)
+		for {
+			_ = draft.step
+			_ = draft.failure
+			_ = m.View().Content
+			select {
+			case <-finished:
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+	}()
+	msg := <-completed
+	close(finished)
+	<-observerDone
+	if draft.step != "" || draft.failure != "" {
+		t.Fatalf("worker changed retry metadata before the event loop handled completion: step=%q failure=%q", draft.step, draft.failure)
+	}
+	m.Update(msg)
+	if draft.step != "registration" || draft.failure != "endpoint rejected registration" {
+		t.Fatalf("event loop did not apply returned metadata: step=%q failure=%q", draft.step, draft.failure)
 	}
 }
 

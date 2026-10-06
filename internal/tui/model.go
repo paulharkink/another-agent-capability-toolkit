@@ -58,6 +58,7 @@ type Model struct {
 	setupInformation           bool
 	setupInfoOffset            int
 	setupOperationPending      bool
+	setupOperationID           uint64
 	logSession                 uint64
 	logCancel                  context.CancelFunc
 	logProfile                 state.Key
@@ -98,6 +99,7 @@ type operationMsg struct {
 	err            error
 	failed         bool
 	step, target   string
+	setupID        uint64
 	result         *viewmodel.OperationResult
 }
 type settingsSavedMsg struct{ err error }
@@ -108,6 +110,7 @@ func NewContext(ctx context.Context, backend Backend) *Model {
 }
 func (m *Model) Init() tea.Cmd { return m.load() }
 func (m *Model) load() tea.Cmd {
+	backend, ctx := m.backend, m.ctx
 	if !m.busy && m.result == nil {
 		m.action = "load"
 	}
@@ -122,40 +125,40 @@ func (m *Model) load() tea.Cmd {
 		var msg loadedMsg
 		errs := []error{}
 		var e error
-		msg.catalog, e = m.backend.UICatalog(m.ctx)
+		msg.catalog, e = backend.UICatalog(ctx)
 		if e != nil {
 			errs = append(errs, e)
 		}
-		msg.inventory, e = m.backend.UIInventory(m.ctx)
+		msg.inventory, e = backend.UIInventory(ctx)
 		msg.inventoryError = e
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if backend, ok := m.backend.(profileSnapshotBackend); ok {
-			snapshot, err := backend.UIProfileSnapshot(m.ctx)
+		if profileBackend, ok := backend.(profileSnapshotBackend); ok {
+			snapshot, err := profileBackend.UIProfileSnapshot(ctx)
 			e = err
 			msg.profileError = err
 			if err == nil {
 				msg.profileSnapshot = &snapshot
 			}
 		} else {
-			msg.mcps, e = m.backend.UIMCPs(m.ctx)
+			msg.mcps, e = backend.UIMCPs(ctx)
 		}
 		if e != nil {
 			errs = append(errs, e)
 		}
-		msg.agents, e = m.backend.UIAgents(m.ctx)
+		msg.agents, e = backend.UIAgents(ctx)
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if backend, ok := m.backend.(agentManagementBackend); ok {
-			msg.agentManagement, e = backend.UIAgentManagement(m.ctx)
+		if managementBackend, ok := backend.(agentManagementBackend); ok {
+			msg.agentManagement, e = managementBackend.UIAgentManagement(ctx)
 			if e != nil {
 				errs = append(errs, e)
 			}
 		}
-		if backend, ok := m.backend.(environmentBrowserBackend); ok {
-			snapshot, err := backend.UIEnvironmentSnapshot(m.ctx)
+		if environmentBackend, ok := backend.(environmentBrowserBackend); ok {
+			snapshot, err := environmentBackend.UIEnvironmentSnapshot(ctx)
 			msg.environmentError = err
 			if err == nil {
 				msg.environmentSnapshot = &snapshot
@@ -163,11 +166,11 @@ func (m *Model) load() tea.Cmd {
 				errs = append(errs, err)
 			}
 		}
-		msg.settings, e = m.backend.UISettings(m.ctx)
+		msg.settings, e = backend.UISettings(ctx)
 		if e != nil {
 			errs = append(errs, e)
 		}
-		msg.labels, e = m.backend.UISourceLabels(m.ctx)
+		msg.labels, e = backend.UISourceLabels(ctx)
 		if e != nil {
 			errs = append(errs, e)
 		}
@@ -356,15 +359,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingDefaultAgents = false
 			selected, _ := values["agents"].([]string)
 			backend := m.backend.(defaultAgentsBackend)
+			ctx := m.ctx
+			selected = append([]string(nil), selected...)
 			m.action = "save default agents"
 			m.busy = true
 			m.retryOperation = func() tea.Cmd {
 				m.busy = true
 				return func() tea.Msg {
-					return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, append([]string(nil), selected...))}
+					return settingsSavedMsg{err: backend.UISetDefaultAgents(ctx, append([]string(nil), selected...))}
 				}
 			}
-			return m, func() tea.Msg { return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, selected)} }
+			return m, func() tea.Msg {
+				return settingsSavedMsg{err: backend.UISetDefaultAgents(ctx, append([]string(nil), selected...))}
+			}
 		}
 		op := m.pending
 		if op.action == "set-environment-root" {
@@ -514,6 +521,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	m.busy = false
+	if msg.setupID != 0 && msg.setupID == m.setupOperationID && m.setupRetry != nil {
+		step := msg.step
+		if msg.result != nil && msg.result.Step != "" {
+			step = msg.result.Step
+		}
+		failure := ""
+		if msg.err != nil {
+			failure = msg.err.Error()
+		} else if msg.result != nil && len(msg.result.Errors) > 0 {
+			failure = strings.Join(msg.result.Errors, "\n")
+		}
+		m.setupRetry.step = step
+		m.setupRetry.failure = failure
+	}
 	cancelOnly := onlyCancellation(msg.err) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
 	if cancelOnly {
 		m.setupOperationPending = false
@@ -789,9 +810,10 @@ func (m *Model) run(op operation) tea.Cmd {
 	m.busy = true
 	m.action = op.action
 	origin := m.view
+	backend, ctx := m.backend, m.ctx
 	m.retryOperation = func() tea.Cmd { return m.run(op) }
 	return func() tea.Msg {
-		output, err := m.backend.UIRun(m.ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
+		output, err := backend.UIRun(ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
 		return operationMsg{origin: origin, output: output, err: err, target: op.target}
 	}
 }
