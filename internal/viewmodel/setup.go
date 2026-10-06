@@ -32,6 +32,8 @@ type SetupPreview struct {
 	PackageName  string
 	SourceRoot   string
 	TargetPath   string
+	TargetTOML   string
+	Configured   bool
 	Inputs       []SetupInput
 	Destinations []SetupDestination
 }

@@ -83,7 +83,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› MCP · profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› dev / production · MCP · profile"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -100,7 +100,7 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Configure / install Plain", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Set up another target", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
@@ -156,7 +156,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "Configure / install Plain") {
+	if !strings.Contains(m.View().Content, "Set up another target") {
 		t.Fatal(m.View().Content)
 	}
 }
@@ -290,7 +290,7 @@ func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
 	id := m.home.Profiles.ID
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyF2, "")
 	press(m, tea.KeyEscape, "")
 	if m.home.Focus != ProfilesPane || m.home.Profiles.ID != id {
 		t.Fatal("modal changed origin")
@@ -318,7 +318,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
 			t.Fatal("short view omitted its scroll cue", v.Content)
 		}
-		if size.Height > 16 && !strings.Contains(v.Content, "Configure / install Plain") {
+		if size.Height > 16 && !strings.Contains(v.Content, "Set up another target") {
 			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
@@ -333,7 +333,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 				msg.mcps[0].Ownership = ownership
 				m.Update(msg)
 				m.selectContext(2)
-				press(m, tea.KeyEnter, "")
+				press(m, tea.KeyF2, "")
 				index := -1
 				for i, entry := range m.menuEntries() {
 					if strings.Contains(entry, "Remove agent registrations") {
@@ -387,13 +387,13 @@ func TestHomeMenusMatchApprovedCommands(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatal("F2 should focus the context list before opening an action")
 	}
-	for _, want := range []string{"Configure / install Inspector", "View capability details", "MCP · profile", "Installation · AACT records"} {
+	for _, want := range []string{"Set up another target", "View capability details", "MCP · profile", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
 	}
 	m.selectContext(2)
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyF2, "")
 	got := strings.Join(m.menuEntries(), "\n")
 	for _, want := range []string{"Restart", "Stop", "Authenticate", "Edit parameters", "Configure agent registrations", "Remove agent registrations", "Check connection", "View logs", "View details", "Back"} {
 		if !strings.Contains(got, want) {
@@ -407,7 +407,7 @@ func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
 	msg.mcps[0].Ownership = "foreign"
 	m.Update(msg)
 	m.selectContext(2)
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyF2, "")
 	m.home.Modal.Selected = 0
 	press(m, tea.KeyEnter, "")
 	if m.home.Modal == nil || m.busy || !strings.Contains(m.output, "not locally owned") {

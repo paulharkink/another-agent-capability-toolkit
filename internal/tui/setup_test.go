@@ -52,9 +52,13 @@ func TestInstallShortcutUsesUnifiedSetupForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
-	if cmd == nil || m.form != nil || !m.busy {
-		t.Fatal("Install shortcut bypassed typed setup preview")
+	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" || m.form != nil || m.busy {
+		t.Fatal("Install shortcut did not open the target chooser")
+	}
+	startHomeSetup(m)
+	if m.form == nil {
+		t.Fatal("choosing the no-preset option did not open typed setup")
 	}
 }
 
@@ -63,7 +67,7 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("setup form did not save")
@@ -90,7 +94,7 @@ func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("Save did not submit")
@@ -106,7 +110,11 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
-	cmd := m.homeOperation("parameters")
+	m.homeOperation("parameters")
+	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
+		t.Fatal("setup did not open target chooser")
+	}
+	cmd := m.modalKey("enter")
 	if cmd == nil || !m.busy || m.form != nil {
 		t.Fatalf("typed setup preview was not requested: busy=%v form=%v", m.busy, m.form)
 	}
@@ -170,7 +178,7 @@ func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	if strings.Contains(m.View().Content, "API server") {
 		t.Fatal("fixed target input appeared in form")
 	}
@@ -244,11 +252,7 @@ func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
 		{SourceID: "team-source", Environment: "home", PackageID: "plain", Name: "pms15", Path: "/environments/home/plain/pms15.toml"},
 	}}
 	m.reconcileHome()
-	cmd := m.homeOperation("parameters")
-	if cmd == nil {
-		t.Fatal("setup did not request preview")
-	}
-	m.Update(cmd())
+	startHomeSetup(m)
 	want := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "home", Target: "pms15"}
 	if b.previewRequest != want {
 		t.Fatalf("capability setup discarded local target: got %+v, want %+v", b.previewRequest, want)
@@ -258,14 +262,14 @@ func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
 func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	m.openSetupForm(viewmodel.SetupPreview{
+	m.Update(setupPreviewMsg{preview: viewmodel.SetupPreview{
 		Key:          state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
 		PackageName:  "Cluster Inspector",
 		Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret"}, Editable: true}},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
-	})
+	}})
 	view := m.View().Content
-	for _, want := range []string{"Install · Cluster Inspector", "home / pms15", "Destinations"} {
+	for _, want := range []string{"New setup · Cluster Inspector", "home / pms15", "Destinations"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup form does not show %q:\n%s", want, view)
 		}

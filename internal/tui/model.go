@@ -55,6 +55,8 @@ type Model struct {
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
 	setupRetry                 *setupRetryDraft
+	setupInformation           bool
+	setupInfoOffset            int
 	setupOperationPending      bool
 	logSession                 uint64
 	logProfile                 state.Key
@@ -165,6 +167,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = size.Height
 		m.reconcileHome()
 	}
+	if m.setupInformation {
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			switch key.String() {
+			case "esc", "f3":
+				m.setupInformation = false
+			case "up", "k":
+				m.setupInfoOffset = max(0, m.setupInfoOffset-1)
+			case "down", "j":
+				m.setupInfoOffset++
+			case "pgup":
+				m.setupInfoOffset = max(0, m.setupInfoOffset-max(1, m.height-8))
+			case "pgdown":
+				m.setupInfoOffset += max(1, m.height-8)
+			case "home":
+				m.setupInfoOffset = 0
+			}
+		}
+		return m, nil
+	}
 	if m.registration != nil {
 		switch event := msg.(type) {
 		case tea.KeyPressMsg:
@@ -177,6 +198,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.form != nil {
+		if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "f3" && m.pendingSetup != nil {
+			m.setupInformation = true
+			m.setupInfoOffset = 0
+			return m, nil
+		}
 		if x, y, width, height, ok := m.setupOverlayBounds(); ok {
 			switch event := msg.(type) {
 			case tea.WindowSizeMsg:
@@ -261,6 +287,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		op := m.pending
 		if op.action == "set-environment-root" {
 			op.target, _ = values["root"].(string)
+		} else if op.action == "locate-source" {
+			op.target, _ = values["root"].(string)
 		} else {
 			if agents, ok := values["agent"].([]string); ok {
 				op.agent = strings.Join(agents, ",")
@@ -284,6 +312,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.openSetupForm(msg.preview)
+		name := msg.preview.PackageName
+		if name == "" {
+			name = msg.preview.Key.Package
+		}
+		title := "New setup · " + name
+		if msg.preview.Configured {
+			title = "Configure · " + name
+		}
+		if msg.preview.Key.Environment != "" && msg.preview.Key.Target != "" {
+			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
+		}
+		m.form.SetTitle(title + " · F3 Target information")
 	case loadedMsg:
 		m.catalog = msg.catalog
 		m.inventory = msg.inventory
@@ -655,6 +695,9 @@ func (m *Model) setupOverlayView() tea.View {
 func (m *Model) View() tea.View {
 	if m.result != nil {
 		return m.resultView()
+	}
+	if m.setupInformation {
+		return m.setupInformationView()
 	}
 	if m.form == nil && (m.view == "Catalog" || m.width < 80 || m.height < 16) {
 		return m.homeView()

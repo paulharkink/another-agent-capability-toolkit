@@ -18,7 +18,7 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	if m.form == nil {
 		t.Fatal("setup form did not open")
 	}
@@ -52,7 +52,7 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	m.Update(cmd())
 	if m.result == nil || !m.result.Failed || !strings.Contains(m.View().Content, "Edit answers") {

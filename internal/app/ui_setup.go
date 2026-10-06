@@ -23,7 +23,12 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		return viewmodel.SetupPreview{}, err
 	}
 	if q.SourceID != "" && q.SourceID != s.Source.ID {
-		return viewmodel.SetupPreview{}, invalid(fmt.Errorf("source %s is not the current checkout", q.SourceID))
+		source, err := s.forSource(q.SourceID)
+		if err != nil {
+			return viewmodel.SetupPreview{}, invalid(err)
+		}
+		q.SourceID = source.Source.ID
+		return source.UISetupPreview(ctx, q)
 	}
 	p, err := s.packageByID(q.PackageID)
 	if err != nil {
@@ -108,7 +113,14 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	for i := range defs {
 		defs[i].Default = nil
 	}
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path}
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path, Configured: attempted}
+	if target.Path != "" {
+		b, readErr := os.ReadFile(target.Path)
+		if readErr != nil {
+			return viewmodel.SetupPreview{}, invalid(readErr)
+		}
+		preview.TargetTOML = string(b)
+	}
 	values := map[string]any{}
 	origins := []string{"package", "source", "target", "saved"}
 	provenance := map[string]string{}
@@ -357,7 +369,12 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		return viewmodel.OperationResult{}, err
 	}
 	if q.SourceID != "" && q.SourceID != s.Source.ID {
-		return viewmodel.OperationResult{}, invalid(fmt.Errorf("source %s is not the current checkout", q.SourceID))
+		source, err := s.forSource(q.SourceID)
+		if err != nil {
+			return viewmodel.OperationResult{}, invalid(err)
+		}
+		q.SourceID = source.Source.ID
+		return source.UIInstall(ctx, q)
 	}
 	p, err := s.packageByID(q.PackageID)
 	if err != nil {
