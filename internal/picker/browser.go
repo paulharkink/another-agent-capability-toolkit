@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 )
 
@@ -319,7 +320,11 @@ func (m *BrowserModel) handleListKey(key tea.KeyPressMsg) {
 }
 
 func (m *BrowserModel) visibleRows() int {
-	n := m.height - 10
+	reserve := 3 + len(m.actionLines()) + 1 // heading/path, actions and one scroll cue
+	if m.message != "" {
+		reserve++
+	}
+	n := m.height - reserve
 	if n < 1 {
 		n = 1
 	}
@@ -364,20 +369,12 @@ func (m *BrowserModel) View() tea.View {
 		lines = []string{"File picker", "Terminal too small (minimum 30×7)", "Esc Cancel"}
 		return tea.NewView(strings.Join(lines, "\n"))
 	}
-	lines = append(lines, browserBlue.Bold(true).Render("Browse "+m.kind), browserMuted.Render("Current: "+m.dir))
+	lines = append(lines, fitPickerLine(browserBlue.Bold(true).Render("Browse "+m.kind), m.width), fitPickerLine(browserMuted.Render("Current: "+m.dir), m.width))
 	pathLabel := "Path: " + m.pathText
 	if m.focus == 1 {
-		chars := []rune(m.pathText)
-		cursor := m.pathCursor
-		if cursor < 0 {
-			cursor = 0
-		}
-		if cursor > len(chars) {
-			cursor = len(chars)
-		}
-		pathLabel = browserFocus.Render("Path: " + string(chars[:cursor]) + "▏" + string(chars[cursor:]))
+		pathLabel = browserFocus.Render(activePathLine(m.pathText, m.pathCursor, m.width))
 	}
-	lines = append(lines, pathLabel)
+	lines = append(lines, fitPickerLine(pathLabel, m.width))
 	rows := m.visibleRows()
 	start := m.offset
 	if start < 0 {
@@ -390,8 +387,16 @@ func (m *BrowserModel) View() tea.View {
 	if end > len(m.entries) {
 		end = len(m.entries)
 	}
-	if start > 0 {
-		lines = append(lines, browserMuted.Render("↑ more"))
+	cue := ""
+	if start > 0 && end < len(m.entries) {
+		cue = "↑ ↓ more"
+	} else if start > 0 {
+		cue = "↑ more"
+	} else if end < len(m.entries) {
+		cue = "↓ more"
+	}
+	if cue != "" {
+		lines = append(lines, fitPickerLine(browserMuted.Render(cue), m.width))
 	}
 	for i := start; i < end; i++ {
 		e := m.entries[i]
@@ -409,32 +414,79 @@ func (m *BrowserModel) View() tea.View {
 		} else {
 			label = "  " + label
 		}
-		lines = append(lines, label)
+		lines = append(lines, fitPickerLine(label, m.width))
 	}
-	if end < len(m.entries) {
-		lines = append(lines, browserMuted.Render("↓ more"))
-	}
-	openLabel := "Open directory"
-	if m.focus == 2 {
-		openLabel = browserFocus.Render("[ Open directory ]")
-	}
-	selectLabel := "Select file"
-	if m.kind == "directory" {
-		selectLabel = "Select this directory"
-	}
-	if m.focus == 3 {
-		selectLabel = browserFocus.Render("[ " + selectLabel + " ]")
-	}
-	cancelLabel := "Cancel"
-	if m.focus == 4 {
-		cancelLabel = browserFocus.Render("[ Cancel ]")
-	}
-	lines = append(lines, openLabel+"   "+selectLabel+"   "+cancelLabel)
+	lines = append(lines, m.actionLines()...)
 	if m.message != "" {
-		lines = append(lines, browserError.Render(m.message))
+		lines = append(lines, fitPickerLine(browserError.Render(m.message), m.width))
 	}
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
 	return tea.NewView(strings.Join(lines, "\n"))
+}
+
+func (m *BrowserModel) actionLines() []string {
+	labels := []string{"Open directory", "Select file", "Cancel"}
+	if m.kind == "directory" {
+		labels[1] = "Select this directory"
+	}
+	var buttons []string
+	for i, label := range labels {
+		if m.focus == i+2 {
+			buttons = append(buttons, browserFocus.Render("[ "+label+" ]"))
+		} else {
+			buttons = append(buttons, "[ "+label+" ]")
+		}
+	}
+	joined := strings.Join(buttons, "   ")
+	if ansi.StringWidth(joined) <= m.width {
+		return []string{joined}
+	}
+	for i := range buttons {
+		buttons[i] = fitPickerLine(buttons[i], m.width)
+	}
+	return buttons
+}
+
+func fitPickerLine(line string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	return ansi.Truncate(line, width, "…")
+}
+
+func activePathLine(path string, cursor, width int) string {
+	chars := []rune(path)
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(chars) {
+		cursor = len(chars)
+	}
+	full := "Path: " + string(chars[:cursor]) + "▏" + string(chars[cursor:])
+	if ansi.StringWidth(full) <= width {
+		return full
+	}
+	const label = "Path: "
+	room := width - ansi.StringWidth(label) - ansi.StringWidth("▏")
+	if room < 0 {
+		return ansi.Truncate(full, width, "…")
+	}
+	before := string(chars[:cursor])
+	if ansi.StringWidth(before) > room {
+		budget := room
+		for {
+			before = ansi.TruncateLeft(string(chars[:cursor]), max(0, budget-1), "…")
+			if ansi.StringWidth(before) <= room {
+				break
+			}
+			budget -= ansi.StringWidth(before) - room
+			if budget <= 1 {
+				before = ""
+				break
+			}
+		}
+	}
+	return label + before + "▏"
 }

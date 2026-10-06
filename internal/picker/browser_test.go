@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestUXBrowserUnicodeCursorEditing(t *testing.T) {
@@ -142,7 +143,7 @@ func TestUXBrowserDirectoryRequiresSelectThisDirectory(t *testing.T) {
 	if _, err := m.Result(); !errors.Is(err, ErrNotSubmitted) {
 		t.Fatalf("row Enter selected directory: %v", err)
 	}
-	if !strings.Contains(m.View().Content, child) {
+	if m.dir != child {
 		t.Fatal("Enter did not navigate into selected directory")
 	}
 	// Focus the visible Select this directory control and activate it.
@@ -179,7 +180,7 @@ func TestUXBrowserPasteManualPathPreservesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewBrowser(context.Background(), "file", "")
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24})
 	browserKey(m, tea.KeyTab, "") // editable Path control
 	m.Update(tea.PasteMsg{Content: path})
 	if view := m.View().Content; !strings.Contains(view, path) {
@@ -252,11 +253,49 @@ func TestUXBrowserResizeKeepsActionsAndScrollCue(t *testing.T) {
 	}
 }
 
+func TestUXBrowserResizeBoundsUnicodeContentAndActions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, strings.Repeat("界", 45)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	m := NewBrowser(context.Background(), "directory", root)
+	m.dir = strings.Repeat("目录/", 12)
+	m.pathText = strings.Repeat("路径/", 14)
+	m.pathCursor = len([]rune(m.pathText))
+	m.message = strings.Repeat("权限错误: 不可读取 ", 8)
+	m.focus = 1
+	for _, width := range []int{30, 43, 44} {
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 14})
+		view := m.View().Content
+		if !strings.Contains(view, "▏") {
+			t.Errorf("width %d clipped the active path cursor:\n%s", width, view)
+		}
+		for lineNumber, line := range strings.Split(view, "\n") {
+			if got := ansi.StringWidth(line); got > width {
+				t.Errorf("width %d line %d renders %d cells: %q", width, lineNumber+1, got, line)
+			}
+		}
+		for _, action := range []string{"Open directory", "Select this directory", "Cancel"} {
+			if !strings.Contains(view, action) {
+				t.Errorf("width %d hides action %q:\n%s", width, action, view)
+			}
+		}
+	}
+}
+
 func TestUXTryNativeUnavailableDoesNotReadTerminal(t *testing.T) {
-	old := nativeDialog
-	nativeDialog = func(context.Context, string, string) (string, error) { return "", ErrUnavailable }
-	t.Cleanup(func() { nativeDialog = old })
-	if _, err := TryNative(context.Background(), "file", ""); !errors.Is(err, ErrUnavailable) {
+	calls := 0
+	native := func(_ context.Context, kind, initial string) (string, error) {
+		calls++
+		if kind != "file" || initial != "" {
+			t.Fatalf("native arguments = %q, %q", kind, initial)
+		}
+		return "", ErrUnavailable
+	}
+	if _, err := tryNative(context.Background(), "file", "", native); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("TryNative error = %v, want ErrUnavailable", err)
+	}
+	if calls != 1 {
+		t.Fatalf("native dialog calls = %d, want 1", calls)
 	}
 }

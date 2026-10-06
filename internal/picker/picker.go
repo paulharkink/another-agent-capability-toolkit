@@ -22,10 +22,13 @@ type Picker struct {
 }
 
 var dialogSlot = make(chan struct{}, 1)
-var nativeDialog NativeDialog = Native
 
 // TryNative opens only the operating-system dialog. It never starts a terminal UI.
 func TryNative(ctx context.Context, kind, initial string) (string, error) {
+	return tryNative(ctx, kind, initial, Native)
+}
+
+func tryNative(ctx context.Context, kind, initial string, native NativeDialog) (string, error) {
 	if kind != "file" && kind != "directory" {
 		return "", fmt.Errorf("unsupported picker kind %q", kind)
 	}
@@ -38,7 +41,7 @@ func TryNative(ctx context.Context, kind, initial string) (string, error) {
 		return "", ctx.Err()
 	}
 	defer func() { <-dialogSlot }()
-	path, err := nativeDialog(ctx, kind, initial)
+	path, err := native(ctx, kind, initial)
 	if errors.Is(err, ErrCancelled) {
 		return "", ErrCancelled
 	}
