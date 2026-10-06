@@ -307,6 +307,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.form = nil
+		m.management.FormOverlay = false
 		if errors.Is(e, picker.ErrCancelled) {
 			m.pendingRegistration = nil
 			m.pendingRegistrationRemoval = false
@@ -831,6 +832,9 @@ func (m *Model) cleanOutput(output string) string {
 }
 
 func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
+	if m.management.FormOverlay {
+		return managementFormOverlayBounds(m.width, m.height)
+	}
 	if m.pendingSetup == nil || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
 		return 0, 0, 0, 0, false
 	}
@@ -885,6 +889,9 @@ func (m *Model) View() tea.View {
 		return m.homeView()
 	}
 	if m.form != nil {
+		if m.management.FormOverlay && (m.width < 80 || m.height < 16) {
+			return m.managementView()
+		}
 		if _, _, _, _, ok := m.setupOverlayBounds(); ok {
 			return m.setupOverlayView()
 		}

@@ -20,18 +20,21 @@ func TestManagementListMarksSelectableRows(t *testing.T) {
 	}
 }
 
-func TestSettingsSkipsInformationalRows(t *testing.T) {
+func TestSettingsCategoryFocusKeepsControlsInRelatedPane(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Settings")
-	m.management.SettingsOptions = []string{"codex"}
 	m.selected = 0
 	press(m, tea.KeyDown, "")
-	if m.selected != 2 {
-		t.Fatalf("Down stopped on informational heading at row %d", m.selected)
+	if m.selected != 1 {
+		t.Fatalf("Down did not select the next Settings category: %d", m.selected)
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "── Default named agents") || !strings.Contains(view, ">   [") {
-		t.Fatalf("settings headings and controls look alike:\n%s", view)
+	if !strings.Contains(view, "> Agent defaults") || !strings.Contains(view, "Default named agents affect future MCP") || !strings.Contains(view, "installations") {
+		t.Fatalf("Settings category and related explanation are not distinct:\n%s", view)
+	}
+	press(m, tea.KeyEnter, "")
+	if m.management.Focus != ProfilesPane || !strings.Contains(ansi.Strip(m.View().Content), "Details · Agent defaults") {
+		t.Fatalf("Enter did not focus Agent defaults details: focus=%v\n%s", m.management.Focus, m.View().Content)
 	}
 }
 

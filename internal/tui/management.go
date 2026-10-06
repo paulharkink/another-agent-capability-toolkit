@@ -27,22 +27,23 @@ func (m *Model) environmentRoot() string {
 }
 
 type managementState struct {
-	Modal            string
-	ModalSelected    int
-	Focus            Pane
-	EnvironmentIndex int
-	TargetIndex      int
-	HelpOrigin       string
-	HelpSelected     int
-	Hits             []hitRegion
-	ViewerPath       string
-	ViewerContent    string
-	ViewerOffset     int
-	ViewerHorizontal int
-	ViewerReturn     string
-	SettingsOptions  []string
-	SettingsDraft    map[string]bool
-	SettingsReason   string
+	Modal                string
+	ModalSelected        int
+	Focus                Pane
+	EnvironmentIndex     int
+	TargetIndex          int
+	AgentDetailIndex     int
+	SettingsDetailOffset int
+	SettingsOptions      []string // retained for source compatibility with legacy test fixtures; no longer drives UI state
+	HelpOrigin           string
+	HelpSelected         int
+	Hits                 []hitRegion
+	ViewerPath           string
+	ViewerContent        string
+	ViewerOffset         int
+	ViewerHorizontal     int
+	ViewerReturn         string
+	FormOverlay          bool
 }
 
 type environmentEntry struct {
@@ -209,6 +210,9 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			m.view = m.management.HelpOrigin
 			m.selected = m.management.HelpSelected
 			m.management.HelpOrigin = ""
+		} else if (m.view == "Agents" || m.view == "Settings") && m.management.Focus == ProfilesPane {
+			m.management.Focus = CapabilitiesPane
+			m.management.AgentDetailIndex = 0
 		} else {
 			m.navigate("Catalog")
 		}
@@ -223,25 +227,41 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 		m.management.Modal = "main"
 		m.management.ModalSelected = 0
 	case "enter":
-		if m.view == "Settings" {
-			if m.selected == 0 {
-				m.editEnvironmentRoot()
+		if m.view == "Agents" {
+			if m.management.Focus == CapabilitiesPane {
+				m.management.Focus = ProfilesPane
+				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
 				return nil
 			}
-			if cmd, handled := m.activateSettingsRow(m.selected); handled {
-				return cmd
+			return m.activateAgentDetail()
+		}
+		if m.view == "Settings" {
+			if m.management.Focus == CapabilitiesPane {
+				m.management.Focus = ProfilesPane
+				m.management.SettingsDetailOffset = 0
+				return nil
 			}
+			return m.activateSettingsCategory()
 		}
 		fallthrough
 	case "f2":
 		if m.view != "Help" {
-			m.management.Modal = "actions"
-			m.management.ModalSelected = 0
+			if m.view == "Agents" && m.management.Focus == CapabilitiesPane {
+				m.management.Focus = ProfilesPane
+				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
+			} else if m.view == "Settings" && m.management.Focus == CapabilitiesPane {
+				m.management.Focus = ProfilesPane
+			} else if m.view == "Agents" {
+				return m.activateAgentDetail()
+			} else if m.view == "Settings" {
+				return m.activateSettingsCategory()
+			} else if m.view == "Environments" {
+				m.management.Modal = "actions"
+				m.management.ModalSelected = 0
+			}
 		}
 	case "space", " ":
-		if m.view == "Settings" {
-			m.toggleSettingsCheckbox(m.selected)
-		}
+		// Category controls are activated explicitly with Enter / F2.
 	case "f5", "R":
 		if m.view == "Agents" {
 			if _, ok := m.backend.(agentManagementBackend); !ok {
@@ -250,27 +270,15 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			}
 		}
 		return m.load()
-	case "ctrl+s":
-		if m.view == "Settings" {
-			return m.saveSettingsDraft()
-		}
 	case "tab", "shift+tab", "left", "right":
-		if m.view == "Settings" && (stroke == "tab" || stroke == "shift+tab") {
-			save := len(m.managementSettingsRows()) - 2
-			if stroke == "shift+tab" {
-				if m.selected == save+1 {
-					m.selected = save
-				} else if m.selected == save {
-					m.selected = 0
-				} else {
-					m.selected = save + 1
-				}
-			} else if m.selected < save {
-				m.selected = save
-			} else if m.selected == save {
-				m.selected = save + 1
+		if m.view == "Agents" || m.view == "Settings" {
+			if stroke == "left" || stroke == "shift+tab" {
+				m.management.Focus = CapabilitiesPane
 			} else {
-				m.selected = 0
+				m.management.Focus = ProfilesPane
+				if m.view == "Agents" {
+					m.management.AgentDetailIndex = m.agentDetailInitialIndex()
+				}
 			}
 		} else if m.view == "Environments" {
 			if stroke == "left" {
@@ -288,8 +296,23 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 }
 
 func (m *Model) moveManagementSelection(stroke string) {
+	if m.view == "Agents" && m.management.Focus == ProfilesPane {
+		count := m.agentDetailLineCount()
+		m.management.AgentDetailIndex = moveBounded(m.management.AgentDetailIndex, count, stroke, max(1, m.height-11))
+		return
+	}
+	if m.view == "Settings" && m.management.Focus == ProfilesPane {
+		_, right := managementPaneWidths(m.width)
+		details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+		m.management.SettingsDetailOffset = moveBounded(m.management.SettingsDetailOffset, len(details), stroke, max(1, m.height-11))
+		return
+	}
 	if m.view == "Settings" {
-		m.moveSettingsSelection(stroke)
+		previous := m.selected
+		m.selected = moveBounded(m.selected, len(m.managementSettingsRows()), stroke, max(1, m.height-11))
+		if m.selected != previous {
+			m.management.SettingsDetailOffset = 0
+		}
 		return
 	}
 	count := 0
@@ -331,50 +354,141 @@ func (m *Model) moveManagementSelection(stroke string) {
 		*index = count - 1
 	}
 	*index = min(max(0, *index), count-1)
+	if m.view == "Agents" && index == &m.selected {
+		m.management.AgentDetailIndex = m.agentDetailInitialIndex()
+	}
 	if m.view == "Environments" && index == &m.management.EnvironmentIndex {
 		m.management.TargetIndex = 0
 	}
 }
 
-func (m *Model) settingsSelectable(index int) bool {
-	option := index - 2
-	if index == 0 || (option >= 0 && option < len(m.management.SettingsOptions)) {
-		return true
-	}
-	return index >= len(m.managementSettingsRows())-2
-}
-
-func (m *Model) moveSettingsSelection(stroke string) {
-	rows := m.managementSettingsRows()
-	choices := make([]int, 0, len(m.management.SettingsOptions)+3)
-	for i := range rows {
-		if m.settingsSelectable(i) {
-			choices = append(choices, i)
-		}
-	}
-	position := 0
-	for i, index := range choices {
-		if index >= m.selected {
-			position = i
-			break
-		}
-		position = i
+func moveBounded(index, count int, stroke string, page int) int {
+	if count == 0 {
+		return 0
 	}
 	switch stroke {
 	case "up":
-		position--
+		index--
 	case "down":
-		position++
+		index++
 	case "pgup":
-		position -= max(1, m.height-11)
+		index -= page
 	case "pgdown":
-		position += max(1, m.height-11)
+		index += page
 	case "home":
-		position = 0
+		index = 0
 	case "end":
-		position = len(choices) - 1
+		index = count - 1
 	}
-	m.selected = choices[min(max(0, position), len(choices)-1)]
+	return min(max(index, 0), count-1)
+}
+
+func (m *Model) agentDetailControlCount() int {
+	_, controls, _ := m.agentManagementDisplayLines()
+	return len(controls)
+}
+
+func (m *Model) agentManagementDisplayLines() (details, controls []string, firstControl int) {
+	row, ok := m.selectedAgentManagement()
+	ids := m.namedAgents()
+	selectedID := ""
+	if m.selected >= 0 && m.selected < len(ids) {
+		selectedID = ids[m.selected]
+	}
+	registrations := m.agentRegistrations(selectedID)
+	if ok {
+		registrations = row.Registrations
+		details = agentManagementDetails(row)
+	} else {
+		details = []string{"Status: Unverified", "Evidence: Detection unavailable", "Active home: Not reported", "Effective config: Not resolved", "Intended write config: Not supported or not resolved", "Config candidates: None reported", "Observed registrations: None reported"}
+	}
+	if !ok && len(registrations) > 0 {
+		details = append(details, "Observed AACT registrations:")
+		details = append(details, registrations...)
+	}
+	if ok && len(row.Registrations) == 0 {
+		for _, registration := range m.agentRegistrations(row.ID) {
+			details = append(details, "Observed AACT registration: "+registration)
+		}
+	}
+	_, right := managementPaneWidths(max(80, m.width))
+	details = wrapManagementDetails(details, right-1)
+	firstControl = len(details)
+	if ok {
+		for i, file := range row.ConfigFiles {
+			if file.Exists {
+				controls = append(controls, fmt.Sprintf("View exact configuration candidate %d", i+1))
+			}
+		}
+	}
+	if len(controls) == 0 {
+		details = append(details, wrapManagementDetails([]string{"Configure location: unavailable; this backend has no supported location editor"}, right-1)...)
+	} else {
+		details = append(details, controls...)
+	}
+	return details, controls, firstControl
+}
+
+func (m *Model) agentDetailLineCount() int {
+	details, _, _ := m.agentManagementDisplayLines()
+	return len(details)
+}
+
+func (m *Model) agentDetailInitialIndex() int {
+	_, controls, first := m.agentManagementDisplayLines()
+	if len(controls) > 0 {
+		return first
+	}
+	return 0
+}
+
+func (m *Model) activateAgentDetail() tea.Cmd {
+	row, ok := m.selectedAgentManagement()
+	if !ok {
+		return nil
+	}
+	_, controls, firstControl := m.agentManagementDisplayLines()
+	index := m.management.AgentDetailIndex - firstControl
+	if index < 0 || index >= len(controls) {
+		return nil
+	}
+	index = 0
+	for _, file := range row.ConfigFiles {
+		if !file.Exists {
+			continue
+		}
+		if index == 0 {
+			backend, ok := m.backend.(agentManagementBackend)
+			if !ok {
+				m.output = "Exact configuration viewer unavailable from service"
+				return nil
+			}
+			m.management.ViewerReturn = ""
+			return func() tea.Msg {
+				content, err := backend.UIAgentConfig(m.ctx, row.ID, file.Path)
+				return agentConfigMsg{path: file.Path, content: content, err: err}
+			}
+		}
+		index--
+	}
+	m.output = "Agent location editing is unavailable: no supported location editor is exposed by this backend."
+	return nil
+}
+
+func (m *Model) activateSettingsCategory() tea.Cmd {
+	switch m.selected {
+	case 0:
+		m.editEnvironmentRoot()
+	case 1:
+		if _, ok := m.backend.(defaultAgentsBackend); ok {
+			m.editDefaultAgents()
+		} else {
+			m.output = "Default-agent preference service unavailable; use the CLI settings command."
+		}
+	default:
+		return nil
+	}
+	return nil
 }
 
 func (m *Model) managementMenuEntries() []string {
@@ -602,8 +716,11 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
+	m.management.FormOverlay = true
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
-	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.form.SetTitle("Environment source · Edit environment root")
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
 
 func (m *Model) editDefaultAgents() {
@@ -631,31 +748,27 @@ func (m *Model) editDefaultAgents() {
 		}
 	}
 	m.pendingDefaultAgents = true
+	m.management.FormOverlay = true
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agents", Label: "Default named agents", Type: "multichoice", Options: choices}}, map[string]any{"agents": selected})
-	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.form.SetTitle("Agent defaults · Edit future MCP destinations")
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+}
+
+func managementFormOverlayBounds(width, height int) (x, y, overlayWidth, overlayHeight int, ok bool) {
+	if width < 80 || height < 16 {
+		return 0, 0, 0, 0, false
+	}
+	overlayWidth = min(72, width-8)
+	overlayHeight = min(20, height-4)
+	if overlayWidth < 48 || overlayHeight < 12 {
+		return 0, 0, 0, 0, false
+	}
+	return (width - overlayWidth) / 2, (height - overlayHeight) / 2, overlayWidth, overlayHeight, true
 }
 
 func (m *Model) initSettingsDraft() {
-	m.management.SettingsOptions = nil
-	m.management.SettingsDraft = map[string]bool{}
-	m.management.SettingsReason = "service support pending"
-	if backend, ok := m.backend.(defaultAgentsBackend); ok {
-		options, err := backend.UIAgentDefaultOptions(m.ctx)
-		if err != nil {
-			m.management.SettingsReason = m.cleanOutput(err.Error())
-		} else {
-			m.management.SettingsOptions = append([]string(nil), options...)
-			m.management.SettingsReason = ""
-		}
-	} else {
-		m.management.SettingsOptions = m.namedAgents()
-	}
-	for _, id := range strings.Split(m.settings["default_agents"], ",") {
-		id = strings.TrimSpace(id)
-		if id != "" {
-			m.management.SettingsDraft[id] = true
-		}
-	}
+	m.management.SettingsDetailOffset = 0
 }
 
 func agentDisplayName(id string) string {
@@ -671,111 +784,39 @@ func agentDisplayName(id string) string {
 	}
 }
 
-func (m *Model) settingsCheckboxIndex(index int) (string, bool) {
-	option := index - 2
-	if option < 0 || option >= len(m.management.SettingsOptions) {
-		return "", false
-	}
-	return m.management.SettingsOptions[option], true
-}
-
-func (m *Model) toggleSettingsCheckbox(index int) bool {
-	id, ok := m.settingsCheckboxIndex(index)
-	if !ok {
-		return false
-	}
-	if m.management.SettingsReason != "" {
-		m.output = m.management.SettingsReason
-		return true
-	}
-	m.management.SettingsDraft[id] = !m.management.SettingsDraft[id]
-	return true
-}
-
-func (m *Model) saveSettingsDraft() tea.Cmd {
-	backend, ok := m.backend.(defaultAgentsBackend)
-	if !ok || m.management.SettingsReason != "" {
-		m.output = m.management.SettingsReason
-		return nil
-	}
-	selected := make([]string, 0, len(m.management.SettingsOptions))
-	for _, id := range m.management.SettingsOptions {
-		if m.management.SettingsDraft[id] {
-			selected = append(selected, id)
-		}
-	}
-	m.busy = true
-	return func() tea.Msg { return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, selected)} }
-}
-
-func (m *Model) activateSettingsRow(index int) (tea.Cmd, bool) {
-	if m.toggleSettingsCheckbox(index) {
-		return nil, true
-	}
-	rows := m.managementSettingsRows()
-	if index >= 0 && index < len(rows) && strings.Contains(rows[index], "disabled:") {
-		m.output = strings.TrimSpace(strings.SplitN(rows[index], "disabled:", 2)[1])
-		return nil, true
-	}
-	if index == len(rows)-2 {
-		return m.saveSettingsDraft(), true
-	}
-	if index == len(rows)-1 {
-		m.navigate("Catalog")
-		return nil, true
-	}
-	return nil, false
-}
-
 func (m *Model) managementSettingsRows() []string {
-	rows := []string{
-		"Environment root: " + m.environmentRoot(),
-		"Default named agents for new MCP installations",
-	}
-	for _, id := range m.management.SettingsOptions {
-		mark := "[ ]"
-		if m.management.SettingsDraft[id] {
-			mark = "[x]"
+	return []string{"Environment source", "Agent defaults", "Runtime backend", "Diagnostics"}
+}
+
+func (m *Model) managementSettingsDetails() []string {
+	switch m.selected {
+	case 0:
+		return []string{"Environment source", "Source: " + nonempty(m.settings["source"], "not selected"), "Checkout: " + nonempty(m.settings["checkout"], "not reported"), "Environment root: " + nonempty(m.environmentRoot(), "not configured"), "[ Edit environment root… ]"}
+	case 1:
+		lines := []string{"Agent defaults", "Default named agents affect future MCP installations only.", "Existing registrations are unchanged.", "Skill-only installations use All — ~/.agents/skills."}
+		if _, ok := m.backend.(defaultAgentsBackend); ok {
+			return append(lines, "[ Edit default named agents… ]")
 		}
-		row := "  " + mark + " " + agentDisplayName(id)
-		if m.management.SettingsReason != "" {
-			row += " — disabled: " + m.management.SettingsReason
-		}
-		rows = append(rows, row)
+		return append(lines, "Default-agent preference service unavailable; use the CLI settings command.")
+	case 2:
+		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
+	default:
+		return []string{"Diagnostics", "Source: " + nonempty(m.settings["source"], "not reported"), "Checkout: " + nonempty(m.settings["checkout"], "not reported"), "Environment root: " + nonempty(m.environmentRoot(), "not reported"), "State: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Known checkout listing: unavailable from this service"}
 	}
-	rows = append(rows,
-		"Skill-only installations default to All — ~/.agents/skills.",
-		"These named-agent defaults do not change existing registrations.",
-		"Docker backend: [ Select backend — disabled: backend preference service unavailable ]",
-		"Resolved backend: unavailable from service",
-		"[ Check backend — disabled: backend check service unavailable ]",
-		"Source: "+m.settings["source"],
-		"Checkout: "+m.settings["checkout"],
-		"Known checkouts: unavailable from service",
-		"[ View known checkouts… — disabled: checkout listing service unavailable ]",
-		"State: "+m.settings["state-dir"],
-		"Platform: "+runtime.GOOS+" / "+runtime.GOARCH,
-	)
-	save := "[ Save ]"
-	if m.management.SettingsReason != "" {
-		save += " — disabled: " + m.management.SettingsReason
-	}
-	return append(rows, save, "[ Cancel ]")
 }
 
 func (m *Model) managementHelpRows() []string {
 	return []string{
-		"Tab / Left / Right: switch two-pane focus",
-		"Up / Down / PageUp / PageDown / Home / End: select and scroll",
-		"Enter / F2: selected row Actions; Up / Down also work in menus",
-		"F1: Help · F5: Refresh · F9 / m: Main menu · F10: Quit",
-		"Mouse click: select row or visible command · wheel: scroll",
-		"Running / Stopped: observed Docker state; a stale observation has a timestamp",
-		"Other installation: running elsewhere; local registration may still be configured",
-		"Disabled action: its reason is shown in the menu",
-		"default: suggested editable value; environment values may prefill it",
-		"source: the package or target file that supplied a value",
-		"Esc / Back: return to the previous screen",
+		"Agents / Settings: Left / Right or Tab changes focused pane",
+		"Up / Down / PageUp / PageDown / Home / End selects and scrolls the focused pane",
+		"Enter / F2: Open / focus the highlighted row or control; Environments opens target actions",
+		"Text editors: arrows move the cursor · Backspace edits · Esc leaves the editor",
+		"Pickers: arrows choose · Enter accepts · Esc returns to the previous layer",
+		"Agents: choose an agent before opening a config · Settings: choose a category before its control",
+		"F1 / ?: Help · F5 / R: Refresh · F9 / m: Main menu · F10: Quit",
+		"Mouse click selects visible rows or controls · wheel scrolls the focused pane",
+		"Scroll titles show More above / More below when content continues",
+		"Esc / Back returns one layer at a time and Help restores its origin",
 	}
 }
 
@@ -783,7 +824,7 @@ func (m *Model) managementView() tea.View {
 	m.management.Hits = nil
 	width, height := m.width, m.height
 	if width < 80 || height < 16 {
-		return m.homeView()
+		return tea.NewView(navyCanvas("AACT · " + m.view + "\nResize terminal to 80×16 or larger.\nEsc Back"))
 	}
 	if m.management.Modal == "viewer" {
 		return m.agentConfigView()
@@ -798,14 +839,14 @@ func (m *Model) managementView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Actions"
+	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
 	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"
 	lines[3] = "╠" + strings.Repeat("═", width-2) + "╣"
-	actionsStart := strings.Index(menubar, "F2 Actions")
-	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Actions"), Height: 1, Control: "actions"})
+	actionsStart := strings.Index(menubar, "F2 Open / Focus")
+	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Open / Focus"), Height: 1, Control: "actions"})
 	visible := height - 12
 	if m.view == "Agents" {
 		m.renderAgentManagement(lines, visible)
@@ -823,7 +864,7 @@ func (m *Model) managementView() tea.View {
 	lines[height-6] = "╠" + strings.Repeat("═", width-2) + "╣"
 	lines[height-5] = "║" + fit(" "+m.output, width-2) + "║"
 	lines[height-4] = "╠" + strings.Repeat("═", width-2) + "╣"
-	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F2 Actions", "actions"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
+	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F2 Open / Focus", "actions"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
 	x, content := 2, " "
 	for _, item := range footer {
 		content += item.label + "  "
@@ -831,7 +872,7 @@ func (m *Model) managementView() tea.View {
 		x += len(item.label) + 2
 	}
 	lines[height-3] = "║" + fit(content, width-2) + "║"
-	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select · Enter Actions", width-2) + "║"
+	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select focused pane · Enter / F2 Open / Focus", width-2) + "║"
 	m.management.Hits = append(m.management.Hits, hitRegion{X: 2, Y: height - 2, Width: len("Esc Back"), Height: 1, Control: "back"})
 	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
 	if m.management.Modal != "" {
@@ -855,7 +896,7 @@ func (m *Model) renderManagementList(lines []string, rows []string, visible int)
 		if i >= len(rows) {
 			break
 		}
-		selectable := m.view != "Help" && (m.view != "Settings" || m.settingsSelectable(i))
+		selectable := m.view != "Help"
 		prefix := "· "
 		if selectable {
 			prefix = "› "
@@ -896,26 +937,56 @@ func managementScrollTitle(title string, count, start, visible, width int) strin
 
 func (m *Model) renderSettingsManagement(lines []string, visible int) {
 	rows := m.managementSettingsRows()
-	save := len(rows) - 2
-	m.renderManagementList(lines, rows[:save], visible)
-	buttons := []struct {
-		label string
-		index int
-	}{{"[ Save ]", save}, {"[ Cancel ]", save + 1}}
-	content := " "
-	for _, button := range buttons {
-		if len(content) > 1 {
-			content += "  "
-		}
-		x := 1 + ansi.StringWidth(content)
-		styled := managementGold.Render(button.label)
-		if m.selected == button.index {
-			styled = managementSelected.Render(button.label)
-		}
-		content += styled
-		m.management.Hits = append(m.management.Hits, hitRegion{X: x, Y: m.height - 7, Width: len(button.label), Height: 1, Index: button.index, Control: "row"})
+	left, right := managementPaneWidths(m.width)
+	start := max(0, m.selected-visible+1)
+	leftTitle := " Settings categories"
+	if m.management.Focus == CapabilitiesPane {
+		leftTitle = "►" + leftTitle
 	}
-	lines[m.height-7] = "║" + fit(content, m.width-2) + "║"
+	details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+	detailStart := min(m.management.SettingsDetailOffset, max(0, len(details)-visible))
+	detailTitle := " Details · " + rows[min(max(0, m.selected), len(rows)-1)]
+	if m.management.Focus == ProfilesPane {
+		detailTitle = "►" + detailTitle
+	}
+	lines[4] = "╠" + managementGold.Render(managementScrollTitle(leftTitle, len(rows), start, visible, left)) + "╦" + managementGold.Render(managementScrollTitle(detailTitle, len(details), detailStart, visible, right)) + "╣"
+	for y := 0; y < visible; y++ {
+		i := start + y
+		leftText := ""
+		if i < len(rows) {
+			prefix := "› "
+			if i == m.selected {
+				prefix = "> "
+			}
+			leftText = prefix + rows[i]
+			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: left, Height: 1, Index: i, Control: "row"})
+		}
+		rightText := ""
+		detailIndex := detailStart + y
+		if detailIndex < len(details) {
+			rightText = details[detailIndex]
+		}
+		leftCell := fit(leftText, left)
+		if m.management.Focus == CapabilitiesPane && i == m.selected {
+			leftCell = managementSelected.Render(leftCell)
+		}
+		rightCell := fit(rightText, right)
+		canEditDefaults := false
+		if _, ok := m.backend.(defaultAgentsBackend); ok {
+			canEditDefaults = true
+		}
+		if detailIndex == len(details)-1 && (m.selected == 0 || (m.selected == 1 && canEditDefaults)) {
+			label := details[detailIndex]
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: m.selected, Control: "settings-action"})
+			rightCell = managementGold.Render(fit(label, right))
+			if m.management.Focus == ProfilesPane {
+				rightCell = managementSelected.Render(fit(label, right))
+			}
+		} else if detailIndex < len(details) {
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-detail"})
+		}
+		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
+	}
 }
 
 func managementPaneWidths(width int) (int, int) {
@@ -940,44 +1011,23 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 		start = 0
 	}
 	start = min(start, max(0, len(rows)-visible))
-	leftTitle := managementScrollTitle(" Detected agents", len(rows), start, visible, left)
-	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(" "+selectedName, right)) + "╣"
-	registrations := m.agentRegistrations(selectedID)
-	details := []string{"Status: Detection unavailable", "Config: location unavailable", fmt.Sprintf("AACT MCPs: %d", len(registrations))}
-	if row, ok := m.selectedAgentManagement(); ok {
-		registrations = row.Registrations
-		status := row.Detection
-		if status == "" {
-			status = "Detection unavailable"
-		}
-		config := "location unavailable"
-		if len(row.ConfigFiles) > 0 {
-			file := row.ConfigFiles[0]
-			config = file.Path
-			if !file.Exists {
-				config += " (missing)"
-			}
-		}
-		details = []string{"Status: " + status, "Config: " + config, fmt.Sprintf("AACT MCPs: %d", len(registrations)), ""}
-		if row.Evidence != "" {
-			details = append(details, "Evidence: "+row.Evidence)
-		}
-		if row.Note != "" {
-			details = append(details, "Note: "+row.Note)
-		}
-		details = append(details, fmt.Sprintf("Config candidates: %d", len(row.ConfigFiles)))
-		for _, file := range row.ConfigFiles {
-			state := "missing"
-			if file.Exists {
-				state = "exists"
-			}
-			details = append(details, file.Path+" · "+state+" · "+file.Scope+" · "+file.Precedence)
-		}
+	leftTitle := managementScrollTitle(" Agents", len(rows), start, visible, left)
+	if m.management.Focus == CapabilitiesPane {
+		leftTitle = managementScrollTitle("► Agents", len(rows), start, visible, left)
 	}
-	if len(registrations) > 0 {
-		details = append(details, "Registrations:")
-		details = append(details, registrations...)
+	detailTitle := " " + selectedName + " · Agent details"
+	if m.management.Focus == ProfilesPane {
+		detailTitle = "► " + selectedName + " · Agent details"
 	}
+	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(detailTitle, right)) + "╣"
+	details, controls, firstControl := m.agentManagementDisplayLines()
+	detailStart := 0
+	if m.management.Focus == ProfilesPane {
+		detailStart = max(0, m.management.AgentDetailIndex-visible+1)
+	}
+	detailStart = min(detailStart, max(0, len(details)-visible))
+	detailTitle = managementScrollTitle(detailTitle, len(details), detailStart, visible, right)
+	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(detailTitle, right)) + "╣"
 	for y := 0; y < visible; y++ {
 		i := start + y
 		leftText := ""
@@ -986,25 +1036,52 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 			if i == m.selected {
 				prefix = "> "
 			}
-			leftText = prefix + rows[i]
+			leftText = prefix + rows[i] + " · " + m.agentManagementRowStatus(rows[i])
 			for _, row := range m.agentManagement {
 				if row.ID == rows[i] && row.Name != "" {
-					leftText = prefix + row.Name + " (" + row.ID + ")"
+					leftText = prefix + row.Name + " (" + row.ID + ") · " + agentManagementStatus(row.Detection)
 					break
 				}
 			}
 			m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: y + 5, Width: left, Height: 1, Index: i, Control: "row"})
 		}
 		rightText := ""
-		if len(rows) > 0 && y < len(details) {
-			rightText = details[y]
+		detailIndex := detailStart + y
+		if len(rows) > 0 && detailIndex < len(details) {
+			rightText = details[detailIndex]
 		}
 		leftCell := fit(leftText, left)
 		if i < len(rows) && i == m.selected {
-			leftCell = managementSelected.Render(leftCell)
+			if m.management.Focus == CapabilitiesPane {
+				leftCell = managementSelected.Render(leftCell)
+			}
 		}
-		lines[y+5] = "║" + leftCell + "║" + fit(rightText, right) + "║"
+		if detailIndex >= firstControl && detailIndex < firstControl+len(controls) {
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "agent-config"})
+			if m.management.Focus == ProfilesPane && detailIndex == m.management.AgentDetailIndex {
+				rightText = managementSelected.Render(fit(rightText, right))
+			}
+		} else if len(rows) > 0 && detailIndex < len(details) {
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "agent-detail"})
+			if m.management.Focus == ProfilesPane && detailIndex == m.management.AgentDetailIndex {
+				rightText = managementSelected.Render(fit(rightText, right))
+			}
+		}
+		rightCell := fit(rightText, right)
+		if rightText != ansi.Strip(rightText) {
+			rightCell = rightText
+		}
+		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
+}
+
+func (m *Model) agentManagementRowStatus(id string) string {
+	for _, row := range m.agentManagement {
+		if row.ID == id {
+			return agentManagementStatus(row.Detection)
+		}
+	}
+	return "Unverified"
 }
 
 func (m *Model) agentConfigView() tea.View {
@@ -1030,7 +1107,19 @@ func (m *Model) agentConfigView() tea.View {
 		}
 		lines[y+3] = "║" + fit(text, width-2) + "║"
 	}
-	lines[height-2] = "║" + fit(fmt.Sprintf(" Line %d/%d · Esc Back", m.management.ViewerOffset+1, len(content)), width-2) + "║"
+	visibleEnd := min(len(content), m.management.ViewerOffset+visible)
+	position := fmt.Sprintf("Lines %d–%d of %d", m.management.ViewerOffset+1, visibleEnd, len(content))
+	if m.management.ViewerOffset > 0 {
+		position = "↑ More above · " + position
+	}
+	if visibleEnd < len(content) {
+		position += " · ↓ More below"
+	}
+	if m.management.ViewerHorizontal > 0 {
+		position += " · ← More left"
+	}
+	position += " · Esc Back"
+	lines[height-2] = "║" + fit(position, width-2) + "║"
 	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
 	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 	v.MouseMode = tea.MouseModeCellMotion
@@ -1157,13 +1246,17 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 		if m.management.Modal != "" && hit.Control != "menu" {
 			continue
 		}
-		if _, ok := msg.(tea.MouseWheelMsg); ok && hit.Control == "row" {
+		if _, ok := msg.(tea.MouseWheelMsg); ok && (hit.Control == "row" || hit.Control == "agent-detail" || hit.Control == "settings-detail") {
 			key := "down"
 			if mouse.Button == tea.MouseWheelUp {
 				key = "up"
 			}
 			if m.view == "Environments" {
 				m.management.Focus = hit.Pane
+			} else if hit.Control == "agent-detail" || hit.Control == "settings-detail" {
+				m.management.Focus = ProfilesPane
+			} else if m.view == "Agents" || m.view == "Settings" {
+				m.management.Focus = CapabilitiesPane
 			}
 			m.moveManagementSelection(key)
 			return nil
@@ -1186,12 +1279,28 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 				}
 			} else {
 				m.selected = hit.Index
-				if m.view == "Settings" {
-					cmd, _ := m.activateSettingsRow(hit.Index)
-					return cmd
+				if m.view == "Agents" || m.view == "Settings" {
+					m.management.Focus = CapabilitiesPane
 				}
 			}
 			return nil
+		case "agent-config":
+			m.management.Focus = ProfilesPane
+			m.management.AgentDetailIndex = hit.Index
+			return m.activateAgentDetail()
+		case "agent-detail", "settings-detail":
+			m.management.Focus = ProfilesPane
+			if hit.Control == "agent-detail" {
+				m.management.AgentDetailIndex = hit.Index
+			}
+			if hit.Control == "settings-detail" {
+				m.management.SettingsDetailOffset = hit.Index
+			}
+			return nil
+		case "settings-action":
+			m.selected = hit.Index
+			m.management.Focus = ProfilesPane
+			return m.activateSettingsCategory()
 		case "help":
 			return m.managementKey("f1")
 		case "actions":
