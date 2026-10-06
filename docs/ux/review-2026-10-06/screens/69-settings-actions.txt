@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ Settings                                                                                                                                                               ║
+║> Environment root: /home/pharkink/sources/dso-skills/environments                                                                                                      ║
+║── Default named agents for new MCP installations                                                                                                                       ║
+║›   [ ] Codex                                                                                                                                                           ║
+║›   [ ] OpenCode                                                                                                                                                        ║
+║›   [ ] Claude Code                                                                                                                                                     ║
+║›   [ ] copilot-cli                                                                                                                                                     ║
+║›   [ ] copilot-intellij                                                                                                                                                ║
+║›   [ ] generic                                                                                                                                                         ║
+║· Skill-only installations default to All — ~/.agents/skills.                                                                                                           ║
+║· These named-agent defaults do not change existing registrations.                                                                                                      ║
+║· Docker backend: [ Select backend — disabled: backend preference service unavailable ]                                                                                 ║
+║· Resolved backend: unavailable from service                                                                                                                            ║
+║· [ Check backend — disabled: backend check se┌ Actions                                                                 ┐                                               ║
+║· Source: dso-skills                          │> Edit environment root                                                  │                                               ║
+║· Checkout: /home/pharkink/sources/dso-skills │› Default named agents                                                   │                                               ║
+║· Known checkouts: unavailable from service   │› Docker backend — disabled: service support pending			 │                                               ║
+║· [ View known checkouts… — disabled: checkout│› Back                                                                   │                                               ║
+║· State: /home/pharkink/.local/state/agent-ski│ ↑↓ Select · Enter Open · Esc Back                                       │                                               ║
+║· Platform: linux / amd64                     └─────────────────────────────────────────────────────────────────────────┘                                               ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║ [ Save ]  [ Cancel ]                                                                                                                                                   ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ Cancelled                                                                                                                                                              ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

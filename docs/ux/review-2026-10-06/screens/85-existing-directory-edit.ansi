@@ -1,0 +1,42 @@
+[38;5;195m[48;5;17m╔ AACT · Another Agent Capability Toolkit[39m                                                                                                                                [38;5;195m╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments[39m                                                                                  [38;5;195m║
+╠[38;5;222mCapabilities[39m                                                                       [38;5;195m╦[38;5;222m► Selected capability · Local Git Repository Map    [39m                                [38;5;195m╣
+║› P[38;5;222m[48;5;24m╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   [38;5;195m[48;5;17m║
+║› P[38;5;222m║[38;5;195m[48;5;24mInstall · Local Git Repository Map[39m                                                                                                                              [38;5;222m║[39m[48;5;195m   [38;5;195m[48;5;17m║
+║› N[38;5;222m║[38;5;195m[48;5;24mEnvironment: No environment file · Target: default · Runtime: New setup[39m                                                                                         [38;5;222m║   ║
+║› N[48;5;17m║[39m[48;5;24m                                                                                                                                                                [38;5;222m║   [38;5;195m[48;5;17m║
+║› I[38;5;222m║[38;5;195m[48;5;24m── Sections[39m                                           [38;5;195m│ ── Inputs      [39m                                                                                         [38;5;222m║[38;5;146m   [38;5;195m[48;5;17m║
+║› I[38;5;222m║[38;5;195m[48;5;24m> Inputs[39m                                              [38;5;195m│ > Directories to scan for local Git checkouts: 1 item [39m                                                  [38;5;222m║   ║
+║> N║[38;5;195m› Destinations[39m                                        [38;5;195m│   > /home/pharkink/sources  [Remove][39m                                                                    [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│   › + Add directory…[39m                                                                                    [38;5;222m║   ║
+║› I║[39m                                                      [38;5;195m│ › Git hosts to include (empty includes all hosts): 0 items[39m                                              [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│   › + Add item…[39m                                                                                         [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║› N║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[39m                                                                                                                                                                [38;5;222m║   ║
+║   ║[38;5;195mEdit: /home/pharkink/sources_[39m                                                                                                                                   [38;5;222m║   ║
+║7/1║[38;5;195mEnter applies; Ctrl+U clears; Esc cancels edit[39m                                                                                                                  [38;5;222m║   ║
+╠═══║[38;5;195mEnter choose/edit · a Add · Backspace/Del Remove · m Type path[39m                                                                                                  [38;5;222m║═══╣
+║Loc║[38;5;195mSections · [Details] · Actions[39m                                                                                                                                  [38;5;222m║   ║
+║Can║[38;5;195m↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back[39m                                                                                                     [38;5;222m║   ║
+╠═══║[38;5;195m[ Save ]  [ Cancel ][39m                                                                                                                                            [38;5;222m║═══╣
+║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝[39m[48;5;17m   [38;5;195m║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit[39m                                                                                                           [38;5;195m║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

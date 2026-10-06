@@ -1,0 +1,42 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║Install · Cluster Inspector                                                                                                                                             ║
+║Environment: No environment file · Target: default · Runtime: New setup                                                                                                 ║
+║                                                                                                                                                                        ║
+║── Setup sections                                        │ ── Authentication                                                                                            ║
+║› Connection                                             │ › Token:                                                                                                     ║
+║> Authentication                                         │     · Enter a Token                                                                                          ║
+║› Databases                                              │ › Source kubeconfig:                                                                                         ║
+║› Destinations                                           │     · Enter a source kubeconfig path · Import source; AACT uses managed credential material at runtime       ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║[Sections] · Details · Actions                                                                                                                                          ║
+║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                             ║
+║[ Save ]  [ Cancel ]                                                                                                                                                    ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

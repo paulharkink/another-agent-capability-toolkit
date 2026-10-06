@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+╠ Detected agents                                                          ╦ OpenCode CLI                                                                                ╣
+║› Codex (codex)                                                           ║Status: installed                                                                            ║
+║> OpenCode CLI (opencode)                                                 ║Config: /home/pharkink/.config/opencode/opencode.json                                        ║
+║› Claude Code (claude)                                                    ║AACT MCPs: 0                                                                                 ║
+║› GitHub Copilot CLI (copilot-cli)                                        ║                                                                                             ║
+║› JetBrains AI Assistant (intellij)                                       ║Evidence: CLI executable: /home/pharkink/.opencode/bin/opencode                              ║
+║› GitHub Copilot in JetBrains (copilot-intellij)                          ║Config candidates: 2                                                                         ║
+║› generic (generic)                                                       ║/home/pharkink/.config/opencode/opencode.json · exists · user · lower                        ║
+║› Claude Desktop (claude-desktop)                                         ║/home/pharkink/.config/opencode/opencode.jsonc · exists · user · higher                      ║
+║› OpenCode Desktop (opencode-desktop)                                     ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                              ┌ Actions                                                                 ┐                                               ║
+║                                     	       │> /home/pharkink/.config/opencode/opencode.json · user                   │                                               ║
+║                                              │› /home/pharkink/.config/opencode/opencode.jsonc · user 		 │                                               ║
+║                                              │› Back                                                                   │                                               ║
+║                                              │ ↑↓ Select · Enter Open · Esc Back                                       │                                               ║
+║                                              └─────────────────────────────────────────────────────────────────────────┘                                               ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ exact files unavailable from service                                                                                                                                   ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

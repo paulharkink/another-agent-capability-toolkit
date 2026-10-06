@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+╠► Environment                                                             ╦ Configured targets · No environment file                                                    ╣
+║> No environment file                                                     ║No targets in this selection                                                                 ║
+║› dso-skills / hopp · TOML files                                          ║                                                                                             ║
+║› dso-skills / hopp · Saved profiles                                      ║                                                                                             ║
+║› pms15-agent-skills / hopp · Saved profiles                              ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║ Environment root: /home/pharkink/sources/dso-skills/environments · saved profiles are separate from TOML files                                                         ║
+║ [ Configure / install ]  [ View target ]  [ Environment root ]  [ Close ]                                                                                              ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

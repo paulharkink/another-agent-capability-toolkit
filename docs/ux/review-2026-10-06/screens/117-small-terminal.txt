@@ -1,0 +1,23 @@
+╔ AACT · Another Agent Capability Toolkit                                                          ╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                          ║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments            ║
+╠► Capabilities                                  ╦Selected capability · Cluster Inspector          ╣
+║> Installed · Cluster Inspector  skill + MCP    ║── Capability                                    ║
+║› Not installed · Grafana Inspector  skill + MCP║› Configure / install Cluster Inspector…         ║
+║› Not installed · Azure Inspector  skill + MCP  ║› View capability details                        ║
+║› Not installed · Forgejo  skill + MCP          ║── Related MCP profiles                          ║
+║› Not installed · Find Session  skill           ║> MCP · cluster-inspector  external			║
+║› Not installed · Non Interactive Ready Plannin…║── Installation · AACT records: Installed        ║
+║› Not installed · Local Git Repository Map  ski…║· Skill: opencode                                ║
+║› Not installed · agent-skills-management  skill║· MCP registration: opencode                     ║
+║› Not installed · clean-up  skill		 ║                                                 ║
+║› Not installed · kinfer-platform  skill        ║                                                 ║
+║› Not installed · kubedock-docker  skill        ║                                                 ║
+║1/17                                            ║3/3                                              ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║dso-skills · Cluster Inspector · skill + MCP · 1 related MCP profiles · AACT records: Installed   ║
+║http://127.0.0.1:1/mcp: unreachable · checked 2026-10-06 15:53:49 UTC Post "http://127.0.0.1:1/mc…║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh                                  ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                     ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝

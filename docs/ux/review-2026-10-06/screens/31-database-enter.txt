@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+╠Capabilities                                                                       ╦► Selected capability · Cluster Inspector                                           ╣
+║> P╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
+║› P║Install · Cluster Inspector · hopp / ota                                                                                                                        ║   ║
+║› N║Environment: hopp · Target: ota · Runtime: never-started                                                                                                        ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› I║── Setup sections                                     │ ── Databases                                                                                            ║   ║
+║› I║› Connection                                          │ > Read-only database queries (optional):                                                                ║   ║
+║› N║› Authentication                                      │                                                                                                         ║   ║
+║› N║> Databases                                           │                                                                                                         ║   ║
+║› I║› Destinations                                        │                                                                                                         ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║1/1║                                                                                                                                                                ║   ║
+╠═══║No choices available in selected target                                                                                                                         ║═══╣
+║dso║Sections · [Details] · Actions                                                                                                                                  ║   ║
+║Fai║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                     ║   ║
+╠═══║[ Save ]  [ Cancel ]                                                                                                                                            ║═══╣
+║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                                                                                           ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
