@@ -6,6 +6,7 @@ type AgentConfigFile struct {
 	Precedence string
 	Evidence   string
 	Profile    string
+	Home       string
 	Exists     bool
 }
 

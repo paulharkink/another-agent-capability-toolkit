@@ -86,7 +86,7 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 		recordedPaths := map[string]bool{}
 		recordedProfilePaths := map[string]bool{}
 		for _, file := range discovery.ConfigFiles {
-			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Exists: file.Exists})
+			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Home: native.Home, Exists: file.Exists})
 		}
 		for _, record := range installed {
 			if record.AgentID != id || (record.Component != "mcp" && record.Component != "skill") {
@@ -122,7 +122,7 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 			_, statErr := os.Stat(record.Destination)
 			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{
 				Path: record.Destination, Scope: "AACT registration", Precedence: "recorded",
-				Evidence: "AACT installation ledger", Profile: profile, Exists: statErr == nil,
+				Evidence: "AACT installation ledger", Profile: profile, Home: record.AgentHome, Exists: statErr == nil,
 			})
 		}
 		if len(recordedHomes) == 1 {
@@ -135,6 +135,11 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 					row.Note += "AACT has profile-specific records using custom home " + home + "; effective config shown above is the process-native candidate"
 				}
 			}
+		} else if len(recordedHomes) > 1 {
+			if row.Note != "" {
+				row.Note += "; "
+			}
+			row.Note += "AACT profile-specific records span multiple homes; Home shows the process-native home, and each recorded profile's home and config path are listed below"
 		}
 		if len(recordedPaths) == 1 {
 			for path := range recordedPaths {

@@ -204,6 +204,83 @@ func TestUXProfileOverrideIsExplained(t *testing.T) {
 	t.Fatal("OpenCode row missing")
 }
 
+func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
+	svc, _, store := fixture(t)
+	nativeHome := t.TempDir()
+	isolateUXNativeConfigs(t, nativeHome)
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	recordedPath := filepath.Join(nativeHome, "profile-config", "opencode.json")
+	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: nativeHome, Component: "mcp", Destination: recordedPath}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativePath := filepath.Join(nativeHome, ".config", "opencode", "opencode.jsonc")
+	var dest *viewmodel.SetupDestination
+	for i := range preview.Destinations {
+		if preview.Destinations[i].ID == "opencode" {
+			dest = &preview.Destinations[i]
+			break
+		}
+	}
+	if dest == nil || dest.Path != strings.TrimSuffix(recordedPath, ".json")+".jsonc" {
+		t.Fatalf("recorded profile path not retained: %+v", dest)
+	}
+	if !strings.Contains(strings.ToLower(dest.Note), "record") || !strings.Contains(dest.Note, recordedPath) || !strings.Contains(dest.Note, nativePath) {
+		t.Fatalf("same-home recorded path override lacks both path provenance: %+v", dest)
+	}
+}
+
+func TestUXMultipleRecordedHomesRemainProfileSpecific(t *testing.T) {
+	svc, _, store := fixture(t)
+	nativeHome := t.TempDir()
+	isolateUXNativeConfigs(t, nativeHome)
+	profiles := []struct {
+		key  state.Key
+		home string
+		path string
+	}{
+		{state.Key{Source: "fixture", Package: "one", Target: "default"}, t.TempDir(), "first.json"},
+		{state.Key{Source: "fixture", Package: "two", Target: "default"}, t.TempDir(), "second.json"},
+	}
+	for _, profile := range profiles {
+		path := filepath.Join(profile.home, "opencode", profile.path)
+		if err := store.Record(state.Installation{Key: profile.key, AgentID: "opencode", AgentKind: "opencode", AgentHome: profile.home, Component: "mcp", Destination: path}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := svc.UIAgentManagement(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID != "opencode" {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(row.Note), "multiple") || !strings.Contains(row.Note, "profile") {
+			t.Fatalf("multiple profile homes not explained: %+v", row)
+		}
+		for _, profile := range profiles {
+			wantPath := filepath.Join(profile.home, "opencode", profile.path)
+			wantProfile := profile.key.Source + " / " + profile.key.Package + " /  / default"
+			found := false
+			for _, file := range row.ConfigFiles {
+				if file.Path == wantPath && file.Profile == wantProfile && uxField(file, "Home") == profile.home {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("profile-specific home/path missing for %s: %+v", wantProfile, row.ConfigFiles)
+			}
+		}
+		return
+	}
+	t.Fatal("OpenCode row missing")
+}
+
 func TestUXMissingConfigDoesNotHideDetectedCLI(t *testing.T) {
 	home, bin := t.TempDir(), t.TempDir()
 	isolateUXNativeConfigs(t, home)

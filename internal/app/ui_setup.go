@@ -203,6 +203,18 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		} else if override := nativeConfigOverride(env.Kind, env); override != "" {
 			note = override
 		}
+		if p.MCP != nil {
+			nativePath, nativeErr := nativePlannedConfigPath(id, env.Kind, currentUserHome())
+			if nativeErr != nil {
+				return viewmodel.SetupPreview{}, nativeErr
+			}
+			if filepath.Clean(writePath) != filepath.Clean(nativePath) {
+				if note != "" {
+					note += "; "
+				}
+				note += fmt.Sprintf("Recorded AACT config path %s plans write to %s; process-native planned config path is %s", env.ConfigPath, writePath, nativePath)
+			}
+		}
 		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{
 			ID: id, Kind: env.Kind, Home: env.Home, SkillsPath: env.SkillsDir,
 			ConfigPath: writePath, Detection: detection, Note: note,
@@ -268,6 +280,20 @@ func nativeConfigOverride(kind string, env agents.Environment) string {
 		return "Uses process-native " + variable + " for agent config paths: " + value
 	}
 	return ""
+}
+
+func nativePlannedConfigPath(id, kind, home string) (string, error) {
+	env, err := agents.ResolveEnvironment(id, kind, home)
+	if err != nil {
+		return "", err
+	}
+	if kind == "codex" || kind == "opencode" {
+		env, err = agents.ApplyNativeConfigOverrides(env)
+		if err != nil {
+			return "", err
+		}
+	}
+	return agents.ResolveConfigWritePath(env)
 }
 
 // targetInputChoices turns wildcard table keys in a target TOML into stable
