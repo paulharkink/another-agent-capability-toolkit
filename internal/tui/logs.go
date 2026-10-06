@@ -64,8 +64,12 @@ func (m *Model) openProfileLogs(p ProfileRow) tea.Cmd {
 	return m.fetchLogs(m.logSession)
 }
 
-func (m *Model) fetchLogs(session uint64) tea.Cmd {
+func (m *Model) fetchLogs(_ uint64) tea.Cmd {
 	m.cancelLogFetch()
+	// Each request gets its own session so a canceled, superseded request cannot
+	// be mistaken for the active request's failure after Follow resumes.
+	m.logSession++
+	session := m.logSession
 	backend, key, label := m.backend, m.logProfile, m.logLabel
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.logCancel = cancel

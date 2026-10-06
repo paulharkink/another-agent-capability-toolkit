@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -270,5 +271,89 @@ func TestWorkspaceRuntimeActionsUseServiceActionNames(t *testing.T) {
 				t.Fatalf("workspace %s sent service action %v, want %q", tc.shortcut, logsBackend.actions, tc.want)
 			}
 		})
+	}
+}
+
+type replacementLogsBackend struct {
+	*logProfileBackend
+	setup       *setupBackendFixture
+	mu          sync.Mutex
+	calls       int
+	started     chan int
+	secondReply chan struct{}
+}
+
+func (b *replacementLogsBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID}, nil
+}
+
+func (b *replacementLogsBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstall(ctx, request)
+}
+
+func (b *replacementLogsBackend) UIProfileLogs(ctx context.Context, _ state.Key) (string, error) {
+	b.mu.Lock()
+	b.calls++
+	call := b.calls
+	b.mu.Unlock()
+	b.started <- call
+	if call == 1 {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	select {
+	case <-b.secondReply:
+		return "fresh replacement output", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestPauseResumeReplacementIgnoresIntentionalCancellation(t *testing.T) {
+	m, base := typedProfileFixture()
+	base.snapshot.Profiles[0].RuntimeStatus = "running"
+	base.snapshot.Profiles[0].Ownership = "local"
+	m.Update(m.load()())
+	backend := &replacementLogsBackend{
+		logProfileBackend: &logProfileBackend{profileBackend: base},
+		setup:             &setupBackendFixture{},
+		started:           make(chan int, 2),
+		secondReply:       make(chan struct{}),
+	}
+	m.backend = backend
+	key := base.snapshot.Profiles[0].Key
+	m.selectPane(ProfilesPane, 0)
+	setup := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	m.Update(setup())
+	_, firstFetch := m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if firstFetch == nil {
+		t.Fatal("workspace Logs route did not start the first fetch")
+	}
+	firstResult := make(chan tea.Msg, 1)
+	go func() { firstResult <- firstFetch() }()
+	if call := <-backend.started; call != 1 {
+		t.Fatalf("first fetch call = %d, want 1", call)
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})            // Pause.
+	_, secondFetch := m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"}) // Resume and replace.
+	if secondFetch == nil {
+		t.Fatal("resuming Follow did not start a replacement fetch")
+	}
+	secondResult := make(chan tea.Msg, 1)
+	go func() { secondResult <- secondFetch() }()
+	if call := <-backend.started; call != 2 {
+		t.Fatalf("replacement fetch call = %d, want 2", call)
+	}
+	m.Update(<-firstResult)
+	if m.result != nil || m.home.Modal == nil || m.home.Modal.Kind != "logs" {
+		t.Fatalf("intentional cancellation replaced the active viewer with an error: result=%+v modal=%+v", m.result, m.home.Modal)
+	}
+	close(backend.secondReply)
+	m.Update(<-secondResult)
+	if m.result != nil || m.home.Modal == nil || !strings.Contains(strings.Join(m.home.Modal.Rows, "\n"), "fresh replacement output") {
+		t.Fatalf("replacement response was not retained: result=%+v modal=%+v", m.result, m.home.Modal)
+	}
+	if m.workspace == nil || !m.workspace.Active || m.workspace.Section != "Logs" {
+		t.Fatalf("pause/resume changed workspace context: %+v", m.workspace)
 	}
 }
