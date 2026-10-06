@@ -331,7 +331,7 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	h := min(m.height-6, 18)
 	if r.Remove {
 		w = min(m.width-8, 78)
-		h = min(m.height-8, max(12, len(r.Choices)+10))
+		h = min(max(8, m.height-2), max(14, len(r.Choices)+12))
 	}
 	x, y := (m.width-w)/2, max(4, (len(lines)-h)/2)
 	if y+h > len(lines) {
@@ -422,18 +422,17 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	} else if id, ok := r.selectedAgent(); ok && r.Remove {
 		choice, _ := r.selectedChoice()
 		rightTitle = m.registrationAgentName(id)
-		details = []string{"Agent ID: " + id}
+		mark := "[ ]"
+		if r.Marked[choice.key()] {
+			mark = "[x]"
+		}
+		details = []string{"Selected removal: " + mark + " " + m.registrationAgentName(id), "Agent ID: " + id}
 		if choice.Destination == "" {
 			details = append(details, "Recorded config path is unavailable.", "Removal will proceed only if this ID resolves to one recorded path.")
 		} else {
 			details = append(details, "Config file to remove:")
 			details = append(details, wrapRegistrationPath(choice.Destination, rightW-3)...)
 		}
-		mark := "[ ]"
-		if r.Marked[choice.key()] {
-			mark = "[x]"
-		}
-		details = append(details, "Selected removal: "+mark+" "+m.registrationAgentName(id))
 		details = append(details, "Only this local registration is removed", "The MCP endpoint is left running")
 	} else if id, ok := r.selectedAgent(); ok {
 		rightTitle = m.registrationAgentName(id)
@@ -518,7 +517,11 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	if r.Remove {
 		shortcut = "Ctrl-S Remove selected registrations"
 	}
-	box = append(box, "├"+strings.Repeat("─", leftW)+"┴"+strings.Repeat("─", rightW)+"┤", "│"+fit(cue+" · Tab areas · "+shortcut+" · Esc Back", w-2)+"│")
+	footer := cue + " · Tab areas · " + shortcut + " · Esc Back"
+	if r.Remove {
+		footer = cue + " · Endpoint stays running · Ctrl-S Remove · Esc Back"
+	}
+	box = append(box, "├"+strings.Repeat("─", leftW)+"┴"+strings.Repeat("─", rightW)+"┤", "│"+fit(footer, w-2)+"│")
 	actions := " Cancel    Save "
 	if r.Remove {
 		actions = " Cancel    Remove selected registrations "
@@ -634,12 +637,20 @@ func (m *Model) registrationMouse(msg tea.MouseMsg) tea.Cmd {
 				r.Transport = "sse"
 			}
 		}
-		if id, ok := r.selectedAgent(); ok && y == r.Y+7 {
-			verb := "Register this endpoint for "
-			if r.Remove {
-				verb = "Remove this registration from "
+		if r.Remove {
+			if choice, ok := r.selectedChoice(); ok && y == r.Y+4 {
+				mark := "[ ]"
+				if r.Marked[choice.key()] {
+					mark = "[x]"
+				}
+				label := "Selected removal: " + mark + " " + m.registrationAgentName(choice.AgentID)
+				if hitControl(label) {
+					r.Marked[choice.key()] = !r.Marked[choice.key()]
+				}
 			}
-			if hitControl("[ ] " + verb + m.registrationAgentName(id)) {
+		} else if id, ok := r.selectedAgent(); ok && y == r.Y+7 {
+			label := "[ ] Register this endpoint for " + m.registrationAgentName(id)
+			if hitControl(label) {
 				r.Marked[id] = !r.Marked[id]
 			}
 		}
