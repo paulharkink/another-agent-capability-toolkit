@@ -21,6 +21,10 @@ type connectionBackend interface {
 }
 
 func (m *Model) profileActionReason(p ProfileRow, action string) string {
+	owner, status := p.Instance.Ownership, p.Status
+	if p.Profile != nil {
+		owner, status = p.Profile.Ownership, p.Profile.RuntimeStatus
+	}
 	if m.profileError != nil {
 		return "Profile refresh failed: " + m.profileError.Error()
 	}
@@ -32,7 +36,7 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 		if !ok || c.CatalogIndex < 0 {
 			return "package is absent from the local catalog"
 		}
-		if p.Instance.Ownership != "local" || p.Status == "external" {
+		if owner != "local" || status == "external" {
 			return "runtime belongs to another installation"
 		}
 		return ""
@@ -67,8 +71,23 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 		}
 		return ""
 	}
+	if action == "l" || action == "logs" {
+		if owner != "local" {
+			return "Logs are available only for locally owned runtimes"
+		}
+		return ""
+	}
 	if p.Profile != nil {
 		if action == "s" {
+			if owner != "local" {
+				if p.Profile.StartDisabledReason != "" {
+					return p.Profile.StartDisabledReason
+				}
+				if owner == "unknown" || owner == "" {
+					return "Runtime owner is unknown"
+				}
+				return "Runtime belongs to another installation"
+			}
 			if p.Profile.CanStart {
 				return ""
 			}
@@ -78,6 +97,15 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 			return "Start is unavailable"
 		}
 		if action == "x" {
+			if owner != "local" {
+				if p.Profile.StopDisabledReason != "" {
+					return p.Profile.StopDisabledReason
+				}
+				if owner == "unknown" || owner == "" {
+					return "Runtime owner is unknown"
+				}
+				return "Runtime belongs to another installation"
+			}
 			if p.Profile.CanStop {
 				return ""
 			}
@@ -87,7 +115,7 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 			return "Stop is unavailable"
 		}
 	}
-	if p.Instance.Ownership != "local" || p.Status == "external" {
+	if owner != "local" || status == "external" {
 		return "Runtime action unavailable: this profile is not locally owned."
 	}
 	return ""
@@ -98,6 +126,7 @@ func (m *Model) checkProfileConnection(p ProfileRow) tea.Cmd {
 		return nil
 	}
 	backend := m.backend.(connectionBackend)
+	m.retryOperation = func() tea.Cmd { return m.checkProfileConnection(p) }
 	m.busy = true
 	m.action = "check connection"
 	m.home.Modal = nil
@@ -116,7 +145,11 @@ func (m *Model) checkProfileConnection(p ProfileRow) tea.Cmd {
 		if observation.Error != "" {
 			output += "\n" + observation.Error
 		}
-		return operationMsg{origin: origin, output: output}
+		result := viewmodel.OperationResult{Target: url, Step: "connection", Connection: observation}
+		if observation.Error != "" {
+			result.Errors = []string{observation.Error}
+		}
+		return operationMsg{origin: origin, output: output, failed: !observation.Reachable, step: result.Step, target: result.Target, result: &result}
 	}
 }
 func (m *Model) registrationForm(p ProfileRow) {
@@ -139,6 +172,7 @@ func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, re
 		m.output = "Registration service support pending"
 		return nil
 	}
+	m.retryOperation = func() tea.Cmd { return m.configureRegistrations(request, removing) }
 	m.busy = true
 	m.action = "configure registrations"
 	if removing {
@@ -165,7 +199,8 @@ func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, re
 			lines = append(lines, fmt.Sprintf("%s: %s registration %s", change.AgentID, change.Component, verb))
 		}
 		lines = append(lines, result.Errors...)
-		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err}
+		structured := result
+		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &structured}
 	}
 }
 

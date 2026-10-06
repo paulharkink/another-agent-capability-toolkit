@@ -13,7 +13,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
-	"io"
 	"sort"
 	"strings"
 )
@@ -60,6 +59,7 @@ type Model struct {
 	setupInfoOffset            int
 	setupOperationPending      bool
 	logSession                 uint64
+	logCancel                  context.CancelFunc
 	logProfile                 state.Key
 	logLabel                   string
 	pendingDefaultAgents       bool
@@ -69,6 +69,7 @@ type Model struct {
 	busy                       bool
 	output, action             string
 	result                     *resultState
+	retryOperation             func() tea.Cmd
 	form                       *forms.FormModel
 	pending                    operation
 	management                 managementState
@@ -107,6 +108,16 @@ func NewContext(ctx context.Context, backend Backend) *Model {
 }
 func (m *Model) Init() tea.Cmd { return m.load() }
 func (m *Model) load() tea.Cmd {
+	if !m.busy && m.result == nil {
+		m.action = "load"
+	}
+	if m.retryOperation == nil {
+		m.retryOperation = func() tea.Cmd {
+			m.busy = true
+			m.action = "load"
+			return m.load()
+		}
+	}
 	return func() tea.Msg {
 		var msg loadedMsg
 		errs := []error{}
@@ -170,6 +181,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = size.Height
 		m.reconcileHome()
 	}
+	// Foreground overlays own human input before any hidden form or modal gets
+	// a chance to consume it. Lifecycle messages still pass through below.
+	if m.result != nil {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			return m, m.resultKey(event.String())
+		case tea.MouseMsg:
+			return m, m.resultMouse(event)
+		}
+	}
+	if m.home.Modal != nil && m.home.Modal.Kind == "logs" {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			return m, m.logKey(event.String())
+		case tea.MouseMsg:
+			return m, m.logMouse(event)
+		}
+	}
+	if m.busy {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			if event.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m, nil
+		case tea.MouseMsg:
+			return m, nil
+		}
+	}
 	if m.setupInformation {
 		if key, ok := msg.(tea.KeyPressMsg); ok {
 			switch key.String() {
@@ -201,6 +241,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.form != nil {
+		switch event := msg.(type) {
+		case logsMsg:
+			return m, m.showLogs(event)
+		case logPollMsg:
+			if event.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
+				return m, m.fetchLogs(event.session)
+			}
+		}
 		if result, ok := msg.(operationMsg); ok {
 			return m, m.handleOperationResult(result)
 		}
@@ -308,7 +356,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingDefaultAgents = false
 			selected, _ := values["agents"].([]string)
 			backend := m.backend.(defaultAgentsBackend)
+			m.action = "save default agents"
 			m.busy = true
+			m.retryOperation = func() tea.Cmd {
+				m.busy = true
+				return func() tea.Msg {
+					return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, append([]string(nil), selected...))}
+				}
+			}
 			return m, func() tea.Msg { return settingsSavedMsg{err: backend.UISetDefaultAgents(m.ctx, selected)} }
 		}
 		op := m.pending
@@ -335,9 +390,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupPreviewMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.output = m.cleanOutput(msg.err.Error())
+			key := state.Key{}
+			if m.workspace != nil {
+				key = m.workspace.Key
+			}
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "preview", target: setupTargetLabel(key)})
 			return m, nil
 		}
+		m.retryOperation = nil
 		m.openSetupForm(msg.preview)
 		name := msg.preview.PackageName
 		if name == "" {
@@ -367,12 +427,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settings = msg.settings
 		m.sourceLabels = msg.labels
 		if msg.err != nil {
-			m.output = m.cleanOutput(msg.err.Error())
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "load"})
+			m.result.CanRetry = true
 		}
 		m.reconcileHome()
 	case agentConfigMsg:
 		if msg.err != nil {
-			m.output = m.cleanOutput(msg.err.Error())
+			m.action = "load agent configuration"
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "load config", target: msg.path})
 			return m, nil
 		}
 		m.management.ViewerPath = msg.path
@@ -382,7 +444,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.management.Modal = "viewer"
 	case environmentTargetMsg:
 		if msg.err != nil {
-			m.output = m.cleanOutput(msg.err.Error())
+			m.action = "load target configuration"
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "load config", target: msg.path})
 			return m, nil
 		}
 		m.management.ViewerPath = msg.path
@@ -395,7 +458,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settingsSavedMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.output = m.cleanOutput(msg.err.Error())
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "save settings"})
 			return m, nil
 		}
 		m.navigate("Catalog")
@@ -451,17 +514,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	m.busy = false
-	cancelOnly := errors.Is(msg.err, picker.ErrCancelled) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
+	cancelOnly := onlyCancellation(msg.err) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
 	if cancelOnly {
 		m.setupOperationPending = false
 		m.setupRetry = nil
 		m.output = strings.TrimSpace(msg.output)
 		m.result = nil
+		m.retryOperation = nil
 		return m.load()
 	}
 	m.view = msg.origin
-	if !m.setupOperationPending || (msg.err == nil && !msg.failed) {
+	succeeded := msg.err == nil && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
+	if succeeded {
 		m.setupRetry = nil
+		m.retryOperation = nil
 	}
 	m.setupOperationPending = false
 	if msg.err != nil && m.workspace != nil && m.workspace.Active && m.pending.action == "start" {
@@ -478,8 +544,33 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 			}
 		}
 	}
+	if m.action == "check connection" && strings.Contains(strings.ToLower(msg.output), ": unreachable") {
+		msg.failed = true
+	}
 	m.showOperationResult(msg)
 	return m.load()
+}
+
+func onlyCancellation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyCancellation(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return onlyCancellation(wrapped.Unwrap())
+	}
+	return errors.Is(err, picker.ErrCancelled)
 }
 func (m *Model) navigate(view string) {
 	if view == "Help" && m.view != "Help" {
@@ -689,29 +780,21 @@ func (m *Model) contextForm() {
 	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 }
 func (m *Model) run(op operation) tea.Cmd {
+	if op.action == "s" {
+		op.action = "start"
+	} else if op.action == "x" {
+		op.action = "stop"
+	}
 	m.pending = op
 	m.busy = true
 	m.action = op.action
 	origin := m.view
-	runner := &operationExec{ctx: m.ctx, backend: m.backend, op: op}
-	return tea.Exec(runner, func(e error) tea.Msg { return operationMsg{origin: origin, output: runner.output, err: e} })
+	m.retryOperation = func() tea.Cmd { return m.run(op) }
+	return func() tea.Msg {
+		output, err := m.backend.UIRun(m.ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
+		return operationMsg{origin: origin, output: output, err: err, target: op.target}
+	}
 }
-
-type operationExec struct {
-	ctx     context.Context
-	backend Backend
-	op      operation
-	output  string
-}
-
-func (e *operationExec) Run() error {
-	output, err := e.backend.UIRun(e.ctx, e.op.action, e.op.source, e.op.packageID, e.op.agent, e.op.environment, e.op.target)
-	e.output = output
-	return err
-}
-func (e *operationExec) SetStdin(io.Reader)  {}
-func (e *operationExec) SetStdout(io.Writer) {}
-func (e *operationExec) SetStderr(io.Writer) {}
 func (m *Model) cleanOutput(output string) string {
 	for _, p := range m.catalog {
 		for _, input := range p.Inputs {
@@ -759,6 +842,12 @@ func (m *Model) View() tea.View {
 	}
 	if m.setupInformation {
 		return m.setupInformationView()
+	}
+	if m.busy {
+		return m.progressView()
+	}
+	if m.home.Modal != nil && m.home.Modal.Kind == "logs" {
+		return m.homeView()
 	}
 	if m.registration != nil && m.form != nil && m.workspace != nil && m.workspace.Active {
 		parent := m.homeView()

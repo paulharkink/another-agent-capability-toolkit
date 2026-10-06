@@ -655,3 +655,53 @@ func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExis
 		t.Fatalf("source fixture unexpectedly exists: %v", err)
 	}
 }
+
+func TestUXRunStartAndAuthenticateNeverInvokeLegacyEditor(t *testing.T) {
+	for _, action := range []string{"start", "authenticate"} {
+		t.Run(action, func(t *testing.T) {
+			svc, _, store := fixture(t)
+			home := t.TempDir()
+			configHome := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", configHome)
+			svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret", Required: true}}
+			svc.Source.Catalog[0].Skill = nil
+			svc.Source.Catalog[0].MCP = &catalog.MCP{
+				Name: "demo", Transport: "streamable-http", ContainerPort: 9000,
+				Actions: map[string]catalog.Command{
+					"authenticate": {Argv: []string{"auth"}},
+					"prepare":      {Argv: []string{"prepare"}},
+				},
+			}
+			key := svc.key("demo", "", "default")
+			if err := store.SaveAnswers(key, map[string]any{"token": "saved-token"}); err != nil {
+				t.Fatal(err)
+			}
+			editorCalls := 0
+			svc.Options.Editor = func(context.Context, []catalog.Input, map[string]any) (map[string]any, error) {
+				editorCalls++
+				return nil, errors.New("legacy editor must not run from the TUI")
+			}
+			executor := &uxActionExecutor{}
+			svc.Options.Runner = executor
+			if action == "start" {
+				svc.Options.Runtime = &fakeRuntime{}
+			}
+			if _, err := svc.UIRun(context.Background(), action, "fixture", "demo", "", "", "default"); err != nil {
+				t.Fatal(err)
+			}
+			if editorCalls != 0 {
+				t.Fatalf("UIRun(%s) invoked legacy editor %d time(s)", action, editorCalls)
+			}
+			if len(executor.calls) == 0 {
+				t.Fatal("expected package action to run")
+			}
+			for _, call := range executor.calls {
+				if call.Interactive {
+					t.Fatalf("UIRun(%s) marked %s action interactive", action, call.Action)
+				}
+			}
+		})
+	}
+}

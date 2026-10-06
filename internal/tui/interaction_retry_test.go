@@ -58,9 +58,10 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	if m.result == nil || !m.result.Failed || !strings.Contains(m.View().Content, "Edit answers") {
 		t.Fatal("partial installation failure was displayed as success")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Retry
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Close
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.result != nil || m.form != nil {
-		t.Fatal("Back action in failed result did not return to the previous screen")
+		t.Fatal("Close action in failed result did not return to the parent screen")
 	}
 }

@@ -359,14 +359,14 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 			}
 			envs = append(envs, a)
 		}
-		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: action == "install"}
+		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: false}
 		if action == "install" {
 			out, e = svc.Install(ctx, q)
 		} else {
 			out, e = svc.Uninstall(ctx, q)
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Interactive: action == "start" || action == "authenticate"})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Interactive: false})
 	}
 	if out.Logs != "" {
 		return out.Logs, e

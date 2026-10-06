@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type resultState struct {
@@ -15,39 +17,125 @@ type resultState struct {
 	Column      int
 	Failed      bool
 	ActionIndex int
+	Origin      string
+	CanRetry    bool
+	CanReturn   bool
 }
 
 func (m *Model) showOperationResult(msg operationMsg) {
-	m.output = m.cleanOutput(msg.output)
+	structured := viewmodel.OperationResult{}
+	if msg.result != nil {
+		structured = *msg.result
+	}
+	if structured.Step == "" {
+		structured.Step = msg.step
+	}
+	if structured.Target == "" {
+		structured.Target = msg.target
+	}
 	if msg.err != nil {
-		cause := "Failed: " + m.cleanOutput(msg.err.Error())
-		if m.output == "" {
-			m.output = cause
-		} else {
-			m.output = cause + "\n" + m.output
+		msg.err = errors.New(m.cleanOutput(msg.err.Error()))
+	}
+	result := resultStateFromOperation(m.action, m.cleanOutput(msg.output), msg.err, structured)
+	result.Failed = result.Failed || msg.failed
+	result.Origin = msg.origin
+	result.CanReturn = m.setupRetry != nil
+	result.CanRetry = result.Failed && (m.setupRetry != nil || m.retryOperation != nil || m.action == "check connection")
+	if msg.failed && msg.err == nil && len(structured.Errors) == 0 {
+		if structured.Step != "" {
+			result.Rows = append(result.Rows, "Failed step: "+structured.Step)
 		}
+		result.Rows = append(result.Rows, "Failed: operation reported an error")
 	}
-	rows := []string{"Completed"}
-	if m.output != "" {
-		rows = strings.Split(strings.TrimSuffix(m.output, "\n"), "\n")
-	}
-	for i, row := range rows {
-		rows[i] = ansi.Strip(strings.TrimSuffix(row, "\r"))
-	}
-	m.result = &resultState{Action: m.action, Rows: rows, Failed: msg.err != nil || msg.failed}
+	m.output = strings.Join(result.Rows, "\n")
+	m.result = result
 }
 
 func (m *Model) canEditResultAnswers() bool {
-	return m.result != nil && m.result.Failed && m.setupRetry != nil
+	return m.result != nil && m.result.CanReturn && m.result.Failed && m.setupRetry != nil
 }
 
-func (m *Model) editResultAnswers() {
+func (m *Model) returnToConfiguration() {
 	if !m.canEditResultAnswers() {
+		m.closeResult()
 		return
 	}
 	draft := m.setupRetry
 	m.result = nil
+	m.pendingSetup = &draft.preview
+	m.pendingSetupField = draft.destinationField
+	if m.workspace != nil && m.workspace.Key == draft.preview.Key {
+		m.workspace.cacheDraft(draft.values)
+		if section := setupFailureSection(draft); section != "" {
+			m.workspace.Section = section
+		}
+	}
+	m.view = draft.origin
 	m.openSetupFormWithValues(draft.preview, draft.values)
+	if m.workspace != nil && m.workspace.Active && draft.section != "" {
+		m.workspace.Section = setupFailureSection(draft)
+		if m.form != nil {
+			m.form.SelectSection(m.workspace.Section)
+			m.form.FocusSection()
+		}
+	}
+}
+
+func setupFailureSection(draft *setupRetryDraft) string {
+	if draft == nil {
+		return ""
+	}
+	step := strings.ToLower(draft.step)
+	detail := strings.ToLower(draft.failure)
+	if strings.Contains(step+" "+detail, "auth") || strings.Contains(step+" "+detail, "credential") || strings.Contains(step+" "+detail, "token") {
+		return "Authentication"
+	}
+	if strings.Contains(step+" "+detail, "connection") || strings.Contains(step+" "+detail, "endpoint") || strings.Contains(step+" "+detail, "url") {
+		return "Connection"
+	}
+	return draft.section
+}
+
+func (m *Model) retryResult() tea.Cmd {
+	if m.result == nil || !m.result.CanRetry {
+		return nil
+	}
+	if m.setupRetry != nil {
+		draft := *m.setupRetry
+		draft.values = cloneSetupValues(draft.values)
+		m.result = nil
+		m.pendingSetup = &draft.preview
+		m.pendingSetupField = draft.destinationField
+		return m.applySetup(draft.values)
+	}
+	retry := m.retryOperation
+	if m.action == "check connection" {
+		if profile, ok := m.selectedContextProfile(); ok {
+			m.result = nil
+			return m.checkProfileConnection(profile)
+		}
+	}
+	if retry == nil {
+		return nil
+	}
+	m.result = nil
+	return retry()
+}
+
+func (m *Model) closeResult() {
+	if m.result == nil {
+		return
+	}
+	if m.setupRetry != nil && m.workspace != nil && m.workspace.Key == m.setupRetry.preview.Key {
+		m.workspace.cacheDraft(m.setupRetry.values)
+		m.workspace.Active = false
+	}
+	m.view = m.result.Origin
+	m.result = nil
+	m.setupRetry = nil
+	m.retryOperation = nil
+	m.pendingSetup = nil
+	m.pendingSetupField = ""
 }
 
 func resultBodyWidth(viewportWidth int) int {
@@ -60,11 +148,11 @@ func resultBodyWidth(viewportWidth int) int {
 
 func (m *Model) resultVisibleRows() int {
 	if m.height < 16 {
-		return max(1, m.height-6)
+		return max(1, m.height-2)
 	}
 	visualRows := wrapResultRows(m.result.Rows, resultBodyWidth(m.width))
-	dialogHeight := min(m.height-4, max(9, min(15, len(visualRows)+6)))
-	return max(1, dialogHeight-6)
+	dialogHeight := min(m.height-4, max(10, min(16, len(visualRows)+7)))
+	return max(1, dialogHeight-7)
 }
 
 func (m *Model) resultKey(stroke string) tea.Cmd {
@@ -77,18 +165,19 @@ func (m *Model) resultKey(stroke string) tea.Cmd {
 	case "f10", "ctrl+c":
 		return tea.Quit
 	case "esc", "q":
-		m.result = nil
+		m.closeResult()
 	case "enter":
-		if m.canEditResultAnswers() && r.ActionIndex == 0 {
-			m.editResultAnswers()
-		} else {
-			m.result = nil
-		}
+		return m.activateResultAction(r.ActionIndex)
 	case "e":
-		m.editResultAnswers()
+		m.returnToConfiguration()
+	case "r":
+		return m.retryResult()
 	case "tab", "shift+tab":
-		if m.canEditResultAnswers() {
-			r.ActionIndex = 1 - r.ActionIndex
+		count := resultActionCount(r)
+		if stroke == "shift+tab" {
+			r.ActionIndex = (r.ActionIndex + count - 1) % count
+		} else {
+			r.ActionIndex = (r.ActionIndex + 1) % count
 		}
 	case "up", "k":
 		r.Offset = max(0, r.Offset-1)
@@ -110,6 +199,32 @@ func (m *Model) resultKey(stroke string) tea.Cmd {
 	return nil
 }
 
+func resultActionCount(result *resultState) int {
+	if result == nil {
+		return 1
+	}
+	return len(resultActionLabels(result, result.CanReturn))
+}
+
+func (m *Model) activateResultAction(index int) tea.Cmd {
+	if m.result == nil {
+		return nil
+	}
+	labels := resultActionLabels(m.result, m.result.CanReturn)
+	if index < 0 || index >= len(labels) {
+		return nil
+	}
+	switch labels[index] {
+	case "Return to configuration":
+		m.returnToConfiguration()
+	case "Retry":
+		return m.retryResult()
+	default:
+		m.closeResult()
+	}
+	return nil
+}
+
 func (m *Model) resultMouse(msg tea.MouseMsg) tea.Cmd {
 	r := m.result
 	if r == nil {
@@ -124,31 +239,55 @@ func (m *Model) resultMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		return nil
 	}
-	dialogHeight := min(m.height-4, max(9, min(15, len(r.Rows)+6)))
-	footerY := (m.height-dialogHeight)/2 + dialogHeight - 2
-	if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft && (mouse.Y == footerY || mouse.Y == m.height-2) {
-		if mouse.Y == footerY && m.canEditResultAnswers() && mouse.X < (m.width-70)/2+22 {
-			m.editResultAnswers()
-		} else {
-			m.result = nil
+	if _, ok := msg.(tea.MouseClickMsg); !ok || mouse.Button != tea.MouseLeft {
+		return nil
+	}
+	width := min(70, m.width-8)
+	if m.width >= 80 {
+		width = m.width - 8
+	}
+	visualRows := wrapResultRows(r.Rows, resultBodyWidth(m.width))
+	dialogHeight := min(m.height-4, max(10, min(16, len(visualRows)+7)))
+	x := (m.width - width) / 2
+	y := (m.height - dialogHeight) / 2
+	footerY := y + dialogHeight - 2
+	if mouse.Y == footerY {
+		if action := resultActionAtX(r, m.canEditResultAnswers(), mouse.X-(x+1)); action >= 0 {
+			return m.activateResultAction(action)
 		}
+	}
+	if mouse.X < x || mouse.X >= x+width || mouse.Y < y || mouse.Y >= y+dialogHeight {
+		m.closeResult()
 	}
 	return nil
 }
 
+func resultActionAtX(result *resultState, canReturn bool, x int) int {
+	if x < 0 {
+		return -1
+	}
+	labels := resultActionLabels(result, canReturn)
+	position := 0
+	for index, label := range labels {
+		prefix := "  "
+		if index == result.ActionIndex {
+			prefix = "> "
+		}
+		width := ansi.StringWidth(prefix + label)
+		if x >= position && x < position+width {
+			return index
+		}
+		position += width
+		if index+1 < len(labels) {
+			position += ansi.StringWidth(" · ")
+		}
+	}
+	return -1
+}
+
 func (m *Model) resultView() tea.View {
 	if m.width < 80 || m.height < 16 {
-		lines := []string{
-			fmt.Sprintf("AACT needs 80×16; current %d×%d", m.width, m.height),
-			"Resize terminal · Esc close · F10 quit",
-		}
-		if m.height < len(lines) {
-			lines = lines[:max(0, m.height)]
-		}
-		for i := range lines {
-			lines[i] = fit(lines[i], max(1, m.width))
-		}
-		return tea.NewView(navyCanvas(strings.Join(lines, "\n")))
+		return m.smallResultView()
 	}
 
 	// Match the approved demo's centered operation-result dialog: a darkened
@@ -162,9 +301,9 @@ func (m *Model) resultView() tea.View {
 	}
 	bodyWidth := max(1, dialogWidth-4)
 	visualRows := wrapResultRows(m.result.Rows, bodyWidth)
-	dialogHeight := min(height-4, max(9, min(15, len(visualRows)+6)))
+	dialogHeight := min(height-4, max(10, min(16, len(visualRows)+7)))
 	x, y := (width-dialogWidth)/2, (height-dialogHeight)/2
-	bodyRows := max(1, dialogHeight-6)
+	bodyRows := max(1, dialogHeight-7)
 	r := m.result
 	r.Offset = min(r.Offset, max(0, len(visualRows)-bodyRows))
 
@@ -199,7 +338,7 @@ func (m *Model) resultView() tea.View {
 	}
 	box := make([]string, dialogHeight)
 	box[0] = "╔" + strings.Repeat("═", dialogWidth-2) + "╗"
-	box[1] = "║" + fit(" Operation result", dialogWidth-2) + "║"
+	box[1] = "║" + fit(resultHeader(r), dialogWidth-2) + "║"
 	box[2] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
 	for i := 0; i < bodyRows; i++ {
 		text := ""
@@ -213,19 +352,14 @@ func (m *Model) resultView() tea.View {
 		box[3+i] = "║" + fit(" "+text, dialogWidth-2) + "║"
 		box[3+i] = rowFG + box[3+i]
 	}
-	box[dialogHeight-3] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
-	footer := fmt.Sprintf(" Back [Enter/Esc/click] · ↑↓ Scroll · ←→ Pan · %d-%d/%d", min(r.Offset+1, len(visualRows)), min(r.Offset+bodyRows, len(visualRows)), len(visualRows))
+	box[dialogHeight-4] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
+	aboveBelow := ""
 	if len(visualRows) > bodyRows {
-		footer = strings.Replace(footer, "Back", "↑ above · ↓ below · Back", 1)
+		aboveBelow = "↑ above · ↓ below · "
 	}
-	if m.canEditResultAnswers() {
-		if r.ActionIndex == 0 {
-			footer = "> Edit answers [Enter/E]   Back [Tab/ Esc] · ↑↓ Scroll · ←→ Pan"
-		} else {
-			footer = "  Edit answers [E]   > Back [Enter/Esc] · ↑↓ Scroll · ←→ Pan"
-		}
-	}
-	box[dialogHeight-2] = "║" + fit(footer, dialogWidth-2) + "║"
+	position := fmt.Sprintf("%s↑↓ scroll · %d-%d/%d", aboveBelow, min(r.Offset+1, len(visualRows)), min(r.Offset+bodyRows, len(visualRows)), len(visualRows))
+	box[dialogHeight-3] = "║" + fit(position, dialogWidth-2) + "║"
+	box[dialogHeight-2] = "║" + fit(resultActions(r, m.canEditResultAnswers()), dialogWidth-2) + "║"
 	box[dialogHeight-1] = "╚" + strings.Repeat("═", dialogWidth-2) + "╝"
 	for i, line := range box {
 		canvas[y+i] = overlayBG + mutedFG + strings.Repeat(" ", x) + dialogBG + goldFG + line + overlayBG + mutedFG + strings.Repeat(" ", width-x-dialogWidth)
@@ -236,4 +370,90 @@ func (m *Model) resultView() tea.View {
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+func resultActionLabels(result *resultState, canReturn bool) []string {
+	labels := []string{}
+	if canReturn {
+		labels = append(labels, "Return to configuration")
+	}
+	if result != nil && result.CanRetry {
+		labels = append(labels, "Retry")
+	}
+	labels = append(labels, "Close / Back")
+	return labels
+}
+
+func resultActions(result *resultState, canReturn bool) string {
+	labels := resultActionLabels(result, canReturn)
+	for index := range labels {
+		if index == result.ActionIndex {
+			labels[index] = "> " + labels[index]
+		} else {
+			labels[index] = "  " + labels[index]
+		}
+	}
+	return strings.Join(labels, " · ")
+}
+
+func resultHeader(result *resultState) string {
+	header := " Operation result · Tab select · Esc Close"
+	if result != nil && result.CanReturn {
+		header = " Operation result · Tab select · E Edit answers · Esc Close"
+	}
+	if result != nil && result.CanRetry {
+		header = " Operation result · Tab select · R Retry · Esc Close"
+	}
+	if result != nil && result.CanReturn && result.CanRetry {
+		header = " Operation result · Tab select · E Edit answers · R Retry · Esc Close"
+	}
+	return header
+}
+
+func (m *Model) smallResultView() tea.View {
+	width, height := max(1, m.width), max(1, m.height)
+	bodyWidth := max(1, width-2)
+	rows := wrapResultRows(m.result.Rows, bodyWidth)
+	bodyRows := max(1, height-2)
+	limit := max(0, len(rows)-bodyRows)
+	m.result.Offset = min(m.result.Offset, limit)
+	controls := "Tab/Enter · Esc close"
+	if m.result.CanReturn {
+		controls += " · E edit"
+	}
+	if m.result.CanRetry {
+		controls += " · R retry"
+	}
+	lines := []string{fit(fmt.Sprintf("Result · need 80×16 · %d×%d · %s", width, height, controls), width)}
+	for index := 0; index < bodyRows; index++ {
+		text := ""
+		if row := m.result.Offset + index; row < len(rows) {
+			text = rows[row]
+		}
+		lines = append(lines, fit(text, width))
+	}
+	footer := "Tab/Enter · Esc close"
+	if m.result.CanReturn {
+		footer += " · E edit"
+	}
+	if m.result.CanRetry {
+		footer += " · R retry"
+	}
+	if m.result.CanReturn {
+		footer = "Tab/Enter · E edit · Esc close"
+	}
+	if m.result.CanRetry {
+		footer = "Tab/Enter · R retry · Esc close"
+	}
+	if m.result.CanReturn && m.result.CanRetry {
+		footer = "Tab/Enter · E edit · R retry · Esc close"
+	}
+	if limit > 0 {
+		footer = "↑↓ more · Tab/Enter · Esc close"
+	}
+	lines = append(lines, fit(footer, width))
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return tea.NewView(navyCanvas(strings.Join(lines, "\n")))
 }

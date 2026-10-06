@@ -38,6 +38,7 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	if m.workspace != nil && m.workspace.Key == key {
 		priorDraft = m.workspace.cachedDraft()
 	}
+	m.retryOperation = func() tea.Cmd { return m.openTargetWorkspace(request, selectedSection) }
 	workspace := &workspaceState{
 		Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
 		InvokingSelection: m.workspaceInvokingSelection(), Draft: priorDraft,
@@ -149,8 +150,13 @@ func copyProfileSnapshot(snapshot *viewmodel.ProfileSnapshot) *viewmodel.Profile
 }
 
 type setupRetryDraft struct {
-	preview viewmodel.SetupPreview
-	values  map[string]any
+	preview          viewmodel.SetupPreview
+	values           map[string]any
+	destinationField string
+	origin           string
+	section          string
+	step             string
+	failure          string
 }
 
 func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
@@ -444,10 +450,18 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		return nil
 	}
 	preview := *m.pendingSetup
+	destinationField := m.pendingSetupField
+	section := ""
+	if m.workspace != nil && m.workspace.Key == preview.Key {
+		section = m.workspace.Section
+	} else if m.form != nil {
+		section = m.form.SectionTitle()
+	}
+	origin := m.view
 	m.pendingSetup = nil
-	destinations, _ := values[m.pendingSetupField].([]string)
+	destinations, _ := values[destinationField].([]string)
 	m.pendingSetupField = ""
-	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values)}
+	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), destinationField: destinationField, origin: origin, section: section}
 	m.setupOperationPending = true
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
@@ -471,7 +485,6 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	m.busy = true
 	m.action = "install"
 	m.home.Modal = nil
-	origin := m.view
 	return func() tea.Msg {
 		result, err := backend.UIInstall(m.ctx, request)
 		structured := result
@@ -494,6 +507,16 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 			lines = append(lines, fmt.Sprintf("%s: %s configured", change.AgentID, change.Component))
 		}
 		lines = append(lines, result.Errors...)
+		failure := ""
+		if err != nil {
+			failure = err.Error()
+		} else if len(result.Errors) > 0 {
+			failure = strings.Join(result.Errors, "\n")
+		}
+		if m.setupRetry != nil {
+			m.setupRetry.step = result.Step
+			m.setupRetry.failure = failure
+		}
 		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &structured}
 	}
 }
@@ -508,4 +531,24 @@ func cloneSetupValues(values map[string]any) map[string]any {
 		}
 	}
 	return copyValues
+}
+
+func setupTargetLabel(key state.Key) string {
+	parts := []string{}
+	if key.Source != "" && key.Package != "" {
+		parts = append(parts, key.Source+" / "+key.Package)
+	} else if key.Package != "" {
+		parts = append(parts, key.Package)
+	}
+	if key.Environment != "" || key.Target != "" {
+		environment, target := key.Environment, key.Target
+		if environment == "" {
+			environment = "default environment"
+		}
+		if target == "" {
+			target = "default target"
+		}
+		parts = append(parts, environment+" / "+target)
+	}
+	return strings.Join(parts, " · ")
 }
