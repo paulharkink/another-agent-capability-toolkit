@@ -36,6 +36,14 @@ type ActionRunner struct {
 	OnStderr func([]byte)
 }
 
+type actionFailure struct {
+	message string
+	cause   error
+}
+
+func (e actionFailure) Error() string { return e.message }
+func (e actionFailure) Unwrap() error { return e.cause }
+
 func RunAction(ctx context.Context, p catalog.Package, q ActionRequest) (ActionResult, error) {
 	return (&ActionRunner{Executor: process.OSExecutor{}}).Run(ctx, p, q)
 }
@@ -115,7 +123,8 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	out, e := executor.Run(ctx, argv, p.Dir, b, nil, redactor.Write)
 	redactor.Flush()
 	if e != nil {
-		return ActionResult{}, fmt.Errorf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(diagnostics.String()))
+		message := fmt.Sprintf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(diagnostics.String()))
+		return ActionResult{}, actionFailure{message: message, cause: e}
 	}
 	var result ActionResult
 	if len(out) > process.MaxStdout {

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"strings"
@@ -105,4 +106,32 @@ func TestActionRejectsTrailingOutputAndRedactsProgress(t *testing.T) {
 	if strings.Contains(progress, "private-secret") {
 		t.Fatal(progress)
 	}
+}
+
+func TestActionFailureWrapsCauseAndKeepsScrubbedDiagnostic(t *testing.T) {
+	var progress string
+	r := ActionRunner{Executor: &actionFailureExec{err: context.Canceled, stderr: "progress private-secret"}, OnStderr: func(b []byte) { progress += string(b) }}
+	_, err := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", Inputs: map[string]any{"token": "private-secret"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("wrapped action error does not preserve cancellation: %v", err)
+	}
+	want := "p prepare failed: context canceled: progress [redacted]"
+	if err.Error() != want {
+		t.Fatalf("visible error = %q, want %q", err, want)
+	}
+	if strings.Contains(progress, "private-secret") {
+		t.Fatalf("stderr was not redacted: %q", progress)
+	}
+}
+
+type actionFailureExec struct {
+	err    error
+	stderr string
+}
+
+func (f *actionFailureExec) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	if stderr != nil {
+		stderr([]byte(f.stderr))
+	}
+	return nil, f.err
 }

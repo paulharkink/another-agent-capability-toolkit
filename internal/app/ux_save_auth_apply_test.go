@@ -45,6 +45,16 @@ func (e uxCancelExecutor) Run(_ context.Context, _ []string, _ string, _ []byte,
 	return nil, context.Canceled
 }
 
+type uxCancelWithErrorExecutor struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (e uxCancelWithErrorExecutor) Run(context.Context, []string, string, []byte, map[string]string, func([]byte)) ([]byte, error) {
+	e.cancel()
+	return nil, e.err
+}
+
 func (e *uxActionExecutor) Run(_ context.Context, argv []string, _ string, input []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
 	var call uxActionCall
 	if err := json.Unmarshal(input, &call); err != nil {
@@ -231,6 +241,29 @@ func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
 	if readErr != nil || answers["kubeconfig"] != kubeconfig {
 		t.Fatalf("cancelled auth discarded submitted path: %#v %v", answers, readErr)
+	}
+}
+
+func TestUXCancellationPhraseInUnrelatedAuthErrorRemainsVisible(t *testing.T) {
+	svc, env, store := fixture(t)
+	kubeconfig := t.TempDir() + "/source.kubeconfig"
+	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Options.Runner = uxCancelWithErrorExecutor{cancel: cancel, err: errors.New("child failed: context canceled: remote endpoint rejected request")}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}}
+	pkg.MCP = &catalog.MCP{Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
+	if err == nil || errors.Is(err, picker.ErrCancelled) || !strings.Contains(err.Error(), "remote endpoint rejected request") {
+		t.Fatalf("unrelated error was hidden by cancellation: %v", err)
+	}
+	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	if readErr != nil || answers["kubeconfig"] != kubeconfig || !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 0 {
+		t.Fatalf("auth error lost saved state or claimed effects: result=%#v answers=%#v err=%v", result, answers, readErr)
 	}
 }
 

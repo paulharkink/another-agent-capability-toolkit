@@ -13,22 +13,21 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
-// ordinaryCancellation recognizes cancellation returned directly by an
-// operation, plus the ActionRunner's textual wrapper when its context has
-// actually been canceled. It does not hide unrelated failures that race with
-// cancellation.
-func ordinaryCancellation(ctx context.Context, err error) bool {
+// ordinaryCancellation recognizes cancellation only when the returned error
+// preserves it structurally. Error-message text is never interpreted as a
+// cancellation signal.
+func ordinaryCancellation(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, picker.ErrCancelled) || errors.Is(err, context.Canceled) {
 		return true
 	}
-	return ctx.Err() != nil && strings.Contains(err.Error(), ": context canceled:")
+	return false
 }
 
-func cancellationResult(ctx context.Context, result Result, err error) (Result, error) {
-	if !ordinaryCancellation(ctx, err) {
+func cancellationResult(result Result, err error) (Result, error) {
+	if !ordinaryCancellation(err) {
 		return result, err
 	}
 	if len(result.Errors) == 0 {
