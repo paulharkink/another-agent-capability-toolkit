@@ -103,6 +103,9 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	if rows[1].Component != "mcp" || rows[1].TimeoutMS != 60000 {
 		t.Fatalf("MCP registration timeout: %+v", rows)
 	}
+	if !rows[1].ExternalRegistration {
+		t.Fatalf("explicit ExternalURL registration lost its provenance: %+v", rows[1])
+	}
 	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)

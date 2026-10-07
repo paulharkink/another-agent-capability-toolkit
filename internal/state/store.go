@@ -31,22 +31,23 @@ func (k Key) ID() string {
 }
 
 type Installation struct {
-	Key              Key       `json:"key"`
-	AgentID          string    `json:"agent_id"`
-	AgentHome        string    `json:"agent_home,omitempty"`
-	AgentKind        string    `json:"agent_kind,omitempty"`
-	Component        string    `json:"component"`
-	Destination      string    `json:"destination"`
-	SourcePath       string    `json:"source_path,omitempty"`
-	Mode             string    `json:"mode"`
-	ReleaseID        string    `json:"release_id,omitempty"`
-	Digest           string    `json:"digest,omitempty"`
-	RegistrationName string    `json:"registration_name,omitempty"`
-	URL              string    `json:"url,omitempty"`
-	Transport        string    `json:"transport,omitempty"`
-	TimeoutMS        int       `json:"timeout_ms,omitempty"`
-	LastAction       string    `json:"last_action,omitempty"`
-	LastActionAt     time.Time `json:"last_action_at,omitempty"`
+	Key                  Key       `json:"key"`
+	AgentID              string    `json:"agent_id"`
+	AgentHome            string    `json:"agent_home,omitempty"`
+	AgentKind            string    `json:"agent_kind,omitempty"`
+	Component            string    `json:"component"`
+	Destination          string    `json:"destination"`
+	SourcePath           string    `json:"source_path,omitempty"`
+	Mode                 string    `json:"mode"`
+	ReleaseID            string    `json:"release_id,omitempty"`
+	Digest               string    `json:"digest,omitempty"`
+	RegistrationName     string    `json:"registration_name,omitempty"`
+	URL                  string    `json:"url,omitempty"`
+	Transport            string    `json:"transport,omitempty"`
+	TimeoutMS            int       `json:"timeout_ms,omitempty"`
+	ExternalRegistration bool      `json:"external_registration,omitempty"`
+	LastAction           string    `json:"last_action,omitempty"`
+	LastActionAt         time.Time `json:"last_action_at,omitempty"`
 }
 type Store struct {
 	root     string

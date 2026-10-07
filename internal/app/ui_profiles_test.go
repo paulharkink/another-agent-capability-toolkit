@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,6 +17,53 @@ type profileRuntime struct {
 	instances []mcp.Instance
 	listErr   error
 	logsCalls int
+}
+
+type emptyDockerExecutor struct{}
+
+func (emptyDockerExecutor) Run(context.Context, []string, string, []byte, map[string]string, func([]byte)) ([]byte, error) {
+	return nil, nil
+}
+
+func TestUIProfileSnapshotDoesNotTreatSavedRegistrationAsObservedRuntime(t *testing.T) {
+	for _, withRuntimeRecord := range []bool{false, true} {
+		t.Run(map[bool]string{false: "saved registration only", true: "missing local runtime"}[withRuntimeRecord], func(t *testing.T) {
+			svc, _, store := fixture(t)
+			svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+			key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
+			if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
+				t.Fatal(err)
+			}
+			endpoint := "http://127.0.0.1:8765/mcp"
+			if err := store.Record(state.Installation{Key: key, AgentID: "opencode", Component: "mcp", Mode: "registration", Destination: "/tmp/opencode.json", URL: endpoint}); err != nil {
+				t.Fatal(err)
+			}
+			if withRuntimeRecord {
+				if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-pms15", SourcePath: "missing-container", URL: endpoint}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtime := mcp.NewDockerRuntime(store)
+			runtime.Executor = emptyDockerExecutor{}
+			svc.Options.Runtime = runtime
+
+			snapshot, err := svc.UIProfileSnapshot(context.Background())
+			if err != nil || len(snapshot.Profiles) != 1 {
+				t.Fatalf("profile snapshot failed: %+v, %v", snapshot, err)
+			}
+			profile := snapshot.Profiles[0]
+			wantStatus := "never-started"
+			if withRuntimeRecord {
+				wantStatus = "missing"
+			}
+			if profile.RuntimeStatus != wantStatus || profile.Ownership != "local" || !profile.CanStart || profile.CanStop {
+				t.Fatalf("saved endpoint was mistaken for an observed external runtime: %+v", profile)
+			}
+			if profile.URL != endpoint || !profile.CanConfigureRegistrations || !reflect.DeepEqual(profile.RegisteredAgents, []string{"opencode"}) {
+				t.Fatalf("saved registration facts were lost: %+v", profile)
+			}
+		})
+	}
 }
 
 func (*profileRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {

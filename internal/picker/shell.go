@@ -82,21 +82,27 @@ func resolveShellPath(ctx context.Context, typedExpression, cwd string, shell sh
 	}
 
 	args, script, envName, envValue := shellCommand(shell, typedExpression)
-	argv := append([]string{shell.path}, args...)
-	if len(argv) > 1 {
-		// POSIX and PowerShell scripts receive the expression through the child
-		// environment. CMD requires its native FOR syntax in the /c command text.
-		argv[len(argv)-1] = script
-	}
 	env := make(map[string]string, 1)
 	if envName != "" {
 		env[envName] = envValue
 	}
 	var stderr limitedBuffer
 	stderr.limit = shellStderrLimit
-	stdout, err := shellprocess.Run(ctx, argv, absCWD, nil, env, func(chunk []byte) {
-		_, _ = stderr.Write(chunk)
-	})
+	writeStderr := func(chunk []byte) { _, _ = stderr.Write(chunk) }
+	var stdout []byte
+	if runtime.GOOS == "windows" && shell.kind == shellCMD {
+		cmdArgs := append([]string(nil), args...)
+		cmdArgs[len(cmdArgs)-1] = script
+		stdout, err = shellprocess.RunWindowsCommandLine(ctx, shell.path, strings.Join(cmdArgs, " "), absCWD, nil, env, writeStderr)
+	} else {
+		argv := append([]string{shell.path}, args...)
+		if len(argv) > 1 {
+			// POSIX and PowerShell scripts receive the expression through the child
+			// environment. Their parser owns expression evaluation.
+			argv[len(argv)-1] = script
+		}
+		stdout, err = shellprocess.Run(ctx, argv, absCWD, nil, env, writeStderr)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

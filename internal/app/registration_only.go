@@ -62,6 +62,20 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 		if err != nil {
 			return err
 		}
+		// Registration-only setup with no local runtime or prior local
+		// registration is an explicit attach. A ledger record for an owned
+		// runtime (including a now-missing one), or a legacy/local registration,
+		// preserves the target's local lifecycle intent.
+		externalOnly := true
+		for _, row := range rows {
+			if row.Key != q.Key {
+				continue
+			}
+			if row.Component == "runtime" || (row.Component == "mcp" && !row.ExternalRegistration) {
+				externalOnly = false
+				break
+			}
+		}
 		for _, row := range rows {
 			registrationKey := row.AgentID + "\x00" + row.Destination
 			if row.Key != q.Key || row.Component != "mcp" || desired[registrationKey].ID != "" || preserved[registrationKey] {
@@ -131,7 +145,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 				}
 			}
 			if err == nil {
-				row := state.Installation{Key: q.Key, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: registration.Name, URL: registration.URL, Transport: registration.Transport, TimeoutMS: registration.TimeoutMS}
+				row := state.Installation{Key: q.Key, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: registration.Name, URL: registration.URL, Transport: registration.Transport, TimeoutMS: registration.TimeoutMS, ExternalRegistration: externalOnly}
 				if agents.IsManual(env.Kind) {
 					row.Mode = "manual"
 				}

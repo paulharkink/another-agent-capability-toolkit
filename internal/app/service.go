@@ -491,7 +491,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 						agentErr = adapter.Register(ctx, env, reg)
 					}
 					if agentErr == nil {
-						row := state.Installation{Key: k, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS}
+						row := state.Installation{Key: k, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS, ExternalRegistration: q.ExternalURL != ""}
 						if agents.IsManual(env.Kind) {
 							row.Mode = "manual"
 							out.Message = "Manual MCP configuration: " + env.ConfigPath

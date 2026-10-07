@@ -38,6 +38,9 @@ func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) 
 	if err != nil || len(rows) != 1 || rows[0].Component != "mcp" {
 		t.Fatalf("registration altered other installation state: %+v, %v", rows, err)
 	}
+	if !rows[0].ExternalRegistration {
+		t.Fatalf("explicit external attach did not retain its provenance: %+v", rows[0])
+	}
 	if _, err := os.Stat(localAgent.SkillsDir); !os.IsNotExist(err) {
 		t.Fatalf("registration installed a skill: %v", err)
 	}
@@ -113,6 +116,34 @@ func TestConfigureRegistrationsCanRemoveEveryOwnedAgent(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("owned registration survived empty desired state: %+v, %v", rows, err)
 	}
+}
+
+func TestConfigureRegistrationsPreservesLocalRuntimeIntent(t *testing.T) {
+	svc, agent, store := fixture(t)
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(t.TempDir(), "mcp.json")
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
+	if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-pms15", SourcePath: "missing-container"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Key == key && row.Component == "mcp" && row.AgentID == agent.ID {
+			if row.ExternalRegistration {
+				t.Fatalf("attaching an agent to a local, now-missing runtime changed target provenance: %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatalf("registration missing after local attach: %+v", rows)
 }
 
 func TestInstallRecordsMCPProfileIndependentlyOfRuntime(t *testing.T) {

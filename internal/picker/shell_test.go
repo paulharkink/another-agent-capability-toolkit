@@ -167,7 +167,9 @@ func TestResolveShellPathRejectsOversizedShellOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	cwd := t.TempDir()
-	_, err = resolveShellPath(context.Background(), `$(printf 'longfilenameabcdefghijklmno %.0s' {1..3000})`, cwd, shell)
+	longName := strings.Repeat("a", 140)
+	expression := `$(printf '` + longName + ` %.0s' {1..500})`
+	_, err = resolveShellPath(context.Background(), expression, cwd, shell)
 	if err == nil || !strings.Contains(err.Error(), "too many results") {
 		t.Fatalf("error = %v, want bounded-output error", err)
 	}

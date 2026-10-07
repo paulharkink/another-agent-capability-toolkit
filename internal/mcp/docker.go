@@ -467,7 +467,7 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 	}
 	for _, row := range rows {
 		identity := registration{row.Key, row.URL}
-		if row.Component == "mcp" && row.URL != "" && !seen[identity] {
+		if row.Component == "mcp" && row.ExternalRegistration && row.URL != "" && !seen[identity] {
 			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL, Ownership: "unknown"})
 			seen[identity] = true
 		}
