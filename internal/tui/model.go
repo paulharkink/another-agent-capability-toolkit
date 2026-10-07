@@ -1023,7 +1023,7 @@ func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
 	if m.management.FormOverlay {
 		return managementFormOverlayBounds(m.width, m.height)
 	}
-	if (m.pendingSetup == nil && !(m.busy && m.setupRetry != nil)) || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
+	if (m.pendingSetup == nil && m.setupRetry == nil) || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
 		return 0, 0, 0, 0, false
 	}
 	// At the supported minimum, reclaim the navigation margins so the form's

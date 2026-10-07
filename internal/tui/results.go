@@ -138,20 +138,44 @@ func (m *Model) closeResult() {
 	m.pendingSetupField = ""
 }
 
-func resultBodyWidth(viewportWidth int) int {
-	width := min(70, viewportWidth-8)
-	if viewportWidth >= 80 {
-		width = viewportWidth - 8
+func (m *Model) resultFrameBounds() (x, y, width, height int) {
+	if m.result != nil && m.result.CanReturn {
+		if x, y, width, height, ok := m.setupOverlayBounds(); ok {
+			return x, y, width, height
+		}
+		return 4, 4, max(1, m.width-8), max(1, m.height-6)
 	}
-	return max(1, width-4)
+	return 0, 0, m.width, m.height
+}
+
+func (m *Model) resultBodyWidth() int {
+	_, _, frameWidth, _ := m.resultFrameBounds()
+	if m.result != nil && m.result.CanReturn {
+		return max(1, min(78, frameWidth-2)-4)
+	}
+	return max(1, min(78, m.width-8)-4)
+}
+
+func (m *Model) resultLayout(rowCount int) (x, y, dialogWidth, dialogHeight int) {
+	frameX, frameY, frameWidth, frameHeight := m.resultFrameBounds()
+	maxWidth := min(78, m.width-8)
+	maxHeight := m.height - 4
+	if m.result != nil && m.result.CanReturn {
+		// Leave a visible inset between the result panel and its setup frame.
+		maxWidth = min(78, max(1, frameWidth-2))
+		maxHeight = max(1, frameHeight-2)
+	}
+	dialogWidth = max(1, min(maxWidth, frameWidth))
+	dialogHeight = max(1, min(maxHeight, max(10, min(16, rowCount+7))))
+	return frameX + (frameWidth-dialogWidth)/2, frameY + (frameHeight-dialogHeight)/2, dialogWidth, dialogHeight
 }
 
 func (m *Model) resultVisibleRows() int {
 	if m.height < 16 {
 		return max(1, m.height-2)
 	}
-	visualRows := wrapResultRows(m.result.Rows, resultBodyWidth(m.width))
-	dialogHeight := min(m.height-4, max(10, min(16, len(visualRows)+7)))
+	visualRows := wrapResultRows(m.result.Rows, m.resultBodyWidth())
+	_, _, _, dialogHeight := m.resultLayout(len(visualRows))
 	return max(1, dialogHeight-7)
 }
 
@@ -160,7 +184,7 @@ func (m *Model) resultKey(stroke string) tea.Cmd {
 	if r == nil {
 		return nil
 	}
-	limit := max(0, len(wrapResultRows(r.Rows, resultBodyWidth(m.width)))-m.resultVisibleRows())
+	limit := max(0, len(wrapResultRows(r.Rows, m.resultBodyWidth()))-m.resultVisibleRows())
 	switch stroke {
 	case "f10", "ctrl+c":
 		return tea.Quit
@@ -235,23 +259,17 @@ func (m *Model) resultMouse(msg tea.MouseMsg) tea.Cmd {
 		if mouse.Button == tea.MouseWheelUp {
 			r.Offset = max(0, r.Offset-1)
 		} else if mouse.Button == tea.MouseWheelDown {
-			r.Offset = min(max(0, len(wrapResultRows(r.Rows, resultBodyWidth(m.width)))-m.resultVisibleRows()), r.Offset+1)
+			r.Offset = min(max(0, len(wrapResultRows(r.Rows, m.resultBodyWidth()))-m.resultVisibleRows()), r.Offset+1)
 		}
 		return nil
 	}
 	if _, ok := msg.(tea.MouseClickMsg); !ok || mouse.Button != tea.MouseLeft {
 		return nil
 	}
-	width := min(70, m.width-8)
-	if m.width >= 80 {
-		width = m.width - 8
-	}
-	visualRows := wrapResultRows(r.Rows, resultBodyWidth(m.width))
-	dialogHeight := min(m.height-4, max(10, min(16, len(visualRows)+7)))
-	x := (m.width - width) / 2
-	y := (m.height - dialogHeight) / 2
+	visualRows := wrapResultRows(r.Rows, m.resultBodyWidth())
+	x, y, width, dialogHeight := m.resultLayout(len(visualRows))
 	footerY := y + dialogHeight - 2
-	if mouse.Y == footerY {
+	if mouse.Y == footerY && mouse.X >= x+1 && mouse.X < x+width-1 {
 		if action := resultActionAtX(r, m.canEditResultAnswers(), mouse.X-(x+1)); action >= 0 {
 			return m.activateResultAction(action)
 		}
@@ -294,17 +312,12 @@ func (m *Model) resultView() tea.View {
 	// navy overlay, gold double border, blue dialog surface, and status-colored
 	// result text. Paint the entire viewport so no terminal-default black leaks
 	// through around the dialog.
-	width, height := m.width, m.height
-	dialogWidth := min(70, width-8)
-	if width >= 80 {
-		dialogWidth = width - 8
-	}
-	bodyWidth := max(1, dialogWidth-4)
-	visualRows := wrapResultRows(m.result.Rows, bodyWidth)
-	dialogHeight := min(height-4, max(10, min(16, len(visualRows)+7)))
-	x, y := (width-dialogWidth)/2, (height-dialogHeight)/2
-	bodyRows := max(1, dialogHeight-7)
 	r := m.result
+	width, height := m.width, m.height
+	visualRows := wrapResultRows(r.Rows, m.resultBodyWidth())
+	// Keep setup recovery inside the same inset occupied by its editor.
+	x, y, dialogWidth, dialogHeight := m.resultLayout(len(visualRows))
+	bodyRows := max(1, dialogHeight-7)
 	r.Offset = min(r.Offset, max(0, len(visualRows)-bodyRows))
 
 	const (
@@ -330,7 +343,7 @@ func (m *Model) resultView() tea.View {
 	const mutedFG = "\x1b[38;2;82;103;143m"
 	canvas := make([]string, height)
 	for row := range canvas {
-		text := ""
+		text := strings.Repeat(" ", width)
 		if row < len(underRows) {
 			text = fit(underRows[row], width)
 		}
@@ -362,7 +375,10 @@ func (m *Model) resultView() tea.View {
 	box[dialogHeight-2] = "║" + fit(resultActions(r, m.canEditResultAnswers()), dialogWidth-2) + "║"
 	box[dialogHeight-1] = "╚" + strings.Repeat("═", dialogWidth-2) + "╝"
 	for i, line := range box {
-		canvas[y+i] = overlayBG + mutedFG + strings.Repeat(" ", x) + dialogBG + goldFG + line + overlayBG + mutedFG + strings.Repeat(" ", width-x-dialogWidth)
+		baseline := ansi.Strip(canvas[y+i])
+		left := ansi.Cut(baseline, 0, x)
+		right := ansi.Cut(baseline, x+dialogWidth, width)
+		canvas[y+i] = overlayBG + mutedFG + left + dialogBG + goldFG + line + overlayBG + mutedFG + right
 	}
 	content := navySGR + strings.Join(canvas, "\x1b[m\n") + "\x1b[m"
 	content = strings.ReplaceAll(content, "\x1b[m", overlayBG)
@@ -399,13 +415,13 @@ func resultActions(result *resultState, canReturn bool) string {
 func resultHeader(result *resultState) string {
 	header := " Operation result · Tab select · Esc Close"
 	if result != nil && result.CanReturn {
-		header = " Operation result · Tab select · E Edit answers · Esc Close"
+		header = " Operation result · E Edit answers · Tab actions · Esc Close"
 	}
 	if result != nil && result.CanRetry {
-		header = " Operation result · Tab select · R Retry · Esc Close"
+		header = " Operation result · R Retry · Tab actions · Esc Close"
 	}
 	if result != nil && result.CanReturn && result.CanRetry {
-		header = " Operation result · Tab select · E Edit answers · R Retry · Esc Close"
+		header = " Operation result · E Edit answers · R Retry · Tab · Esc Close"
 	}
 	return header
 }
