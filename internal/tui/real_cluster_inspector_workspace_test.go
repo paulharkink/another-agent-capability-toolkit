@@ -114,12 +114,17 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	if cmd == nil {
 		t.Fatal("visible build/start action did not submit the unified Save and Apply operation")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
+	completion := runTeaCmd(t, m, cmd)
+	m.Update(completion)
+	dockerArgs, err := os.ReadFile(dockerLog)
+	dockerLogText := string(dockerArgs)
+	if err != nil {
+		dockerLogText = "<unavailable: " + err.Error() + ">"
+	}
 	expectedImage := fmt.Sprintf("sha256:%064d", 0)
 	if runtimeStub.starts != 1 || runtimeStub.last.Image != expectedImage {
-		t.Fatalf("actual UI path did not start the immutable image reported by Docker's iidfile: starts=%d image=%q want=%q", runtimeStub.starts, runtimeStub.last.Image, expectedImage)
+		t.Fatalf("actual UI path did not start the immutable image reported by Docker's iidfile: starts=%d image=%q want=%q completion=%#v output=%q result=%+v docker=%q", runtimeStub.starts, runtimeStub.last.Image, expectedImage, completion, m.output, m.result, dockerLogText)
 	}
-	dockerArgs, err := os.ReadFile(dockerLog)
 	if err != nil {
 		t.Fatal(err)
 	}
