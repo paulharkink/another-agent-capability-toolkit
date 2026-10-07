@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,17 +24,62 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},
 		HasManifestUI:  true,
 		Sections: []catalog.Section{
-			{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}},
+			{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig", "endpoint"}},
 			{ID: "databases", Title: "Databases", Fields: []string{"databases"}},
 		},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Value: "old-token", HasValue: true, Provenance: "saved", Editable: true},
 			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Hint: "Import source; not a live path · AACT uses managed credential material at runtime", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
+			{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint", Type: "string"}, Value: "saved-url", HasValue: true, Provenance: "saved", InheritedValue: "environment-url", HasInheritedValue: true, InheritedOrigin: "environment", InheritedPath: "/env/home.toml", Editable: true},
 			{Definition: catalog.Input{Name: "databases", Label: "Databases", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}, {Value: "grafana", Label: "Grafana"}}}, Value: []string{"plane"}, HasValue: true, Editable: true},
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills"}, {ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	})
 	return m, backend
+}
+
+func TestSavedOverrideOffersKeyboardRestoreAndShowsInheritedProvenance(t *testing.T) {
+	m, _ := openSetupInteraction(t)
+	setupKey(m, tea.KeyRight, "")
+	setupKey(m, tea.KeyDown, "")
+	setupKey(m, tea.KeyDown, "")
+	if !strings.Contains(m.View().Content, "Ctrl+R restore inherited value") {
+		t.Fatalf("saved override does not explain how to restore inherited value:\n%s", m.View().Content)
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	if got := m.form.Values()["endpoint"]; got != "environment-url" {
+		t.Fatalf("restore action did not load the lower-precedence value: %#v", got)
+	}
+	if got := m.form.ResetFields(); len(got) != 1 || got[0] != "endpoint" {
+		t.Fatalf("restored field was not tracked for override removal: %#v", got)
+	}
+	for _, def := range m.form.Definitions() {
+		if def.Name == "endpoint" && !strings.Contains(def.Label, "environment") {
+			t.Fatalf("field label kept stale saved provenance after restore: %q", def.Label)
+		}
+	}
+}
+
+func TestSetupApplyOmitsRestoredFieldFromAnswersAndSendsResetIntent(t *testing.T) {
+	m, backend := openSetupInteraction(t)
+	setupKey(m, tea.KeyRight, "")
+	setupKey(m, tea.KeyDown, "")
+	setupKey(m, tea.KeyDown, "")
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	cmd := m.applySetup(m.form.Values())
+	if cmd == nil {
+		t.Fatal("reset form did not submit")
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	if backend.installRequest == nil {
+		t.Fatal("setup backend did not receive reset form")
+	}
+	if _, ok := backend.installRequest.Inputs["endpoint"]; ok {
+		t.Fatalf("inherited value was submitted as a new override: %+v", backend.installRequest.Inputs)
+	}
+	if !reflect.DeepEqual(backend.installRequest.ResetInputs, []string{"endpoint"}) {
+		t.Fatalf("reset intent was not sent independently of field values: %+v", backend.installRequest)
+	}
 }
 
 func TestResolvedWorkspaceBaselineIsCleanAfterSyntheticControlsAreSeeded(t *testing.T) {

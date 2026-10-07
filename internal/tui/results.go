@@ -76,6 +76,27 @@ func (m *Model) returnToConfiguration() {
 	}
 	m.view = draft.origin
 	m.openSetupFormWithValues(draft.preview, values)
+	if m.form != nil {
+		for _, name := range draft.resetInputs {
+			for _, input := range draft.preview.Inputs {
+				if input.Definition.Name == name {
+					m.form.SetResetValue(name, input.InheritedValue, input.HasInheritedValue)
+					origin := input.Provenance
+					if origin == "" {
+						origin = "unset"
+					}
+					label := input.Definition.Label
+					if label == "" {
+						label = name
+					}
+					m.form.SetResetPresentation(name, label+" ["+origin+"]", setupProvenanceHint(origin, input.ProvenancePath))
+					m.form.SetOverridePresentation(name, label+" [unsaved override]", "Unsaved override · Will save as an override · Ctrl+R restore inherited value")
+					m.form.MarkResetField(name)
+					break
+				}
+			}
+		}
+	}
 	if m.workspace != nil && m.workspace.Active && draft.section != "" {
 		m.workspace.Section = setupFailureSection(draft)
 		if m.form != nil {
@@ -102,7 +123,7 @@ func (m *Model) retryResult() tea.Cmd {
 		m.result = nil
 		m.pendingSetup = &draft.preview
 		m.pendingSetupField = draft.destinationField
-		return m.applySetup(draft.values)
+		return m.applySetupWithReset(draft.values, draft.resetInputs)
 	}
 	retry := m.retryOperation
 	if m.action == "check connection" {

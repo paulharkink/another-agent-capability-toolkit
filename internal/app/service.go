@@ -72,6 +72,7 @@ type InstallRequest struct {
 	Package, Environment, Target string
 	Agents                       []agents.Environment
 	Inputs                       map[string]any
+	ResetInputs                  []string
 	Interactive                  bool
 	SkillsOnly                   bool
 	ExternalURL                  string
@@ -283,9 +284,17 @@ func skillInstallInputs(p catalog.Package, skillsOnly bool) []catalog.Input {
 	return defs
 }
 func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool) error {
+	return s.saveAnswersWithReset(k, p, values, skillsOnly, nil)
+}
+
+func (s *Service) saveAnswersWithReset(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool, resetInputs []string) error {
+	reset := make(map[string]bool, len(resetInputs))
+	for _, name := range resetInputs {
+		reset[name] = true
+	}
 	safe := map[string]any{}
 	for _, d := range p.Inputs {
-		if d.Type != "secret" {
+		if d.Type != "secret" && !reset[d.Name] {
 			if v, ok := values[d.Name]; ok {
 				safe[d.Name] = v
 			}
@@ -470,7 +479,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	// Save the requested configuration before applying it. An apply failure
 	// leaves these answers available for correction and retry; installation
 	// records below still describe only effects that actually succeeded.
-	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswers(k, p, values, q.SkillsOnly) }); e != nil {
+	if e := s.Store.WithLock(ctx, func() error { return s.saveAnswersWithReset(k, p, values, q.SkillsOnly, q.ResetInputs) }); e != nil {
 		return out, e
 	}
 	out.Saved = true

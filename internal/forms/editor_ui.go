@@ -71,6 +71,18 @@ type FormModel struct {
 	actionIndex                 int
 	exclusive                   map[string][]string
 	visibilityContext           map[string]any
+	resetValues                 map[string]resetValue
+	resetApplied                map[string]bool
+	resetTouched                map[string]bool
+}
+
+type resetValue struct {
+	value         any
+	has           bool
+	label         string
+	hint          string
+	overrideLabel string
+	overrideHint  string
 }
 
 // FormSection groups fields into the left-hand navigation list of a split form.
@@ -343,10 +355,110 @@ func (m *FormModel) ApplyValues(values map[string]any) error {
 }
 func (m *FormModel) SetMessage(message string) { m.message = message }
 
+// SetResetValue enables Ctrl+R for a field and records its resolved value
+// without the persisted answer override. A missing inherited value remains
+// unset when restored.
+func (m *FormModel) SetResetValue(name string, value any, hasValue bool) {
+	if m.resetValues == nil {
+		m.resetValues = map[string]resetValue{}
+	}
+	if m.resetApplied == nil {
+		m.resetApplied = map[string]bool{}
+	}
+	if m.resetTouched == nil {
+		m.resetTouched = map[string]bool{}
+	}
+	m.resetValues[name] = resetValue{value: value, has: hasValue}
+}
+
+// SetResetPresentation updates the field's provenance label and hint after
+// restoring its inherited value.
+func (m *FormModel) SetResetPresentation(name, label, hint string) {
+	fallback, ok := m.resetValues[name]
+	if !ok {
+		return
+	}
+	fallback.label, fallback.hint = label, hint
+	m.resetValues[name] = fallback
+}
+
+// SetOverridePresentation provides the value/provenance cue to show if a user
+// edits away from the inherited value after resetting an override.
+func (m *FormModel) SetOverridePresentation(name, label, hint string) {
+	fallback, ok := m.resetValues[name]
+	if !ok {
+		return
+	}
+	fallback.overrideLabel, fallback.overrideHint = label, hint
+	m.resetValues[name] = fallback
+	if m.hints == nil {
+		m.hints = map[string]string{}
+	}
+	m.hints[name] = hint
+}
+
+// MarkResetField restores reset intent when a submitted operation is retried.
+func (m *FormModel) MarkResetField(name string) {
+	if _, ok := m.resetValues[name]; ok {
+		m.resetApplied[name] = true
+		m.resetTouched[name] = true
+	}
+}
+
+func (m *FormModel) refreshResetPresentation() {
+	if len(m.resetTouched) == 0 {
+		return
+	}
+	values := m.editor.Values()
+	for index, def := range m.defs {
+		if !m.resetTouched[def.Name] {
+			continue
+		}
+		fallback := m.resetValues[def.Name]
+		value, exists := values[def.Name]
+		if m.editing && m.selected < len(m.defs) && m.defs[m.selected].Name == def.Name && m.buffer != m.editOriginal {
+			value, exists = m.buffer, true
+		}
+		if exists == fallback.has && (!exists || answerValueEqual(value, fallback.value)) {
+			m.resetApplied[def.Name] = true
+			if fallback.label != "" {
+				m.defs[index].Label = fallback.label
+			}
+			m.hints[def.Name] = fallback.hint
+			continue
+		}
+		delete(m.resetApplied, def.Name)
+		if fallback.overrideLabel != "" {
+			m.defs[index].Label = fallback.overrideLabel
+		}
+		m.hints[def.Name] = fallback.overrideHint
+	}
+}
+
+// ResetFields returns explicitly reset fields in declaration order. A later
+// edit away from the inherited value makes the field a normal override again.
+func (m *FormModel) ResetFields() []string {
+	values := m.editor.Values()
+	fields := make([]string, 0, len(m.resetApplied))
+	for _, def := range m.defs {
+		if !m.resetApplied[def.Name] {
+			continue
+		}
+		fallback := m.resetValues[def.Name]
+		value, exists := values[def.Name]
+		if exists == fallback.has && (!exists || answerValueEqual(value, fallback.value)) {
+			fields = append(fields, def.Name)
+		} else {
+			delete(m.resetApplied, def.Name)
+		}
+	}
+	return fields
+}
+
 // HasUnsavedChanges compares the semantic field values with the last clean
 // baseline and also accounts for text still being edited in place.
 func (m *FormModel) HasUnsavedChanges() bool {
-	return m.editor.HasUnsavedChanges() || (m.editing && m.buffer != m.editOriginal)
+	return m.editor.HasUnsavedChanges() || len(m.ResetFields()) > 0 || (m.editing && m.buffer != m.editOriginal)
 }
 
 // ChangedFieldSummary returns changed field labels in declaration order and
@@ -356,7 +468,7 @@ func (m *FormModel) ChangedFieldSummary(limit int) ([]string, int) {
 	for _, def := range m.defs {
 		original := m.editor.original[def.Name]
 		current := m.editor.values[def.Name]
-		changed := !answerValueEqual(original, current)
+		changed := !answerValueEqual(original, current) || m.resetApplied[def.Name]
 		if m.editing && m.selected < len(m.defs) && m.defs[m.selected].Name == def.Name && m.buffer != m.editOriginal {
 			changed = true
 		}
@@ -927,6 +1039,26 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
+		if stroke == "ctrl+r" && !m.editing && m.selected >= 0 && m.selected < len(m.defs) && (len(m.sections) == 0 || m.area == 1) {
+			name := m.defs[m.selected].Name
+			if fallback, ok := m.resetValues[name]; ok {
+				var err error
+				if fallback.has {
+					err = m.editor.Apply(name, fallback.value)
+				} else {
+					err = m.editor.Clear(name)
+				}
+				if err != nil {
+					m.message = err.Error()
+				} else {
+					m.MarkResetField(name)
+					m.refreshResetPresentation()
+					m.message = "Restored inherited value; saved override will be removed"
+					m.refreshSections()
+				}
+				return m, nil
+			}
+		}
 		if stroke == "ctrl+c" {
 			return m.discard()
 		}
@@ -1337,6 +1469,14 @@ func (m *FormModel) beginEdit(action, buffer string) {
 }
 func (m *FormModel) commitBuffer() {
 	def := m.defs[m.selected]
+	if m.resetApplied[def.Name] && m.editAction != "add" && m.buffer == m.editOriginal {
+		// Opening and accepting an unchanged reset field must preserve the
+		// removal intent. In particular, don't turn an absent value into a
+		// blank-string override just because the editor buffer is empty.
+		m.editing = false
+		m.refreshSections()
+		return
+	}
 	var e error
 	switch m.editAction {
 	case "add":
@@ -2402,6 +2542,7 @@ func scrollSplitPaneAt(rows []string, primary, secondary []int, start, height in
 }
 
 func (m *FormModel) View() tea.View {
+	m.refreshResetPresentation()
 	if m.browser != nil {
 		return m.pickerView()
 	}

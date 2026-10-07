@@ -194,6 +194,7 @@ func copyProfileSnapshot(snapshot *viewmodel.ProfileSnapshot) *viewmodel.Profile
 type setupRetryDraft struct {
 	preview          viewmodel.SetupPreview
 	values           map[string]any
+	resetInputs      []string
 	returnValues     map[string]any
 	destinationField string
 	origin           string
@@ -418,7 +419,21 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 			m.form.SetDisabled(input.Definition.Name, fixed+" is fixed by target")
 			continue
 		}
-		if setupDisplayValue(input) && input.ProvenancePath != "" {
+		if input.Provenance == "saved" {
+			name := input.Definition.Name
+			m.form.SetResetValue(name, input.InheritedValue, input.HasInheritedValue)
+			inheritedOrigin := input.InheritedOrigin
+			if inheritedOrigin == "" {
+				inheritedOrigin = "unset"
+			}
+			baseLabel := input.Definition.Label
+			if baseLabel == "" {
+				baseLabel = name
+			}
+			m.form.SetResetPresentation(name, baseLabel+" ["+inheritedOrigin+"]", setupProvenanceHint(inheritedOrigin, input.InheritedPath))
+			m.form.SetOverridePresentation(name, baseLabel+" [unsaved override]", "Unsaved override · Will save as an override · Ctrl+R restore inherited value")
+			m.form.SetHint(name, setupProvenanceHint("saved", input.ProvenancePath)+" · Ctrl+R restore inherited value")
+		} else if setupDisplayValue(input) && input.ProvenancePath != "" {
 			m.form.SetHint(input.Definition.Name, setupProvenanceHint(input.Provenance, input.ProvenancePath))
 		}
 	}
@@ -464,6 +479,8 @@ func setupProvenanceHint(origin, path string) string {
 		return "Source default · editable · " + file
 	case "package":
 		return "Package default · editable · " + file
+	case "unset":
+		return "No lower-precedence value"
 	default:
 		return origin + " · editable · " + file
 	}
@@ -500,6 +517,14 @@ func withUnavailableSavedChoices(def catalog.Input, value any) catalog.Input {
 }
 
 func (m *Model) applySetup(values map[string]any) tea.Cmd {
+	var resetInputs []string
+	if m.form != nil {
+		resetInputs = m.form.ResetFields()
+	}
+	return m.applySetupWithReset(values, resetInputs)
+}
+
+func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string) tea.Cmd {
 	backend, ok := m.backend.(setupBackend)
 	if !ok || m.pendingSetup == nil {
 		m.output = "Unified setup service unavailable"
@@ -514,6 +539,24 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		return nil
 	}
 	preview := *m.pendingSetup
+	preview.Inputs = append([]viewmodel.SetupInput(nil), m.pendingSetup.Inputs...)
+	reset := make(map[string]bool, len(resetInputs))
+	for _, name := range resetInputs {
+		reset[name] = true
+		for i := range preview.Inputs {
+			input := &preview.Inputs[i]
+			if input.Definition.Name != name {
+				continue
+			}
+			input.Value = input.InheritedValue
+			input.HasValue = input.HasInheritedValue
+			input.Provenance = input.InheritedOrigin
+			if input.Provenance == "" {
+				input.Provenance = "unset"
+			}
+			input.ProvenancePath = input.InheritedPath
+		}
+	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		for _, definition := range preview.MCPDefinitions {
 			profile := m.profileForMCPName(definition.Name)
@@ -536,20 +579,20 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	m.pendingSetup = nil
 	destinations, _ := values[destinationField].([]string)
 	m.pendingSetupField = ""
-	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), destinationField: destinationField, origin: origin, section: section}
+	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, origin: origin, section: section}
 	m.setupOperationPending = true
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
 		if !input.Editable {
 			continue
 		}
-		if value, exists := values[input.Definition.Name]; exists {
+		if value, exists := values[input.Definition.Name]; exists && !reset[input.Definition.Name] {
 			inputs[input.Definition.Name] = value
 		}
 	}
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{SourceID: preview.Key.Source, PackageID: preview.Key.Package, Environment: preview.Key.Environment, Target: preview.Key.Target},
-		Inputs:       inputs, DestinationIDs: destinations,
+		Inputs:       inputs, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		var profiles []viewmodel.Profile

@@ -87,6 +87,18 @@ func (e *Editor) Apply(name string, value any) error {
 	delete(e.initialErrors, name)
 	return nil
 }
+
+// Clear removes a value from the submitted answer map. It is used when a
+// lower-precedence source has no value, so an override can be removed without
+// persisting an empty string as a replacement.
+func (e *Editor) Clear(name string) error {
+	if _, err := e.definition(name); err != nil {
+		return err
+	}
+	delete(e.values, name)
+	delete(e.initialErrors, name)
+	return nil
+}
 func (e *Editor) Cancel() { e.cancelled = true; e.values = copyAnswers(e.original) }
 func (e *Editor) Commit() (map[string]any, error) {
 	if e.cancelled {

@@ -13,12 +13,16 @@ type SetupRequest struct {
 }
 
 type SetupInput struct {
-	Definition     catalog.Input
-	Value          any
-	HasValue       bool
-	Provenance     string
-	ProvenancePath string
-	Editable       bool
+	Definition        catalog.Input
+	Value             any
+	HasValue          bool
+	Provenance        string
+	ProvenancePath    string
+	InheritedValue    any
+	HasInheritedValue bool
+	InheritedOrigin   string
+	InheritedPath     string
+	Editable          bool
 }
 
 type SetupDestination struct {
@@ -48,6 +52,7 @@ type SetupPreview struct {
 type SetupInstallRequest struct {
 	SetupRequest
 	Inputs         map[string]any
+	ResetInputs    []string
 	DestinationIDs []string
 	ExternalURL    string
 	ExternalURLs   map[string]string

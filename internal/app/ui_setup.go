@@ -201,6 +201,10 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	origins := []string{"package", "source", "target", "saved"}
 	provenance := map[string]string{}
 	provenancePaths := map[string]string{}
+	inheritedValues := map[string]any{}
+	inheritedPresent := map[string]bool{}
+	inheritedOrigins := map[string]string{}
+	inheritedPaths := map[string]string{}
 	for i, layer := range layers {
 		resolved, resolveErr := forms.ResolvePartial(defs, layer)
 		if resolveErr != nil {
@@ -210,6 +214,12 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 			values[name] = value
 			provenance[name] = origins[i]
 			provenancePaths[name] = paths[i]
+			if i < len(layers)-1 {
+				inheritedValues[name] = value
+				inheritedPresent[name] = true
+				inheritedOrigins[name] = origins[i]
+				inheritedPaths[name] = paths[i]
+			}
 		}
 	}
 	for name, value := range fixed {
@@ -267,7 +277,11 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 			origin = "unset"
 		}
 		_, locked := fixed[def.Name]
-		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: value, HasValue: present, Provenance: origin, ProvenancePath: provenancePaths[def.Name], Editable: !locked})
+		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{
+			Definition: def, Value: value, HasValue: present, Provenance: origin, ProvenancePath: provenancePaths[def.Name],
+			InheritedValue: inheritedValues[def.Name], HasInheritedValue: inheritedPresent[def.Name],
+			InheritedOrigin: inheritedOrigins[def.Name], InheritedPath: inheritedPaths[def.Name], Editable: !locked,
+		})
 	}
 	ids, err := s.UIAgents(ctx)
 	if err != nil {
@@ -583,6 +597,21 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		return viewmodel.OperationResult{}, err
 	}
 	key := s.key(p.ID, q.Environment, q.Target)
+	for _, name := range q.ResetInputs {
+		declared := false
+		for _, input := range p.Inputs {
+			if input.Name == name {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return viewmodel.OperationResult{}, invalid(fmt.Errorf("cannot reset undeclared input %q", name))
+		}
+	}
+	if err := s.validateResetInputOverrides(p, key, q.ResetInputs); err != nil {
+		return viewmodel.OperationResult{}, err
+	}
 	envs := make([]agents.Environment, 0, len(q.DestinationIDs))
 	desired := make(map[string]bool, len(q.DestinationIDs))
 	for _, id := range q.DestinationIDs {
@@ -636,7 +665,7 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		removed, removeErr = s.removeCapabilityBindings(ctx, p, key, remove)
 	}
 	if len(q.DestinationIDs) == 0 {
-		saveErr := s.savePartialSetupAnswers(ctx, p, key, q.Inputs)
+		saveErr := s.savePartialSetupAnswers(ctx, p, key, q.Inputs, q.ResetInputs)
 		removed.Saved = saveErr == nil
 		removed.SavedApplicable = true
 		return removed, errors.Join(removeErr, saveErr)
@@ -644,13 +673,18 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 	if removeErr != nil {
 		return removed, removeErr
 	}
+	if len(q.ResetInputs) > 0 {
+		if err := s.removeSavedAnswerOverrides(ctx, key, q.ResetInputs); err != nil {
+			return removed, err
+		}
+	}
 	inputs := make(map[string]any, len(q.Inputs))
 	for name, value := range q.Inputs {
 		inputs[name] = value
 	}
 	result, err := s.Install(ctx, InstallRequest{
 		Package: q.PackageID, Environment: q.Environment, Target: q.Target, Agents: envs,
-		Inputs: inputs, Interactive: false, ExternalURL: q.ExternalURL, ExternalURLs: q.ExternalURLs,
+		Inputs: inputs, Interactive: false, ExternalURL: q.ExternalURL, ExternalURLs: q.ExternalURLs, ResetInputs: q.ResetInputs,
 	})
 	result.Changes = append(removed.Changes, result.Changes...)
 	result.Errors = append(removed.Errors, result.Errors...)
@@ -662,7 +696,7 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 
 // savePartialSetupAnswers persists declared nonsecret edits without applying
 // required-field validation, generation, authentication, or runtime actions.
-func (s *Service) savePartialSetupAnswers(ctx context.Context, p catalog.Package, key state.Key, submitted map[string]any) error {
+func (s *Service) savePartialSetupAnswers(ctx context.Context, p catalog.Package, key state.Key, submitted map[string]any, resetInputs []string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -695,6 +729,9 @@ func (s *Service) savePartialSetupAnswers(ctx context.Context, p catalog.Package
 		}
 		values[name] = value
 	}
+	for _, name := range resetInputs {
+		delete(values, name)
+	}
 	for name, value := range fixed {
 		values[name] = value
 	}
@@ -712,6 +749,43 @@ func (s *Service) savePartialSetupAnswers(ctx context.Context, p catalog.Package
 		}
 	}
 	return s.Store.WithLock(ctx, func() error { return s.Store.SaveAnswers(key, safe) })
+}
+
+func (s *Service) removeSavedAnswerOverrides(ctx context.Context, key state.Key, names []string) error {
+	return s.Store.WithLock(ctx, func() error {
+		values, err := s.Store.Answers(key)
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			delete(values, name)
+		}
+		return s.Store.SaveAnswers(key, values)
+	})
+}
+
+func (s *Service) validateResetInputOverrides(p catalog.Package, key state.Key, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	target := config.Target{Environment: key.Environment, Name: key.Target, Raw: map[string]any{}}
+	if key.Environment != "" {
+		loaded, err := config.LoadTarget(s.Source, p.ID, key.Environment, key.Target)
+		if err != nil {
+			return invalid(err)
+		}
+		target = loaded
+	}
+	fixed, err := fixedTargetInputs(p.Inputs, target, target.Raw)
+	if err != nil {
+		return invalid(err)
+	}
+	for _, name := range names {
+		if _, locked := fixed[name]; locked {
+			return invalid(fmt.Errorf("input %q is fixed by target %s", name, target.Path))
+		}
+	}
+	return nil
 }
 
 // removeCapabilityBindings removes only recorded skill and MCP effects for

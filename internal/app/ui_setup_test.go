@@ -611,6 +611,85 @@ func TestSavedCredentialClearOverridesEditableTargetPrefillOnReopen(t *testing.T
 	if len(preview.Inputs) != 2 || preview.Inputs[1].Value != "" || preview.Inputs[1].Provenance != "saved" {
 		t.Fatalf("cleared credential was restored by target prefill: %#v", preview.Inputs)
 	}
+	if preview.Inputs[1].InheritedValue != filepath.Join(filepath.Dir(path), "source.yaml") || !preview.Inputs[1].HasInheritedValue {
+		t.Fatalf("saved override did not retain its resolved lower-precedence value: %#v", preview.Inputs[1])
+	}
+}
+
+func TestUIInstallResetRemovesOnlySelectedSavedAnswerAndRevealsPackageDefault(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "endpoint", Label: "Endpoint", Type: "string", Default: "https://inherited.example"},
+		{Name: "team", Label: "Team", Type: "string"},
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswers(key, map[string]any{"endpoint": "https://saved.example", "team": "keep-me"}); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Inputs[0].Provenance != "saved" || preview.Inputs[0].InheritedValue != "https://inherited.example" || !preview.Inputs[0].HasInheritedValue {
+		t.Fatalf("preview did not expose the value below the saved override: %+v", preview.Inputs[0])
+	}
+
+	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
+		Inputs:       map[string]any{"endpoint": "https://inherited.example", "team": "keep-me"},
+		ResetInputs:  []string{"endpoint"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	answers, err := store.Answers(key)
+	if err != nil || answers["team"] != "keep-me" {
+		t.Fatalf("reset removed another field or failed to preserve it: %#v %v", answers, err)
+	}
+	if _, exists := answers["endpoint"]; exists {
+		t.Fatalf("inherited value was re-saved as an override: %#v", answers)
+	}
+	after, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Inputs[0].Value != "https://inherited.example" || after.Inputs[0].Provenance != "package" {
+		t.Fatalf("removing the override did not reveal the package default: %+v", after.Inputs[0])
+	}
+}
+
+func TestUIInstallResetDoesNotResaveInheritedValueAfterInstallingSkill(t *testing.T) {
+	svc, _, store := fixture(t)
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "endpoint", Label: "Endpoint", Type: "string", Default: "https://inherited.example"}}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswers(key, map[string]any{"endpoint": "https://saved.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest:   viewmodel.SetupRequest{PackageID: "demo"},
+		Inputs:         map[string]any{"endpoint": "https://inherited.example"},
+		ResetInputs:    []string{"endpoint"},
+		DestinationIDs: []string{"all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := answers["endpoint"]; exists {
+		t.Fatalf("install path persisted the inherited value as an override: %#v", answers)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Inputs[0].Value != "https://inherited.example" || preview.Inputs[0].Provenance != "package" {
+		t.Fatalf("install path did not leave the package default as effective value: %+v", preview.Inputs[0])
+	}
 }
 
 func TestUISetupPreviewDisablesUndetectedJetBrainsMCPAdapterWithReason(t *testing.T) {
