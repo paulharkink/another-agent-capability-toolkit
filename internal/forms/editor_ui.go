@@ -530,13 +530,24 @@ func wrapHint(text string, width int) []string {
 		if len(words) == 0 {
 			continue
 		}
-		line := words[0]
-		for _, word := range words[1:] {
-			if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
+		line := ""
+		for _, word := range words {
+			chunks := wrapCellText(word, width)
+			if len(chunks) > 1 {
+				if line != "" {
+					lines = append(lines, line)
+				}
+				lines = append(lines, chunks[:len(chunks)-1]...)
+				line = chunks[len(chunks)-1]
+				continue
+			}
+			if line == "" {
+				line = word
+			} else if lipgloss.Width(line)+1+lipgloss.Width(word) <= width {
+				line += " " + word
+			} else {
 				lines = append(lines, line)
 				line = word
-			} else {
-				line += " " + word
 			}
 		}
 		lines = append(lines, line)
