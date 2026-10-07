@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -26,7 +27,6 @@ func fixedPaletteRows(content string, width, height int) []string {
 		if row < len(lines) {
 			line = ansi.Truncate(lines[row], width, "")
 		}
-		line = navyCanvas(line)
 		used := ansi.StringWidth(line)
 		if used < width {
 			line += navySGR + strings.Repeat(" ", width-used)
@@ -41,5 +41,58 @@ func fixedPaletteRows(content string, width, height int) []string {
 func composeOverlayRow(base, dialog string, x, dialogWidth, width int) string {
 	left := ansi.Cut(base, 0, x)
 	right := ansi.Cut(base, x+dialogWidth, width)
-	return left + dialog + navySGR + right
+	return left + dialog + sgrStateAt(base, x+dialogWidth) + right
+}
+
+// sgrStateAt returns the active SGR sequences at a cell boundary so that a
+// style which spans across an overlay resumes unchanged on its far side.
+func sgrStateAt(content string, cell int) string {
+	// Canvas rows are separated with navySGR. Replay every SGR change so
+	// bold, reverse, underline, and future parent styles survive the seam too.
+	active := []string{navySGR}
+	for i, col := 0, 0; i < len(content) && col < cell; {
+		if content[i] == '\x1b' && i+1 < len(content) && content[i+1] == '[' {
+			end := strings.IndexByte(content[i:], 'm')
+			if end > 0 {
+				sequence := content[i : i+end+1]
+				if sgrResetsAll(content[i+2 : i+end]) {
+					active = nil
+				}
+				active = append(active, sequence)
+				i += end + 1
+				continue
+			}
+		}
+		_, size := utf8.DecodeRuneInString(content[i:])
+		if content[i] == '\n' || content[i] == '\r' {
+			i += size
+			continue
+		}
+		col += ansi.StringWidth(content[i : i+size])
+		i += size
+	}
+	return strings.Join(active, "")
+}
+
+func sgrResetsAll(parameters string) bool {
+	if parameters == "" {
+		return true
+	}
+	parts := strings.Split(parameters, ";")
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "38" || parts[i] == "48" {
+			if i+4 < len(parts) && parts[i+1] == "2" {
+				i += 4
+				continue
+			}
+			if i+2 < len(parts) && parts[i+1] == "5" {
+				i += 2
+				continue
+			}
+		}
+		if parts[i] == "0" {
+			return true
+		}
+	}
+	return false
 }

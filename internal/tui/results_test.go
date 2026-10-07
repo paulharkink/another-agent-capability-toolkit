@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -179,6 +180,8 @@ func TestOperationResultOverlayPreservesUnderlyingPalette(t *testing.T) {
 	underlying := m.View().Content
 	m.Update(operationMsg{origin: "Catalog", output: "Inputs saved"})
 	view := m.View().Content
+	dialogX, dialogY, dialogWidth, dialogHeight := m.resultLayout(len(wrapResultRows(m.result.Rows, m.resultBodyWidth())))
+	assertPaletteOutsideOverlay(t, underlying, view, m.width, m.height, dialogX, dialogY, dialogWidth, dialogHeight, "result")
 	if !strings.Contains(ansi.Strip(view), "AACT · Another Agent Capability Toolkit") || !strings.Contains(ansi.Strip(view), "Operation result") {
 		t.Fatalf("result overlay should retain the underlying screen and modal:\n%s", ansi.Strip(view))
 	}
@@ -193,12 +196,105 @@ func TestOperationResultOverlayPreservesUnderlyingPalette(t *testing.T) {
 	}
 }
 
+func renderedRowPalettes(content string, width, height int) [][]string {
+	fg, bg := "", ""
+	attrs := map[string]bool{}
+	rows := make([][]string, height)
+	row, col := 0, 0
+	for i := 0; i < len(content) && row < height; {
+		if content[i] == '\x1b' && i+1 < len(content) && content[i+1] == '[' {
+			end := strings.IndexByte(content[i:], 'm')
+			if end > 0 {
+				params := strings.Split(content[i+2:i+end], ";")
+				if len(params) == 1 && (params[0] == "" || params[0] == "0") {
+					fg, bg = "", ""
+					attrs = map[string]bool{}
+				} else {
+					for j := 0; j < len(params); j++ {
+						if (params[j] == "38" || params[j] == "48") && j+4 < len(params) && params[j+1] == "2" {
+							color := strings.Join(params[j:j+5], ";")
+							if params[j] == "38" {
+								fg = color
+							} else {
+								bg = color
+							}
+							j += 4
+							continue
+						}
+						switch params[j] {
+						case "0":
+							fg, bg = "", ""
+							attrs = map[string]bool{}
+						case "1":
+							attrs["bold"] = true
+						case "22":
+							delete(attrs, "bold")
+						case "4":
+							attrs["underline"] = true
+						case "24":
+							delete(attrs, "underline")
+						case "7":
+							attrs["reverse"] = true
+						case "27":
+							delete(attrs, "reverse")
+						}
+					}
+				}
+				i += end + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(content[i:])
+		if r == '\n' {
+			row++
+			col = 0
+		} else if r != '\r' {
+			for cell := 0; cell < ansi.StringWidth(string(r)) && col < width; cell++ {
+				rows[row] = append(rows[row], cellStyleSignature(fg, bg, attrs))
+				col++
+			}
+		}
+		i += size
+	}
+	for i := range rows {
+		for len(rows[i]) < width {
+			rows[i] = append(rows[i], cellStyleSignature(fg, bg, attrs))
+		}
+	}
+	return rows
+}
+
+func cellStyleSignature(fg, bg string, attrs map[string]bool) string {
+	return fmt.Sprintf("%s/%s/bold=%t/reverse=%t/underline=%t", fg, bg, attrs["bold"], attrs["reverse"], attrs["underline"])
+}
+
 func TestProgressOverlayPreservesUnderlyingPalette(t *testing.T) {
 	m, _ := homeFixture()
 	m.width, m.height = 110, 30
 	m.action = "check connection"
 	underlying := m.View().Content
 	view := m.progressView().Content
+	progressLines := strings.Split(ansi.Strip(view), "\n")
+	progressWidth := min(78, m.width-8)
+	progressY := -1
+	progressX := -1
+	progressHeight := 0
+	for row, line := range progressLines {
+		if strings.Contains(line, "Operation in progress") {
+			progressY = row - 1
+			borderIndex := strings.LastIndex(line[:strings.Index(line, "Operation in progress")], "║")
+			progressX = ansi.StringWidth(line[:borderIndex])
+		}
+		bottomIndex := strings.Index(line, "╚")
+		if progressY >= 0 && bottomIndex >= 0 && ansi.StringWidth(line[:bottomIndex]) == progressX {
+			progressHeight = row - progressY + 1
+			break
+		}
+	}
+	if progressY < 0 || progressX < 0 || progressHeight == 0 {
+		t.Fatalf("could not find progress popup bounds at x=%d: y=%d height=%d\n%s", progressX, progressY, progressHeight, ansi.Strip(view))
+	}
+	assertPaletteOutsideOverlay(t, underlying, view, m.width, m.height, progressX, progressY, progressWidth, progressHeight, "progress")
 	if strings.Contains(view, "48;2;6;22;74m") || strings.Contains(view, "38;2;82;103;143m") {
 		t.Fatal("progress overlay recolored the underlying layer with a darkened palette")
 	}
@@ -207,5 +303,60 @@ func TestProgressOverlayPreservesUnderlyingPalette(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(view), "Operation in progress") || ansi.Strip(underlying) == ansi.Strip(view) {
 		t.Fatal("progress dialog was not drawn over the retained screen")
+	}
+}
+
+func assertPaletteOutsideOverlay(t *testing.T, before, after string, width, height, x, y, overlayWidth, overlayHeight int, name string) {
+	t.Helper()
+	beforeRows := renderedRowPalettes(before, width, height)
+	afterRows := renderedRowPalettes(after, width, height)
+	for row := range beforeRows {
+		for col := range beforeRows[row] {
+			if row >= y && row < y+overlayHeight && col >= x && col < x+overlayWidth {
+				continue
+			}
+			if col >= len(afterRows[row]) || beforeRows[row][col] != afterRows[row][col] {
+				got := "<missing>"
+				if col < len(afterRows[row]) {
+					got = afterRows[row][col]
+				}
+				t.Fatalf("%s overlay changed rendered foreground/background at row %d column %d: want %q, got %q", name, row, col, beforeRows[row][col], got)
+			}
+		}
+	}
+}
+
+func TestOverlayCompositionPreservesSelectedStyleCrossingRightEdge(t *testing.T) {
+	base := navySGR + "before " + "\x1b[1;4;7;38;2;8;31;91;48;2;233;242;251m" + strings.Repeat("S", 16) + "\x1b[m after"
+	width := 32
+	base = ansi.Truncate(base, width, "")
+	overlaid := composeOverlayRow(base, "\x1b[48;2;12;49;133mDIALOG!!", 8, 8, width)
+	beforeCells := renderedRowPalettes(base, width, 1)[0]
+	afterCells := renderedRowPalettes(overlaid, width, 1)[0]
+	if !strings.Contains(beforeCells[16], "bold=true/reverse=true/underline=true") {
+		t.Fatalf("fixture does not exercise active bold, reverse, and underline: %q", beforeCells[16])
+	}
+	for col := range beforeCells {
+		if col >= 8 && col < 16 {
+			continue
+		}
+		if beforeCells[col] != afterCells[col] {
+			t.Fatalf("overlay changed selected parent style at column %d: want %q, got %q", col, beforeCells[col], afterCells[col])
+		}
+	}
+}
+
+func TestSGRResetsAllIgnoresIndexedColorZero(t *testing.T) {
+	for _, tc := range []struct {
+		parameters string
+		want       bool
+	}{
+		{parameters: "38;5;0", want: false},
+		{parameters: "48;5;0", want: false},
+		{parameters: "0;38;5;0", want: true},
+	} {
+		if got := sgrResetsAll(tc.parameters); got != tc.want {
+			t.Errorf("sgrResetsAll(%q) = %t, want %t", tc.parameters, got, tc.want)
+		}
 	}
 }
