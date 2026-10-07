@@ -18,7 +18,8 @@ func TestResolveShellPathCancellationKillsShellDescendants(t *testing.T) {
 	cwd := t.TempDir()
 	marker := filepath.Join(cwd, "child.pid")
 	quotedMarker := "'" + strings.ReplaceAll(marker, "'", "'\\''") + "'"
-	expression := "$(sleep 3 & echo $! > " + quotedMarker + "; wait)"
+	tmpMarker := quotedMarker + ".tmp"
+	expression := "$(sleep 3 & child=$!; printf '%s\\n' \"$child\" > " + tmpMarker + "; mv " + tmpMarker + " " + quotedMarker + "; wait)"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -28,24 +29,20 @@ func TestResolveShellPathCancellationKillsShellDescendants(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(time.Second)
+	var childPID int
 	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
+		pidBytes, err := os.ReadFile(marker)
+		if err == nil {
+			if parsedPID, parseErr := strconv.Atoi(strings.TrimSpace(string(pidBytes))); parseErr == nil && parsedPID > 1 {
+				childPID = parsedPID
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("shell descendant did not start")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	pidBytes, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPID, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		t.Fatalf("invalid child pid %q: %v", pidBytes, err)
-	}
-
 	started := time.Now()
 	cancel()
 	select {

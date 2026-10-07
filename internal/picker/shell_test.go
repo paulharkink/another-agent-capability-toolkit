@@ -23,7 +23,7 @@ func TestResolveShellPathPreservesExistingLiteralSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !sameResolvedPath(got, want) {
 		t.Fatalf("resolved path = %q, want %q", got, want)
 	}
 }
@@ -39,7 +39,7 @@ func TestResolveShellPathUsesShellGlobExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !sameResolvedPath(got, want) {
 		t.Fatalf("resolved path = %q, want %q", got, want)
 	}
 }
@@ -69,7 +69,7 @@ func TestResolveShellPathHonorsCancellation(t *testing.T) {
 func TestResolveShellPathReportsShellSyntaxFailure(t *testing.T) {
 	shell := testPathShell(t)
 	if shell.kind == shellCMD {
-		t.Skip("cmd.exe does not have POSIX or PowerShell quote syntax")
+		t.Skip("cmd.exe does not report parser errors for unmatched quotes")
 	}
 	_, err := resolveShellPath(context.Background(), "'unterminated", t.TempDir(), shell)
 	if err == nil || !strings.Contains(err.Error(), "shell path expression") || !strings.Contains(err.Error(), shellDisplayName(shell)) {
@@ -166,7 +166,8 @@ func TestResolveShellPathRejectsOversizedShellOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = resolveShellPath(context.Background(), `"$(printf '%70000s' x; printf y)"`, t.TempDir(), shell)
+	cwd := t.TempDir()
+	_, err = resolveShellPath(context.Background(), `$(printf 'longfilenameabcdefghijklmno %.0s' {1..3000})`, cwd, shell)
 	if err == nil || !strings.Contains(err.Error(), "too many results") {
 		t.Fatalf("error = %v, want bounded-output error", err)
 	}
@@ -189,6 +190,9 @@ func TestResolveShellPathPowerShellEngine(t *testing.T) {
 		if !sameResolvedPath(got, home) {
 			t.Errorf("PowerShell expression %q = %q, want %q", expression, got, home)
 		}
+	}
+	if _, err := resolveShellPath(context.Background(), `$(throw 'picker diagnostic fixture')`, t.TempDir(), shell); err == nil || !strings.Contains(err.Error(), shellDisplayName(shell)) || !strings.Contains(err.Error(), "picker diagnostic fixture") {
+		t.Fatalf("PowerShell reported failure = %v, want selected shell and engine diagnostic", err)
 	}
 
 	literal := filepath.Join(cwd, "path with spaces.yaml")

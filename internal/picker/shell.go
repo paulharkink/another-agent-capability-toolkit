@@ -84,8 +84,8 @@ func resolveShellPath(ctx context.Context, typedExpression, cwd string, shell sh
 	args, script, envName, envValue := shellCommand(shell, typedExpression)
 	argv := append([]string{shell.path}, args...)
 	if len(argv) > 1 {
-		// The source script is supplied as an argument, never assembled with the
-		// user's expression. The selected shell owns path-expression parsing.
+		// POSIX and PowerShell scripts receive the expression through the child
+		// environment. CMD requires its native FOR syntax in the /c command text.
 		argv[len(argv)-1] = script
 	}
 	env := make(map[string]string, 1)
@@ -112,6 +112,12 @@ func resolveShellPath(ctx context.Context, typedExpression, cwd string, shell sh
 	}
 	if len(stdout) > shellStdoutLimit {
 		return "", errors.New("shell path expression produced too many results; narrow it to one path")
+	}
+	if len(stdout) == 0 && stderr.Len() > 0 {
+		diagnostic := boundedShellDiagnostic(stderr.String())
+		if diagnostic != "" {
+			return "", fmt.Errorf("shell path expression failed in %s: %s", shellDisplayName(shell), diagnostic)
+		}
 	}
 	results := shellResults(stdout, shell.kind)
 	if len(results) == 1 && len(results[0]) == 0 {
@@ -186,7 +192,7 @@ func shellCommand(shell shellSpec, expression string) (args []string, script, en
 		if !strings.Contains(set, `"`) {
 			set = `"` + set + `"`
 		}
-		return []string{"/d", "/s", "/c", ""}, `for %P in (` + set + `) do @echo %~fP`, "", ""
+		return []string{"/d", "/c", ""}, `for %P in (` + set + `) do @echo %~fP`, "", ""
 	default:
 		return []string{"-c", ""}, `if [ -e "$AACT_PICKER_TYPED_EXPRESSION" ]; then printf '%s\0' "$AACT_PICKER_TYPED_EXPRESSION"; else eval "set -- $AACT_PICKER_TYPED_EXPRESSION" || exit; printf '%s\0' "$@"; fi`, envName, envValue
 	}

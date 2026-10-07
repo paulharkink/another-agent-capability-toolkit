@@ -305,6 +305,26 @@ func browserClickText(t *testing.T, m *BrowserModel, text string) {
 	t.Fatalf("browser did not render %q:\n%s", text, ansi.Strip(m.View().Content))
 }
 
+func TestUXBrowserAbsoluteMissingResolverErrorPreservesDiagnostic(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	m := NewBrowser(context.Background(), "file", missing)
+	const diagnostic = "PowerShell could not resolve the typed expression: item not found"
+	m.applyResolvedPath(resolvedPathMsg{
+		expression: missing,
+		initial:    true,
+		err:        errors.New(diagnostic),
+	})
+	if _, err := m.Result(); !errors.Is(err, ErrNotSubmitted) {
+		t.Fatalf("absolute missing path closed picker: %v", err)
+	}
+	if m.pathText != missing {
+		t.Fatalf("failed resolution changed address: got %q, want %q", m.pathText, missing)
+	}
+	if !strings.Contains(m.message, "Path unavailable:") || !strings.Contains(m.message, diagnostic) {
+		t.Fatalf("resolver diagnostic was not preserved for absolute address: %q", m.message)
+	}
+}
+
 func TestUXBrowserUnreadableOrMissingPathStaysOpen(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	m := NewBrowser(context.Background(), "file", missing)
@@ -315,8 +335,11 @@ func TestUXBrowserUnreadableOrMissingPathStaysOpen(t *testing.T) {
 	if _, err := m.Result(); !errors.Is(err, ErrNotSubmitted) {
 		t.Fatalf("initial path error closed picker: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(m.View().Content), "unavailable") && !strings.Contains(strings.ToLower(m.View().Content), "no such") {
+	if !strings.Contains(strings.ToLower(m.View().Content), "unavailable") {
 		t.Fatalf("missing-path error not visible:\n%s", m.View().Content)
+	}
+	if m.pathText != missing {
+		t.Fatalf("missing-path resolution changed the address: got %q, want %q", m.pathText, missing)
 	}
 	browserKey(m, tea.KeyEscape, "")
 	if _, err := m.Result(); !errors.Is(err, ErrCancelled) {

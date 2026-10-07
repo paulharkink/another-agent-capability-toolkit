@@ -391,7 +391,7 @@ func (m *BrowserModel) applyResolvedPath(msg resolvedPathMsg) {
 		if msg.err == context.Canceled || msg.err == context.DeadlineExceeded {
 			return
 		}
-		m.message = msg.err.Error()
+		m.message = fmt.Sprintf("Path unavailable: %v", msg.err)
 		return
 	}
 	info, err := os.Stat(msg.path)

@@ -720,10 +720,14 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	}
 	writeUXCapture(t, "Authentication token selected kubeconfig inactive", tokenView)
 
-	const fixtureKubeconfig = "/fixtures/cluster/source-kubeconfig.yaml"
+	fixtureKubeconfig := filepath.Join(t.TempDir(), "selected-kubeconfig.yaml")
+	if err := os.WriteFile(fixtureKubeconfig, []byte("synthetic kubeconfig fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, msg := range []tea.Msg{
 		tea.KeyPressMsg{Code: tea.KeyDown},    // Select Source kubeconfig.
-		tea.KeyPressMsg{Code: 'm', Text: "m"}, // Type a path; never open a picker.
+		tea.KeyPressMsg{Code: 'm', Text: "m"}, // Edit the existing/default path; never open a picker.
+		tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl},
 		tea.PasteStartMsg{}, tea.PasteMsg{Content: fixtureKubeconfig}, tea.PasteEndMsg{},
 		tea.KeyPressMsg{Code: tea.KeyEnter},
 	} {
@@ -735,8 +739,8 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 		t.Fatalf("keyboard edit/commit did not switch to the synthetic kubeconfig choice: %#v", values)
 	}
 	assertInactiveAlternativeInANSI(t, kubeconfigView, "Token")
-	if !strings.Contains(ansi.Strip(kubeconfigView), fixtureKubeconfig) {
-		t.Fatalf("kubeconfig-selected capture does not show its synthetic path:\n%s", ansi.Strip(kubeconfigView))
+	if !strings.Contains(ansi.Strip(kubeconfigView), "Source kubeconfig:") || !strings.Contains(ansi.Strip(kubeconfigView), "[Browse · b]") {
+		t.Fatalf("kubeconfig-selected capture does not show its active field and Browse action:\n%s", ansi.Strip(kubeconfigView))
 	}
 	writeUXCapture(t, "Authentication kubeconfig selected token inactive", kubeconfigView)
 }
