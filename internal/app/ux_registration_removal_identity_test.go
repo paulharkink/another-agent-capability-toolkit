@@ -42,8 +42,8 @@ func TestUXRegistrationRemovalRejectsAmbiguousAgentOnlyIdentity(t *testing.T) {
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: key, RemoveAgentIDs: []string{"claude"},
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
-		t.Fatalf("agent-only removal should reject multiple recorded paths, result=%+v err=%v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
+		t.Fatalf("unavailable source should require locating the package: result=%+v err=%v", result, err)
 	}
 	for _, path := range []string{pathA, pathB} {
 		contents, readErr := os.ReadFile(path)
@@ -111,15 +111,15 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 		t.Fatal(err)
 	}
 	result, err := svc.UIConfigureRegistrations(context.Background(), request)
-	if err != nil || len(result.Changes) != 1 || result.Changes[0].Destination != pathA {
-		t.Fatalf("exact removal did not report only the selected record: result=%+v err=%v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
+		t.Fatalf("unavailable source did not require locating the package: result=%+v err=%v", result, err)
 	}
 	if !result.Connection.CheckedAt.IsZero() {
 		t.Fatalf("exact removal unexpectedly checked the endpoint: %+v", result.Connection)
 	}
 	contentsA, errA := os.ReadFile(pathA)
-	if errA != nil || strings.Contains(string(contentsA), endpoint) {
-		t.Fatalf("selected config still has registration: content=%s err=%v", contentsA, errA)
+	if errA != nil || !strings.Contains(string(contentsA), endpoint) {
+		t.Fatalf("unavailable source changed selected config: content=%s err=%v", contentsA, errA)
 	}
 	contentsB, errB := os.ReadFile(pathB)
 	if errB != nil || !strings.Contains(string(contentsB), endpoint) {
@@ -134,15 +134,15 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 		if row.Key != key || row.AgentID != "claude" {
 			continue
 		}
-		if row.Component == "mcp" && row.Destination == pathB {
+		if row.Component == "mcp" {
 			remainingMCP++
 		}
 		if row.Component == "skill" && row.Destination == skillPath {
 			remainingSkill++
 		}
 	}
-	if remainingMCP != 1 || remainingSkill != 1 {
-		t.Fatalf("exact removal changed unselected ledger entries: rows=%+v", rows)
+	if remainingMCP != 2 || remainingSkill != 1 {
+		t.Fatalf("unavailable source changed registration ledger: rows=%+v", rows)
 	}
 	if runtime.starts != 0 || runtime.stops != 0 {
 		t.Fatalf("registration removal changed runtime: starts=%d stops=%d", runtime.starts, runtime.stops)

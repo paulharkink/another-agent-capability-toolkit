@@ -88,6 +88,23 @@ func TestUXSectionActionRowsAreKeyboardAndMouseSelectable(t *testing.T) {
 	t.Fatalf("section action was not visible:\n%s", ansi.Strip(m.View().Content))
 }
 
+func TestReadOnlySectionCanActivateItsDiagnosticAction(t *testing.T) {
+	m := NewForm(context.Background(), nil, nil)
+	m.SetSections(FormSection{ID: "tool:endpoint", Title: "Endpoint"})
+	m.SetSectionContentID("tool:endpoint", []string{"Observed endpoint facts"})
+	m.SetSectionActionsID("tool:endpoint", FormAction{ID: "check", Label: "Check connection"})
+	m.SetReadOnly(true)
+	m.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
+	_, _ = m.Update(key(tea.KeyEnter, "")) // L3 → read-only details.
+	_, cmd := m.Update(key(tea.KeyEnter, ""))
+	if cmd == nil {
+		t.Fatalf("read-only diagnostic action could not be activated:\n%s", ansi.Strip(m.View().Content))
+	}
+	if msg, ok := cmd().(ActionMsg); !ok || msg != (ActionMsg{Section: "Endpoint", SectionID: "tool:endpoint", ID: "check"}) {
+		t.Fatalf("read-only endpoint action returned %#v", msg)
+	}
+}
+
 func TestUXDisabledSectionActionRemainsVisibleButCannotDispatch(t *testing.T) {
 	m := NewForm(context.Background(), nil, nil)
 	m.SetSections(FormSection{Title: "Overview"})

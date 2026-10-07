@@ -23,6 +23,7 @@ type SetupInput struct {
 
 type SetupDestination struct {
 	ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
+	DisabledReason                                          string
 	Path                                                    string
 	Selected                                                bool
 }
@@ -35,6 +36,9 @@ type SetupPreview struct {
 	TargetTOML      string
 	Configured      bool
 	MCP             bool
+	Sections        []catalog.Section
+	HasManifestUI   bool
+	MCPDefinitions  []catalog.MCP
 	CredentialState string
 	CredentialNote  string
 	Inputs          []SetupInput
@@ -46,4 +50,5 @@ type SetupInstallRequest struct {
 	Inputs         map[string]any
 	DestinationIDs []string
 	ExternalURL    string
+	ExternalURLs   map[string]string
 }

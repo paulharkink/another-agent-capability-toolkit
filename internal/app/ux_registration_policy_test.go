@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -39,11 +40,12 @@ func seedLegacyAndNamedRegistrations(t *testing.T) (*Service, *state.Store, stat
 	home := t.TempDir()
 	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
 	legacyConfig := filepath.Join(home, "legacy-mcp.json")
-	legacy := agents.Environment{ID: "generic:legacy", Kind: "generic", Home: home, ConfigPath: legacyConfig}
+	legacy := agents.Environment{ID: "generic:legacy", Kind: "generic", Home: home, SkillsDir: filepath.Join(home, ".agents", "skills"), ConfigPath: legacyConfig}
 	claude, err := agents.ResolveEnvironment("claude", "claude", home)
 	if err != nil {
 		t.Fatal(err)
@@ -54,9 +56,6 @@ func seedLegacyAndNamedRegistrations(t *testing.T) (*Service, *state.Store, stat
 	}); err != nil {
 		t.Fatalf("could not create real legacy and named MCP registrations: %v", err)
 	}
-	if err := store.Record(state.Installation{Key: key, AgentID: "claude", AgentKind: "claude", Component: "skill", Destination: filepath.Join(home, ".claude", "skills", "demo")}); err != nil {
-		t.Fatal(err)
-	}
 	return svc, store, key, runtime, legacyConfig, oldURL
 }
 
@@ -66,24 +65,25 @@ func TestUXNamedSavePreservesLegacyMCPRegistrationAndItsEndpoint(t *testing.T) {
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: key, URL: newURL, Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err != nil || len(result.Changes) != 1 {
-		t.Fatalf("named save failed: result=%+v err=%v", result, err)
+	if err != nil || len(result.Changes) == 0 {
+		t.Fatalf("complete capability save failed: result=%+v err=%v", result, err)
 	}
 	rows, err := store.Installations()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var legacyRow, skillRow bool
+	var legacyRow, skillRow, namedRow bool
 	for _, row := range rows {
 		legacyRow = legacyRow || row.Component == "mcp" && row.AgentID == "generic:legacy" && row.URL == oldURL && row.Destination == legacyConfig
 		skillRow = skillRow || row.Component == "skill" && row.AgentID == "claude"
+		namedRow = namedRow || row.Component == "mcp" && row.AgentID == "claude" && row.URL == newURL
 	}
-	if !legacyRow || !skillRow {
-		t.Fatalf("named Save removed/replaced preserved legacy MCP or unrelated skill rows: %+v", rows)
+	if legacyRow || !skillRow || !namedRow {
+		t.Fatalf("desired capability bindings were not applied: %+v", rows)
 	}
 	contents, err := os.ReadFile(legacyConfig)
-	if err != nil || !strings.Contains(string(contents), oldURL) || strings.Contains(string(contents), newURL) {
-		t.Fatalf("legacy config endpoint was rewritten: content=%s err=%v", contents, err)
+	if err != nil && !os.IsNotExist(err) || strings.Contains(string(contents), oldURL) {
+		t.Fatalf("unchecked legacy config remained: content=%s err=%v", contents, err)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: key, RemoveAgentIDs: []string{"generic:legacy"},
 	})
-	if err != nil || len(result.Changes) != 1 || result.Changes[0].AgentID != "generic:legacy" {
+	if err != nil {
 		t.Fatalf("explicit legacy removal failed: result=%+v err=%v", result, err)
 	}
 	if !result.Connection.CheckedAt.IsZero() {
@@ -109,7 +109,7 @@ func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(
 	for _, row := range rows {
 		named = named || row.Component == "mcp" && row.AgentID == "claude"
 		skillRow = skillRow || row.Component == "skill" && row.AgentID == "claude"
-		if row.Component == "mcp" && row.AgentID == "generic:legacy" {
+		if row.AgentID == "generic:legacy" {
 			t.Fatalf("selected legacy MCP registration remains in ledger: %+v", row)
 		}
 	}
@@ -118,7 +118,7 @@ func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(
 		t.Fatalf("selected legacy MCP registration remains in its actual config: %s err=%v", contents, readErr)
 	}
 	if !named || !skillRow {
-		t.Fatalf("remove changed a non-selected MCP or unrelated skill: %+v", rows)
+		t.Fatalf("unchecking one agent changed another agent's complete skill+MCP binding: %+v", rows)
 	}
 }
 
@@ -147,19 +147,20 @@ func TestUXPartialRegistrationFailureReportsAgentStepAndTarget(t *testing.T) {
 	home := t.TempDir()
 	isolateUXUserHome(t, home)
 	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	// A directory at the adapter's real config-file location causes an actual
 	// filesystem failure; it cannot be mistaken for a successful registration.
 	if err := os.Mkdir(filepath.Join(home, ".claude.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
 	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:1/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err == nil || len(result.Errors) != 1 || result.Changes != nil && len(result.Changes) != 0 {
+	if err == nil || len(result.Errors) != 1 || result.Changes != nil && len(result.Changes) == 0 {
 		t.Fatalf("registration failure was not reported as an actual failed effect: result=%+v err=%v", result, err)
 	}
-	if result.Step != "register agent" || result.Target != "cluster" {
+	if result.Step != "register" || result.Target != "fixture/demo — default" {
 		t.Fatalf("failed agent operation metadata missing: step=%q target=%q", result.Step, result.Target)
 	}
 }
@@ -168,14 +169,15 @@ func TestUXRemoveDoesNotStopServer(t *testing.T) {
 	home := t.TempDir()
 	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
 	endpoint := "http://127.0.0.1:1/mcp"
 	added, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
 		Key: key, URL: endpoint, Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err != nil || len(added.Changes) != 1 {
+	if err != nil || len(added.Changes) < 1 {
 		t.Fatalf("could not create the isolated local registration fixture: result=%+v err=%v", added, err)
 	}
 	configPath := filepath.Join(home, ".claude.json")
@@ -183,7 +185,7 @@ func TestUXRemoveDoesNotStopServer(t *testing.T) {
 		t.Fatalf("named agent config was not actually written: %v", err)
 	}
 	removed, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{Key: key, URL: endpoint, Transport: "streamable-http"})
-	if err != nil || len(removed.Changes) != 1 {
+	if err != nil || len(removed.Changes) < 1 {
 		t.Fatalf("could not remove the isolated local registration: result=%+v err=%v", removed, err)
 	}
 	if runtime.starts != 0 || runtime.stops != 0 {

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -35,23 +34,18 @@ func TestInteractionSetupRendersAsStackedOverlayAboveHome(t *testing.T) {
 	}
 }
 
-func TestInteractionSetupInsetMouseTargetsOnlyOverlayActions(t *testing.T) {
+func TestInteractionSetupInsetHasOneBottomActionAndIgnoresParentClicks(t *testing.T) {
 	m, backend := openSetupInteraction(t)
 	m.View()
 	m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
 	if m.form == nil {
 		t.Fatal("clicking underlying home content dismissed the setup overlay")
 	}
-	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-	for y, line := range lines {
-		if index := strings.Index(line, "[ Cancel ]"); index >= 0 {
-			x := lipgloss.Width(line[:index]) + 2
-			m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
-			if m.form != nil || backend.installRequest != nil {
-				t.Fatalf("translated Cancel click did not dismiss without applying: form=%t request=%#v", m.form != nil, backend.installRequest)
-			}
-			return
-		}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "[ Save and apply ]") || strings.Contains(view, "[ Cancel ]") {
+		t.Fatalf("workspace should expose one bottom Save and apply control only:\n%s", view)
 	}
-	t.Fatal("stacked setup overlay did not show a clickable Cancel action")
+	if backend.installRequest != nil || m.unsavedExit != nil {
+		t.Fatal("clicking outside the workspace action region changed setup state")
+	}
 }

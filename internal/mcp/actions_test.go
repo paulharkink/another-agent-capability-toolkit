@@ -6,9 +6,100 @@ import (
 	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestMissingBuiltInInspectorHelperUsesCurrentAactExecutable(t *testing.T) {
+	packageDir := filepath.Join(t.TempDir(), "grafana-inspector")
+	if err := os.MkdirAll(filepath.Join(packageDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &recordingActionExec{output: `{}`}
+	pkg := catalog.Package{
+		ID:  "grafana-inspector",
+		Dir: packageDir,
+		MCP: &catalog.MCP{Actions: map[string]catalog.Command{
+			"prepare": {Argv: []string{"bin/inspector-helper", "grafana-inspector", "prepare"}},
+		}},
+	}
+	if _, err := (&ActionRunner{Executor: executor}).Run(context.Background(), pkg, ActionRequest{Action: "prepare"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.argv) != 4 || executor.argv[0] != self || executor.argv[1] != "__aact_internal_inspector_helper" || executor.argv[2] != "grafana-inspector" || executor.argv[3] != "prepare" {
+		t.Fatalf("fallback helper argv = %#v", executor.argv)
+	}
+	if executor.cwd != packageDir {
+		t.Fatalf("fallback helper working directory = %q, want %q", executor.cwd, packageDir)
+	}
+}
+
+func TestMissingArbitraryPackageCommandKeepsDeclaredExecutable(t *testing.T) {
+	packageDir := filepath.Join(t.TempDir(), "custom-package")
+	executor := &recordingActionExec{output: `{}`}
+	pkg := actionPackage()
+	pkg.Dir = packageDir
+	if _, err := (&ActionRunner{Executor: executor}).Run(context.Background(), pkg, ActionRequest{Action: "prepare"}); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(packageDir, "bin", "helper")
+	if len(executor.argv) == 0 || executor.argv[0] != want {
+		t.Fatalf("arbitrary action command changed to %#v, want %q", executor.argv, want)
+	}
+}
+
+func TestBuiltAactDispatchesInspectorHelperForTemporaryPackageWithoutDocker(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := t.TempDir()
+	packageDir := filepath.Join(temp, "grafana-inspector")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"grafana-inspector\"\nname = \"Temporary Grafana Inspector\"\n[mcp]\nname = \"grafana-inspector\"\nruntime = \"docker\"\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(temp, "aact")
+	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
+	build := exec.Command(goBinary, "build", "-o", binary, "./cmd/aact")
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build AACT binary: %v\n%s", err, output)
+	}
+	request, err := json.Marshal(ActionRequest{ProtocolVersion: 1, Action: "prepare", PackageDir: packageDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "__aact_internal_inspector_helper", "grafana-inspector", "prepare")
+	cmd.Stdin = strings.NewReader(string(request))
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "target state directory required") {
+		t.Fatalf("built AACT helper dispatch did not reach pre-Docker validation: err=%v output=%s", err, output)
+	}
+}
+
+type recordingActionExec struct {
+	argv   []string
+	cwd    string
+	output string
+}
+
+func (f *recordingActionExec) Run(_ context.Context, argv []string, cwd string, _ []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	f.argv = append([]string(nil), argv...)
+	f.cwd = cwd
+	return []byte(f.output), nil
+}
 
 type actionExec struct {
 	request ActionRequest

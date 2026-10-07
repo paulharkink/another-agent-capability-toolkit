@@ -221,7 +221,13 @@ func (m *Model) logsOverlay(lines []string) []string {
 	box := []string{"┌" + fit(" Logs · "+modal.Label+" · latest 200 lines", w-2) + "┐"}
 	for i := 0; i < visible; i++ {
 		row := modal.Rows[modal.Offset+i]
-		box = append(box, "│"+fit(ansi.Cut(row, modal.Column, modal.Column+w-2), w-2)+"│")
+		textWidth := w - 2
+		bar := " "
+		if len(modal.Rows) > visible {
+			textWidth = w - 3
+			bar = scrollbarGlyph(modal.Offset, len(modal.Rows), visible, i)
+		}
+		box = append(box, "│"+fit(ansi.Cut(row, modal.Column, modal.Column+textWidth), textWidth)+bar+"│")
 	}
 	mode := "[F Pause]"
 	if !modal.Follow {

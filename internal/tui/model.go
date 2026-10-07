@@ -35,6 +35,9 @@ type agentManagementBackend interface {
 	UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
 	UIAgentConfig(context.Context, string, string) (string, error)
 }
+type profileRunBackend interface {
+	UIProfileRun(context.Context, string, state.Key) (string, error)
+}
 type Model struct {
 	home                       homeState
 	backend                    Backend
@@ -81,10 +84,14 @@ type Model struct {
 	result                     *resultState
 	retryOperation             func() tea.Cmd
 	form                       *forms.FormModel
+	unsavedExit                *unsavedExitState
+	unsavedExitApplying        bool
+	unsavedExitIntent          *unsavedExitState
+	unsavedExitFailure         bool
 	pending                    operation
 	management                 managementState
 }
-type operation struct{ action, source, packageID, agent, environment, target string }
+type operation struct{ action, source, packageID, agent, environment, target, mcp string }
 type loadedMsg struct {
 	catalog             []catalog.Package
 	inventory           []state.Installation
@@ -225,6 +232,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if progress.setupID != 0 && progress.setupID != m.setupOperationID {
 			return m, nil
 		}
+		return m, m.handleOperationResult(progress)
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = size.Width
@@ -237,18 +245,78 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLoaded(loaded)
 		return m, nil
 	}
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		stroke := key.String()
+		quitKey := stroke == "f10"
+		if stroke == "q" {
+			quitKey = m.form == nil || !m.form.IsEditingInput()
+		}
+		if quitKey {
+			if m.registration != nil {
+				if m.registration.HasUnsavedChanges() {
+					m.openRegistrationExitPrompt(m.registration, true)
+					return m, nil
+				}
+				if m.form != nil && m.form.HasUnsavedChanges() {
+					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					return m, nil
+				}
+				return m, tea.Quit
+			}
+			if m.form != nil && m.form.HasUnsavedChanges() {
+				m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+				return m, nil
+			}
+			return m, tea.Quit
+		}
+	}
 	// A below-minimum resize replaces an active form with a recovery screen.
 	// Keep the underlying draft, but don't let ordinary input reach controls
 	// that are no longer visible. Only the recovery screen's quit keys remain.
-	if m.form != nil && (m.width < 80 || m.height < 16) {
+	if m.form != nil && m.unsavedExit == nil && (m.width < 80 || m.height < 16) {
 		switch event := msg.(type) {
 		case tea.KeyPressMsg:
 			switch event.String() {
-			case "f10", "q", "ctrl+c":
+			case "ctrl+c":
+				m.discardFormAndContinue("cancel")
+				return m, tea.Quit
+			case "f10", "q":
+				if m.form.HasUnsavedChanges() {
+					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					return m, nil
+				}
 				return m, tea.Quit
 			}
 			return m, nil
 		case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg, tea.MouseMsg:
+			return m, nil
+		}
+	}
+	if request, ok := msg.(forms.ExitRequestMsg); ok && m.form != nil {
+		m.unsavedExit = &unsavedExitState{reason: request.Reason, selected: 2}
+		return m, nil
+	}
+	if m.unsavedExit != nil {
+		switch event := msg.(type) {
+		case tea.KeyPressMsg:
+			if event.String() == "ctrl+c" {
+				m.discardFormAndContinue("cancel")
+				return m, tea.Quit
+			}
+			return m, m.unsavedExitKey(event.String())
+		case tea.MouseClickMsg:
+			return m, m.unsavedExitMouse(event)
+		case tea.WindowSizeMsg:
+			return m, nil
+		case operationMsg:
+			return m, m.handleOperationResult(event)
+		case loadedMsg:
+			m.applyLoaded(event)
+			return m, nil
+		case settingsSavedMsg:
+			m.busy = false
+			return m, nil
+		default:
 			return m, nil
 		}
 	}
@@ -301,7 +369,49 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.Section == "Overview" {
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
+		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Profile != nil {
+			profile := m.workspace.Profile
+			return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		}
+		parts := strings.SplitN(action.ID, ":", 2)
+		if len(parts) == 2 {
+			if parts[0] == "check-connection" {
+				if profile := m.profileForMCPName(parts[1]); profile != nil {
+					return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				}
+				return m, nil
+			}
+			if parts[0] == "logs" {
+				if profile := m.profileForMCPName(parts[1]); profile != nil {
+					return m, m.openProfileLogs(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				}
+				return m, nil
+			}
+			if parts[0] == "start" || parts[0] == "stop" {
+				profile := m.profileForMCPName(parts[1])
+				if profile == nil && m.workspace.Profile != nil {
+					parent := *m.workspace.Profile
+					profile = &parent
+				}
+				row := ProfileRow{}
+				if profile != nil {
+					row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+				}
+				guardAction := "s"
+				if parts[0] == "stop" {
+					guardAction = "x"
+				}
+				if reason := m.profileActionReason(row, guardAction); reason != "" {
+					m.output = reason
+					return m, nil
+				}
+				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+			}
+		}
+		return m, nil
+	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && ((action.SectionID == sectionOverviewID || action.SectionID == sectionAgentsID) || (action.SectionID == "" && action.Section == "Overview")) {
 		switch action.ID {
 		case "apply":
 			if m.form != nil && m.pendingSetup != nil {
@@ -311,12 +421,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled, cmd := m.workspaceOverviewAction("x"); handled {
 				return m, cmd
 			}
-		case "registrations":
-			if m.form != nil && m.workspace.Profile != nil {
-				profile := m.workspace.Profile
-				m.workspace.cacheDraft(m.form.Values())
-				m.registrationForm(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		case "agents":
+			if m.form != nil {
+				m.workspace.Section = "Agents"
+				m.workspace.SectionID = sectionAgentsID
+				m.form.SelectSectionID(sectionAgentsID)
+				m.form.FocusSection()
 			}
+			return m, nil
+		case "locate-source":
+			m.locateSelectedSource()
 			return m, nil
 		}
 		return m, nil
@@ -352,6 +466,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.form != nil {
+		m.form.SetUnsavedExitGuard(true)
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			switch key.String() {
+			case "ctrl+c":
+				m.discardFormAndContinue("cancel")
+				return m, tea.Quit
+			case "f10":
+				if m.form.HasUnsavedChanges() {
+					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					return m, nil
+				}
+				return m, tea.Quit
+			}
+		}
 		switch event := msg.(type) {
 		case logsMsg:
 			return m, m.showLogs(event)
@@ -363,10 +491,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if result, ok := msg.(operationMsg); ok {
 			return m, m.handleOperationResult(result)
 		}
+		if saved, ok := msg.(settingsSavedMsg); ok && m.unsavedExitApplying {
+			m.busy = false
+			m.unsavedExitApplying = false
+			intent := m.unsavedExitIntent
+			m.unsavedExitIntent = nil
+			if saved.err != nil {
+				m.form.PrepareRetry(saved.err.Error())
+				m.output = saved.err.Error()
+				m.showOperationResult(operationMsg{origin: m.view, err: saved.err, step: "save settings"})
+				m.result.CanReturn = false
+				m.result.CanRetry = false
+				m.unsavedExitFailure = true
+				return m, nil
+			}
+			m.pendingDefaultAgents = false
+			m.form.MarkClean()
+			return m, m.finishUnsavedExit(intent)
+		}
 		if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "f3" && m.pendingSetup != nil && !m.form.PickerActive() {
 			if m.workspace != nil && m.workspace.Active {
 				m.workspace.Section = "Information"
-				m.form.SelectSection("Information")
+				m.workspace.SectionID = sectionInformationID
+				m.form.SelectSectionID(sectionInformationID)
 				m.form.FocusSection()
 				return m, nil
 			}
@@ -384,39 +531,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.workspace.ObservedOnly {
-			profile := m.workspace.Profile
-			row := ProfileRow{Key: m.workspace.Key, URL: "", Name: m.workspace.Key.Package, Status: "unknown", Profile: profile}
-			if profile != nil {
-				row.URL, row.Name, row.Status = profile.URL, profile.Name, profile.RuntimeStatus
-			}
 			switch key.String() {
 			case "g":
 				m.workspace.Section = "Agents"
-				m.form.SelectSection("Agents")
+				m.workspace.SectionID = sectionAgentsID
+				m.form.SelectSectionID(sectionAgentsID)
 				m.form.FocusSection()
-				m.registrationForm(row)
 				return m, nil
-			case "c":
-				m.workspace.Section = "Endpoint"
-				m.form.SelectSection("Endpoint")
-				m.form.FocusSection()
-				return m, m.checkProfileConnection(row)
 			case "enter":
-				if m.form.FocusArea() == 1 {
-					switch m.form.SectionTitle() {
-					case "Endpoint":
-						return m, m.checkProfileConnection(row)
-					case "Agents":
-						m.registrationForm(row)
-						return m, nil
-					}
+				if m.form.FocusArea() == 1 && m.form.SectionID() == sectionAgentsID {
+					m.locateSelectedSource()
+					return m, nil
 				}
 			case "s", "x":
 				m.output = "Runtime lifecycle actions are unavailable from this observed profile workspace."
 				return m, nil
 			}
 		}
-		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.form.SectionTitle() == "Overview" && !m.form.PickerActive() {
+		if key, ok := msg.(tea.KeyPressMsg); ok && m.workspace != nil && m.workspace.Active && m.form.SectionID() == sectionOverviewID && !m.form.PickerActive() {
 			if handled, cmd := m.workspaceOverviewAction(key.String()); handled {
 				return m, cmd
 			}
@@ -445,10 +577,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.form = next.(*forms.FormModel)
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
+			if m.unsavedExitApplying {
+				m.unsavedExitApplying = false
+				m.unsavedExitIntent = nil
+			}
 			return m, cmd
 		}
-		m.form = nil
-		m.management.FormOverlay = false
+		if m.unsavedExitApplying && e == nil && m.pendingSetup != nil {
+			cmd := m.applySetup(values)
+			if cmd == nil && m.unsavedExitApplying {
+				m.unsavedExitApplying = false
+				m.unsavedExitIntent = nil
+				m.form.PrepareRetry(m.output)
+			}
+			return m, cmd
+		}
+		if !m.unsavedExitApplying {
+			m.form = nil
+			m.management.FormOverlay = false
+		}
 		if errors.Is(e, picker.ErrCancelled) {
 			m.pendingRegistration = nil
 			m.pendingRegistrationRemoval = false
@@ -460,6 +607,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if e != nil {
+			m.unsavedExitApplying = false
+			m.unsavedExitIntent = nil
 			m.output = e.Error()
 			return m, nil
 		}
@@ -498,7 +647,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.applySetup(values)
 		}
 		if m.pendingDefaultAgents {
-			m.pendingDefaultAgents = false
 			selected, _ := values["agents"].([]string)
 			backend := m.backend.(defaultAgentsBackend)
 			ctx := m.ctx
@@ -556,10 +704,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
 			title = "Configure · " + name
 		}
-		if msg.preview.Key.Environment != "" && msg.preview.Key.Target != "" {
+		if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
 		}
-		m.form.SetTitle(title + " · F3 Target information")
+		m.form.SetTitle(title + " · F3 Information")
 	case loadedMsg:
 		m.applyLoaded(msg)
 	case agentConfigMsg:
@@ -592,6 +740,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "save settings"})
 			return m, nil
 		}
+		m.pendingDefaultAgents = false
 		m.navigate("Catalog")
 		m.output = "Default named agents saved for future MCP installs"
 		return m, m.load()
@@ -702,6 +851,20 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 		}
 		m.setupRetry.step = step
 		m.setupRetry.failure = failure
+		if msg.err != nil || msg.failed || (msg.result != nil && len(msg.result.Errors) > 0) {
+			m.setupRetry.returnValues = cloneSetupValues(m.setupRetry.values)
+			if m.setupRetry.destinationField != "" {
+				achieved := m.achievedDestinationIDs(m.setupRetry, msg.result)
+				m.setupRetry.returnValues[m.setupRetry.destinationField] = achieved
+				if m.unsavedExitIntent != nil && m.form != nil {
+					m.form.ReconcileDraftField(m.setupRetry.destinationField, achieved)
+				}
+			}
+		}
+	}
+	if intent := m.unsavedExitIntent; intent != nil && intent.onResult != nil {
+		m.unsavedExitIntent = nil
+		return intent.onResult(msg)
 	}
 	cancelOnly := onlyCancellation(msg.err) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
 	if cancelOnly {
@@ -717,7 +880,57 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	}
 	m.view = msg.origin
 	succeeded := msg.err == nil && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
+	if m.unsavedExitApplying {
+		intent := m.unsavedExitIntent
+		m.unsavedExitApplying = false
+		m.unsavedExitIntent = nil
+		m.setupOperationPending = false
+		m.setupProgressEvents = nil
+		m.setupProgressDone = nil
+		m.resetSetupProgress()
+		if succeeded {
+			if m.form != nil {
+				m.form.MarkClean()
+			}
+			m.setupRetry = nil
+			m.retryOperation = nil
+			return m.finishUnsavedExit(intent)
+		}
+		failure := strings.TrimSpace(msg.output)
+		if msg.err != nil {
+			failure = msg.err.Error()
+		} else if msg.result != nil && len(msg.result.Errors) > 0 {
+			failure = strings.Join(msg.result.Errors, "\n")
+		}
+		if failure == "" {
+			failure = "Save and apply failed"
+		}
+		if m.form != nil {
+			m.form.PrepareRetry(failure)
+		}
+		if draft := m.setupRetry; draft != nil {
+			m.pendingSetup = &draft.preview
+			m.pendingSetupField = draft.destinationField
+		}
+		m.output = failure
+		m.showOperationResult(msg)
+		m.result.CanReturn = false
+		m.result.CanRetry = false
+		m.unsavedExitFailure = true
+		return nil
+	}
 	if succeeded {
+		// Keep the retained workspace actionable after its result is dismissed.
+		// applySetup consumes pendingSetup while the operation runs, so restore
+		// the preview and destination field from the submitted draft on success.
+		if draft := m.setupRetry; draft != nil && m.workspace != nil && m.workspace.Active && m.workspace.Key == draft.preview.Key {
+			preview := draft.preview
+			m.pendingSetup = &preview
+			m.pendingSetupField = draft.destinationField
+			if m.form != nil {
+				m.form.MarkClean()
+			}
+		}
 		m.setupRetry = nil
 		m.retryOperation = nil
 	}
@@ -725,20 +938,6 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	m.setupProgressEvents = nil
 	m.setupProgressDone = nil
 	m.resetSetupProgress()
-	if msg.err != nil && m.workspace != nil && m.workspace.Active && m.pending.action == "start" {
-		message := strings.ToLower(msg.err.Error())
-		if strings.Contains(message, "missing") || strings.Contains(message, "required") || strings.Contains(message, "not configured") {
-			section := "Connection"
-			if strings.Contains(message, "auth") || strings.Contains(message, "credential") || strings.Contains(message, "token") {
-				section = "Authentication"
-			}
-			m.workspace.Section = section
-			if m.form != nil {
-				m.form.SelectSection(section)
-				m.form.FocusSection()
-			}
-		}
-	}
 	if m.action == "check connection" && strings.Contains(strings.ToLower(msg.output), ": unreachable") {
 		msg.failed = true
 	}
@@ -813,7 +1012,7 @@ func (m *Model) rows() []string {
 			if p.Skill != nil {
 				components = append(components, "skill")
 			}
-			if p.MCP != nil {
+			if p.HasMCP() {
 				components = append(components, "MCP")
 			}
 			rows = append(rows, name+" ["+strings.Join(components, " + ")+"] · "+m.label(m.sourceLabels[p.Dir]))
@@ -856,7 +1055,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 		if m.selected < len(m.catalog) {
 			if stroke == "a" || stroke == "s" {
 				p := m.catalog[m.selected]
-				if p.MCP == nil {
+				if !p.HasMCP() {
 					m.output = "This package has no MCP server to authenticate or start."
 					return nil
 				}
@@ -920,7 +1119,7 @@ func (m *Model) contextForm() {
 		if source == "" {
 			source = m.settings["source"]
 		}
-		if p.ID == m.pending.packageID && source == m.pending.source && p.Skill != nil && p.MCP == nil {
+		if p.ID == m.pending.packageID && source == m.pending.source && p.Skill != nil && !p.HasMCP() {
 			allowAll = true
 			break
 		}
@@ -988,7 +1187,17 @@ func (m *Model) run(op operation) tea.Cmd {
 	backend, ctx := m.backend, m.ctx
 	m.retryOperation = func() tea.Cmd { return m.run(op) }
 	return func() tea.Msg {
-		output, err := backend.UIRun(ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
+		var output string
+		var err error
+		if op.mcp != "" {
+			profileBackend, ok := backend.(profileRunBackend)
+			if !ok {
+				return operationMsg{origin: origin, err: errors.New("backend does not support MCP-specific runtime actions"), target: op.target}
+			}
+			output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp})
+		} else {
+			output, err = backend.UIRun(ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
+		}
 		return operationMsg{origin: origin, output: output, err: err, target: op.target}
 	}
 }
@@ -1056,7 +1265,17 @@ func (m *Model) setupOverlayViewContent(content string) tea.View {
 	return v
 }
 
-func (m *Model) View() tea.View {
+func (m *Model) View() (v tea.View) {
+	defer func() {
+		// Bubble Tea owns entering and restoring terminal modes when requested
+		// on the active view. Keep these properties consistent across overlays
+		// so exit restores the caller's screen, cursor, and mouse state.
+		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
+	}()
+	if m.unsavedExit != nil && (m.form != nil || m.registration != nil) {
+		return m.exitPopupView()
+	}
 	if m.form != nil && (m.width < 80 || m.height < 16) {
 		if m.busy {
 			return m.progressView()
@@ -1077,7 +1296,7 @@ func (m *Model) View() tea.View {
 	if m.home.Modal != nil && m.home.Modal.Kind == "logs" {
 		return m.homeView()
 	}
-	if m.registration != nil && m.form != nil && m.workspace != nil && m.workspace.Active {
+	if m.registration != nil {
 		parent := m.homeView()
 		if isManagementView(m.view) {
 			parent = m.managementView()

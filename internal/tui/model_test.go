@@ -14,6 +14,78 @@ import (
 
 type fixtureBackend struct{}
 
+func TestEveryTopLevelViewOwnsAlternateScreenAndMouseMode(t *testing.T) {
+	m, _ := homeFixture()
+	view := m.View()
+	if !view.AltScreen || view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("home view did not request Bubble Tea managed terminal modes: alt=%t mouse=%v", view.AltScreen, view.MouseMode)
+	}
+	m.result = &resultState{Rows: []string{"done"}}
+	view = m.View()
+	if !view.AltScreen || view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("result view did not request Bubble Tea managed terminal modes: alt=%t mouse=%v", view.AltScreen, view.MouseMode)
+	}
+}
+
+func TestF10QuitsGlobalOverlaysAndPromptsForDirtySetup(t *testing.T) {
+	t.Run("home", func(t *testing.T) {
+		m := fixtureModel(t)
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
+		if cmd == nil {
+			t.Fatal("F10 did not quit from home")
+		}
+	})
+	t.Run("result", func(t *testing.T) {
+		m := fixtureModel(t)
+		m.showOperationResult(operationMsg{origin: "Catalog", output: "complete"})
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
+		if cmd == nil {
+			t.Fatal("F10 did not quit from the result overlay")
+		}
+	})
+	t.Run("dirty form", func(t *testing.T) {
+		m, _ := openSetupInteraction(t)
+		m.form.ApplyValues(map[string]any{"token": "changed-token"})
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
+		if cmd != nil || m.unsavedExit == nil || m.unsavedExit.reason != "quit" {
+			t.Fatalf("F10 bypassed the dirty-form guard: cmd=%v popup=%+v", cmd, m.unsavedExit)
+		}
+	})
+}
+
+func TestQQuitsWhenNoTextEditorOwnsTheKey(t *testing.T) {
+	m := fixtureModel(t)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("q did not quit from a non-editing screen")
+	}
+}
+
+func TestGlobalQuitDuringBusyOperationAndQDuringActiveEdit(t *testing.T) {
+	t.Run("busy F10", func(t *testing.T) {
+		m := fixtureModel(t)
+		m.busy = true
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
+		if cmd == nil {
+			t.Fatal("F10 did not quit while an operation was active")
+		}
+	})
+	t.Run("q stays in active form editor", func(t *testing.T) {
+		m, _ := openSetupInteraction(t)
+		m.form.SelectSection("Authentication")
+		m.form.FocusSection()
+		m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !m.form.IsEditingInput() {
+			t.Fatal("fixture did not enter a text-edit state")
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+		if cmd != nil || !m.form.IsEditingInput() || m.unsavedExit != nil {
+			t.Fatalf("q escaped the active text editor: cmd=%v editing=%t popup=%+v", cmd, m.form.IsEditingInput(), m.unsavedExit)
+		}
+	})
+}
+
 type modelWorkspaceBackend struct{ *setupBackendFixture }
 
 func (b *modelWorkspaceBackend) UISetupPreview(ctx context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
@@ -21,8 +93,11 @@ func (b *modelWorkspaceBackend) UISetupPreview(ctx context.Context, request view
 	preview.Key = state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
 	preview.PackageName = "Inspector"
 	// This backend is used for observed MCP profile fixtures; keep the package
-	// metadata consistent with the profile rows it returns.
+	// metadata and declared public UI sections consistent with the profile rows it returns.
 	preview.MCP = request.PackageID == "inspect"
+	if request.PackageID == "inspect" && len(preview.Sections) > 0 {
+		preview.Sections[0].Title = "Authentication"
+	}
 	return preview, err
 }
 
@@ -78,6 +153,19 @@ func TestGlobalInventoryShowsSourceLabels(t *testing.T) {
 	text := m.View().Content
 	if !strings.Contains(text, "Team checkout") || !strings.Contains(text, "Plain") {
 		t.Fatalf("%s", text)
+	}
+}
+
+func TestHomeScrollableCapabilityPaneShowsThumbAndTrack(t *testing.T) {
+	m := fixtureModel(t)
+	for i := 0; i < 24; i++ {
+		id := "package-" + strings.Repeat("x", i+1)
+		m.catalog = append(m.catalog, catalog.Package{ID: id, Name: id, Dir: "/catalog"})
+	}
+	m.reconcileHome()
+	view := m.View().Content
+	if !strings.Contains(view, "█") || !strings.Contains(view, "│") {
+		t.Fatalf("scrollable home pane has no visible scrollbar thumb/track:\n%s", view)
 	}
 }
 func TestMCPStatusAuthLogsActions(t *testing.T) {

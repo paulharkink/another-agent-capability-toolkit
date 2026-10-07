@@ -17,11 +17,18 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
-		PackageName: "Cluster Inspector",
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
+		PackageName:    "Cluster Inspector",
+		MCP:            true,
+		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},
+		HasManifestUI:  true,
+		Sections: []catalog.Section{
+			{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}},
+			{ID: "databases", Title: "Databases", Fields: []string{"databases"}},
+		},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Value: "old-token", HasValue: true, Provenance: "saved", Editable: true},
-			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
+			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Hint: "Import source; not a live path · AACT uses managed credential material at runtime", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
 			{Definition: catalog.Input{Name: "databases", Label: "Databases", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}, {Value: "grafana", Label: "Grafana"}}}, Value: []string{"plane"}, HasValue: true, Editable: true},
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills"}, {ID: "codex", Path: "/home/test/.codex", Selected: true}},
@@ -29,9 +36,27 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 	return m, backend
 }
 
+func TestResolvedWorkspaceBaselineIsCleanAfterSyntheticControlsAreSeeded(t *testing.T) {
+	m, _ := openSetupInteraction(t)
+	if m.form == nil || m.form.HasUnsavedChanges() {
+		t.Fatalf("newly opened capability form was marked dirty by initial setup normalization: form=%v values=%v", m.form != nil, m.form.Values())
+	}
+}
+
 func setupKey(m *Model, code rune, text string) tea.Cmd {
 	_, cmd := m.Update(tea.KeyPressMsg{Code: code, Text: text})
 	return cmd
+}
+
+func discardDirtySetupExit(t *testing.T, m *Model) {
+	t.Helper()
+	for _, want := range []string{"Apply changes", "Discard changes", "Keep editing"} {
+		if !strings.Contains(m.View().Content, want) {
+			t.Fatalf("dirty setup exit omitted %q:\n%s", want, m.View().Content)
+		}
+	}
+	setupKey(m, tea.KeyUp, "") // Discard changes.
+	setupKey(m, tea.KeyEnter, "")
 }
 
 func enableWorkspaceBackForTest(m *Model) {
@@ -45,21 +70,24 @@ func enableWorkspaceBackForTest(m *Model) {
 func TestInteractionSetupUsesSectionListAndMatchingDetailsPane(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	view := m.View().Content
-	for _, want := range []string{"Authentication", "Databases", "Destinations", "Token", "Source kubeconfig", "Save", "Cancel"} {
+	for _, want := range []string{"Authentication", "Databases", "Agents", "Token", "Source kubeconfig", "Save and apply"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("setup split overlay missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[ Cancel ]") || strings.Contains(view, "Save and apply configuration") {
+		t.Fatalf("workspace exposed a second exit/apply action:\n%s", view)
 	}
 	if strings.Index(view, "Authentication") > strings.Index(view, "Token") {
 		t.Fatalf("section list should precede its right-side detail controls:\n%s", view)
 	}
 }
 
-func TestInteractionSetupKeepsSaveCancelFixedAt80By24(t *testing.T) {
+func TestInteractionSetupKeepsSaveAndApplyFixedAt80By24(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if !strings.Contains(m.View().Content, "[ Save ]  [ Cancel ]") {
-		t.Fatalf("fixed Save/Cancel action row should remain above the bottom border:\n%s", m.View().Content)
+	if !strings.Contains(m.View().Content, "[ Save and apply ]") || strings.Contains(m.View().Content, "[ Cancel ]") {
+		t.Fatalf("one fixed Save and apply action should remain above the bottom border:\n%s", m.View().Content)
 	}
 }
 
@@ -95,7 +123,7 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/source-kubeconfig"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view = m.View().Content
-	if strings.Contains(view, "old-token") || !strings.Contains(view, "Active method · imported") {
+	if strings.Contains(view, "old-token") || !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a value to switch to Token") {
 		t.Fatalf("typing Source kubeconfig did not activate it and clear Token:\n%s", view)
 	}
 }
@@ -111,14 +139,25 @@ func TestInteractionSetupTabActionCancelAndEscBack(t *testing.T) {
 	if !strings.Contains(m.View().Content, "[Details]") {
 		t.Fatalf("Shift+Tab did not return from actions to details:\n%s", m.View().Content)
 	}
-	setupKey(m, tea.KeyTab, "")
-	setupKey(m, tea.KeyRight, "") // Cancel.
-	setupKey(m, tea.KeyEnter, "")
+	if err := m.form.ApplyValues(map[string]any{"token": "edited-token"}); err != nil {
+		t.Fatal(err)
+	}
+	setupKey(m, tea.KeyEscape, "") // Back out of L4.
+	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
+		m.Update(cmd())
+	}
+	if m.form == nil || m.unsavedExit == nil || backend.installRequest != nil {
+		t.Fatal("Esc from the workspace did not show the dirty-exit popup")
+	}
+	discardDirtySetupExit(t, m)
 	if m.form != nil || backend.installRequest != nil {
-		t.Fatal("Enter on Cancel did not close the form without applying")
+		t.Fatal("Discard changes did not close the form without applying")
 	}
 	m, backend = openSetupInteraction(t)
 	enableWorkspaceBackForTest(m)
+	if err := m.form.ApplyValues(map[string]any{"token": "edited-token"}); err != nil {
+		t.Fatal(err)
+	}
 	setupKey(m, tea.KeyRight, "")
 	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
 		m.Update(cmd())
@@ -129,11 +168,15 @@ func TestInteractionSetupTabActionCancelAndEscBack(t *testing.T) {
 	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
 		m.Update(cmd())
 	}
-	if m.form != nil || backend.installRequest != nil || m.workspace == nil || m.workspace.Active {
-		t.Fatal("Esc from the section list should return to the parent without applying")
+	if m.form == nil || m.unsavedExit == nil || backend.installRequest != nil {
+		t.Fatal("Esc from the section list did not show the dirty-exit popup")
 	}
-	if len(m.workspace.cachedDraft()) == 0 {
-		t.Fatal("Back from the section list discarded the target draft")
+	discardDirtySetupExit(t, m)
+	if m.form != nil || backend.installRequest != nil || m.workspace == nil || m.workspace.Active {
+		t.Fatal("Discard changes from Back did not return to the parent without applying")
+	}
+	if m.workspace.Draft != nil {
+		t.Fatal("Discard changes from Back retained the target draft")
 	}
 }
 
@@ -148,7 +191,7 @@ func TestInteractionSetupShowsDatabaseAndNamedMCPDestinationsInRightPane(t *test
 		}
 	}
 	setupKey(m, tea.KeyLeft, "")
-	setupKey(m, tea.KeyDown, "") // Destinations.
+	setupKey(m, tea.KeyDown, "") // Agents.
 	setupKey(m, tea.KeyRight, "")
 	view = m.View().Content
 	if !strings.Contains(view, "Codex") || !strings.Contains(view, "/home/test/.codex") {
@@ -159,20 +202,27 @@ func TestInteractionSetupShowsDatabaseAndNamedMCPDestinationsInRightPane(t *test
 	}
 }
 
-func TestInteractionSetupEscapeCancelsWithoutApplying(t *testing.T) {
+func TestInteractionSetupEscapeShowsDirtyExitBeforeDiscard(t *testing.T) {
 	m, backend := openSetupInteraction(t)
 	enableWorkspaceBackForTest(m)
+	if err := m.form.ApplyValues(map[string]any{"token": "edited-token"}); err != nil {
+		t.Fatal(err)
+	}
 	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
 		m.Update(cmd())
 	}
-	if m.form != nil || m.workspace == nil || m.workspace.Active {
-		t.Fatalf("Esc from the section list should return to the parent: %s", m.View().Content)
+	if m.form == nil || m.unsavedExit == nil {
+		t.Fatalf("Esc from the dirty section list did not show the exit popup: %s", m.View().Content)
 	}
 	if backend.installRequest != nil {
 		t.Fatalf("Esc applied setup changes: %+v", backend.installRequest)
 	}
-	if len(m.workspace.cachedDraft()) == 0 {
-		t.Fatal("Esc from the section list discarded the target draft")
+	discardDirtySetupExit(t, m)
+	if m.form != nil || m.workspace == nil || m.workspace.Active || backend.installRequest != nil {
+		t.Fatal("Discard changes did not return to the parent without applying")
+	}
+	if m.workspace.Draft != nil {
+		t.Fatal("Discard changes from Esc retained the target draft")
 	}
 }
 

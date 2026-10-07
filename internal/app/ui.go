@@ -388,7 +388,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	}
 	matching := []state.Installation{}
 	for _, r := range rows {
-		if r.AgentID == id && r.Key == k && r.Component != "runtime" {
+		if r.AgentID == id && sameCapabilityKey(r.Key, k) && r.Component != "runtime" {
 			matching = append(matching, r)
 		}
 	}

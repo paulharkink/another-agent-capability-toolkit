@@ -19,6 +19,7 @@ func TestUXCapabilityAndTargetDetailsContainRealInformation(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.pendingSetup = &viewmodel.SetupPreview{
 		Key:         state.Key{Source: "team-source", Package: "grafana-inspector", Environment: "home", Target: "production"},
+		MCP:         true,
 		PackageName: "Grafana Inspector", SourceRoot: "/sources/team", TargetPath: "/envs/home/production.toml",
 		TargetTOML: "[grafana]\nurl = \"https://grafana.example.test\"\n",
 		Inputs: []viewmodel.SetupInput{
@@ -73,12 +74,16 @@ func (b *workspaceRouteBackend) UISetupPreview(_ context.Context, request viewmo
 	return viewmodel.SetupPreview{
 		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
 		PackageName: "Inspector", Configured: true, MCP: true,
+		HasManifestUI: true, Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
+		MCPDefinitions: []catalog.MCP{{Name: "inspector"}},
+		Inputs:         []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint", Type: "string"}, Value: "https://fixture.example/mcp", HasValue: true, Editable: true}},
 	}, nil
 }
 
 type workspaceApplyBackend struct {
 	setupBackendFixture
-	withMCP bool
+	withMCP      bool
+	installCalls int
 }
 
 func (b *workspaceApplyBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
@@ -86,9 +91,20 @@ func (b *workspaceApplyBackend) UISetupPreview(_ context.Context, request viewmo
 	return viewmodel.SetupPreview{
 		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
 		PackageName: "Inspector", Configured: true, MCP: b.withMCP,
+		MCPDefinitions: func() []catalog.MCP {
+			if b.withMCP {
+				return []catalog.MCP{{Name: "inspector"}}
+			}
+			return nil
+		}(),
 		Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string", Required: true}, Value: "/repos/team", HasValue: true, Editable: true}},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/tmp/codex/config.toml", Selected: true}},
 	}, nil
+}
+
+func (b *workspaceApplyBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.installCalls++
+	return b.setupBackendFixture.UIInstall(ctx, request)
 }
 
 type profileWorkspaceBackend struct {
@@ -96,7 +112,7 @@ type profileWorkspaceBackend struct {
 	*workspaceRouteBackend
 }
 
-func TestUXAuthenticateShortcutSelectsSharedAuthentication(t *testing.T) {
+func TestUXProfileConfigurationOpensSharedGenericWorkspace(t *testing.T) {
 	m, _ := typedProfileFixture()
 	setup := &workspaceRouteBackend{}
 	m.backend = profileWorkspaceBackend{profileBackend: m.backend.(*profileBackend), workspaceRouteBackend: setup}
@@ -107,51 +123,42 @@ func TestUXAuthenticateShortcutSelectsSharedAuthentication(t *testing.T) {
 			break
 		}
 	}
-	cmd := m.homeOperation("a")
+	cmd := m.homeOperation("parameters")
 	if cmd == nil {
-		t.Fatal("Authenticate did not load the shared target workspace")
+		t.Fatal("profile configuration did not load the shared target workspace")
 	}
 	m.Update(cmd())
 	section := ""
 	if m.form != nil {
 		section = m.form.SectionTitle()
 	}
-	if setup.previewRequest.Target != "foreign" || section != "Authentication" {
-		t.Fatalf("Authenticate did not select Authentication on the exact target: request=%+v section=%q form=%v", setup.previewRequest, section, m.form != nil)
+	if setup.previewRequest.Target != "foreign" || section != "Overview" || m.workspace == nil || m.workspace.SectionID != sectionOverviewID {
+		t.Fatalf("profile configuration did not open the generic workspace on the exact target: request=%+v section=%q form=%v workspace=%+v", setup.previewRequest, section, m.form != nil, m.workspace)
 	}
 }
 
-func TestUXOverviewRegistrationActionOpensExactPairedEditor(t *testing.T) {
+func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 	m, _ := typedProfileFixture()
 	setup := &workspaceRouteBackend{}
 	m.backend = profileWorkspaceBackend{profileBackend: m.backend.(*profileBackend), workspaceRouteBackend: setup}
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
 	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
 	m.Update(cmd())
-	if m.form == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "Manage agent registrations") {
-		t.Fatalf("Overview does not offer the named registration action:\n%s", ansi.Strip(m.View().Content))
+	if m.form == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "Configure agent destinations") {
+		t.Fatalf("Overview does not offer the shared Agents action:\n%s", ansi.Strip(m.View().Content))
 	}
-	m.Update(tea.KeyPressMsg{Code: 'g'})
-	if m.registration == nil || m.registration.Profile.Key != key || m.form == nil || !m.workspace.Active {
-		t.Fatalf("registration editor did not retain the exact paired workspace: registration=%+v form=%v workspace=%+v", m.registration, m.form != nil, m.workspace)
+	handled, _ := m.workspaceOverviewAction("g")
+	if !handled || m.workspace == nil || m.workspace.SectionID != sectionAgentsID || m.form == nil || !m.workspace.Active || m.registration != nil {
+		t.Fatalf("Agents action did not select the one complete-binding workspace: registration=%+v form=%v workspace=%+v", m.registration, m.form != nil, m.workspace)
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capabilities", "Selected capability", "Endpoint URI", "Claude"} {
+	for _, want := range []string{"Capabilities", "Selected capability", "Agents", "No named agent destinations"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("paired registration editor lacks %q:\n%s", want, view)
+			t.Errorf("shared Agents workspace lacks %q:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Workspace sections") || strings.Count(view, "Overview") > 0 {
-		t.Fatalf("registration editor stacked a second L3/L4 workspace over the parent:\n%s", view)
-	}
-	// Click Claude's visible left row using its rendered global cell position.
-	registration := m.registration
-	_, _ = m.Update(tea.MouseClickMsg{X: registration.X + 3, Y: registration.Y + 6, Button: tea.MouseLeft})
-	if m.registration.Row != 2 || m.registration.Area != 0 {
-		t.Fatalf("rendered global click did not select Claude's row: row=%d area=%d box=%+v", m.registration.Row, m.registration.Area, m.registration)
-	}
-	if m.workspace.Section != "Overview" {
-		t.Fatalf("registration action lost the invoking Overview section: %q", m.workspace.Section)
+	if m.workspace.Section != "Agents" {
+		t.Fatalf("Agents action did not retain the selected section: %q", m.workspace.Section)
 	}
 }
 
@@ -220,7 +227,7 @@ func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T)
 	}
 }
 
-func TestUXOverviewApplyActionIsVisibleAndSubmitsCurrentConfiguration(t *testing.T) {
+func TestUXOverviewHasNoApplyActionAndBottomSaveSubmitsCurrentConfiguration(t *testing.T) {
 	setup := &workspaceApplyBackend{withMCP: true}
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
@@ -228,27 +235,62 @@ func TestUXOverviewApplyActionIsVisibleAndSubmitsCurrentConfiguration(t *testing
 	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
 	m.Update(cmd())
 	view := ansi.Strip(m.form.View().Content)
-	if !strings.Contains(view, "Save and apply") || !strings.Contains(view, "build, start, register") {
-		t.Fatalf("fresh target Overview does not expose the package build/start action:\n%s", view)
+	if strings.Contains(view, "Save and apply · configure agents") || strings.Contains(strings.ToLower(view), "build, start, register") || !strings.Contains(view, "Save and apply") {
+		t.Fatalf("Overview should contain facts/navigation and the form one bottom Save and apply control:\n%s", view)
 	}
-	// The Overview action is reachable from the rendered L3/L4 workspace with
-	// normal navigation keys; exercise that route instead of dispatching an
-	// ActionMsg directly.
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("activating the Overview action did not submit Save and Apply")
+	if strings.Contains(view, "Save and apply ·") {
+		t.Fatal("Overview content contains a second Save and apply action")
 	}
-	_, cmd = m.Update(cmd()) // Form action message dispatches the service operation.
+	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
-		t.Fatal("Overview action message did not invoke UIInstall")
+		t.Fatal("bottom form Save and apply did not invoke UIInstall")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	if setup.installRequest == nil {
-		t.Fatal("Overview action bypassed the unified Save and Apply service")
+		t.Fatal("bottom Save and apply bypassed the unified setup service")
 	}
 	if setup.installRequest.SetupRequest.Target != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
-		t.Fatalf("Overview action did not submit the current target draft: %+v", setup.installRequest)
+		t.Fatalf("bottom Save and apply did not submit the current target draft: %+v", setup.installRequest)
+	}
+}
+
+func TestUXOverviewApplyCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
+	setup := &workspaceApplyBackend{withMCP: true}
+	m := NewContext(t.Context(), setup)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	m.Update(cmd())
+
+	activate := func(dismiss bool) {
+		t.Helper()
+		if m.form == nil {
+			cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+			if cmd == nil {
+				t.Fatal("workspace could not be reopened after the previous successful result")
+			}
+			m.Update(cmd())
+		}
+		_, install := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+		if install == nil {
+			t.Fatalf("Save and apply did not submit UIInstall: active=%t pending=%v form=%t busy=%t", m.workspace != nil && m.workspace.Active, m.pendingSetup != nil, m.form != nil, m.busy)
+		}
+		m.Update(runTeaCmd(t, m, install))
+		if m.result == nil || m.result.Failed {
+			t.Fatalf("successful apply did not show its result: %+v", m.result)
+		}
+		if dismiss {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		}
+	}
+
+	activate(true)
+	if setup.installCalls != 1 || setup.installRequest == nil {
+		t.Fatal("first Save and apply did not call UIInstall")
+	}
+	activate(false)
+	if setup.installCalls != 2 || setup.installRequest == nil || m.busy || m.result == nil {
+		t.Fatalf("second Overview apply did not run through progress and result: request=%+v busy=%t result=%+v", setup.installRequest, m.busy, m.result)
 	}
 }
 
@@ -265,7 +307,7 @@ func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
 			t.Fatalf("skill-only target exposed runtime action %q:\n%s", forbidden, view)
 		}
 	}
-	if !strings.Contains(view, "Save and apply configuration") {
+	if !strings.Contains(view, "[ Save and apply ]") {
 		t.Fatalf("skill-only target lost its Save and Apply action:\n%s", view)
 	}
 }

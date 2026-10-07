@@ -21,6 +21,7 @@ import (
 type CapabilityRow struct {
 	ID, Source, Package, Name string
 	Skill, MCP                bool
+	MCPNames                  []string
 	CatalogIndex              int
 }
 type ProfileRow struct {
@@ -87,7 +88,6 @@ func (m *Model) contextRows() []contextRow {
 		rows := []contextRow{
 			{ID: "locate", Label: "Locate source…", Kind: "locate-source"},
 			{ID: "information", Label: "View saved information", Kind: "saved-information"},
-			{ID: "remove", Label: "Remove local registration…", Kind: "remove-local-registration"},
 		}
 		for i, p := range m.profiles() {
 			target := p.Key.Target
@@ -99,7 +99,7 @@ func (m *Model) contextRows() []contextRow {
 		return rows
 	}
 	rows := []contextRow{
-		{ID: "configure", Label: "Set up another target…", Kind: "configure"},
+		{ID: "configure", Label: capabilitySetupLabel(m, c), Kind: "configure"},
 		{ID: "details", Label: "View capability details", Kind: "details"},
 	}
 	for i, p := range m.profiles() {
@@ -122,6 +122,10 @@ func (m *Model) contextRows() []contextRow {
 			continue
 		}
 		seen[key] = true
+		if c.Skill && !c.MCP && key.Environment == "" && (key.Target == "" || key.Target == "default") {
+			rows = append(rows, contextRow{ID: key.ID() + "\x00configured", Label: "Saved configuration", Kind: "target", Key: key})
+			continue
+		}
 		environment, target := key.Environment, key.Target
 		if environment == "" {
 			environment = "No preset"
@@ -138,16 +142,24 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 	if m.inventoryError != nil {
 		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
 	}
-	components := []struct{ name, kind string }{}
+	type component struct{ name, kind, mcp string }
+	components := []component{}
 	if c.Skill {
-		components = append(components, struct{ name, kind string }{"Skill", "skill"})
+		components = append(components, component{name: "Skill", kind: "skill"})
 	}
 	if c.MCP {
-		components = append(components, struct{ name, kind string }{"MCP registration", "mcp"})
+		if len(c.MCPNames) == 0 {
+			components = append(components, component{name: "MCP registration", kind: "mcp"})
+		} else {
+			for _, name := range c.MCPNames {
+				components = append(components, component{name: name + " MCP registration", kind: "mcp", mcp: name})
+			}
+		}
 	}
 	if len(components) == 0 {
 		return "Unknown", []string{"No installable components in the catalog"}
 	}
+	componentsByDestination := map[string]map[string]bool{}
 	found := 0
 	details := make([]string, 0, len(components))
 	for _, component := range components {
@@ -156,6 +168,20 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 			if inst.Key.Source != c.Source || inst.Key.Package != c.Package || inst.Component != component.kind {
 				continue
 			}
+			if component.kind == "mcp" && component.mcp != "" && inst.Key.MCP != component.mcp {
+				continue
+			}
+			parentKey := inst.Key
+			parentKey.MCP = ""
+			destination := inst.AgentID + "\x00" + inst.AgentHome
+			if destination == "\x00" {
+				destination = "unspecified destination"
+			}
+			group := parentKey.ID() + "\x00" + destination
+			if componentsByDestination[group] == nil {
+				componentsByDestination[group] = map[string]bool{}
+			}
+			componentsByDestination[group][component.kind+"\x00"+component.mcp] = true
 			agent := inst.AgentID
 			if agent == "" {
 				agent = "unspecified destination"
@@ -177,7 +203,21 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 	if found == 0 {
 		return "Not installed", details
 	}
-	if found < len(components) {
+	complete := false
+	for _, installed := range componentsByDestination {
+		all := true
+		for _, component := range components {
+			if !installed[component.kind+"\x00"+component.mcp] {
+				all = false
+				break
+			}
+		}
+		if all {
+			complete = true
+			break
+		}
+	}
+	if !complete {
 		return "Partial", details
 	}
 	return "Installed", details
@@ -211,7 +251,13 @@ func (m *Model) capabilities() []CapabilityRow {
 		if name == "" {
 			name = p.ID
 		}
-		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.Skill != nil, MCP: p.MCP != nil, CatalogIndex: i})
+		mcpNames := []string{}
+		for _, definition := range p.MCPDefinitions() {
+			if definition.Name != "" {
+				mcpNames = append(mcpNames, definition.Name)
+			}
+		}
+		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.Skill != nil, MCP: p.HasMCP(), MCPNames: mcpNames, CatalogIndex: i})
 	}
 	if m.profileSnapshot != nil {
 		seen := map[string]bool{}
@@ -505,13 +551,13 @@ func (m *Model) openObservedProfileWorkspace(p ProfileRow) {
 	}
 	profile := *p.Profile
 	profile.RegisteredAgents = append([]string(nil), p.Profile.RegisteredAgents...)
-	sections := []forms.FormSection{{Title: "Overview"}, {Title: "Endpoint"}, {Title: "Agents"}, {Title: "Information"}}
+	sections := []forms.FormSection{{ID: sectionOverviewID, Title: "Overview"}, {ID: sectionEndpointID, Title: "Endpoint"}, {ID: sectionAgentsID, Title: "Agents"}, {ID: sectionInformationID, Title: "Information"}}
 	form := forms.NewForm(m.ctx, nil, nil)
 	form.SetTitle("Observed · " + p.Name)
 	form.SetBackNavigation(true)
 	form.SetReadOnly(true)
 	form.SetSections(sections...)
-	form.SelectSection("Overview")
+	form.SelectSectionID(sectionOverviewID)
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
 	form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	m.workspace = &workspaceState{
@@ -563,6 +609,18 @@ func (m *Model) selectedCapabilitySource() string {
 	c, _ := m.selectedCapability()
 	return c.Source
 }
+func (m *Model) hasNamedPreset(capability CapabilityRow) bool {
+	if m.environmentSnapshot == nil {
+		return false
+	}
+	for _, target := range m.environmentSnapshot.Targets {
+		if target.SourceID == capability.Source && target.PackageID == capability.Package && target.Error == "" && strings.TrimSpace(target.Environment) != "" && strings.TrimSpace(target.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) homeMenuItems() []homeMenuItem {
 	if m.home.Modal == nil {
 		return nil
@@ -583,7 +641,13 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 			if strings.EqualFold(p.Status, "running") {
 				start = "Restart…"
 			}
-			return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Authenticate…", "a"), item("Edit parameters…", "parameters"), item("Configure agent registrations…", "registrations"), item("Remove agent registrations…", "remove-registrations"), item("Check connection", "check-connection"), {"Refresh observation", "refresh", ""}, item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
+			bindingReason := ""
+			if _, available := m.backend.(setupBackend); !available {
+				bindingReason = "setup service unavailable"
+			} else if capability, exists := m.selectedCapability(); !exists || capability.CatalogIndex < 0 {
+				bindingReason = "package is absent from the local catalog"
+			}
+			return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Edit parameters…", "parameters"), {"Manage complete agent binding…", "agents", bindingReason}, item("Check connection", "check-connection"), {"Refresh observation", "refresh", ""}, item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
 		}
 	}
 	c, ok := m.selectedCapability()
@@ -595,9 +659,21 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		installReason = "absent from local catalog"
 	}
 	if c.CatalogIndex < 0 {
-		return []homeMenuItem{{"Locate source…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Remove local registration…", "remove-local-registration", ""}, {"Back", "back", ""}}
+		return []homeMenuItem{{"Locate source…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Back", "back", ""}}
 	}
-	return []homeMenuItem{{"Set up another target…", "parameters", installReason}, {"View capability details", "details", ""}, {"Back", "back", ""}}
+	items := []homeMenuItem{{capabilitySetupLabel(m, c), "parameters", installReason}}
+	if m.hasNamedPreset(c) && !c.MCP {
+		items = append(items, homeMenuItem{"Choose environment preset…", "choose-preset", installReason})
+	}
+	items = append(items, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
+	return items
+}
+
+func capabilitySetupLabel(m *Model, capability CapabilityRow) string {
+	if capability.MCP && m.hasNamedPreset(capability) {
+		return "Set up another target…"
+	}
+	return "Configure now…"
 }
 func (m *Model) menuEntries() []string {
 	items := m.homeMenuItems()
@@ -734,15 +810,21 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			capability, capabilityOK := m.selectedCapability()
 			packageUnavailable := capabilityOK && capability.CatalogIndex < 0
 			if action == "remove-registrations" {
-				m.removeRegistrationForm(p)
-				return nil
+				if packageUnavailable {
+					m.openObservedProfileWorkspace(p)
+					return nil
+				}
+				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Agents")
 			}
 			if action == "check-connection" {
 				return m.checkProfileConnection(p)
 			}
-			if action == "registrations" {
-				m.registrationForm(p)
-				return nil
+			if action == "registrations" || action == "agents" {
+				if packageUnavailable {
+					m.openObservedProfileWorkspace(p)
+					return nil
+				}
+				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Agents")
 			}
 			if action == "l" {
 				return m.openProfileLogs(p)
@@ -756,16 +838,10 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 					m.output = reason
 					return nil
 				}
-				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Connection")
+				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Overview")
 			}
-			if action == "a" {
-				if packageUnavailable {
-					m.output = "Authentication inputs are unavailable because this package is absent from the local catalog. Enter opens the observed endpoint workspace; use Locate source… for package authentication settings."
-					return nil
-				}
-				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Authentication")
-			}
-			actions := map[string]string{"s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
+
+			actions := map[string]string{"s": "start", "x": "stop", "l": "logs"}
 			kind := actions[action]
 			if kind == "" {
 				return nil
@@ -775,7 +851,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 				return nil
 			}
 			m.home.Modal = nil
-			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target}
+			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target, mcp: p.Key.MCP}
 			return m.run(op)
 		}
 	}
@@ -784,10 +860,17 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		return nil
 	}
 	m.selected = c.CatalogIndex
+	if action == "choose-preset" {
+		m.openTargetChooser(c)
+		return nil
+	}
 	if action == "parameters" || action == "i" {
 		if _, ok := m.backend.(setupBackend); ok {
-			m.openTargetChooser(c)
-			return nil
+			if c.MCP && m.hasNamedPreset(c) {
+				m.openTargetChooser(c)
+				return nil
+			}
+			return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: c.Source, PackageID: c.Package}, "")
 		}
 	}
 	if action == "parameters" {
@@ -889,7 +972,13 @@ func (m *Model) selectedDetail() string {
 		components = append(components, "skill")
 	}
 	if c.MCP {
-		components = append(components, "MCP")
+		if len(c.MCPNames) == 0 {
+			components = append(components, "MCP")
+		} else {
+			for _, name := range c.MCPNames {
+				components = append(components, "MCP "+name)
+			}
+		}
 	}
 	detail := fmt.Sprintf("%s · %s · %s", m.label(c.Source), c.Name, strings.Join(components, " + "))
 	if c.MCP {
@@ -936,7 +1025,11 @@ func (m *Model) homeView() tea.View {
 			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
 		}
 		if len(contextRows) > 3 {
-			contextDisplay = append(contextDisplay, displayRow{text: "Saved targets", contextIndex: -1, kind: "heading"})
+			heading := "Saved targets"
+			if c.Skill && !c.MCP {
+				heading = "Saved configuration"
+			}
+			contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
 			for i := 3; i < len(contextRows); i++ {
 				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
 			}
@@ -964,7 +1057,11 @@ func (m *Model) homeView() tea.View {
 		}
 	}
 	if len(contextRows) > 2+len(m.profiles()) {
-		contextDisplay = append(contextDisplay, displayRow{text: "Saved targets", contextIndex: -1, kind: "heading"})
+		heading := "Saved targets"
+		if c.Skill && !c.MCP {
+			heading = "Saved configuration"
+		}
+		contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
 		for i := 2 + len(m.profiles()); i < len(contextRows); i++ {
 			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
 		}
@@ -1010,7 +1107,15 @@ func (m *Model) homeView() tea.View {
 	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
 	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
-	lines = append(lines, "╠"+gold.Render(fit(ltitle, left))+"╦"+gold.Render(fit(rtitle, right))+"╣")
+	focusedTitle := lipgloss.NewStyle().Bold(true).Reverse(true)
+	leftTitle := gold.Render(fit(ltitle, left))
+	rightTitle := gold.Render(fit(rtitle, right))
+	if m.home.Focus == CapabilitiesPane {
+		leftTitle = focusedTitle.Render(fit(ltitle, left))
+	} else {
+		rightTitle = focusedTitle.Render(fit(rtitle, right))
+	}
+	lines = append(lines, "╠"+leftTitle+"╦"+rightTitle+"╣")
 	for row := 0; row < visible; row++ {
 		l, r := "", ""
 		i := m.home.Capabilities.Offset + row
@@ -1023,6 +1128,9 @@ func (m *Model) homeView() tea.View {
 			kind := "skill"
 			if cs[i].MCP {
 				kind = "MCP"
+				if len(cs[i].MCPNames) > 0 {
+					kind = "MCP: " + strings.Join(cs[i].MCPNames, ", ")
+				}
 				if cs[i].Skill {
 					kind = "skill + MCP"
 				}
@@ -1046,8 +1154,22 @@ func (m *Model) homeView() tea.View {
 				r = "· " + item.text
 			}
 		}
-		l = fit(l, left)
-		r = fit(r, right)
+		leftBody, rightBody := left, right
+		leftBar, rightBar := len(cs) > visible, len(contextDisplay) > visible
+		if leftBar {
+			leftBody = max(1, left-1)
+		}
+		if rightBar {
+			rightBody = max(1, right-1)
+		}
+		l = fit(l, leftBody)
+		r = fit(r, rightBody)
+		if leftBar {
+			l += scrollbarGlyph(m.home.Capabilities.Offset, len(cs), visible, row)
+		}
+		if rightBar {
+			r += scrollbarGlyph(m.home.ContextDisplayOffset, len(contextDisplay), visible, row)
+		}
 		if i := m.home.ContextDisplayOffset + row; i < len(contextDisplay) {
 			switch contextDisplay[i].kind {
 			case "heading":
@@ -1191,4 +1313,16 @@ func (m *Model) overlay(lines []string) []string {
 		lines[y+i] = ansi.Cut(lines[y+i], 0, x) + line + ansi.Cut(lines[y+i], x+w, m.width)
 	}
 	return lines
+}
+
+func scrollbarGlyph(offset, total, visible, row int) string {
+	if total <= visible || visible < 1 {
+		return " "
+	}
+	thumb := max(1, visible*visible/total)
+	start := offset * (visible - thumb) / max(1, total-visible)
+	if row >= start && row < start+thumb {
+		return "█"
+	}
+	return "│"
 }

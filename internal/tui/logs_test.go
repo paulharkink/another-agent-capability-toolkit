@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -248,7 +249,7 @@ func TestLogFollowControlRespondsToMouse(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStartAppliesCurrentDraftAndStopUsesRuntimeAction(t *testing.T) {
+func TestWorkspaceStartAndStopUseRuntimeActions(t *testing.T) {
 	for _, tc := range []struct{ shortcut, want string }{{"s", "start"}, {"x", "stop"}} {
 		t.Run(tc.want, func(t *testing.T) {
 			m, base := typedProfileFixture()
@@ -269,11 +270,11 @@ func TestWorkspaceStartAppliesCurrentDraftAndStopUsesRuntimeAction(t *testing.T)
 			}
 			m.Update(runTeaCmd(t, m, operation))
 			if tc.shortcut == "s" {
-				if workspaceBackend.setup.installRequest == nil {
-					t.Fatal("workspace Start did not Save and apply the current setup draft")
+				if workspaceBackend.setup.installRequest != nil {
+					t.Fatal("workspace Start applied capability configuration instead of starting the runtime")
 				}
-				if len(logsBackend.actions) != 0 {
-					t.Fatalf("workspace Start bypassed the setup lifecycle: runtime actions=%v", logsBackend.actions)
+				if len(logsBackend.actions) != 1 || logsBackend.actions[0] != tc.want {
+					t.Fatalf("workspace Start did not send the runtime action: %v", logsBackend.actions)
 				}
 				return
 			}
@@ -294,7 +295,7 @@ type replacementLogsBackend struct {
 }
 
 func (b *replacementLogsBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID}, nil
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "test-runtime"}}}, nil
 }
 
 func (b *replacementLogsBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {

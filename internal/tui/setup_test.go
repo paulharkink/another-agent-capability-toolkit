@@ -136,8 +136,10 @@ func setupSection(m *Model, down int) {
 func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = q
 	preview := viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team-source", Package: "plain", Target: "default"},
-		PackageName: "Plain",
+		Key:           state.Key{Source: "team-source", Package: "plain", Target: "default"},
+		PackageName:   "Plain",
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "inputs", Title: "Inputs", Fields: []string{"repo", "mode"}}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string", Required: true}, Value: "/repos/team", HasValue: true, Provenance: "source", ProvenancePath: "/catalog/aact.toml", Editable: true},
 			{Definition: catalog.Input{Name: "mode", Label: "Mode", Type: "choice", Required: true, Options: []catalog.Choice{{Value: "fast", Label: "Fast"}, {Value: "safe", Label: "Safe"}}}, Value: "safe", HasValue: true, Provenance: "package", ProvenancePath: "/catalog/plain/package.toml", Editable: true},
@@ -153,13 +155,13 @@ func TestInstallShortcutUsesUnifiedSetupForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
-	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
-	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" || m.form != nil || m.busy {
-		t.Fatal("Install shortcut did not open the target chooser")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	if cmd == nil || m.form != nil || !m.busy {
+		t.Fatal("skill-only Install shortcut did not start setup immediately")
 	}
-	startHomeSetup(m)
-	if m.form == nil {
-		t.Fatal("choosing the no-preset option did not open typed setup")
+	m.Update(cmd())
+	if m.form == nil || m.home.Modal != nil {
+		t.Fatal("skill-only Install shortcut did not open its typed setup form")
 	}
 }
 
@@ -225,15 +227,16 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 			if m.workspace == nil || m.workspace.Key != foreignKey || m.workspace.Profile == nil || m.workspace.Profile.URL != "http://127.0.0.1:8765/mcp" {
 				t.Fatalf("explicitly selected foreign target facts changed: %+v", m.workspace)
 			}
-			setupSection(m, 4)
-			press(m, tea.KeyRight, "")
-			press(m, tea.KeySpace, " ")
-			_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			capabilityBackend := openCapabilityProfileWorkspace(t, m, profiles, "foreign", "Agents")
+			if !m.form.ReconcileDraftField(m.pendingSetupField, []string{"codex"}) {
+				t.Fatal("could not select Codex for the complete capability binding")
+			}
+			save := m.applySetup(m.form.Values())
 			if save == nil {
-				t.Fatal("foreign workspace Save did not submit named agent registrations")
+				t.Fatalf("foreign workspace Save did not submit the selected capability draft: output=%q form=%t workspace=%+v values=%v", m.output, m.form != nil, m.workspace, m.form.Values())
 			}
 			m.Update(runTeaCmd(t, m, save))
-			request := backend.installRequest
+			request := capabilityBackend.setup.installRequest
 			if request == nil || request.SetupRequest.Target != foreignKey.Target || request.ExternalURL != "http://127.0.0.1:8765/mcp" || !containsString(request.DestinationIDs, "codex") {
 				t.Fatalf("Save did not forward the selected foreign endpoint and destinations: %+v", request)
 			}
@@ -246,13 +249,9 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
-	m.homeOperation("parameters")
-	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
-		t.Fatal("setup did not open target chooser")
-	}
-	cmd := m.modalKey("enter")
+	cmd := m.homeOperation("parameters")
 	if cmd == nil || !m.busy || m.form != nil {
-		t.Fatalf("typed setup preview was not requested: busy=%v form=%v", m.busy, m.form)
+		t.Fatalf("skill-only setup did not immediately request preview: busy=%v form=%v", m.busy, m.form)
 	}
 	m.Update(cmd())
 	if m.form == nil || m.busy || b.previewRequest.PackageID != "plain" || b.previewRequest.SourceID != "team-source" {
@@ -292,7 +291,9 @@ func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "cluster-inspector", Target: "pms15"},
+		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Target: "pms15"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "database", Title: "Databases", Fields: []string{"connections"}}},
 		Inputs: []viewmodel.SetupInput{{
 			Definition: catalog.Input{Name: "connections", Label: "Read-only database queries (optional)", Type: "multichoice", OptionsFrom: "dbms.*.tenants.*", Options: []catalog.Choice{{Value: "shared_postgres/plane", Label: "Plane — shared_postgres/plane"}}},
 			Value:      []string{""}, HasValue: true, Provenance: "saved", Editable: true,
@@ -335,7 +336,9 @@ func TestLongProvenanceKeepsInputValueVisible(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "plain", Target: "default"},
+		Key:           state.Key{Source: "team-source", Package: "plain", Target: "default"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "repo", Title: "Inputs", Fields: []string{"repo"}}},
 		Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string"},
 			Value: "/repos/team", HasValue: true, Provenance: "source",
 			ProvenancePath: "/a/very/long/checkout/path/for/a/company/private/capabilities/repository/that/exceeds/the/terminal/width/aact.toml", Editable: true}},
@@ -369,7 +372,7 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 		t.Fatal("Edit parameters did not request the shared workspace")
 	}
 	m.Update(cmd())
-	if b.previewRequest != (viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}) || m.form == nil || m.form.SectionTitle() != "Connection" {
+	if b.previewRequest != (viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}) || m.form == nil || m.form.SectionTitle() != "Overview" {
 		t.Fatalf("wrong profile target or missing shared editor: %+v section=%q form=%v", b.previewRequest, func() string {
 			if m.form == nil {
 				return ""
@@ -388,7 +391,15 @@ func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
 		{SourceID: "team-source", Environment: "home", PackageID: "plain", Name: "pms15", Path: "/environments/home/plain/pms15.toml"},
 	}}
 	m.reconcileHome()
-	startHomeSetup(m)
+	m.homeOperation("choose-preset")
+	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
+		t.Fatal("explicit preset action did not open the target chooser")
+	}
+	cmd := m.chooseTarget(0)
+	if cmd == nil {
+		t.Fatal("choosing the available preset did not start setup")
+	}
+	m.Update(cmd())
 	want := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "home", Target: "pms15"}
 	if b.previewRequest != want {
 		t.Fatalf("capability setup discarded local target: got %+v, want %+v", b.previewRequest, want)
@@ -399,16 +410,21 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(setupPreviewMsg{preview: viewmodel.SetupPreview{
-		Key:          state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
-		PackageName:  "Cluster Inspector",
-		Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret"}, Editable: true}},
-		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
+		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
+		PackageName:   "Cluster Inspector",
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
+		Inputs:        []viewmodel.SetupInput{{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret"}, Editable: true}},
+		Destinations:  []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	}})
 	view := m.View().Content
-	for _, want := range []string{"New setup · Cluster Inspector", "home / pms15", "Destinations"} {
+	for _, want := range []string{"New setup · Cluster Inspector", "Authentication", "Agents"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup form does not show %q:\n%s", want, view)
 		}
+	}
+	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "home" || m.pendingSetup.Key.Target != "pms15" {
+		t.Fatalf("setup preview lost the selected environment target: %+v", m.pendingSetup)
 	}
 }
 
@@ -416,8 +432,10 @@ func TestExclusiveCredentialsShowMethodAndInactiveBranch(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team-source", Package: "inspect", Environment: "company", Target: "production"},
-		PackageName: "Inspector",
+		Key:           state.Key{Source: "team-source", Package: "inspect", Environment: "company", Target: "production"},
+		PackageName:   "Inspector",
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "credential"}, Editable: true},
 			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "credential"}, Editable: true},
@@ -425,21 +443,22 @@ func TestExclusiveCredentialsShowMethodAndInactiveBranch(t *testing.T) {
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	})
 	view := m.View().Content
-	for _, want := range []string{"Environment: company", "Target: production", "Authentication", "Destinations"} {
+	for _, want := range []string{"Authentication", "Agents"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup missing %q:\n%s", want, view)
 		}
 	}
-	setupSection(m, 0) // Authentication.
+	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "company" || m.pendingSetup.Key.Target != "production" {
+		t.Fatalf("setup lost the selected environment target: %+v", m.pendingSetup)
+	}
+	m.form.SelectSection("Authentication")
 	view = m.View().Content
 	for _, want := range []string{"Token", "Source kubeconfig"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("authentication field %q was not visible:\n%s", want, view)
 		}
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Destinations.
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m.form.SelectSection("Agents")
 	if !strings.Contains(m.View().Content, "Codex") {
 		t.Fatalf("setup Destinations section omitted Codex:\n%s", m.View().Content)
 	}
@@ -449,7 +468,7 @@ func TestNoEnvironmentSetupTitleHasNoBlankSegment(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.openSetupForm(viewmodel.SetupPreview{Key: state.Key{Source: "one", Package: "inspect", Target: "default"}, PackageName: "Inspector", Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}}})
 	view := m.View().Content
-	if strings.Contains(view, "·  / default") || !strings.Contains(view, "Environment: No environment file") {
+	if strings.Contains(view, "·  / default") || strings.Contains(view, "Environment:") || !strings.Contains(view, "Install · Inspector") || !strings.Contains(view, "Agents") {
 		t.Fatalf("no-environment title/context is unclear: %s", view)
 	}
 }
@@ -458,7 +477,9 @@ func TestSwitchingAuthenticationClearsPreviouslyPrefilledCredential(t *testing.T
 	b := &setupBackendFixture{}
 	m := NewContext(context.Background(), b)
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		Key:           state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Type: "secret", ExclusiveGroup: "credential"}, Value: "old-token", HasValue: true, Editable: true},
 			{Definition: catalog.Input{Name: "kubeconfig", Type: "file", ExclusiveGroup: "credential"}, Editable: true},
@@ -484,7 +505,9 @@ func TestBothPrefilledCredentialsKeepOnlySelectedMethod(t *testing.T) {
 	b := &setupBackendFixture{}
 	m := NewContext(context.Background(), b)
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		Key:           state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Type: "secret", ExclusiveGroup: "credential"}, Value: "old-token", HasValue: true, Editable: true},
 			{Definition: catalog.Input{Name: "kubeconfig", Type: "file", ExclusiveGroup: "credential"}, Value: "/tmp/existing-kubeconfig", HasValue: true, Editable: true},
@@ -505,16 +528,17 @@ func TestFixedTargetCredentialDisablesOtherMethod(t *testing.T) {
 	b := &setupBackendFixture{}
 	m := NewContext(context.Background(), b)
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		Key:           state.Key{Source: "team-source", Package: "inspect", Target: "default"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "credential"}, Value: "fixed-token", HasValue: true, Provenance: "target", Editable: false},
 			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "credential"}, Value: "/tmp/old-kubeconfig", HasValue: true, Editable: true},
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
 	})
-	setupSection(m, 0) // Authentication.
 	view := m.View().Content
-	if strings.Contains(view, "Token") || strings.Contains(view, "Source kubeconfig") || !strings.Contains(view, "No fields in this section") {
+	if strings.Contains(view, "Authentication") || strings.Contains(view, "Token") || strings.Contains(view, "Source kubeconfig") {
 		t.Fatalf("fixed credential left an editable authentication method: %s", view)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})

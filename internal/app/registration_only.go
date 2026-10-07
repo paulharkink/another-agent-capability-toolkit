@@ -13,10 +13,11 @@ import (
 // RegistrationRequest connects agents in this AACT installation to an MCP
 // endpoint. The endpoint's runtime may belong to another installation.
 type RegistrationRequest struct {
-	Key       state.Key
-	URL       string
-	Transport string
-	Agents    []agents.Environment
+	Key          state.Key
+	URL          string
+	ExternalURLs map[string]string
+	Transport    string
+	Agents       []agents.Environment
 
 	// preserve contains existing ineligible MCP entries carried through UI
 	// desired-state updates without rewriting their config or endpoint.
@@ -27,7 +28,11 @@ func (s *Service) registrationTimeoutForKey(key state.Key) int {
 	if key.Source == s.Source.ID {
 		for _, p := range s.Source.Catalog {
 			if p.ID == key.Package {
-				return registrationTimeoutMS(p.MCP)
+				for _, definition := range p.MCPDefinitions() {
+					if (len(p.MCPs) == 0 && key.MCP == "") || definition.Name == key.MCP {
+						return registrationTimeoutMS(&definition)
+					}
+				}
 			}
 		}
 	}
@@ -39,8 +44,31 @@ func (s *Service) registrationTimeoutForKey(key state.Key) int {
 func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequest) (out Result, err error) {
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
-	if q.Key.Source == "" || q.Key.Package == "" || q.URL == "" {
+	if q.Key.Source == "" || q.Key.Package == "" || (q.URL == "" && len(q.ExternalURLs) == 0) {
 		return out, invalid(errors.New("MCP source, package, and endpoint URL are required"))
+	}
+	if q.Key.Source == s.Source.ID {
+		p, lookupErr := s.packageByID(q.Key.Package)
+		if lookupErr != nil {
+			return out, invalid(fmt.Errorf("cannot attach this MCP without its catalog capability; locate the package source first: %w", lookupErr))
+		}
+		if p.HasMCP() && p.Skill != nil {
+			externalURLs := q.ExternalURLs
+			externalURL := q.URL
+			if len(p.MCPs) > 0 {
+				if q.URL != "" {
+					if len(p.MCPs) != 1 || len(q.ExternalURLs) > 0 {
+						return out, invalid(errors.New("multi-MCP capability requires a separately keyed endpoint for each definition"))
+					}
+					externalURLs = map[string]string{p.MCPs[0].Name: q.URL}
+				}
+				externalURL = ""
+			}
+			return s.Install(ctx, InstallRequest{
+				Package: q.Key.Package, Environment: q.Key.Environment, Target: q.Key.Target,
+				Agents: q.Agents, ExternalURL: externalURL, ExternalURLs: externalURLs,
+			})
+		}
 	}
 	desired := make(map[string]agents.Environment, len(q.Agents))
 	timeoutMS := s.registrationTimeoutForKey(q.Key)

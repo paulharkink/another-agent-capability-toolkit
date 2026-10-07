@@ -55,6 +55,12 @@ func Load(dir string) (Package, error) {
 			p.MCP.Actions[name] = c
 		}
 	}
+	for i := range p.MCPs {
+		for name, c := range p.MCPs[i].Actions {
+			defaultCommand(&c)
+			p.MCPs[i].Actions[name] = c
+		}
+	}
 	return p, nil
 }
 func defaultCommand(c *Command) {
@@ -72,8 +78,11 @@ func Validate(p Package) error {
 	if !identifier.MatchString(p.ID) {
 		return fmt.Errorf("invalid package id %q", p.ID)
 	}
-	if p.Skill == nil && p.MCP == nil {
+	if p.Skill == nil && !p.HasMCP() {
 		return fmt.Errorf("package must declare skill or mcp")
+	}
+	if p.MCP != nil && len(p.MCPs) > 0 {
+		return fmt.Errorf("cannot mix [mcp] and [[mcps]] declarations")
 	}
 	if p.Skill != nil && !identifier.MatchString(p.Skill.Name) {
 		return fmt.Errorf("invalid skill name %q", p.Skill.Name)
@@ -84,7 +93,21 @@ func Validate(p Package) error {
 	if p.MCP != nil && p.MCP.RegistrationTimeoutMS < 0 {
 		return fmt.Errorf("mcp registration_timeout_ms must be positive")
 	}
+	mcpNames := map[string]bool{}
+	for _, mcp := range p.MCPDefinitions() {
+		if !identifier.MatchString(mcp.Name) {
+			return fmt.Errorf("invalid mcp name %q", mcp.Name)
+		}
+		if mcpNames[mcp.Name] {
+			return fmt.Errorf("duplicate mcp name %q", mcp.Name)
+		}
+		mcpNames[mcp.Name] = true
+		if mcp.RegistrationTimeoutMS < 0 {
+			return fmt.Errorf("mcp registration_timeout_ms must be positive")
+		}
+	}
 	seen := map[string]bool{}
+	inputsByName := map[string]Input{}
 	for _, in := range p.Inputs {
 		if !identifier.MatchString(in.Name) {
 			return fmt.Errorf("invalid input name %q", in.Name)
@@ -93,6 +116,7 @@ func Validate(p Package) error {
 			return fmt.Errorf("duplicate input %q", in.Name)
 		}
 		seen[in.Name] = true
+		inputsByName[in.Name] = in
 		if in.ExclusiveGroup != "" && !identifier.MatchString(in.ExclusiveGroup) {
 			return fmt.Errorf("input %s: invalid exclusive_group %q", in.Name, in.ExclusiveGroup)
 		}
@@ -125,6 +149,60 @@ func Validate(p Package) error {
 			return fmt.Errorf("input %s: invalid item bounds", in.Name)
 		}
 	}
+	for _, mcp := range p.MCPDefinitions() {
+		if mcp.RegistrationNameInput == "" {
+			continue
+		}
+		input, ok := inputsByName[mcp.RegistrationNameInput]
+		if !ok {
+			return fmt.Errorf("mcp %s: registration_name_input %q is not declared", mcp.Name, mcp.RegistrationNameInput)
+		}
+		if input.Type != "string" {
+			return fmt.Errorf("mcp %s: registration_name_input %q must reference a string input", mcp.Name, mcp.RegistrationNameInput)
+		}
+		if len(input.VisibleWhen) > 0 {
+			return fmt.Errorf("mcp %s: registration_name_input %q must be unconditionally visible", mcp.Name, mcp.RegistrationNameInput)
+		}
+	}
+	for _, in := range p.Inputs {
+		for controller, expected := range in.VisibleWhen {
+			if !seen[controller] {
+				return fmt.Errorf("input %s: unknown controller %q in visible_when", in.Name, controller)
+			}
+			switch expected.(type) {
+			case string, int64, float64, bool:
+			default:
+				return fmt.Errorf("input %s: visible_when values must be scalar equality values", in.Name)
+			}
+		}
+	}
+	if p.UI != nil {
+		sectionIDs := map[string]bool{}
+		assigned := map[string]bool{}
+		for _, section := range p.UI.Sections {
+			if section.ID == "" || section.Title == "" {
+				return fmt.Errorf("ui section id and title are required")
+			}
+			if sectionIDs[section.ID] {
+				return fmt.Errorf("duplicate ui section %q", section.ID)
+			}
+			sectionIDs[section.ID] = true
+			for _, field := range section.Fields {
+				if !seen[field] {
+					return fmt.Errorf("ui section %s: unknown input %q", section.ID, field)
+				}
+				if assigned[field] {
+					return fmt.Errorf("ui input %q is assigned more than once", field)
+				}
+				assigned[field] = true
+			}
+		}
+		for name := range seen {
+			if !assigned[name] {
+				return fmt.Errorf("ui input %q is unassigned", name)
+			}
+		}
+	}
 	if p.Generator != nil {
 		if err := validateCommand(*p.Generator); err != nil {
 			return fmt.Errorf("generator: %w", err)
@@ -134,6 +212,13 @@ func Validate(p Package) error {
 		for name, c := range p.MCP.Actions {
 			if err := validateCommand(c); err != nil {
 				return fmt.Errorf("mcp action %s: %w", name, err)
+			}
+		}
+	}
+	for _, mcp := range p.MCPs {
+		for name, c := range mcp.Actions {
+			if err := validateCommand(c); err != nil {
+				return fmt.Errorf("mcp %s action %s: %w", mcp.Name, name, err)
 			}
 		}
 	}
@@ -169,6 +254,23 @@ func validateDeclaredTimeouts(data []byte) error {
 				if command, ok := value.(map[string]any); ok {
 					if err := declaredTimeout(command); err != nil {
 						return fmt.Errorf("mcp action %s: %w", name, err)
+					}
+				}
+			}
+		}
+	}
+	if mcps, ok := raw["mcps"].([]any); ok {
+		for i, value := range mcps {
+			mcp, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			if actions, ok := mcp["actions"].(map[string]any); ok {
+				for name, value := range actions {
+					if command, ok := value.(map[string]any); ok {
+						if err := declaredTimeout(command); err != nil {
+							return fmt.Errorf("mcp %d action %s: %w", i+1, name, err)
+						}
 					}
 				}
 			}

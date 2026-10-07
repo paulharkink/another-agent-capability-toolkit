@@ -339,21 +339,25 @@ func TestUXSmallResultKeepsExactFailureAndActionKeysVisible(t *testing.T) {
 }
 
 func TestUXRegistrationResultListsOnlyStructuredAchievedEffectsAndKeepsMixedFailureVisible(t *testing.T) {
-	m, backend := typedProfileFixture()
+	m, _ := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
-	openRegistrationWorkspaceAction(t, m, false)
-	backend.result = viewmodel.OperationResult{
+	profileBackend, ok := m.backend.(*profileBackend)
+	if !ok {
+		t.Fatalf("expected profile fixture backend, got %T", m.backend)
+	}
+	backend := openCapabilityProfileWorkspace(t, m, profileBackend, "foreign", "Agents")
+	backend.setup.installResult = &viewmodel.OperationResult{
 		Saved: true, Step: "registration", Target: "plain / dev / foreign",
 		Changes: []state.Installation{{AgentID: "codex", Component: "mcp", RegistrationName: "plain-dev", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http"}},
 		Errors:  []string{"claude: endpoint rejected registration"},
 	}
-	backend.err = errors.Join(errors.New("registration command returned a partial failure"), picker.ErrCancelled)
+	backend.setup.installErr = errors.Join(errors.New("registration command returned a partial failure"), picker.ErrCancelled)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("registration update was not scheduled")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil || !m.result.Failed {
 		t.Fatalf("mixed failure/cancellation was hidden: result=%+v output=%q", m.result, m.output)
 	}
@@ -363,8 +367,8 @@ func TestUXRegistrationResultListsOnlyStructuredAchievedEffectsAndKeepsMixedFail
 			t.Errorf("registration result omitted %q:\n%s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "Saved:") {
-		t.Fatalf("registration-only operation claimed package inputs were saved:\n%s", joined)
+	if !strings.Contains(joined, "Saved: yes") {
+		t.Fatalf("complete capability update did not report saved package inputs:\n%s", joined)
 	}
 	if strings.Contains(joined, "claude registered") || strings.Contains(joined, "claude · mcp ·") {
 		t.Fatalf("failed agent was claimed as applied:\n%s", joined)
@@ -513,7 +517,12 @@ func TestUXRunningInstallShowsLiveOutputOverWorkspaceContext(t *testing.T) {
 	m.action = "install"
 	m.progressStep = "generate"
 	m.progressOutput = "generator: writing configured skill files"
-	m.pendingSetup = &viewmodel.SetupPreview{PackageName: "Plain", Key: state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "default"}}
+	m.pendingSetup = &viewmodel.SetupPreview{
+		PackageName: "Plain", HasManifestUI: true,
+		Key:      state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "default"},
+		Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
+		Inputs:   []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string"}, Editable: true}},
+	}
 	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true}
 
 	plain := ansi.Strip(m.View().Content)
@@ -579,10 +588,13 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 	progress := batch[1]()
 	m.Update(progress)
 	plain := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Authentication", "Databases", "Elapsed", "Quiet"} {
+	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Overview", "Agents", "Elapsed", "Quiet"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("blocked operation overlay omitted %q:\n%s", want, plain)
 		}
+	}
+	if strings.Contains(plain, "Authentication") || strings.Contains(plain, "Databases") {
+		t.Fatalf("blocked operation overlay inferred undeclared sections:\n%s", plain)
 	}
 	select {
 	case <-operationDone:

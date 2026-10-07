@@ -13,8 +13,7 @@ import (
 )
 
 type jsonAdapter struct {
-	kind, parent    string
-	requireExisting bool
+	kind, parent string
 }
 
 func standardJSON(b []byte) (map[string]any, error) {
@@ -152,9 +151,6 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			return err
 		}
 		if !existed {
-			if a.requireExisting {
-				return fmt.Errorf("Copilot IntelliJ config does not exist: %s; open Copilot Chat and select Add MCP Tools first", file)
-			}
 			if r == nil {
 				continue
 			}

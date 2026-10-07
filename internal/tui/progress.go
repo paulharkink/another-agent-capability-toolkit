@@ -176,11 +176,9 @@ func (m *Model) progressView() tea.View {
 		header = header[:contentHeight]
 	}
 	const (
-		overlayBG = "\x1b[48;2;6;22;74m"
-		dialogBG  = "\x1b[48;2;12;49;133m"
-		goldFG    = "\x1b[38;2;255;223;134m"
-		bodyFG    = "\x1b[38;2;233;245;255m"
-		mutedFG   = "\x1b[38;2;82;103;143m"
+		dialogBG = "\x1b[48;2;12;49;133m"
+		goldFG   = "\x1b[38;2;255;223;134m"
+		bodyFG   = "\x1b[38;2;233;245;255m"
 	)
 	dialogHeight := min(height-4, max(8, min(20, len(header)+4)))
 	bodyRows := max(1, dialogHeight-4)
@@ -199,24 +197,14 @@ func (m *Model) progressView() tea.View {
 		box[3+index] = bodyFG + "║" + fit(" "+line, panelWidth-2) + "║"
 	}
 	box[dialogHeight-1] = "╚" + strings.Repeat("═", panelWidth-2) + "╝"
-	underRows := strings.Split(ansi.Strip(base.Content), "\n")
-	baseRows := make([]string, height)
-	for index := range baseRows {
-		line := ""
-		if index < len(underRows) {
-			line = fit(underRows[index], width)
-		}
-		baseRows[index] = overlayBG + mutedFG + fit(line, width)
-	}
+	baseRows := fixedPaletteRows(base.Content, width, height)
 	startY := max(0, (height-dialogHeight)/2)
 	startX := max(0, (width-panelWidth)/2)
 	for index, row := range box {
-		canvasRow := overlayBG + mutedFG + strings.Repeat(" ", startX) + dialogBG + goldFG + row + overlayBG + mutedFG + strings.Repeat(" ", max(0, width-startX-panelWidth))
-		baseRows[startY+index] = canvasRow
+		panel := dialogBG + goldFG + row
+		baseRows[startY+index] = composeOverlayRow(baseRows[startY+index], panel, startX, panelWidth, width)
 	}
-	content := navySGR + strings.Join(baseRows, "\x1b[m\n") + "\x1b[m"
-	content = strings.ReplaceAll(content, "\x1b[m", overlayBG)
-	content = strings.TrimSuffix(content, overlayBG) + "\x1b[m"
+	content := strings.Join(baseRows, navySGR+"\n") + "\x1b[m"
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	return v

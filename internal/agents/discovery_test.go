@@ -105,8 +105,14 @@ func TestDiscoverySeparatesDesktopAppFromCLIAndJetBrainsXML(t *testing.T) {
 		t.Fatal(err)
 	}
 	jetbrains := DiscoverAgent(context.Background(), "intellij", p)
-	if jetbrains.Detection != "unverified" || jetbrains.Evidence == "" || len(jetbrains.ConfigFiles) != 1 || jetbrains.ConfigFiles[0].Path != xml || !jetbrains.ConfigFiles[0].Exists {
+	if jetbrains.Detection != "unverified" || jetbrains.Evidence == "" || len(jetbrains.ConfigFiles) != 2 {
 		t.Fatalf("JetBrains IDE or XML settings were treated as plugin evidence: %+v", jetbrains)
+	}
+	if jetbrains.ConfigFiles[0].Path != filepath.Join(home, ".ai", "mcp", "mcp.json") || jetbrains.ConfigFiles[0].Exists {
+		t.Fatalf("JetBrains JSON config did not show the default missing file: %+v", jetbrains.ConfigFiles)
+	}
+	if jetbrains.ConfigFiles[1].Path != xml || !jetbrains.ConfigFiles[1].Exists || jetbrains.ConfigFiles[1].Precedence != "metadata" {
+		t.Fatalf("JetBrains IDE metadata path was not reported separately: %+v", jetbrains.ConfigFiles)
 	}
 }
 
@@ -149,6 +155,29 @@ func TestDiscoveryWindowsConfigFileAloneIsNotInstallEvidence(t *testing.T) {
 	}
 }
 
+func TestDiscoveryWindowsCopilotCLIDetectsExecutableAndCOPILOTHomeConfig(t *testing.T) {
+	p, home := probeFixture(t)
+	p.GOOS = "windows"
+	root := filepath.Join(home, "custom-copilot")
+	p.Getenv = func(name string) string {
+		if name == "COPILOT_HOME" {
+			return root
+		}
+		return ""
+	}
+	p.LookPath = func(name string) (string, error) {
+		if name == "copilot" {
+			return filepath.Join(home, "bin", "copilot.exe"), nil
+		}
+		return "", os.ErrNotExist
+	}
+	got := DiscoverAgent(context.Background(), "copilot-cli", p)
+	want := filepath.Join(root, "mcp-config.json")
+	if got.Detection != "installed" || len(got.ConfigFiles) != 1 || got.ConfigFiles[0].Path != want {
+		t.Fatalf("Windows Copilot CLI discovery failed: %+v", got)
+	}
+}
+
 func TestDiscoveryWSLUsesLinuxCLIAndHomeOnly(t *testing.T) {
 	p, home := probeFixture(t)
 	p.GOOS = "linux"
@@ -173,11 +202,83 @@ func TestDiscoveryWSLUsesLinuxCLIAndHomeOnly(t *testing.T) {
 func TestDiscoveryDoesNotCertifyUnverifiedWindowsClients(t *testing.T) {
 	p, _ := probeFixture(t)
 	p.GOOS = "windows"
-	for _, id := range []string{"claude-desktop", "opencode-desktop", "intellij", "copilot-intellij", "copilot-cli"} {
+	for _, id := range []string{"claude-desktop", "opencode-desktop", "intellij", "copilot-intellij"} {
 		got := DiscoverAgent(context.Background(), id, p)
 		if got.Detection != "unverified" || got.Note == "" {
 			t.Fatalf("%s claimed Windows evidence: %+v", id, got)
 		}
+	}
+}
+
+func TestDiscoveryCopilotCLIUsesCOPILOTHomeAndExecutableEvidence(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			p, home := probeFixture(t)
+			p.GOOS = goos
+			root := filepath.Join(home, "copilot-root")
+			p.Getenv = func(name string) string {
+				if name == "COPILOT_HOME" {
+					return root
+				}
+				return ""
+			}
+			p.LookPath = func(name string) (string, error) {
+				if name == "copilot" {
+					return filepath.Join(home, "bin", "copilot"), nil
+				}
+				return "", os.ErrNotExist
+			}
+			got := DiscoverAgent(context.Background(), "copilot-cli", p)
+			if got.Detection != "installed" || !strings.Contains(got.Evidence, "CLI executable:") || len(got.ConfigFiles) != 1 {
+				t.Fatalf("Copilot CLI installation evidence incorrect: %+v", got)
+			}
+			if got.ConfigFiles[0].Path != filepath.Join(root, "mcp-config.json") {
+				t.Fatalf("COPILOT_HOME not honored: %+v", got.ConfigFiles)
+			}
+		})
+	}
+}
+
+func TestDiscoveryCopilotJetBrainsListsConfigWithoutClaimingPluginInstalled(t *testing.T) {
+	p, home := probeFixture(t)
+	path := filepath.Join(home, ".config", "github-copilot", "intellij", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\"servers\":{}}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := DiscoverAgent(context.Background(), "copilot-intellij", p)
+	if got.Detection != "unverified" || len(got.ConfigFiles) != 1 || !got.ConfigFiles[0].Exists || !strings.Contains(got.Note, "does not prove") {
+		t.Fatalf("config presence was conflated with plugin installation: %+v", got)
+	}
+}
+
+func TestDiscoveryWindowsJetBrainsFindsRoamingIDEStateAndCopilotConfig(t *testing.T) {
+	p, home := probeFixture(t)
+	p.GOOS = "windows"
+	appData := filepath.Join(home, "roaming-data")
+	p.Getenv = func(name string) string {
+		if name == "APPDATA" {
+			return appData
+		}
+		return ""
+	}
+	xml := filepath.Join(appData, "JetBrains", "IntelliJIdea2026.2", "options", "llm.mcpServers.xml")
+	if err := os.MkdirAll(filepath.Dir(xml), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(xml, []byte("<application/>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := DiscoverAgent(context.Background(), "intellij", p)
+	if got.Detection != "unverified" || len(got.ConfigFiles) != 2 || got.ConfigFiles[1].Path != xml || !got.ConfigFiles[1].Exists {
+		t.Fatalf("Windows JetBrains discovery failed: %+v", got)
+	}
+	copilot := DiscoverAgent(context.Background(), "copilot-intellij", p)
+	want := filepath.Join(appData, "github-copilot", "intellij", "mcp.json")
+	if copilot.Detection != "unverified" || len(copilot.ConfigFiles) != 1 || copilot.ConfigFiles[0].Path != want {
+		t.Fatalf("Windows Copilot in JetBrains discovery failed: %+v", copilot)
 	}
 }
 

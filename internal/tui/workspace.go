@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,12 +13,49 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
+// workspaceDestinations keeps each destination identity intact for selection
+// and achievement reconciliation.
+func workspaceDestinations(preview viewmodel.SetupPreview) []viewmodel.SetupDestination {
+	return preview.Destinations
+}
+
+func destinationDisplayPath(preview viewmodel.SetupPreview, destination viewmodel.SetupDestination) string {
+	if !preview.MCP {
+		return firstNonempty(destination.Path, destination.SkillsPath)
+	}
+	configPath := firstNonempty(destination.ConfigPath, destination.Path)
+	skillsPath := destination.SkillsPath
+	if skillsPath == "" || filepath.Clean(skillsPath) == filepath.Clean(configPath) {
+		return configPath
+	}
+	return "skills: " + skillsPath + " · config: " + configPath
+}
+
+func firstNonempty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+const (
+	sectionOverviewID    = "tool:overview"
+	sectionAgentsID      = "tool:agents"
+	sectionEndpointID    = "tool:endpoint"
+	sectionRuntimeID     = "tool:runtime"
+	sectionLogsID        = "tool:logs"
+	sectionInformationID = "tool:information"
+)
+
 // workspaceState is the cached editor context for one exact target. It keeps
 // the invoking layer and profile observation beside the target draft so later
 // route handling can restore Back without losing the parent selection.
 type workspaceState struct {
 	Key               state.Key
 	Section           string
+	SectionID         string
 	InvokingView      string
 	InvokingSelection int
 	Active            bool
@@ -40,28 +78,38 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 	if len(profile.RegisteredAgents) > 0 {
 		registered = strings.Join(profile.RegisteredAgents, ", ")
 	}
-	m.form.SetSectionContent("Overview", []string{
+	m.form.SetSectionContentID(sectionOverviewID, []string{
 		"Package configuration unavailable: this package is absent from the local catalog.",
 		"Source: " + key.Source + " · Package: " + key.Package,
 		"Runtime: " + nonempty(profile.RuntimeStatus, "unknown") + " · Ownership: " + nonempty(profile.Ownership, "unknown"),
-		"No package settings or install action are available for this observation.",
-		"g · Manage named agent registrations",
+		"Locate the source checkout to edit capability settings and manage complete agent bindings.",
 	})
-	m.form.SetSectionContent("Endpoint", []string{
-		"Observed endpoint: " + nonempty(profile.URL, "not reported"),
-		"Transport: " + nonempty(profile.Transport, "not reported"),
-		"› Check connection · Enter (or c)",
+	m.form.SetSectionContentID(sectionAgentsID, []string{
+		"Observed registrations: " + registered,
+		"Complete agent bindings require the capability manifest. Locate its source to manage them.",
 	})
-	m.form.SetSectionContent("Agents", []string{
-		"Registered named agents: " + registered,
-		"› Configure named registrations · Enter (or g)",
+	m.form.SetSectionContentID(sectionEndpointID, []string{
+		"Endpoint: " + nonempty(profile.URL, "not configured"),
+		"Transport: " + nonempty(profile.Transport, "unknown"),
+		"Connection checks observe this endpoint and do not change its configuration.",
 	})
-	m.form.SetSectionContent("Information", []string{
+	checkDisabled := ""
+	if profile.URL == "" {
+		checkDisabled = "No MCP endpoint is configured"
+	} else if _, ok := m.backend.(connectionBackend); !ok {
+		checkDisabled = "Connection diagnostics are unavailable"
+	}
+	m.form.SetSectionActionsID(sectionEndpointID, forms.FormAction{ID: "check-connection", Label: "Check connection", Disabled: checkDisabled})
+	m.form.SetSectionContentID(sectionInformationID, []string{
 		"Observed target identity: " + key.Source + " / " + key.Package + " / " + nonempty(key.Environment, "(none)") + " / " + nonempty(key.Target, "default"),
+		"Observed endpoint: " + nonempty(profile.URL, "unavailable"),
+		"Observed transport: " + nonempty(profile.Transport, "unknown"),
 		"Runtime status: " + nonempty(profile.RuntimeStatus, "unknown"),
 		"Runtime ownership: " + nonempty(profile.Ownership, "unknown"),
 		"This workspace reflects observed profile facts; it does not imply package installation or local runtime ownership.",
 	})
+	m.form.SetSectionActionsID(sectionOverviewID, forms.FormAction{ID: "locate-source", Label: "Locate source checkout"})
+	m.form.SetSectionActionsID(sectionAgentsID, forms.FormAction{ID: "locate-source", Label: "Locate source checkout"})
 }
 
 func (s *workspaceState) cacheDraft(draft map[string]any) { s.Draft = cloneSetupValues(draft) }
@@ -74,14 +122,20 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 		name = preview.Key.Package
 	}
 	lines := []string{
-		"Target information",
+		"Capability information",
 		fmt.Sprintf("Capability: %s · package %s", name, preview.Key.Package),
 		fmt.Sprintf("Source identity: %s · checkout %s", preview.Key.Source, preview.SourceRoot),
-		"Environment: " + preview.Key.Environment + " · Target: " + preview.Key.Target,
-		"Exact TOML: " + preview.TargetPath,
 	}
-	if preview.TargetPath == "" {
-		lines[4] = "Exact TOML: no environment file selected"
+	if preview.CredentialState != "" {
+		lines = append(lines, "Credential state: "+preview.CredentialState)
+	}
+	if preview.CredentialNote != "" {
+		lines = append(lines, splitDisplayLine("Credential note: "+preview.CredentialNote, inner)...)
+	}
+	if preview.TargetPath != "" {
+		lines = append(lines, "Environment: "+preview.Key.Environment+" · Target: "+preview.Key.Target, "Exact TOML: "+preview.TargetPath)
+	} else if preview.Key.Environment != "" && preview.Key.Target != "" && preview.Key.Target != "default" {
+		lines = append(lines, "Selected preset: "+preview.Key.Environment+" / "+preview.Key.Target)
 	}
 	if preview.TargetTOML != "" {
 		lines = append(lines, "Raw TOML")
@@ -106,25 +160,30 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 		}
 		lines = append(lines, splitDisplayLine(fmt.Sprintf("%s: %v · from %s · %s", label, input.Value, input.Provenance, path), inner)...)
 	}
-	lines = append(lines, "Agent destinations · planned configuration files")
-	if len(preview.Destinations) == 0 {
+	destinations := workspaceDestinations(preview)
+	if preview.MCP {
+		lines = append(lines, "Agent destinations · planned skill and MCP configuration paths")
+	} else {
+		lines = append(lines, "Agent destinations · skill directories")
+	}
+	if len(destinations) == 0 {
 		lines = append(lines, "No named agent destinations are available")
 	} else {
-		for _, destination := range preview.Destinations {
+		for _, destination := range destinations {
 			selection := "not selected"
 			if destination.Selected {
 				selection = "selected for apply"
 			}
-			path := destination.ConfigPath
-			if path == "" {
-				path = destination.Path
-			}
+			path := destinationDisplayPath(preview, destination)
 			lines = append(lines, splitDisplayLine(fmt.Sprintf("%s · %s · %s", destination.ID, selection, path), inner)...)
 			if destination.Detection != "" {
 				lines = append(lines, splitDisplayLine("Detection: "+destination.Detection, inner)...)
 			}
 			if destination.Note != "" {
 				lines = append(lines, splitDisplayLine("Note: "+destination.Note, inner)...)
+			}
+			if destination.DisabledReason != "" {
+				lines = append(lines, splitDisplayLine("Unavailable for new setup: "+destination.DisabledReason, inner)...)
 			}
 		}
 	}
@@ -208,80 +267,185 @@ func nonempty(value, fallback string) string {
 	return value
 }
 
+func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
+	if m.workspace == nil {
+		return nil
+	}
+	key := m.workspace.Key
+	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
+		for i := range snapshot.Profiles {
+			profile := snapshot.Profiles[i]
+			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target && profile.Key.MCP == name {
+				copy := profile
+				return &copy
+			}
+		}
+	}
+	for _, instance := range m.mcps {
+		if instance.Key.Source == key.Source && instance.Key.Package == key.Package && instance.Key.Environment == key.Environment && instance.Key.Target == key.Target && instance.Key.MCP == name {
+			return &viewmodel.Profile{Key: instance.Key, Name: instance.Name, URL: instance.URL, RuntimeStatus: instance.Status, Ownership: instance.Ownership}
+		}
+	}
+	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == name {
+		copy := *m.workspace.Profile
+		return &copy
+	}
+	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == "" && m.workspace.Preview != nil && len(m.workspace.Preview.MCPDefinitions) == 1 {
+		copy := *m.workspace.Profile
+		copy.Key.MCP = name
+		return &copy
+	}
+	return nil
+}
+
+func (m *Model) legacyWorkspaceMCP() *viewmodel.Profile {
+	if m.workspace == nil {
+		return nil
+	}
+	key := m.workspace.Key
+	if m.workspace.Profile != nil {
+		profile := *m.workspace.Profile
+		if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
+			return &profile
+		}
+	}
+	matches := []viewmodel.Profile{}
+	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
+		for _, profile := range snapshot.Profiles {
+			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
+				matches = append(matches, profile)
+			}
+		}
+	}
+	if len(matches) == 1 {
+		return &matches[0]
+	}
+	return nil
+}
+
 func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 	if m.workspace == nil || m.form == nil {
 		return false, nil
 	}
 	switch strings.ToLower(stroke) {
-	case "c":
-		m.workspace.Section = "Connection"
-	case "a":
-		m.workspace.Section = "Authentication"
-	case "d":
-		m.workspace.Section = "Databases"
+	case "g", "r":
+		m.workspace.Section = "Agents"
+		m.workspace.SectionID = sectionAgentsID
 	case "i":
 		m.workspace.Section = "Information"
+		m.workspace.SectionID = sectionInformationID
 	case "l":
+		if !m.form.HasSectionID(sectionLogsID) {
+			return false, nil
+		}
 		m.workspace.Section = "Logs"
-		m.form.SelectSection(m.workspace.Section)
+		m.workspace.SectionID = sectionLogsID
+		m.form.SelectSectionID(m.workspace.SectionID)
 		m.form.FocusSection()
-		profile := m.workspace.Profile
+		if m.workspace.Preview == nil || len(m.workspace.Preview.MCPDefinitions) > 1 {
+			m.output = "Choose a specific MCP under Runtime to view its logs."
+			return true, nil
+		}
+		var profile *viewmodel.Profile
+		if len(m.workspace.Preview.MCPDefinitions) == 1 {
+			profile = m.profileForMCPName(m.workspace.Preview.MCPDefinitions[0].Name)
+		} else {
+			profile = m.legacyWorkspaceMCP()
+		}
 		if profile == nil {
 			m.output = "Runtime observation is unavailable; refresh this target before viewing logs."
 			return true, nil
 		}
 		m.workspace.cacheDraft(m.form.Values())
 		return true, m.openProfileLogs(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
-	case "g", "r":
-		profile := m.workspace.Profile
-		if profile == nil {
-			m.output = "Agent registration is unavailable without an observed target profile"
-			return true, nil
-		}
-		row := ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile}
-		m.workspace.cacheDraft(m.form.Values())
-		if strings.ToLower(stroke) == "r" {
-			m.removeRegistrationForm(row)
-		} else {
-			m.registrationForm(row)
-		}
-		return true, nil
 	case "s", "x":
 		shortcut := strings.ToLower(stroke)
 		if shortcut == "s" {
-			if m.workspace.ObservedOnly {
-				m.output = "This observed target is read-only; use its existing endpoint and agent registration controls."
-				return true, nil
-			}
-			if m.workspace.Preview == nil || (!m.workspace.Preview.MCP && (m.workspace.Profile == nil || m.workspace.Profile.Ownership == "local")) {
+			if m.workspace.Preview == nil || !m.workspace.Preview.MCP {
 				return false, nil
 			}
-			if m.profileError != nil {
-				m.output = "Runtime observation failed: " + m.profileError.Error() + "; refresh this target before building and starting it."
+			definitions := m.workspace.Preview.MCPDefinitions
+			if len(definitions) > 1 {
+				parent := m.workspace.Profile
+				row := ProfileRow{}
+				if parent != nil {
+					row = ProfileRow{Key: parent.Key, Profile: parent, URL: parent.URL, Status: parent.RuntimeStatus}
+				}
+				if reason := m.profileActionReason(row, "s"); reason != "" {
+					m.output = reason
+					return true, nil
+				}
+				m.output = "Choose a specific MCP under Runtime to start it."
 				return true, nil
 			}
-			if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
-				m.output = nonempty(profile.StartDisabledReason, "Runtime owner is unknown")
+			profile := (*viewmodel.Profile)(nil)
+			mcpName := ""
+			if len(definitions) == 1 {
+				mcpName = definitions[0].Name
+				profile = m.profileForMCPName(mcpName)
+			} else {
+				profile = m.legacyWorkspaceMCP()
+				if profile != nil {
+					mcpName = profile.Key.MCP
+				}
+			}
+			if profile == nil && m.workspace.Profile != nil {
+				parent := *m.workspace.Profile
+				profile = &parent
+			}
+			row := ProfileRow{}
+			if profile != nil {
+				row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+			}
+			if reason := m.profileActionReason(row, "s"); reason != "" {
+				m.output = reason
+				return true, nil
+			}
+			if m.profileError != nil {
+				m.output = "Runtime observation failed: " + m.profileError.Error() + "; refresh this target before starting it."
+				return true, nil
+			}
+			if mcpName == "" && len(definitions) > 0 {
+				m.output = "Choose a specific MCP under Runtime to start it."
 				return true, nil
 			}
 			m.workspace.cacheDraft(m.form.Values())
-			return true, m.applySetup(m.form.Values())
+			return true, m.run(operation{action: "start", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: mcpName})
 		}
-		if m.workspace.Profile == nil {
+		if m.workspace.Preview == nil || len(m.workspace.Preview.MCPDefinitions) > 1 {
+			m.output = "Choose a specific MCP under Runtime to stop it."
+			return true, nil
+		}
+		definition := catalog.MCP{}
+		var profile *viewmodel.Profile
+		if len(m.workspace.Preview.MCPDefinitions) == 1 {
+			definition = m.workspace.Preview.MCPDefinitions[0]
+			profile = m.profileForMCPName(definition.Name)
+		} else {
+			profile = m.legacyWorkspaceMCP()
+			if profile != nil {
+				definition.Name = profile.Key.MCP
+			}
+		}
+		if profile == nil {
 			m.output = "No locally owned MCP runtime is available to stop."
 			return true, nil
 		}
-		reason := m.profileActionReason(ProfileRow{Key: m.workspace.Key, Profile: m.workspace.Profile, URL: m.workspace.Profile.URL, Status: m.workspace.Profile.RuntimeStatus}, shortcut)
+		reason := m.profileActionReason(ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}, shortcut)
 		if reason != "" {
 			m.output = reason
 			return true, nil
 		}
 		m.workspace.cacheDraft(m.form.Values())
-		return true, m.run(operation{action: "stop", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target})
+		return true, m.run(operation{action: "stop", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: definition.Name})
 	default:
 		return false, nil
 	}
-	m.form.SelectSection(m.workspace.Section)
+	if m.workspace.SectionID != "" {
+		m.form.SelectSectionID(m.workspace.SectionID)
+	} else {
+		m.form.SelectSection(m.workspace.Section)
+	}
 	m.form.FocusSection()
 	return true, nil
 }
@@ -292,132 +456,128 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	}
 	stored := preview
 	m.workspace.Preview = &stored
-	sections := workspaceFormSections(preview.Key.Package, m.form.Definitions(), m.pendingSetupField)
+	sections := workspaceFormSections(preview, m.form.Definitions(), m.pendingSetupField)
 	m.form.SetSections(sections...)
 	m.form.SetSectionHeading("Workspace sections")
 	if m.workspace.Section == "" {
-		m.workspace.Section = "Overview"
+		m.workspace.Section = "Agents"
+		m.workspace.SectionID = sectionAgentsID
+		for _, section := range sections {
+			if len(section.Fields) > 0 {
+				m.workspace.Section = section.Title
+				m.workspace.SectionID = section.ID
+				break
+			}
+		}
 	}
 	if m.workspace.Profile != nil {
 		m.workspace.Profile.Key = preview.Key
 	}
-	m.form.SetSectionContent("Overview", workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Profile))
-
-	connection := []string{"Configure endpoint and listen settings for this target."}
-	if len(formSectionFields(m.form.Sections(), "Connection")) == 0 {
-		connection = []string{"No editable connection inputs are supplied by this package."}
-	}
-	m.form.SetSectionContent("Connection", connection)
-
-	credentialState := strings.TrimSpace(preview.CredentialState)
-	if credentialState == "" {
-		credentialState = "unknown"
-	}
-	authentication := []string{"Imported credentials: " + credentialState}
-	if note := strings.TrimSpace(preview.CredentialNote); note != "" {
-		authentication = append(authentication, note)
-	} else {
-		authentication = append(authentication, "This is an observation of managed credential material; authentication health has not been checked.")
-	}
-	m.form.SetSectionContent("Authentication", authentication)
-
-	hasDatabaseChoices := false
-	for _, input := range preview.Inputs {
-		name := strings.ToLower(input.Definition.Name + " " + input.Definition.Label + " " + input.Definition.OptionsFrom)
-		if strings.Contains(name, "database") || strings.Contains(name, "dbms") {
-			if len(input.Definition.Options) > 0 || input.Definition.OptionsFrom != "" {
-				hasDatabaseChoices = true
-			}
-		}
-	}
-	if !hasDatabaseChoices {
-		database := []string{"Database access is optional.", "This target supplies no database choices."}
-		if preview.TargetPath != "" {
-			database = append(database, "Target TOML: "+preview.TargetPath)
-		} else {
-			database = append(database, "Target TOML: no environment preset is selected")
-		}
-		m.form.SetSectionContent("Databases", database)
-	}
+	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Profile))
 
 	agents := []string{}
-	for _, destination := range preview.Destinations {
+	for _, destination := range workspaceDestinations(preview) {
 		state := "Not selected"
 		if destination.Selected {
 			state = "Selected for Save"
 		}
-		path := destination.ConfigPath
-		if path == "" {
-			path = destination.Path
-		}
+		path := destinationDisplayPath(preview, destination)
 		agents = append(agents, destination.ID+" · "+state+" · "+path)
+		if destination.Detection != "" {
+			agents = append(agents, destination.ID+" · Detection: "+destination.Detection)
+		}
+		if destination.Note != "" {
+			agents = append(agents, destination.ID+" · Note: "+destination.Note)
+		}
+		if destination.DisabledReason != "" {
+			agents = append(agents, destination.ID+" · Unavailable for new setup: "+destination.DisabledReason)
+		}
 	}
 	if len(agents) == 0 {
 		agents = []string{"No named agent destinations are available."}
 	}
-	m.form.SetSectionContent("Agents", agents)
+	m.form.SetSectionContentID(sectionAgentsID, agents)
 
-	logs := []string{"No MCP container has been created for this target."}
-	if m.workspace.Profile != nil {
-		switch m.workspace.Profile.RuntimeStatus {
-		case "running":
-			logs = []string{"MCP runtime is running. Logs belong to this target and closing this section does not stop it."}
-		case "never-started", "missing":
-			logs = []string{"No MCP container has been created for this target.", "Configure or Start this locally owned target to create a runtime."}
-		default:
-			logs = []string{"MCP runtime status: " + m.workspace.Profile.RuntimeStatus, "Logs are available only for an observed runtime."}
-		}
-	}
-	m.form.SetSectionContent("Logs", logs)
-	information := workspaceInformationLines(preview, max(20, m.form.PaneWidth()/2))
-	if profileInformation := workspaceProfileInformationLines(m.workspace.Profile); len(profileInformation) > 0 {
-		information = append(profileInformation, information...)
-	}
-	m.form.SetSectionContent("Information", information)
-	applyLabel := "Save and apply configuration"
-	applyDisabled := ""
 	if preview.MCP {
-		applyLabel = "Save and apply · build, start, register"
-		if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
-			applyLabel = "Save and apply configuration"
-			if strings.TrimSpace(profile.URL) == "" {
-				applyDisabled = nonempty(profile.StartDisabledReason, "Runtime owner is unknown; no endpoint is available for a safe registration.")
+		runtime := []string{}
+		logs := []string{}
+		runtimeActions := []forms.FormAction{}
+		definitions := append([]catalog.MCP(nil), preview.MCPDefinitions...)
+		if len(definitions) == 0 {
+			if profile := m.legacyWorkspaceMCP(); profile != nil {
+				definitions = append(definitions, catalog.MCP{Name: profile.Key.MCP})
 			}
 		}
-	}
-	stopDisabled := "No locally owned MCP runtime is available to stop."
-	if profile := m.workspace.Profile; profile != nil {
-		if profile.StopDisabledReason != "" {
-			stopDisabled = profile.StopDisabledReason
+		for _, definition := range definitions {
+			profile := m.profileForMCPName(definition.Name)
+			if len(preview.MCPDefinitions) == 0 {
+				profile = m.legacyWorkspaceMCP()
+			}
+			label := definition.Name
+			if label == "" && profile != nil {
+				label = nonempty(profile.Name, preview.Key.Package)
+			}
+			status, owner, endpoint := "not observed", "unknown", "not configured"
+			if profile != nil {
+				status, owner, endpoint = nonempty(profile.RuntimeStatus, "unknown"), nonempty(profile.Ownership, "unknown"), nonempty(profile.URL, "not configured")
+			}
+			runtime = append(runtime, label+" · status: "+status+" · ownership: "+owner+" · endpoint: "+endpoint)
+			startProfile := profile
+			if startProfile == nil && m.workspace.Profile != nil {
+				parent := *m.workspace.Profile
+				startProfile = &parent
+			}
+			startRow := ProfileRow{}
+			if startProfile != nil {
+				startRow = ProfileRow{Key: startProfile.Key, Profile: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
+			}
+			startDisabled := m.profileActionReason(startRow, "s")
+			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
+			if profile != nil && profile.CanStop {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
+			}
+			if profile != nil && profile.RuntimeStatus == "running" {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "logs:" + definition.Name, Label: "View " + definition.Name + " logs"})
+			}
+			if profile != nil && profile.URL != "" {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "check-connection:" + definition.Name, Label: "Check " + definition.Name + " connection"})
+			}
+			logs = append(logs, label+" · "+status)
 		}
-		if profile.CanStop {
-			stopDisabled = ""
+		if len(runtime) == 0 {
+			runtime = []string{"Runtime definitions are unavailable in this setup preview."}
+		}
+		if len(logs) == 0 {
+			logs = []string{"No runtime logs are available."}
+		}
+		m.form.SetSectionContentID(sectionRuntimeID, runtime)
+		m.form.SetSectionActionsID(sectionRuntimeID, runtimeActions...)
+		m.form.SetSectionContentID(sectionLogsID, logs)
+	}
+	information := workspaceInformationLines(preview, max(20, m.form.PaneWidth()/2))
+	if preview.MCP {
+		if profileInformation := workspaceProfileInformationLines(m.workspace.Profile); len(profileInformation) > 0 {
+			information = append(profileInformation, information...)
 		}
 	}
+	m.form.SetSectionContentID(sectionInformationID, information)
 	actions := []forms.FormAction{}
 	if !m.workspace.ObservedOnly {
-		actions = append(actions, forms.FormAction{ID: "apply", Label: applyLabel, Disabled: applyDisabled})
+		actions = append(actions, forms.FormAction{ID: "agents", Label: "Configure agent destinations"})
 	}
-	if preview.MCP && !m.workspace.ObservedOnly {
-		registrationDisabled := "No observed MCP endpoint is available for registration."
-		if profile := m.workspace.Profile; profile != nil {
-			registrationDisabled = nonempty(profile.RegistrationDisabledReason, registrationDisabled)
-			if profile.CanConfigureRegistrations {
-				registrationDisabled = ""
-			}
-		}
-		actions = append(actions, forms.FormAction{ID: "registrations", Label: "Manage agent registrations", Disabled: registrationDisabled})
-		actions = append(actions, forms.FormAction{ID: "stop", Label: "Stop MCP", Disabled: stopDisabled})
-		if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
-			startDisabled := nonempty(profile.StartDisabledReason, "Runtime owner is unknown")
-			actions = append(actions, forms.FormAction{ID: "start", Label: "Build and start MCP", Disabled: startDisabled})
-		}
+	m.form.SetSectionActionsID(sectionOverviewID, actions...)
+	if m.workspace.SectionID != "" && !m.form.HasSectionID(m.workspace.SectionID) {
+		m.workspace.SectionID = ""
 	}
-	m.form.SetSectionActions("Overview", actions...)
-	if !m.formHasSection(m.workspace.Section) {
+	if m.workspace.SectionID == "" && !m.form.HasSection(m.workspace.Section) {
 		m.workspace.Section = "Overview"
+		m.workspace.SectionID = sectionOverviewID
 	}
-	m.form.SelectSection(m.workspace.Section)
+	if m.workspace.SectionID != "" {
+		m.form.SelectSectionID(m.workspace.SectionID)
+	} else {
+		m.form.SelectSection(m.workspace.Section)
+	}
 	m.form.FocusSection()
 }
 
@@ -430,116 +590,42 @@ func formSectionFields(sections []forms.FormSection, title string) []string {
 	return nil
 }
 
-func (m *Model) formHasSection(title string) bool {
-	return m.form.HasSection(title)
-}
-
-// workspaceSections groups editable inputs by the task they represent. Package
-// inputs remain the source of truth; these names only shape the TUI navigation.
-func workspaceSections(packageID string, defs []catalog.Input, destinationField string) []forms.FormSection {
-	fields := map[string][]string{}
+func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input, destinationField string) []forms.FormSection {
+	known := make(map[string]bool, len(defs))
+	ordered := make([]string, 0, len(defs))
+	hasDestination := false
 	for _, def := range defs {
-		name := strings.ToLower(def.Name + " " + def.Label)
-		section := "Inputs"
-		switch {
-		case def.Name == destinationField:
-			section = "Destinations"
-		case strings.Contains(name, "database") || strings.Contains(name, "dbms") || strings.Contains(def.OptionsFrom, "dbms"):
-			section = "Databases"
-		case strings.Contains(name, "tenant") || strings.Contains(name, "subscription"):
-			section = "Azure"
-		case strings.Contains(name, "datasource"):
-			section = "Datasource"
-		case workspaceAuthenticationInput(def):
-			section = "Authentication"
-		case workspaceConnectionInput(def):
-			section = "Connection"
-		case packageID == "cluster-inspector":
-			section = "Connection"
+		if def.Name == destinationField {
+			hasDestination = true
+			continue
 		}
-		fields[section] = append(fields[section], def.Name)
+		known[def.Name] = true
+		ordered = append(ordered, def.Name)
 	}
-	order := []string{"Connection", "Authentication", "Databases", "Datasource", "Azure", "Inputs", "Destinations"}
-	sections := make([]forms.FormSection, 0, len(order))
-	for _, title := range order {
-		if len(fields[title]) > 0 {
-			sections = append(sections, forms.FormSection{Title: title, Fields: fields[title]})
+	sections := []forms.FormSection{{ID: sectionOverviewID, Title: "Overview"}}
+	if preview.HasManifestUI {
+		for _, section := range preview.Sections {
+			fields := make([]string, 0, len(section.Fields))
+			for _, name := range section.Fields {
+				if known[name] {
+					fields = append(fields, name)
+				}
+			}
+			if len(fields) > 0 {
+				sections = append(sections, forms.FormSection{ID: "package:" + section.ID, Title: section.Title, Fields: fields})
+			}
 		}
+	} else if len(ordered) > 0 {
+		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
 	}
+	var agentFields []string
+	if hasDestination {
+		agentFields = []string{destinationField}
+	}
+	sections = append(sections, forms.FormSection{ID: sectionAgentsID, Title: "Agents", Fields: agentFields})
+	if preview.MCP {
+		sections = append(sections, forms.FormSection{ID: sectionRuntimeID, Title: "Runtime"}, forms.FormSection{ID: sectionLogsID, Title: "Logs"})
+	}
+	sections = append(sections, forms.FormSection{ID: sectionInformationID, Title: "Information"})
 	return sections
-}
-
-func workspaceFormSections(packageID string, defs []catalog.Input, destinationField string) []forms.FormSection {
-	dynamic := workspaceSections(packageID, defs, destinationField)
-	fields := make(map[string][]string, len(dynamic))
-	for _, section := range dynamic {
-		title := section.Title
-		if title == "Destinations" {
-			title = "Agents"
-		}
-		fields[title] = section.Fields
-	}
-	sections := []forms.FormSection{
-		{Title: "Overview"},
-		{Title: "Connection", Fields: fields["Connection"]},
-		{Title: "Authentication", Fields: fields["Authentication"]},
-		{Title: "Databases", Fields: fields["Databases"]},
-	}
-	for _, title := range []string{"Datasource", "Azure", "Inputs"} {
-		if len(fields[title]) > 0 {
-			sections = append(sections, forms.FormSection{Title: title, Fields: fields[title]})
-		}
-	}
-	sections = append(sections,
-		forms.FormSection{Title: "Agents", Fields: fields["Agents"]},
-		forms.FormSection{Title: "Logs"},
-		forms.FormSection{Title: "Information"},
-	)
-	return sections
-}
-
-func workspaceAuthenticationInput(def catalog.Input) bool {
-	name := strings.ToLower(def.Name + " " + def.Label)
-	if def.Type == "secret" || def.ExclusiveGroup != "" {
-		return true
-	}
-	for _, word := range []string{"auth", "token", "credential", "kubeconfig", "cookie", "session", "oauth", "vault"} {
-		if strings.Contains(name, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func workspaceConnectionInput(def catalog.Input) bool {
-	name := strings.ToLower(def.Name + " " + def.Label)
-	for _, word := range []string{"url", "host", "address", "endpoint", "port", "listen"} {
-		if strings.Contains(name, word) {
-			return true
-		}
-	}
-	return false
-}
-
-// configureWorkspaceAuthentication keeps Grafana controls for the selected
-// authentication mode conditional, using the package's existing auth_mode
-// choice and credential names rather than changing package semantics.
-func configureWorkspaceAuthentication(form *forms.FormModel, preview viewmodel.SetupPreview) {
-	if preview.Key.Package != "grafana-inspector" {
-		return
-	}
-	available := make(map[string]bool, len(preview.Inputs))
-	for _, input := range preview.Inputs {
-		available[input.Definition.Name] = input.Editable
-	}
-	for _, name := range []string{"token", "vault_addr", "vault_path", "vault_key"} {
-		if available[name] {
-			form.SetConditional(name, "auth_mode", "api_token")
-		}
-	}
-	for _, name := range []string{"grafana_session", "session_expiry", "oauth_refresh", "refresh_cookie_name"} {
-		if available[name] {
-			form.SetConditional(name, "auth_mode", "session_cookie")
-		}
-	}
 }

@@ -36,9 +36,6 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 		if !ok || c.CatalogIndex < 0 {
 			return "package is absent from the local catalog"
 		}
-		if owner != "local" || status == "external" {
-			return "runtime belongs to another installation"
-		}
 		return ""
 	}
 	if action == "check-connection" {

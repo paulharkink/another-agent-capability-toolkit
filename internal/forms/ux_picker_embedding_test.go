@@ -3,8 +3,10 @@ package forms
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -38,6 +40,20 @@ func TestUXBrowseOpensEmbeddedBrowserOverForm(t *testing.T) {
 }
 
 func TestUXDirectoryCollectionAddUsesEmbeddedPickerAndAddsOneRow(t *testing.T) {
+	// Go's test binary runs under Docker's init process, not the user's shell.
+	// Give the picker the same explicit invoking-shell override available when
+	// AACT is launched from a terminal, so this test covers path expansion and
+	// selection rather than process-ancestry discovery.
+	shell := "/bin/sh"
+	if runtime.GOOS == "windows" {
+		var err error
+		shell, err = exec.LookPath("powershell.exe")
+		if err != nil {
+			t.Skipf("no supported PowerShell executable is available: %v", err)
+		}
+	}
+	t.Setenv("AACT_PICKER_SHELL", shell)
+
 	dir := t.TempDir()
 	current, added := filepath.Join(dir, "current"), filepath.Join(dir, "added")
 	for _, path := range []string{current, added} {
@@ -55,7 +71,18 @@ func TestUXDirectoryCollectionAddUsesEmbeddedPickerAndAddsOneRow(t *testing.T) {
 	}
 	updateFormCommand(m, key(tea.KeyTab, ""))
 	updateFormCommand(m, tea.PasteMsg{Content: added})
+	updateFormCommand(m, tea.WindowSizeMsg{Width: 240, Height: 32})
 	updateFormCommand(m, key(tea.KeyEnter, ""))
+	view := ansi.Strip(m.browser.View().Content)
+	addressChanged := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Path:") && strings.Contains(line, filepath.Base(added)) {
+			addressChanged = true
+		}
+	}
+	if strings.Contains(view, "Path unavailable:") || !addressChanged {
+		t.Fatalf("pasted directory address was not accepted by the embedded picker before selection:\n%s", view)
+	}
 	updateFormCommand(m, key(tea.KeyTab, ""))
 	updateFormCommand(m, key(tea.KeyTab, ""))
 	updateFormCommand(m, key(tea.KeyEnter, ""))

@@ -36,9 +36,9 @@ func (m *Model) chooseTarget(index int) tea.Cmd {
 	m.home.TargetChooser = nil
 	if index >= 0 && index < len(chooser.Targets) {
 		target := chooser.Targets[index]
-		return m.beginSetup(target.SourceID, target.PackageID, target.Environment, target.Name)
+		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: target.SourceID, PackageID: target.PackageID, Environment: target.Environment, Target: target.Name}, "")
 	}
-	return m.beginSetup(chooser.SourceID, chooser.PackageID, "", "")
+	return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: chooser.SourceID, PackageID: chooser.PackageID}, "")
 }
 
 func (m *Model) targetChooserItems() []homeMenuItem {
@@ -61,7 +61,7 @@ func (m *Model) setupInformationView() tea.View {
 	visible := max(1, height-8)
 	start := min(max(0, m.setupInfoOffset), max(0, len(lines)-visible))
 	m.setupInfoOffset = start
-	box := []string{"╔" + fit(" Target information · F3 / Esc Back", width-2) + "╗"}
+	box := []string{"╔" + fit(" Capability information · F3 / Esc Back", width-2) + "╗"}
 	for i := 0; i < visible; i++ {
 		line := ""
 		if start+i < len(lines) {

@@ -61,17 +61,21 @@ func (m *Model) returnToConfiguration() {
 		return
 	}
 	draft := m.setupRetry
+	values := draft.values
+	if draft.returnValues != nil {
+		values = draft.returnValues
+	}
 	m.result = nil
 	m.pendingSetup = &draft.preview
 	m.pendingSetupField = draft.destinationField
 	if m.workspace != nil && m.workspace.Key == draft.preview.Key {
-		m.workspace.cacheDraft(draft.values)
+		m.workspace.cacheDraft(values)
 		if section := setupFailureSection(draft); section != "" {
 			m.workspace.Section = section
 		}
 	}
 	m.view = draft.origin
-	m.openSetupFormWithValues(draft.preview, draft.values)
+	m.openSetupFormWithValues(draft.preview, values)
 	if m.workspace != nil && m.workspace.Active && draft.section != "" {
 		m.workspace.Section = setupFailureSection(draft)
 		if m.form != nil {
@@ -84,14 +88,6 @@ func (m *Model) returnToConfiguration() {
 func setupFailureSection(draft *setupRetryDraft) string {
 	if draft == nil {
 		return ""
-	}
-	step := strings.ToLower(draft.step)
-	detail := strings.ToLower(draft.failure)
-	if strings.Contains(step+" "+detail, "auth") || strings.Contains(step+" "+detail, "credential") || strings.Contains(step+" "+detail, "token") {
-		return "Authentication"
-	}
-	if strings.Contains(step+" "+detail, "connection") || strings.Contains(step+" "+detail, "endpoint") || strings.Contains(step+" "+detail, "url") {
-		return "Connection"
 	}
 	return draft.section
 }
@@ -126,16 +122,28 @@ func (m *Model) closeResult() {
 	if m.result == nil {
 		return
 	}
+	if m.unsavedExitFailure {
+		m.unsavedExitFailure = false
+		m.view = m.result.Origin
+		m.result = nil
+		return
+	}
 	if m.setupRetry != nil && m.workspace != nil && m.workspace.Key == m.setupRetry.preview.Key {
 		m.workspace.cacheDraft(m.setupRetry.values)
 		m.workspace.Active = false
+	}
+	if m.form == nil {
+		m.pendingDefaultAgents = false
 	}
 	m.view = m.result.Origin
 	m.result = nil
 	m.setupRetry = nil
 	m.retryOperation = nil
-	m.pendingSetup = nil
-	m.pendingSetupField = ""
+	retainWorkspaceSetup := m.workspace != nil && m.workspace.Active && m.workspace.Preview != nil && m.pendingSetup != nil && m.workspace.Key == m.pendingSetup.Key
+	if !retainWorkspaceSetup {
+		m.pendingSetup = nil
+		m.pendingSetupField = ""
+	}
 }
 
 func (m *Model) resultFrameBounds() (x, y, width, height int) {
@@ -308,10 +316,9 @@ func (m *Model) resultView() tea.View {
 		return m.smallResultView()
 	}
 
-	// Match the approved demo's centered operation-result dialog: a darkened
-	// navy overlay, gold double border, blue dialog surface, and status-colored
-	// result text. Paint the entire viewport so no terminal-default black leaks
-	// through around the dialog.
+	// Keep the underlying screen's palette fixed while drawing the result as a
+	// separate foreground layer. Terminals do not alpha-composite, so dimming
+	// the whole canvas changes the parent screen's palette and focus colors.
 	r := m.result
 	width, height := m.width, m.height
 	visualRows := wrapResultRows(r.Rows, m.resultBodyWidth())
@@ -321,48 +328,47 @@ func (m *Model) resultView() tea.View {
 	r.Offset = min(r.Offset, max(0, len(visualRows)-bodyRows))
 
 	const (
-		overlayBG = "\x1b[48;2;6;22;74m"
-		dialogBG  = "\x1b[48;2;12;49;133m"
-		goldFG    = "\x1b[38;2;255;223;134m"
-		bodyFG    = "\x1b[38;2;233;245;255m"
-		okFG      = "\x1b[38;2;217;246;228m"
-		errFG     = "\x1b[38;2;255;220;200m"
+		dialogBG = "\x1b[48;2;12;49;133m"
+		goldFG   = "\x1b[38;2;255;223;134m"
+		bodyFG   = "\x1b[38;2;233;245;255m"
+		okFG     = "\x1b[38;2;217;246;228m"
+		errFG    = "\x1b[1;38;2;255;77;95m"
 	)
 	statusFG := okFG
 	if r.Failed {
 		statusFG = errFG
 	}
-	// A terminal has no alpha compositing, so show the previous screen's
-	// content in a muted foreground over the dark navy overlay as the closest
-	// equivalent to the demo's translucent backdrop.
 	result := m.result
 	m.result = nil
-	underlying := ansi.Strip(m.View().Content)
+	// Recover the rendered parent with ANSI colors intact. The result is drawn
+	// over it without darkening or muting any content outside the dialog.
+	underlying := m.View().Content
 	m.result = result
-	underRows := strings.Split(underlying, "\n")
-	const mutedFG = "\x1b[38;2;82;103;143m"
-	canvas := make([]string, height)
-	for row := range canvas {
-		text := strings.Repeat(" ", width)
-		if row < len(underRows) {
-			text = fit(underRows[row], width)
-		}
-		canvas[row] = overlayBG + mutedFG + text
-	}
+	canvas := fixedPaletteRows(underlying, width, height)
 	box := make([]string, dialogHeight)
 	box[0] = "╔" + strings.Repeat("═", dialogWidth-2) + "╗"
-	box[1] = "║" + fit(resultHeader(r), dialogWidth-2) + "║"
+	statusLabel := "\x1b[1;38;2;119;255;174mSUCCESS\x1b[m · "
+	if r.Failed {
+		statusLabel = "\x1b[1;38;2;255;77;95mFAILED\x1b[m · "
+	}
+	box[1] = "║" + fit(statusLabel+resultHeader(r), dialogWidth-2) + "║"
 	box[2] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
 	for i := 0; i < bodyRows; i++ {
 		text := ""
 		if index := r.Offset + i; index < len(visualRows) {
-			text = ansi.Cut(visualRows[index], r.Column, r.Column+dialogWidth-3)
+			text = ansi.Cut(visualRows[index], r.Column, r.Column+dialogWidth-4)
 		}
-		rowFG := statusFG
-		if i > 0 {
-			rowFG = bodyFG
+		rowFG := bodyFG
+		if strings.Contains(text, "Failed") {
+			rowFG = errFG
+		} else if i == 0 {
+			rowFG = statusFG
 		}
-		box[3+i] = "║" + fit(" "+text, dialogWidth-2) + "║"
+		bar := " "
+		if len(visualRows) > bodyRows {
+			bar = resultScrollbar(r.Offset, len(visualRows), bodyRows, i)
+		}
+		box[3+i] = "║" + fit(" "+text, dialogWidth-3) + bar + "║"
 		box[3+i] = rowFG + box[3+i]
 	}
 	box[dialogHeight-4] = "╠" + strings.Repeat("═", dialogWidth-2) + "╣"
@@ -375,17 +381,30 @@ func (m *Model) resultView() tea.View {
 	box[dialogHeight-2] = "║" + fit(resultActions(r, m.canEditResultAnswers()), dialogWidth-2) + "║"
 	box[dialogHeight-1] = "╚" + strings.Repeat("═", dialogWidth-2) + "╝"
 	for i, line := range box {
-		baseline := ansi.Strip(canvas[y+i])
-		left := ansi.Cut(baseline, 0, x)
-		right := ansi.Cut(baseline, x+dialogWidth, width)
-		canvas[y+i] = overlayBG + mutedFG + left + dialogBG + goldFG + line + overlayBG + mutedFG + right
+		// Restore the dialog's fixed blue surface and readable body foreground
+		// after inline status colors reset their SGR state.
+		line = strings.NewReplacer("\x1b[m", dialogBG+bodyFG, "\x1b[0m", dialogBG+bodyFG).Replace(line)
+		canvas[y+i] = composeOverlayRow(canvas[y+i], dialogBG+goldFG+line, x, dialogWidth, width)
 	}
-	content := navySGR + strings.Join(canvas, "\x1b[m\n") + "\x1b[m"
-	content = strings.ReplaceAll(content, "\x1b[m", overlayBG)
-	content = strings.TrimSuffix(content, overlayBG) + "\x1b[m"
+	content := strings.Join(canvas, navySGR+"\n") + "\x1b[m"
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+func resultScrollbar(offset, total, visible, row int) string {
+	if total <= visible || visible < 1 {
+		return " "
+	}
+	thumb := max(1, visible*visible/total)
+	start := 0
+	if total > visible {
+		start = offset * (visible - thumb) / (total - visible)
+	}
+	if row >= start && row < start+thumb {
+		return "█"
+	}
+	return "│"
 }
 
 func resultActionLabels(result *resultState, canReturn bool) []string {
@@ -413,15 +432,15 @@ func resultActions(result *resultState, canReturn bool) string {
 }
 
 func resultHeader(result *resultState) string {
-	header := " Operation result · Tab select · Esc Close"
+	header := " Operation result · Esc Close"
 	if result != nil && result.CanReturn {
-		header = " Operation result · E Edit answers · Tab actions · Esc Close"
+		header = " Operation result · E Edit answers · Esc Close"
 	}
 	if result != nil && result.CanRetry {
-		header = " Operation result · R Retry · Tab actions · Esc Close"
+		header = " Operation result · R Retry · Esc Close"
 	}
 	if result != nil && result.CanReturn && result.CanRetry {
-		header = " Operation result · E Edit answers · R Retry · Tab · Esc Close"
+		header = " Operation result · E Edit answers · R Retry · Esc Close"
 	}
 	return header
 }
@@ -440,7 +459,11 @@ func (m *Model) smallResultView() tea.View {
 	if m.result.CanRetry {
 		controls += " · R retry"
 	}
-	lines := []string{fit(fmt.Sprintf("Result · need 80×16 · %d×%d · %s", width, height, controls), width)}
+	status := "SUCCESS"
+	if m.result.Failed {
+		status = "FAILED"
+	}
+	lines := []string{fit(fmt.Sprintf("Result · %s · need 80×16 · %d×%d · %s", status, width, height, controls), width)}
 	for index := 0; index < bodyRows; index++ {
 		text := ""
 		if row := m.result.Offset + index; row < len(rows) {

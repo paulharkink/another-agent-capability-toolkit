@@ -11,6 +11,7 @@ import (
 )
 
 func Validate(defs []catalog.Input, values map[string]any) error {
+	defs = catalog.VisibleInputs(defs, values)
 	activeGroup := map[string]string{}
 	for _, def := range defs {
 		def = scalarDefinition(def)

@@ -191,7 +191,7 @@ func TestTargetBackedMultiChoiceCannotCreateEmptyRows(t *testing.T) {
 	if m.editing {
 		t.Fatal("Enter opened a free-text editor for target-backed choices")
 	}
-	if !strings.Contains(m.View().Content, "No choices available in selected target") {
+	if !strings.Contains(m.View().Content, "No choices are currently available") {
 		t.Fatalf("missing empty-choice explanation: %s", m.View().Content)
 	}
 }

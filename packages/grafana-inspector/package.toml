@@ -12,7 +12,7 @@ destination = "SKILL.md"
 [[inputs]]
 name = "local_port"
 type = "integer"
-label = "Local port"
+label = "Listen port"
 config_key = "mcp.local_port"
 default = 8765
 min = 1024
@@ -21,8 +21,16 @@ max = 65535
 [[inputs]]
 name = "host"
 type = "string"
-label = "Host"
+label = "Listen address"
 default = "127.0.0.1"
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+hint = "User-editable name shown by MCP clients for this server."
+config_key = "mcp.registration_name"
+required = true
 
 [[inputs]]
 name = "url"
@@ -34,7 +42,7 @@ required = true
 [[inputs]]
 name = "auth_mode"
 type = "choice"
-label = "Auth mode"
+label = "Authentication mode"
 config_key = "grafana.auth_mode"
 required = true
 [[inputs.options]]
@@ -47,45 +55,50 @@ label = "session_cookie"
 [[inputs]]
 name = "datasource_uid"
 type = "string"
-label = "Datasource uid"
+label = "Datasource UID"
 config_key = "grafana.datasource_uid"
 
 [[inputs]]
 name = "token"
 type = "secret"
 label = "Token"
+visible_when = { auth_mode = "api_token" }
 
 [[inputs]]
 name = "grafana_session"
 type = "secret"
 label = "Grafana session"
+visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
 name = "oauth_refresh"
 type = "secret"
-label = "Oauth refresh"
+label = "OAuth refresh"
+visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
 name = "session_expiry"
 type = "secret"
 label = "Session expiry"
+visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
 name = "refresh_cookie_name"
 type = "string"
 label = "Refresh cookie name"
 config_key = "grafana.refresh_cookie_name"
+visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
 name = "ca_file"
 type = "file"
-label = "Ca file"
+label = "CA file"
 config_key = "grafana.ca_file"
 
 [[inputs]]
 name = "verify_x509_strict"
 type = "boolean"
-label = "Verify x509 strict"
+label = "Verify X.509 strict"
 config_key = "grafana.verify_x509_strict"
 
 [[inputs]]
@@ -93,18 +106,21 @@ name = "vault_addr"
 type = "string"
 label = "Vault addr"
 config_key = "grafana.vault_addr"
+visible_when = { auth_mode = "api_token" }
 
 [[inputs]]
 name = "vault_path"
 type = "string"
 label = "Vault path"
 config_key = "grafana.vault_path"
+visible_when = { auth_mode = "api_token" }
 
 [[inputs]]
 name = "vault_key"
 type = "string"
 label = "Vault key"
 config_key = "grafana.vault_key"
+visible_when = { auth_mode = "api_token" }
 
 [mcp]
 name = "grafana-inspector"
@@ -113,6 +129,7 @@ transport = "streamable-http"
 container_port = 8765
 endpoint_path = "/mcp"
 host_port_input = "local_port"
+registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
 
@@ -129,3 +146,25 @@ timeout_seconds = 300
 
 [mcp.actions.authenticate.windows]
 command = ["bin/inspector-helper.exe", "grafana-inspector", "authenticate"]
+
+[ui]
+[[ui.sections]]
+id = "connection"
+title = "Connection"
+fields = ["host", "local_port", "registration_name", "url"]
+[[ui.sections]]
+id = "authentication"
+title = "Authentication"
+fields = ["auth_mode", "token", "grafana_session", "oauth_refresh", "session_expiry", "refresh_cookie_name"]
+[[ui.sections]]
+id = "datasource"
+title = "Datasource"
+fields = ["datasource_uid"]
+[[ui.sections]]
+id = "tls"
+title = "TLS"
+fields = ["ca_file", "verify_x509_strict"]
+[[ui.sections]]
+id = "vault"
+title = "Vault"
+fields = ["vault_addr", "vault_path", "vault_key"]

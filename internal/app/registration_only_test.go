@@ -50,6 +50,31 @@ func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) 
 	}
 }
 
+func TestConfigureRegistrationsForLocalCapabilityInstallsCompanionSkill(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
+	result, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	components := map[string]bool{}
+	for _, row := range rows {
+		components[row.Component] = true
+	}
+	if !components["skill"] || !components["mcp"] || len(result.Changes) != 2 {
+		t.Fatalf("complete capability was not attached: result=%+v rows=%+v", result, rows)
+	}
+}
+
 func TestConfigureRegistrationsUsesLocalPackageTimeout(t *testing.T) {
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationTimeoutMS: 60000}
@@ -63,8 +88,13 @@ func TestConfigureRegistrationsUsesLocalPackageTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
-	if err != nil || len(rows) != 1 || rows[0].TimeoutMS != 60000 {
+	if err != nil || len(rows) != 2 {
 		t.Fatalf("MCP registration timeout: %+v, %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.Component == "mcp" && row.TimeoutMS != 60000 {
+			t.Fatalf("MCP registration timeout: %+v", row)
+		}
 	}
 }
 

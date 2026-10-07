@@ -118,7 +118,7 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Set up another target", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
@@ -174,7 +174,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "Set up another target") {
+	if !strings.Contains(m.View().Content, "Configure now") {
 		t.Fatal(m.View().Content)
 	}
 }
@@ -340,7 +340,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
 			t.Fatal("short view omitted its scroll cue", v.Content)
 		}
-		if size.Height > 16 && !strings.Contains(v.Content, "Set up another target") {
+		if size.Height > 16 && !strings.Contains(v.Content, "Configure now") {
 			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
@@ -354,11 +354,11 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 			backend.snapshot.Profiles[1].RegisteredAgents = []string{"claude"}
 			m.Update(m.load()())
 			openRegistrationWorkspaceAction(t, m, true)
-			if m.registration == nil || !m.registration.Remove || m.busy || backend.request != nil || m.pending.action == "uninstall" {
-				t.Fatalf("focused removal opened a capability uninstall or dispatched early: registration=%+v busy=%v pending=%q", m.registration, m.busy, m.pending.action)
+			if m.registration != nil || m.form == nil || !m.form.HasSectionID(sectionAgentsID) || m.busy || backend.request != nil || m.pending.action == "uninstall" {
+				t.Fatalf("agent management did not use the complete capability workspace: registration=%+v form=%v busy=%v pending=%q", m.registration, m.form != nil, m.busy, m.pending.action)
 			}
-			if strings.Contains(m.View().Content, "Uninstall capability") {
-				t.Fatal("focused removal offered capability uninstall")
+			if strings.Contains(m.View().Content, "Uninstall capability") || strings.Contains(m.View().Content, "Remove registrations") {
+				t.Fatal("separate registration removal flow remained visible")
 			}
 		})
 	}
@@ -375,7 +375,7 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatal("F2 should focus the context list before opening an action")
 	}
-	for _, want := range []string{"Set up another target", "View capability details", "MCP · profile", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "MCP · profile", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
@@ -386,7 +386,7 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	if m.form == nil || m.workspace == nil || m.form.SectionTitle() != "Overview" {
 		t.Fatalf("F2 on a target did not open the shared Overview workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	for _, want := range []string{"Configure ·", "Overview", "Connection", "Authentication", "Agents", "Logs", "Information"} {
+	for _, want := range []string{"Configure ·", "Overview", "Agents", "Runtime", "Logs", "Information"} {
 		if !strings.Contains(ansi.Strip(m.View().Content), want) {
 			t.Fatalf("shared target workspace omitted %q:\n%s", want, ansi.Strip(m.View().Content))
 		}

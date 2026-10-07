@@ -18,6 +18,7 @@ import (
 
 var managementGold = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
 var managementSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+var managementFocused = lipgloss.NewStyle().Bold(true).Reverse(true)
 
 func (m *Model) environmentRoot() string {
 	if root := m.settings["environment-root"]; root != "" {
@@ -941,7 +942,7 @@ func (m *Model) renderManagementList(lines []string, rows []string, visible int)
 		start = 0
 	}
 	start = min(start, max(0, len(rows)-visible))
-	lines[4] = "║" + managementGold.Render(managementScrollTitle(" "+m.view, len(rows), start, visible, width-2)) + "║"
+	lines[4] = "║" + managementFocused.Render(managementScrollTitle(" "+m.view, len(rows), start, visible, width-2)) + "║"
 	for y := 0; y < visible; y++ {
 		i := start + y
 		if i >= len(rows) {
@@ -957,7 +958,12 @@ func (m *Model) renderManagementList(lines []string, rows []string, visible int)
 		} else if m.view == "Settings" && i == 1 {
 			prefix = "── "
 		}
-		row := fit(prefix+rows[i], width-2)
+		textWidth, bar := width-2, ""
+		if len(rows) > visible {
+			textWidth = width - 3
+			bar = scrollbarGlyph(start, len(rows), visible, y)
+		}
+		row := fit(prefix+rows[i], textWidth) + bar
 		if selectable && i == m.selected {
 			row = managementSelected.Render(row)
 		} else if prefix == "── " {
@@ -1001,7 +1007,15 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 	if m.management.Focus == ProfilesPane {
 		detailTitle = "►" + detailTitle
 	}
-	lines[4] = "╠" + managementGold.Render(managementScrollTitle(leftTitle, len(rows), start, visible, left)) + "╦" + managementGold.Render(managementScrollTitle(detailTitle, len(details), detailStart, visible, right)) + "╣"
+	leftTitleText := managementGold.Render(managementScrollTitle(leftTitle, len(rows), start, visible, left))
+	if m.management.Focus == CapabilitiesPane {
+		leftTitleText = managementFocused.Render(managementScrollTitle(leftTitle, len(rows), start, visible, left))
+	}
+	rightTitleText := managementGold.Render(managementScrollTitle(detailTitle, len(details), detailStart, visible, right))
+	if m.management.Focus == ProfilesPane {
+		rightTitleText = managementFocused.Render(managementScrollTitle(detailTitle, len(details), detailStart, visible, right))
+	}
+	lines[4] = "╠" + leftTitleText + "╦" + rightTitleText + "╣"
 	for y := 0; y < visible; y++ {
 		i := start + y
 		leftText := ""
@@ -1018,23 +1032,33 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 		if detailIndex < len(details) {
 			rightText = details[detailIndex]
 		}
-		leftCell := fit(leftText, left)
+		leftWidth, rightWidth := left, right
+		leftMark, rightMark := "", ""
+		if len(rows) > visible {
+			leftWidth = left - 1
+			leftMark = scrollbarGlyph(start, len(rows), visible, y)
+		}
+		if len(details) > visible {
+			rightWidth = right - 1
+			rightMark = scrollbarGlyph(detailStart, len(details), visible, y)
+		}
+		leftCell := fit(leftText, leftWidth) + leftMark
 		if m.management.Focus == CapabilitiesPane && i == m.selected {
 			leftCell = managementSelected.Render(leftCell)
 		}
-		rightCell := fit(rightText, right)
+		rightCell := fit(rightText, rightWidth) + rightMark
 		actionIndex, hasAction := m.settingsActionIndex(details)
 		if hasAction && detailIndex == actionIndex {
 			label := details[detailIndex]
 			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-action"})
 			rightCell = managementGold.Render(fit(label, right))
 			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
-				rightCell = managementSelected.Render(fit(label, right))
+				rightCell = managementSelected.Render(fit(label, rightWidth) + rightMark)
 			}
 		} else if detailIndex < len(details) {
 			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-detail"})
 			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
-				rightCell = managementSelected.Render(fit(rightText, right))
+				rightCell = managementSelected.Render(fit(rightText, rightWidth) + rightMark)
 			}
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
@@ -1071,7 +1095,15 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 	if m.management.Focus == ProfilesPane {
 		detailTitle = "► " + selectedName + " · Agent details"
 	}
-	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(detailTitle, right)) + "╣"
+	leftTitleCell := managementGold.Render(leftTitle)
+	if m.management.Focus == CapabilitiesPane {
+		leftTitleCell = managementFocused.Render(leftTitle)
+	}
+	rightTitleCell := managementGold.Render(fit(detailTitle, right))
+	if m.management.Focus == ProfilesPane {
+		rightTitleCell = managementFocused.Render(fit(detailTitle, right))
+	}
+	lines[4] = "╠" + leftTitleCell + "╦" + rightTitleCell + "╣"
 	details, controls, firstControl := m.agentManagementDisplayLines()
 	detailStart := 0
 	if m.management.Focus == ProfilesPane {
@@ -1079,7 +1111,11 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 	}
 	detailStart = min(detailStart, max(0, len(details)-visible))
 	detailTitle = managementScrollTitle(detailTitle, len(details), detailStart, visible, right)
-	lines[4] = "╠" + managementGold.Render(leftTitle) + "╦" + managementGold.Render(fit(detailTitle, right)) + "╣"
+	rightTitleCell = managementGold.Render(fit(detailTitle, right))
+	if m.management.Focus == ProfilesPane {
+		rightTitleCell = managementFocused.Render(fit(detailTitle, right))
+	}
+	lines[4] = "╠" + leftTitleCell + "╦" + rightTitleCell + "╣"
 	for y := 0; y < visible; y++ {
 		i := start + y
 		leftText := ""
@@ -1102,7 +1138,17 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 		if len(rows) > 0 && detailIndex < len(details) {
 			rightText = details[detailIndex]
 		}
-		leftCell := fit(leftText, left)
+		leftWidth, rightWidth := left, right
+		leftMark, rightMark := "", ""
+		if len(rows) > visible {
+			leftWidth = left - 1
+			leftMark = scrollbarGlyph(start, len(rows), visible, y)
+		}
+		if len(details) > visible {
+			rightWidth = right - 1
+			rightMark = scrollbarGlyph(detailStart, len(details), visible, y)
+		}
+		leftCell := fit(leftText, leftWidth) + leftMark
 		if i < len(rows) && i == m.selected {
 			if m.management.Focus == CapabilitiesPane {
 				leftCell = managementSelected.Render(leftCell)
@@ -1119,7 +1165,7 @@ func (m *Model) renderAgentManagement(lines []string, visible int) {
 				rightText = managementSelected.Render(fit(rightText, right))
 			}
 		}
-		rightCell := fit(rightText, right)
+		rightCell := fit(rightText, rightWidth) + rightMark
 		if rightText != ansi.Strip(rightText) {
 			rightCell = rightText
 		}
@@ -1150,6 +1196,11 @@ func (m *Model) agentConfigView() tea.View {
 	visible := height - 5
 	for y := 0; y < visible; y++ {
 		text := ""
+		textWidth, bar := width-2, ""
+		if len(content) > visible {
+			textWidth = width - 3
+			bar = scrollbarGlyph(m.management.ViewerOffset, len(content), visible, y)
+		}
 		i := m.management.ViewerOffset + y
 		if i < len(content) {
 			line := []rune(content[i])
@@ -1157,7 +1208,7 @@ func (m *Model) agentConfigView() tea.View {
 				text = string(line[m.management.ViewerHorizontal:])
 			}
 		}
-		lines[y+3] = "║" + fit(text, width-2) + "║"
+		lines[y+3] = "║" + fit(text, textWidth) + bar + "║"
 	}
 	visibleEnd := min(len(content), m.management.ViewerOffset+visible)
 	position := fmt.Sprintf("Lines %d–%d of %d", m.management.ViewerOffset+1, visibleEnd, len(content))

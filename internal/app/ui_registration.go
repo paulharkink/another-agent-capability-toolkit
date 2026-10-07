@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -23,6 +24,85 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 	if len(q.RemoveAgentIDs) > 0 && len(q.RemoveRegistrations) > 0 {
 		return viewmodel.OperationResult{}, errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both")
 	}
+	for _, id := range q.AgentIDs {
+		kind, _, _ := strings.Cut(id, ":")
+		if strings.EqualFold(id, "all") || strings.EqualFold(kind, "generic") || strings.EqualFold(kind, "generic-mcp") {
+			return viewmodel.OperationResult{}, fmt.Errorf("MCP registrations require a named agent destination; %q is not supported", id)
+		}
+	}
+	source, sourceErr := s.forSource(q.Key.Source)
+	if sourceErr != nil {
+		result := viewmodel.OperationResult{}
+		if q.URL != "" {
+			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
+		}
+		return result, fmt.Errorf("cannot configure this capability without its catalog package; locate the package source first: %w", sourceErr)
+	}
+	p, packageErr := source.packageByID(q.Key.Package)
+	if packageErr != nil {
+		result := viewmodel.OperationResult{}
+		if q.URL != "" {
+			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
+		}
+		return result, fmt.Errorf("cannot configure this capability without its catalog package; locate the package source first: %w", packageErr)
+	}
+	if p.HasMCP() {
+		if p.Skill == nil {
+			return viewmodel.OperationResult{}, errors.New("this MCP has no companion skill in its catalog capability; locate the package source")
+		}
+		if len(p.MCPDefinitions()) != 1 {
+			return viewmodel.OperationResult{}, errors.New("multi-MCP capabilities must be configured through the capability setup form so every endpoint is supplied")
+		}
+		if hasRemoval {
+			rows, err := source.Store.Installations()
+			if err != nil {
+				return viewmodel.OperationResult{}, err
+			}
+			removed := map[string]bool{}
+			for _, id := range q.RemoveAgentIDs {
+				removed[id] = true
+			}
+			for _, identity := range q.RemoveRegistrations {
+				removed[identity.AgentID] = true
+			}
+			envs := map[string]agents.Environment{}
+			for _, row := range rows {
+				if !sameCapabilityKey(row.Key, q.Key) || (row.Component != "skill" && row.Component != "mcp") || row.AgentID == "" || !removed[row.AgentID] {
+					continue
+				}
+				kind := row.AgentKind
+				if kind == "" {
+					kind, _, _ = strings.Cut(row.AgentID, ":")
+				}
+				env := envs[row.AgentID]
+				env.ID, env.Kind, env.Home = row.AgentID, kind, row.AgentHome
+				if row.Component == "skill" {
+					env.SkillsDir = filepath.Dir(row.Destination)
+				}
+				if row.Component == "mcp" {
+					env.ConfigPath = row.Destination
+				}
+				envs[row.AgentID] = env
+			}
+			result, err := source.removeCapabilityBindings(ctx, p, q.Key, envs)
+			return result, normalizeRegistrationCancellation(ctx, err)
+		}
+		if q.URL == "" && len(q.AgentIDs) > 0 {
+			return viewmodel.OperationResult{}, errors.New("an external MCP endpoint URL is required to configure this capability")
+		}
+		externalURLs := map[string]string(nil)
+		externalURL := q.URL
+		if len(p.MCPs) > 0 && q.URL != "" {
+			externalURLs = map[string]string{p.MCPs[0].Name: q.URL}
+			externalURL = ""
+		}
+		request := viewmodel.SetupInstallRequest{
+			SetupRequest:   viewmodel.SetupRequest{PackageID: p.ID, Environment: q.Key.Environment, Target: q.Key.Target},
+			DestinationIDs: q.AgentIDs, ExternalURL: externalURL, ExternalURLs: externalURLs,
+		}
+		result, err := source.UIInstall(ctx, request)
+		return result, normalizeRegistrationCancellation(ctx, err)
+	}
 	if hasRemoval {
 		identities := make([]registrationIdentity, 0, len(q.RemoveRegistrations))
 		for _, identity := range q.RemoveRegistrations {
@@ -40,12 +120,6 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 			Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message,
 			Step: step, Target: target,
 		}, normalizeRegistrationCancellation(ctx, err)
-	}
-	for _, id := range q.AgentIDs {
-		kind, _, _ := strings.Cut(id, ":")
-		if strings.EqualFold(id, "all") || strings.EqualFold(kind, "generic") || strings.EqualFold(kind, "generic-mcp") {
-			return viewmodel.OperationResult{}, fmt.Errorf("MCP registrations require a named agent destination; %q is not supported", id)
-		}
 	}
 	if q.URL == "" {
 		return viewmodel.OperationResult{}, errors.New("an explicit MCP endpoint URL is required to register named agents")

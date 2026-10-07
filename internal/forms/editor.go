@@ -11,10 +11,11 @@ import (
 )
 
 type Editor struct {
-	defs             []catalog.Input
-	values, original map[string]any
-	initialErrors    map[string]error
-	cancelled        bool
+	defs              []catalog.Input
+	values, original  map[string]any
+	visibilityContext map[string]any
+	initialErrors     map[string]error
+	cancelled         bool
 }
 
 func NewEditor(defs []catalog.Input, prefill map[string]any) *Editor {
@@ -32,7 +33,12 @@ func NewEditor(defs []catalog.Input, prefill map[string]any) *Editor {
 	e.original = copyAnswers(e.values)
 	return e
 }
-func (e *Editor) Values() map[string]any { return copyAnswers(e.values) }
+func (e *Editor) Values() map[string]any  { return copyAnswers(e.values) }
+func (e *Editor) HasUnsavedChanges() bool { return !answersEqual(e.values, e.original) }
+func (e *Editor) MarkClean()              { e.original = copyAnswers(e.values) }
+func (e *Editor) SetVisibilityContext(values map[string]any) {
+	e.visibilityContext = copyAnswers(values)
+}
 func (e *Editor) Apply(name string, value any) error {
 	if e.cancelled {
 		return picker.ErrCancelled
@@ -59,6 +65,7 @@ func (e *Editor) Apply(name string, value any) error {
 	editable := def
 	editable.Required = false
 	editable.MinItems = nil
+	editable.VisibleWhen = nil
 	if err = Validate([]catalog.Input{editable}, map[string]any{name: normalized}); err != nil {
 		return err
 	}
@@ -85,12 +92,17 @@ func (e *Editor) Commit() (map[string]any, error) {
 	if e.cancelled {
 		return nil, picker.ErrCancelled
 	}
-	for _, def := range e.defs {
+	context := copyAnswers(e.visibilityContext)
+	for name, value := range e.values {
+		context[name] = value
+	}
+	visible := catalog.VisibleInputs(e.defs, context)
+	for _, def := range visible {
 		if err := e.initialErrors[def.Name]; err != nil {
 			return nil, err
 		}
 	}
-	if err := Validate(e.defs, e.values); err != nil {
+	if err := Validate(visible, context); err != nil {
 		return nil, err
 	}
 	return e.Values(), nil
@@ -253,12 +265,45 @@ func copyAnswers(values map[string]any) map[string]any {
 		if value != nil {
 			rv := reflect.ValueOf(value)
 			if rv.Kind() == reflect.Slice {
-				copy := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
-				reflect.Copy(copy, rv)
-				value = copy.Interface()
+				if !rv.IsNil() {
+					copy := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+					reflect.Copy(copy, rv)
+					value = copy.Interface()
+				}
 			}
 		}
 		out[name] = value
 	}
 	return out
+}
+
+func answersEqual(left, right map[string]any) bool {
+	for name, value := range left {
+		if !answerValueEqual(value, right[name]) {
+			return false
+		}
+	}
+	for name, value := range right {
+		if !answerValueEqual(value, left[name]) {
+			return false
+		}
+	}
+	return true
+}
+
+func answerValueEqual(left, right any) bool {
+	if reflect.DeepEqual(left, right) {
+		return true
+	}
+	isEmptySlice := func(value any) bool {
+		if value == nil {
+			return true
+		}
+		rv := reflect.ValueOf(value)
+		return rv.Kind() == reflect.Slice && rv.Len() == 0
+	}
+	if isEmptySlice(left) && isEmptySlice(right) {
+		return true
+	}
+	return false
 }

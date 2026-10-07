@@ -130,12 +130,12 @@ func TestUXExclusiveAlternativeSwitchIsVisible(t *testing.T) {
 	}
 }
 
-func TestUXEmptyChoicesExplainOptionalInput(t *testing.T) {
+func TestUXEmptyChoicesExplainOptionsContext(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "db", Label: "Database", Type: "choice", OptionsFrom: "dbms.*.tenants.*"}}, nil)
 	m.SetHint("db", "target TOML: /etc/aact/target.toml")
 	m.Update(key(tea.KeyEnter, ""))
 	view := strings.ToLower(m.View().Content)
-	if m.editing || !strings.Contains(view, "optional") || !strings.Contains(view, "target toml") {
+	if m.editing || !strings.Contains(view, "no choices are currently available") || !strings.Contains(view, "target toml") || strings.Contains(view, "database access") {
 		t.Fatalf("empty options lack optional target-TOML explanation:\n%s", view)
 	}
 }

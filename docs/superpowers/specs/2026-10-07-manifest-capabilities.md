@@ -1,0 +1,17 @@
+# Manifest Driven Capability Setup
+
+Capability manifests own their input definitions, visible labels and hints, form sections and order, simple equality conditions, and exclusive groups. Environment packs supply only prefill/default values and target policy. Setup rendering must not infer capability identity or field meaning from package or input names.
+
+Visibility conditions are equality checks combined with AND. Numeric TOML integers and normalized numeric values compare numerically; strings and booleans retain strict types. Hidden inputs are omitted from visible definitions but their values remain untouched. Required-field validation applies only to visible inputs.
+
+`package.toml` schema version 1 gains additive `ui` metadata: sections have `id`, `title`, and ordered `fields`; inputs may declare `visible_when` as a map of declared controller input names to expected values. Conditions use equality only and all controllers must match. Sections may reference each input at most once; every input must be assigned when sections are declared. References and controllers must exist. Existing manifests without `ui` retain input-order fallback.
+
+Multiple MCP definitions may be declared as `[[mcps]]`. Existing `[mcp]` stays supported. A manifest cannot mix forms; list entries have unique valid names; their fields use the existing MCP schema. `MCPDefinitions()` provides a uniform view and `HasMCP()` reports either form. Setup previews expose UI sections, whether manifest UI is present, and all MCP definitions while retaining the legacy MCP boolean.
+
+The backend binds and unbinds a capability across selected agent destinations as desired state. A destination removed from the selection loses only that capability's recorded skill and MCP registrations; runtime lifecycle remains capability scoped. Each named MCP has independent runtime identity, endpoint URL, registration name, timeout, and install record. External endpoint attachment supplies a URL for each named MCP; a legacy single external URL remains valid for a single MCP only. The runtime manager and profile/runtime actions address the named MCP identity.
+
+Conditional validation is shared by CLI and forms: all declared conditions must match, hidden required inputs are skipped, and inactive field values are preserved for later mode changes. Input forms render only visible inputs and react immediately to controller edits.
+
+The TUI uses manifest section order, labels, and conditions without package or input-name heuristics. A package without manifest sections uses input-order fallback; a package with no inputs creates no synthetic input section. Overview, Agents, and Information stay generic. Runtime and Logs are shown only for packages with at least one MCP. Skill-only packages enter their setup flow without requiring an environment target or MCP configuration. Unsaved setup and registration drafts remain guarded when the user exits, backs out, or closes an overlay.
+
+Migrate cluster-inspector, grafana-inspector, azure-inspector, forgejo, and git-repo-map labels, sections, and visibility conditions from manager assumptions into manifests. Skill-only packages have no required target or MCP-only sections. Packages without sections keep input-order fallback; zero-input packages do not invent inputs. Generic Overview, Agents, and Information pages remain; Runtime and Logs exist only when MCP definitions exist.

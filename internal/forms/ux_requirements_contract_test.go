@@ -16,17 +16,20 @@ func TestUXTabCyclesSectionsDetailsAndActions(t *testing.T) {
 	assertFocusedPane := func(want string) {
 		t.Helper()
 		view := ansi.Strip(m.View().Content)
+		if strings.Contains(view, "L3") || strings.Contains(view, "L4") || strings.Contains(view, "FOCUSED") {
+			t.Fatalf("pane hierarchy labels appeared in the rendered view:\n%s", view)
+		}
 		if !strings.Contains(view, want) {
-			t.Fatalf("focused pane %q missing after Tab:\n%s", want, view)
+			t.Fatalf("pane title %q missing after Tab:\n%s", want, view)
 		}
 	}
-	assertFocusedPane("L3 Sections · FOCUSED")
+	assertFocusedPane("── Sections")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	assertFocusedPane("L4 · Connection · FOCUSED")
+	assertFocusedPane("── Connection")
 	assertFocusedPane("> Endpoint")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	assertFocusedPane("[Actions]")
 	assertFocusedPane("[ Save ]")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	assertFocusedPane("L3 Sections · FOCUSED")
+	assertFocusedPane("── Sections")
 }

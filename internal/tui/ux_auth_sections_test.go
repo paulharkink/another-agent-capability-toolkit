@@ -16,18 +16,23 @@ func TestUXGrafanaSessionCookieInputsAllInAuthenticationAndIrrelevantCredentials
 	m.catalog = []catalog.Package{{ID: "grafana-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 38})
 	preview := viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "production"},
-		PackageName: "Grafana Inspector",
+		Key:           state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "production"},
+		PackageName:   "Grafana Inspector",
+		HasManifestUI: true,
+		Sections: []catalog.Section{
+			{ID: "connection", Title: "Connection", Fields: []string{"auth_mode"}},
+			{ID: "authentication", Title: "Authentication", Fields: []string{"token", "grafana_session", "session_expiry", "oauth_refresh", "refresh_cookie_name", "vault_addr", "vault_path", "vault_key"}},
+		},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "auth_mode", Label: "Auth mode", Type: "choice", Options: []catalog.Choice{{Value: "api_token", Label: "API token"}, {Value: "session_cookie", Label: "Session cookie"}}}, Value: "session_cookie", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret"}, Editable: true},
-			{Definition: catalog.Input{Name: "grafana_session", Label: "Grafana session", Type: "secret"}, Value: "session-fixture", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "session_expiry", Label: "Session expiry", Type: "string"}, Value: "expiry-fixture", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "oauth_refresh", Label: "OAuth refresh", Type: "secret"}, Value: "refresh-fixture", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "refresh_cookie_name", Label: "Refresh cookie name", Type: "string"}, Value: "refresh_cookie", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "vault_addr", Label: "Vault address", Type: "string"}, Value: "https://vault.example.test", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "vault_path", Label: "Vault path", Type: "string"}, Value: "secret/grafana", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "vault_key", Label: "Vault key", Type: "string"}, Value: "token", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", VisibleWhen: map[string]any{"auth_mode": "api_token"}}, Editable: true},
+			{Definition: catalog.Input{Name: "grafana_session", Label: "Grafana session", Type: "secret", VisibleWhen: map[string]any{"auth_mode": "session_cookie"}}, Value: "session-fixture", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "session_expiry", Label: "Session expiry", Type: "string", VisibleWhen: map[string]any{"auth_mode": "session_cookie"}}, Value: "expiry-fixture", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "oauth_refresh", Label: "OAuth refresh", Type: "secret", VisibleWhen: map[string]any{"auth_mode": "session_cookie"}}, Value: "refresh-fixture", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "refresh_cookie_name", Label: "Refresh cookie name", Type: "string", VisibleWhen: map[string]any{"auth_mode": "session_cookie"}}, Value: "refresh_cookie", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "vault_addr", Label: "Vault address", Type: "string", VisibleWhen: map[string]any{"auth_mode": "api_token"}}, Value: "https://vault.example.test", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "vault_path", Label: "Vault path", Type: "string", VisibleWhen: map[string]any{"auth_mode": "api_token"}}, Value: "secret/grafana", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "vault_key", Label: "Vault key", Type: "string", VisibleWhen: map[string]any{"auth_mode": "api_token"}}, Value: "token", HasValue: true, Editable: true},
 		},
 	}
 	m.openSetupForm(preview)
@@ -70,6 +75,7 @@ func TestUXAzureAndForgejoTaskSections(t *testing.T) {
 	cases := []struct {
 		name, packageID string
 		inputs          []viewmodel.SetupInput
+		sections        []catalog.Section
 		sectionFields   map[string][]string
 	}{
 		{
@@ -81,6 +87,7 @@ func TestUXAzureAndForgejoTaskSections(t *testing.T) {
 				{Definition: catalog.Input{Name: "subscription_id", Label: "Subscription ID", Type: "string"}, Editable: true},
 				{Definition: catalog.Input{Name: "token", Label: "Access token", Type: "secret"}, Editable: true},
 			},
+			sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"url"}}, {ID: "azure", Title: "Azure", Fields: []string{"tenant_id", "subscription_id"}}, {ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
 			sectionFields: map[string][]string{"Connection": {"Azure URL"}, "Azure": {"Tenant ID", "Subscription ID"}, "Authentication": {"Access token"}},
 		},
 		{
@@ -90,6 +97,7 @@ func TestUXAzureAndForgejoTaskSections(t *testing.T) {
 				{Definition: catalog.Input{Name: "url", Label: "Forgejo URL", Type: "string"}, Editable: true},
 				{Definition: catalog.Input{Name: "token", Label: "Access token", Type: "secret"}, Editable: true},
 			},
+			sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"url"}}, {ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
 			sectionFields: map[string][]string{"Connection": {"Forgejo URL"}, "Authentication": {"Access token"}},
 		},
 	}
@@ -97,7 +105,7 @@ func TestUXAzureAndForgejoTaskSections(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewContext(t.Context(), &setupBackendFixture{})
 			m.Update(tea.WindowSizeMsg{Width: 140, Height: 32})
-			m.openSetupForm(viewmodel.SetupPreview{Key: state.Key{Package: tc.packageID}, Inputs: tc.inputs})
+			m.openSetupForm(viewmodel.SetupPreview{Key: state.Key{Package: tc.packageID}, HasManifestUI: true, Sections: tc.sections, Inputs: tc.inputs})
 			for title, labels := range tc.sectionFields {
 				m.form.SelectSection(title)
 				view := ansi.Strip(m.View().Content)

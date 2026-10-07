@@ -16,6 +16,7 @@ import (
 )
 
 func TestUXBrowserUnicodeCursorEditing(t *testing.T) {
+	useTestPickerShell(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "café.txt")
 	if err := os.WriteFile(path, []byte("unicode"), 0600); err != nil {
@@ -40,7 +41,7 @@ func TestUXBrowserUnicodeCursorEditing(t *testing.T) {
 	browserKey(m, tea.KeyEnter, "")
 	got, err := m.Result()
 	if err != nil || got != path {
-		t.Fatalf("Result() = %q, %v; want %q", got, err, path)
+		t.Fatalf("Result() = %q, %v; want %q; picker message=%q", got, err, path, m.message)
 	}
 }
 
@@ -179,6 +180,7 @@ func TestUXBrowserEscapeCancelsAndDotfilesVisible(t *testing.T) {
 }
 
 func TestUXBrowserPasteManualPathPreservesInput(t *testing.T) {
+	useTestPickerShell(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "selected file")
 	if err := os.WriteFile(path, nil, 0600); err != nil {
@@ -194,7 +196,7 @@ func TestUXBrowserPasteManualPathPreservesInput(t *testing.T) {
 	browserKey(m, tea.KeyEnter, "")
 	got, err := m.Result()
 	if err != nil || got != path {
-		t.Fatalf("Result() = %q, %v; want %q", got, err, path)
+		t.Fatalf("Result() = %q, %v; want %q; picker message=%q", got, err, path, m.message)
 	}
 }
 
@@ -219,6 +221,7 @@ func TestUXBrowserAddressUsesInvokingShellExpansion(t *testing.T) {
 }
 
 func TestUXBrowserAddressCanReplaceCurrentPathWithPaste(t *testing.T) {
+	useTestPickerShell(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "selected file")
 	if err := os.WriteFile(path, nil, 0600); err != nil {
@@ -234,8 +237,23 @@ func TestUXBrowserAddressCanReplaceCurrentPathWithPaste(t *testing.T) {
 	}
 	browserKey(m, tea.KeyEnter, "")
 	if got, err := m.Result(); err != nil || got != path {
-		t.Fatalf("address selection = %q, %v; want %q", got, err, path)
+		t.Fatalf("address selection = %q, %v; want %q; picker message=%q", got, err, path, m.message)
 	}
+}
+
+// Browser tests that submit an address exercise shell-based path resolution.
+// Go's test process may have no interactive shell in its ancestry (notably in
+// Linux containers), so select one explicitly instead of depending on the
+// machine running the test.
+func useTestPickerShell(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"sh", "pwsh", "powershell", "cmd"} {
+		if path, err := exec.LookPath(name); err == nil {
+			t.Setenv("AACT_PICKER_SHELL", path)
+			return
+		}
+	}
+	t.Skip("no supported shell is available for address resolution")
 }
 
 func TestUXBrowserIgnoresResolverResultAfterCancel(t *testing.T) {

@@ -15,21 +15,24 @@ import (
 // registrationState is a presentation draft. The adapter receives a request
 // only after Apply; moving between rows never changes an agent config file.
 type registrationState struct {
-	Profile        ProfileRow
-	Agents         []string
-	Choices        []registrationChoice
-	Marked         map[string]bool
-	Remove         bool
-	NeedsTransport bool
-	Transport      string
-	Row            int // Endpoint URI is row zero; named agents follow.
-	Area           int // Left list, right detail, fixed actions.
-	Action         int // Cancel or Apply.
-	Offset         int
-	Check          viewmodel.ConnectionObservation
-	Message        string
-	X, Y, W        int
-	H, LeftW       int
+	Profile           ProfileRow
+	Agents            []string
+	Choices           []registrationChoice
+	Marked            map[string]bool
+	OriginalMarked    map[string]bool
+	Remove            bool
+	NeedsTransport    bool
+	Transport         string
+	OriginalTransport string
+	keepOnApply       bool
+	Row               int // Endpoint URI is row zero; named agents follow.
+	Area              int // Left list, right detail, fixed actions.
+	Action            int // Cancel or Apply.
+	Offset            int
+	Check             viewmodel.ConnectionObservation
+	Message           string
+	X, Y, W           int
+	H, LeftW          int
 }
 
 type registrationChoice struct {
@@ -88,6 +91,42 @@ func (r *registrationState) selectTransport() {
 	} else {
 		r.Transport = "sse"
 	}
+}
+
+func (r *registrationState) HasUnsavedChanges() bool {
+	if r == nil {
+		return false
+	}
+	if r.Transport != r.OriginalTransport {
+		return true
+	}
+	for key, marked := range r.Marked {
+		if r.OriginalMarked[key] != marked {
+			return true
+		}
+	}
+	for key, marked := range r.OriginalMarked {
+		if r.Marked[key] != marked {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *registrationState) MarkClean() {
+	if r == nil {
+		return
+	}
+	r.OriginalMarked = cloneRegistrationMarks(r.Marked)
+	r.OriginalTransport = r.Transport
+}
+
+func cloneRegistrationMarks(values map[string]bool) map[string]bool {
+	copy := make(map[string]bool, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
 }
 
 type registrationCheckMsg struct {
@@ -149,7 +188,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 			choices = append(choices, choice)
 			seenChoices[choice.key()] = true
 		}
-		m.registration = &registrationState{Profile: p, Choices: choices, Marked: map[string]bool{}, Remove: true, Transport: p.Profile.Transport}
+		m.registration = &registrationState{Profile: p, Choices: choices, Marked: map[string]bool{}, OriginalMarked: map[string]bool{}, Remove: true, Transport: p.Profile.Transport, OriginalTransport: p.Profile.Transport}
 		return
 	} else {
 		for _, id := range m.agents {
@@ -169,7 +208,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 	if removing {
 		message = ""
 	}
-	m.registration = &registrationState{Profile: p, Agents: rows, Marked: marked, Remove: removing, NeedsTransport: p.Profile.Transport == "", Transport: p.Profile.Transport, Message: message}
+	m.registration = &registrationState{Profile: p, Agents: rows, Marked: marked, OriginalMarked: cloneRegistrationMarks(marked), Remove: removing, NeedsTransport: p.Profile.Transport == "", Transport: p.Profile.Transport, OriginalTransport: p.Profile.Transport, Message: message}
 }
 
 func (m *Model) registrationKey(stroke string) tea.Cmd {
@@ -183,8 +222,20 @@ func (m *Model) registrationKey(stroke string) tea.Cmd {
 	case "esc":
 		if r.Area != 0 {
 			r.Area = 0
+		} else if r.HasUnsavedChanges() {
+			m.openRegistrationExitPrompt(r, false)
 		} else {
 			m.registration = nil
+		}
+	case "ctrl+c":
+		return tea.Quit
+	case "f10":
+		if r.HasUnsavedChanges() {
+			m.openRegistrationExitPrompt(r, true)
+		} else if m.form != nil && m.form.HasUnsavedChanges() {
+			m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+		} else {
+			return tea.Quit
 		}
 	case "tab":
 		r.Area = (r.Area + 1) % 3
@@ -254,7 +305,11 @@ func (m *Model) registrationKey(stroke string) tea.Cmd {
 				r.Marked[id] = !r.Marked[id]
 			}
 		} else if r.Action == 0 {
-			m.registration = nil
+			if r.HasUnsavedChanges() {
+				m.openRegistrationExitPrompt(r, false)
+			} else {
+				m.registration = nil
+			}
 		} else {
 			return m.applyRegistrationOverlay()
 		}
@@ -318,8 +373,72 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 		}
 		request.AgentIDs = selected
 	}
-	m.registration = nil
+	if !r.keepOnApply {
+		m.registration = nil
+	}
 	return m.configureRegistrations(request, r.Remove)
+}
+
+func (m *Model) openRegistrationExitPrompt(r *registrationState, quit bool) {
+	state := &unsavedExitState{reason: "registration", selected: 2}
+	if quit {
+		state.reason = "quit"
+	}
+	state.apply = func() tea.Cmd {
+		r.keepOnApply = true
+		cmd := m.applyRegistrationOverlay()
+		if cmd == nil {
+			r.keepOnApply = false
+			m.unsavedExitIntent = nil
+		}
+		return cmd
+	}
+	state.discard = func() tea.Cmd {
+		m.registration = nil
+		m.unsavedExitIntent = nil
+		if quit {
+			return m.continueRegistrationQuit()
+		}
+		return nil
+	}
+	state.onResult = func(result operationMsg) tea.Cmd {
+		m.unsavedExitIntent = nil
+		succeeded := result.err == nil && !result.failed && (result.result == nil || len(result.result.Errors) == 0)
+		if succeeded {
+			r.MarkClean()
+			m.registration = nil
+			m.output = strings.TrimSpace(result.output)
+			if quit {
+				return m.continueRegistrationQuit()
+			}
+			return nil
+		}
+		message := strings.TrimSpace(result.output)
+		if result.err != nil {
+			message = result.err.Error()
+		} else if result.result != nil && len(result.result.Errors) > 0 {
+			message = strings.Join(result.result.Errors, "\n")
+		}
+		if message == "" {
+			message = "Registration apply failed"
+		}
+		r.Message = message
+		r.keepOnApply = false
+		m.registration = r
+		m.output = message
+		m.unsavedExitFailure = true
+		m.showOperationResult(result)
+		return nil
+	}
+	m.unsavedExit = state
+}
+
+func (m *Model) continueRegistrationQuit() tea.Cmd {
+	if m.form != nil && m.form.HasUnsavedChanges() {
+		m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+		return nil
+	}
+	return tea.Quit
 }
 
 func (m *Model) registrationOverlay(lines []string) []string {
@@ -658,7 +777,11 @@ func (m *Model) registrationMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	if y == r.Y+r.H-2 {
 		if x < r.X+r.W/2 {
-			m.registration = nil
+			if r.HasUnsavedChanges() {
+				m.openRegistrationExitPrompt(r, false)
+			} else {
+				m.registration = nil
+			}
 			return nil
 		}
 		return m.applyRegistrationOverlay()

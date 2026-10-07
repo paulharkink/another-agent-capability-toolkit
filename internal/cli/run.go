@@ -19,6 +19,14 @@ import (
 	"strings"
 )
 
+func externalURLValues(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
 var Version = "0.1.0-dev"
 
 const usage = `Another Agent Capability Toolkit (aact)
@@ -29,7 +37,7 @@ aact install PACKAGE --agent AGENT       Install skill and register its MCP
 aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
 aact mcp list|status [--json]             Show MCPs from every source
-aact mcp start|stop|logs|prepare|authenticate PACKAGE
+aact mcp start|stop|logs|prepare|authenticate PACKAGE [--mcp NAME]
 aact agents | settings                   Show supported agents / configuration
 aact config set-environment-root PATH    Save the environment checkout
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
@@ -37,7 +45,7 @@ aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 Flags: --config PATH --state-dir PATH --environment-root PATH
        --environment NAME --target NAME --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
-       --external-url URL --skills-only --update-source --json --help --version
+       --external-url URL|NAME=URL --mcp NAME --skills-only --update-source --json --help --version
 
 Docker is required for container capabilities. Plain skills need no host runtime.
 `
@@ -68,6 +76,15 @@ func bundledRoot() string {
 	}
 	return ""
 }
+
+func appOptions(errOut io.Writer, bundle string, tuiMode bool) app.Options {
+	options := app.Options{Editor: forms.RunEditor, BundledRoot: bundle}
+	if !tuiMode {
+		options.OnStderr = func(b []byte) { errOut.Write(b) }
+	}
+	return options
+}
+
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	if out == nil {
 		out = io.Discard
@@ -138,13 +155,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if migrating {
 		return runMigration(ctx, src, store, f.apply, f.json, out, errOut)
 	}
-	svc := app.New(src, store, app.Options{Editor: forms.RunEditor, BundledRoot: bundle, OnStderr: func(b []byte) { errOut.Write(b) }})
+	options := appOptions(errOut, bundle, len(f.args) == 0)
+	svc := app.New(src, store, options)
 	if len(f.args) == 0 {
-		opts := []tea.ProgramOption{tea.WithContext(ctx), tea.WithOutput(out)}
+		uiCtx, cancelUI := context.WithCancel(ctx)
+		defer cancelUI()
+		opts := []tea.ProgramOption{tea.WithContext(uiCtx), tea.WithOutput(out)}
 		if in != nil {
 			opts = append(opts, tea.WithInput(in))
 		}
-		_, e := tea.NewProgram(tui.NewContext(ctx, svc), opts...).Run()
+		_, e := tea.NewProgram(tui.NewContext(uiCtx, svc), opts...).Run()
 		if e != nil {
 			fmt.Fprintln(errOut, e)
 			return 1
@@ -248,14 +268,21 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, e)
 			return 2
 		}
-		if f.url != "" {
-			u, e := url.Parse(f.url)
-			if e != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		if f.url != "" && len(f.externalURLs) > 0 {
+			fmt.Fprintln(errOut, "--external-url cannot mix a bare URL with named NAME=URL values")
+			return 2
+		}
+		for _, endpoint := range append([]string{f.url}, externalURLValues(f.externalURLs)...) {
+			if endpoint == "" {
+				continue
+			}
+			u, parseErr := url.Parse(endpoint)
+			if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 				fmt.Fprintln(errOut, "--external-url must be an HTTP(S) URL without credentials")
 				return 2
 			}
 		}
-		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, SkillsOnly: f.skillsOnly, ExternalURL: f.url, UpdateSource: f.updateSource}
+		q := app.InstallRequest{Package: f.args[1], Environment: f.environment, Target: f.target, Agents: envs, Inputs: inputs, Interactive: f.interactive, SkillsOnly: f.skillsOnly, ExternalURL: f.url, ExternalURLs: f.externalURLs, UpdateSource: f.updateSource}
 		var r app.Result
 		if f.args[0] == "install" {
 			r, e = svc.Install(ctx, q)
@@ -291,7 +318,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		r, e := svc.MCP(ctx, app.MCPRequest{Action: action, Package: p, Environment: f.environment, Target: f.target, Inputs: inputs, Interactive: f.interactive})
+		r, e := svc.MCP(ctx, app.MCPRequest{Action: action, Package: p, Environment: f.environment, Target: f.target, MCP: f.mcp, Inputs: inputs, Interactive: f.interactive})
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
 		}

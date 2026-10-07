@@ -49,7 +49,7 @@ func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
 			if m.home.Modal != nil {
 				t.Fatalf("first %s opened a deeper overlay: %#v", test.name, m.home.Modal)
 			}
-			for _, want := range []string{"Set up another target", "View capability details", "Related MCP profiles", "MCP · profile"} {
+			for _, want := range []string{"Configure now", "View capability details", "Related MCP profiles", "MCP · profile"} {
 				if !strings.Contains(m.View().Content, want) {
 					t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
 				}
@@ -64,13 +64,9 @@ func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 		setup := &setupBackendFixture{}
 		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 		focusHomeContext(t, m)
-		pressAndRun(m, tea.KeyEnter) // Set up another target opens the chooser.
-		if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
-			t.Fatal("setup action did not open the target chooser")
-		}
-		pressAndRun(m, tea.KeyEnter) // Without a preset.
-		if m.form == nil {
-			t.Fatal("choosing Without a preset did not open the setup form")
+		pressAndRun(m, tea.KeyEnter) // Configure now opens the package directly.
+		if m.home.Modal != nil || m.form == nil {
+			t.Fatalf("Configure now did not open the setup form directly: modal=%#v form=%v", m.home.Modal, m.form != nil)
 		}
 	})
 
@@ -126,17 +122,13 @@ func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
 	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
 	focusHomeContext(t, m)
 	view := m.View().Content
-	for _, want := range []string{"Set up another target", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
 	pressAndRun(m, tea.KeyEnter)
-	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
-		t.Fatal("skill-only setup did not open chooser")
-	}
-	pressAndRun(m, tea.KeyEnter)
-	if m.form == nil {
+	if m.home.Modal != nil || m.form == nil {
 		t.Fatal("Enter on skill-only Configure / install did not open the setup form")
 	}
 }

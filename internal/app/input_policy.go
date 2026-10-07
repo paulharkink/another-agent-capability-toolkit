@@ -65,9 +65,49 @@ func withoutFixed(defs []catalog.Input, values map[string]any, fixed map[string]
 	return visible, editable
 }
 
+// editableWithFixedContext removes locked controllers from the editor payload
+// while simplifying predicates that they alone satisfy. A locked mismatch
+// makes the dependent field permanently hidden for this target.
+func editableWithFixedContext(defs []catalog.Input, values map[string]any, fixed map[string]any) ([]catalog.Input, map[string]any) {
+	visible, editable := withoutFixed(defs, values, fixed)
+	result := make([]catalog.Input, 0, len(visible))
+	for _, def := range visible {
+		conditions := make(map[string]any, len(def.VisibleWhen))
+		hidden := false
+		for controller, expected := range def.VisibleWhen {
+			_, locked := fixed[controller]
+			if locked {
+				if !catalog.InputVisible(catalog.Input{VisibleWhen: map[string]any{controller: expected}}, fixed) {
+					hidden = true
+					break
+				}
+				continue
+			}
+			conditions[controller] = expected
+		}
+		if hidden {
+			continue
+		}
+		def.VisibleWhen = conditions
+		result = append(result, def)
+	}
+	return result, editable
+}
+
 func withFixed(values, fixed map[string]any) map[string]any {
 	for name, value := range fixed {
 		values[name] = value
 	}
 	return values
+}
+
+func mergeEditedValues(values, edited map[string]any) map[string]any {
+	merged := make(map[string]any, len(values)+len(edited))
+	for name, value := range values {
+		merged[name] = value
+	}
+	for name, value := range edited {
+		merged[name] = value
+	}
+	return merged
 }

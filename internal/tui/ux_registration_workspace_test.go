@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -33,22 +34,23 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	if m.workspace.Profile.Ownership != "other-aact" || !strings.Contains(m.View().Content, "http://127.0.0.1:8765/mcp") {
 		t.Fatalf("foreign endpoint/ownership facts missing from Overview: %s", m.View().Content)
 	}
-	setupSection(m, 4) // Overview → Agents → right-hand detail.
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
 	if m.form.SectionTitle() != "Agents" || !strings.Contains(m.View().Content, "/home/test/.claude") {
-		t.Fatalf("foreign runtime blocked named local agent destinations in Agents: section=%q\n%s", m.form.SectionTitle(), m.View().Content)
+		t.Fatalf("foreign runtime blocked local destinations in Agents: %s", m.View().Content)
 	}
-	press(m, tea.KeyRight, "")
+	press(m, tea.KeyRight, " ")
 	press(m, tea.KeySpace, " ")
 	if strings.Contains(m.View().Content, "Start") || strings.Contains(m.View().Content, "Stop") {
-		t.Fatalf("workspace offered local runtime control for a foreign runtime:\n%s", m.View().Content)
+		t.Fatalf("foreign runtime showed local runtime control: %s", m.View().Content)
 	}
 	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if save == nil {
-		t.Fatalf("Agents Save did not invoke the registration install path: %s", m.View().Content)
+		t.Fatalf("Agents Save did not invoke setup install: %s", m.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, save))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Target != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
-		t.Fatalf("Agents Save did not register named destinations on the selected foreign target: %+v", backend.installRequest)
+		t.Fatalf("Agents Save did not bind destinations on selected target: %+v", backend.installRequest)
 	}
 }
 
@@ -61,182 +63,152 @@ type registrationWorkspaceBackend struct {
 func (b *registrationWorkspaceBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
 	return b.profileBackend.UIProfileSnapshot(ctx)
 }
-
 func (b *registrationWorkspaceBackend) UIConfigureRegistrations(ctx context.Context, request viewmodel.RegistrationRequest) (viewmodel.OperationResult, error) {
 	return b.profileBackend.UIConfigureRegistrations(ctx, request)
 }
-
 func (b *registrationWorkspaceBackend) CheckConnection(ctx context.Context, url, transport string) viewmodel.ConnectionObservation {
 	return b.profileBackend.CheckConnection(ctx, url, transport)
 }
+func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	b.previewRequest = request
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: "Plain", MCP: true, HasManifestUI: true,
+		Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
+		Inputs:   []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string"}, Value: "http://127.0.0.1:8765/mcp", HasValue: true, Editable: true}}, MCPDefinitions: []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex/skills", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"}, {ID: "claude", Path: "/home/test/.claude/skills", ConfigPath: "/home/test/.claude.json", Detection: "installed"}}}, nil
+}
+func (b *registrationWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setupBackendFixture.UIInstall(ctx, request)
+}
 
-func openRegistrationActionForUX(t *testing.T, action ...string) (*Model, *profileBackend) {
+func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBackend) {
 	t.Helper()
-	m, backend := typedProfileFixture()
-	m.backend = &registrationWorkspaceBackend{Backend: backend, profileBackend: backend, setupBackendFixture: &setupBackendFixture{}}
+	m, profile := typedProfileFixture()
+	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}}
+	m.backend = backend
 	m.focusPane(ProfilesPane)
 	foreign := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
-	for index, row := range m.contextRows() {
+	for i, row := range m.contextRows() {
 		if row.Kind == "profile" && row.Key == foreign {
-			m.selectContext(index)
+			m.selectContext(i)
 			break
 		}
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatalf("profile Enter did not open the shared workspace: %s", m.View().Content)
+		t.Fatal("profile Enter did not open workspace")
 	}
 	m.Update(cmd())
-	stroke := "g"
-	if len(action) > 0 && action[0] == "remove" {
-		stroke = "r"
-	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: rune(stroke[0]), Text: stroke})
-	if m.registration == nil {
-		t.Fatalf("workspace %s action did not open registration editor: %s", stroke, m.output)
-	}
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
 	return m, backend
 }
 
-func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	b.previewRequest = request
-	return viewmodel.SetupPreview{
-		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
-		PackageName: "Plain", MCP: true,
-		Destinations: []viewmodel.SetupDestination{
-			{ID: "codex", Path: "/home/test/.codex/skills", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"},
-			{ID: "claude", Path: "/home/test/.claude/skills", ConfigPath: "/home/test/.claude.json", Detection: "installed"},
-		},
-	}, nil
-}
-
-func (b *registrationWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
-	return b.setupBackendFixture.UIInstall(ctx, request)
-}
-
 func TestUXRegistrationEndpointAndAgentDetailsAreIndependent(t *testing.T) {
-	m, _ := openRegistrationActionForUX(t)
-	m.agentManagement = []viewmodel.AgentManagementRow{{
-		ID: "codex", Name: "Codex", Detection: "installed", Home: "/tmp/codex-home",
-		EffectiveConfigPath: "/tmp/codex-home/.codex/config.toml",
-		WriteConfigPath:     "/tmp/codex-home/.codex/config.toml",
-	}}
-	endpoint := m.View().Content
-	for _, want := range []string{"Endpoint URI", "http://127.0.0.1:8765/mcp", "Check connection"} {
-		if !strings.Contains(endpoint, want) {
-			t.Fatalf("endpoint pane lacks %q:\n%s", want, endpoint)
+	m, b := openRegistrationActionForUX(t)
+	m.agentManagement = []viewmodel.AgentManagementRow{{ID: "codex", Name: "Codex", Detection: "installed", Home: "/tmp/codex-home", EffectiveConfigPath: "/tmp/codex-home/.codex/config.toml", WriteConfigPath: "/tmp/codex-home/.codex/config.toml"}}
+	if !strings.Contains(m.View().Content, "Detection: installed") {
+		t.Fatalf("agent destination details missing: %s", m.View().Content)
+	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	v := m.View().Content
+	for _, want := range []string{"Runtime", "plain", "Check plain connection"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("runtime child action lacks %q: %s", want, v)
 		}
 	}
-	press(m, tea.KeyDown, "")
-	detail := m.View().Content
-	for _, want := range []string{"Agent detection: installed", "Config file to change: /tmp/codex-home/.codex/config.toml", "Desired registration", "Achieved registration: not registered", "Agent home: /tmp/codex-home"} {
-		if !strings.Contains(strings.ToLower(detail), strings.ToLower(want)) {
-			t.Fatalf("selected agent detail lacks %q:\n%s", want, detail)
-		}
-	}
-	if strings.Contains(detail, "Check connection") {
-		t.Fatalf("agent detail contains endpoint check control:\n%s", detail)
+	if b.profileBackend.checkedURL != "" {
+		t.Fatal("opening capability performed endpoint check")
 	}
 }
-
 func TestUXRegistrationOptionsExcludeGenericAndAll(t *testing.T) {
 	m, _ := openRegistrationActionForUX(t)
-	m.agents = []string{"codex", "all", "generic", "generic:work", "generic-mcp:work"}
-	profile := m.profileSnapshot.Profiles[1]
-	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Profile: &profile}, false)
-	if got := strings.Join(m.registration.Agents, ","); got != "codex,claude" {
-		t.Fatalf("registration choices are not named agents only: %s", got)
-	}
-}
-
-func TestUXRemoveIsNarrowAndDoesNotOfferEndpointCheck(t *testing.T) {
-	m, _ := openRegistrationActionForUX(t, "remove")
-	view := m.View().Content
-	for _, forbidden := range []string{"Endpoint URI", "Check connection", "Apply changes"} {
-		if strings.Contains(view, forbidden) {
-			t.Fatalf("removal dialog still contains unrelated control %q:\n%s", forbidden, view)
+	v := m.View().Content
+	for _, bad := range []string{"generic:legacy", "generic-mcp", "[all]"} {
+		if strings.Contains(v, bad) {
+			t.Fatalf("named destination UI exposed %q: %s", bad, v)
 		}
 	}
-	for _, want := range []string{"Remove local registrations", "Claude", "Remove selected registrations", "Cancel"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("removal dialog lacks %q:\n%s", want, view)
+	if !strings.Contains(v, "Codex") || !strings.Contains(v, "Claude") {
+		t.Fatalf("named local destinations missing: %s", v)
+	}
+}
+func TestUXAgentsSectionUsesUnifiedCapabilityBinding(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	v := m.View().Content
+	if !strings.Contains(v, "Agents") {
+		t.Fatalf("complete capability binding form missing: %s", v)
+	}
+	for _, bad := range []string{"Remove local registrations", "Remove selected registrations"} {
+		if strings.Contains(v, bad) {
+			t.Fatalf("obsolete overlay remains: %s", v)
 		}
 	}
 }
-
-func TestUXRemoveShowsLegacyRecordedMCPAndSendsExplicitIDs(t *testing.T) {
-	m, backend := typedProfileFixture()
-	profile := backend.snapshot.Profiles[1]
-	profile.RegisteredAgents = append(profile.RegisteredAgents, "generic:legacy")
-	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Profile: &profile}, true)
-	if !strings.Contains(m.View().Content, "generic:legacy") {
-		t.Fatalf("actual legacy MCP registration was hidden from focused removal:\n%s", m.View().Content)
-	}
-	m.registration.Marked["generic:legacy"] = true
-	cmd := m.applyRegistrationOverlay()
-	if cmd == nil {
-		t.Fatal("selected legacy MCP row did not submit a narrow removal")
-	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if backend.request == nil || len(backend.request.RemoveAgentIDs) != 1 || backend.request.RemoveAgentIDs[0] != "generic:legacy" {
-		t.Fatalf("removal did not identify only the selected recorded row: %+v", backend.request)
-	}
-}
-
-func TestUXRemoveDoesNotStopServer(t *testing.T) {
-	m, b := openRegistrationActionForUX(t, "remove")
-	m.registration.Marked["claude"] = true
-	cmd := m.applyRegistrationOverlay()
-	if cmd == nil {
-		t.Fatal("removing a selected registration did not invoke the registration service")
-	}
-	m.Update(cmd())
-	if b.request == nil || len(b.request.AgentIDs) != 0 {
-		t.Fatalf("removal did not submit the remaining named registrations: %+v", b.request)
-	}
-}
-
-func TestUXPartialRegistrationFailureShowsErrorAndUnchecksFailedAgent(t *testing.T) {
+func TestUXEmptyDesiredSetRemovesRecordedBindings(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
-	b.result = viewmodel.OperationResult{
-		Message: "Registration update completed with errors",
-		Changes: []state.Installation{{AgentID: "codex", Component: "mcp"}},
-		Errors:  []string{`claude: refusing foreign MCP registration "plain-dev"`},
-	}
-	m.registration.Marked["codex"] = true
-	m.registration.Marked["claude"] = true
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
-		t.Fatal("Ctrl-S did not submit selected registrations")
+		t.Fatal("empty desired bindings were not submitted")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
-	view := m.View().Content
-	if !strings.Contains(view, "codex: mcp registration configured") || strings.Contains(view, "claude: mcp registration configured") || !strings.Contains(view, "refusing foreign MCP registration") {
-		t.Fatalf("result does not report actual per-agent effects:\n%s", view)
+	if b.installRequest == nil || len(b.installRequest.DestinationIDs) != 0 {
+		t.Fatalf("empty complete desired set not submitted: %+v", b.installRequest)
 	}
-	if len(b.request.AgentIDs) != 2 {
-		t.Fatalf("selected draft was not submitted once: %+v", b.request)
+	if b.profileBackend.request != nil {
+		t.Fatal("legacy registration API was used")
 	}
 }
-
+func TestUXAgentsBindingDoesNotStopRuntime(t *testing.T) {
+	m, b := openRegistrationActionForUX(t)
+	v := m.View().Content
+	for _, bad := range []string{"Start MCP", "Stop MCP"} {
+		if strings.Contains(v, bad) {
+			t.Fatalf("Agents form offers runtime control %q", bad)
+		}
+	}
+	if b.installRequest != nil {
+		t.Fatal("opening form altered binding state")
+	}
+}
+func TestUXPartialRegistrationFailureShowsErrorAndUnchecksFailedAgent(t *testing.T) {
+	m, b := openRegistrationActionForUX(t)
+	b.installResult = &viewmodel.OperationResult{Message: "Binding update completed with errors", Changes: []state.Installation{{AgentID: "codex", Component: "mcp"}}, Errors: []string{`claude: refusing foreign MCP registration "plain-dev"`}}
+	press(m, tea.KeyRight, "")
+	press(m, tea.KeySpace, " ")
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeySpace, " ")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Ctrl-S did not submit capability")
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	v := m.View().Content
+	if !strings.Contains(v, "codex: mcp configured") || !strings.Contains(v, "refusing foreign MCP registration") {
+		t.Fatalf("result omitted effects/error: %s", v)
+	}
+	if b.installRequest == nil || len(b.installRequest.DestinationIDs) != 2 {
+		t.Fatalf("binding draft not submitted once: %+v", b.installRequest)
+	}
+}
 func TestUXRegistrationButtonsReachableAndOneSave(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
-	for i := 0; i < 2; i++ {
-		press(m, tea.KeyTab, "")
+	press(m, tea.KeyTab, "")
+	press(m, tea.KeyTab, "")
+	v := m.View().Content
+	if !strings.Contains(v, "[ Save and apply ]") || strings.Contains(v, "[ Cancel ]") {
+		t.Fatalf("single Save and apply action not visible: %s", v)
 	}
-	view := m.View().Content
-	if !strings.Contains(view, "[Cancel]") || !strings.Contains(view, "Save") {
-		t.Fatalf("Save/Cancel actions are not visible while action focus is active:\n%s", view)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Ctrl-S did not submit")
 	}
-	press(m, tea.KeyRight, "")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd != nil {
-		m.Update(runTeaCmd(t, m, cmd))
+	m.Update(runTeaCmd(t, m, cmd))
+	if b.installRequest == nil {
+		t.Fatal("save not submitted")
 	}
-	if b.request == nil {
-		t.Fatal("focused Save action did not submit")
-	}
-	if cmd := m.registrationKey("ctrl+s"); cmd != nil {
-		t.Fatal("completed save submitted a second operation")
+	if m.workspace == nil || !m.workspace.Active {
+		t.Fatal("save left the capability workspace")
 	}
 }

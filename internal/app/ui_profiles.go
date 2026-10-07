@@ -31,10 +31,29 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 		if instance.Ownership != "local" {
 			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
 		}
-		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target})
+		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP})
 		return result.Logs, err
 	}
 	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
+}
+
+// UIProfileRun performs a lifecycle action for one observed MCP child profile.
+// The child key is preserved so a named MCP action never affects a sibling.
+func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
+	source, err := s.forSource(key.Source)
+	if err != nil {
+		return "", err
+	}
+	result, err := source.MCP(ctx, MCPRequest{
+		Action: action, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(result.Instances) > 0 {
+		return result.Instances[0].URL, nil
+	}
+	return result.Message, nil
 }
 
 // UIProfileSnapshot merges configured profiles and registrations with a Docker
@@ -78,8 +97,13 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		profile := &viewmodel.Profile{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
 		if k.Source == s.Source.ID {
 			for _, packageInfo := range s.Source.Catalog {
-				if packageInfo.ID == k.Package && packageInfo.MCP != nil {
-					profile.Transport = packageInfo.MCP.Transport
+				if packageInfo.ID == k.Package {
+					for _, definition := range packageInfo.MCPDefinitions() {
+						if (len(packageInfo.MCPs) == 0 && k.MCP == "") || definition.Name == k.MCP {
+							profile.Transport = definition.Transport
+							break
+						}
+					}
 					break
 				}
 			}

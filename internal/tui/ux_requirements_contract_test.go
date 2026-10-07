@@ -21,7 +21,7 @@ func TestUXChooserSelectionReplacesChooserWithExactWorkspace(t *testing.T) {
 	}}
 	parent := ansi.Strip(m.homeView().Content)
 	parentL1, parentL2, parentFocus := m.home.Capabilities.ID, m.home.Context.Index, m.home.Focus
-	m.homeOperation("parameters")
+	m.homeOperation("choose-preset")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	_, preview := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if preview == nil {
@@ -52,33 +52,33 @@ func TestUXChooserSelectionReplacesChooserWithExactWorkspace(t *testing.T) {
 			t.Errorf("rendered workspace did not retain parent content %q:\n%s", parentContent, rendered)
 		}
 	}
-	if !strings.Contains(rendered, "L3 Sections") || !strings.Contains(rendered, "│ ── Connection") {
+	if !strings.Contains(rendered, "Workspace sections") || strings.Contains(rendered, "L3") || strings.Contains(rendered, "L4") || strings.Contains(rendered, "FOCUSED") || !strings.Contains(rendered, "│ ── Connection") {
 		t.Fatalf("selected target did not render paired section and detail panes:\n%s", rendered)
 	}
 }
 
-func TestUXAuthenticationShowsManagedCredentialObservationSeparateFromSourcePath(t *testing.T) {
+func TestUXDeclaredCredentialHintAndSourcePathStaySeparate(t *testing.T) {
 	key := state.Key{Source: "fixture", Package: "cluster-inspector", Environment: "home", Target: "local"}
-	for _, state := range []string{"missing", "present"} {
-		t.Run(state, func(t *testing.T) {
+	for _, credentialState := range []string{"missing", "present"} {
+		t.Run(credentialState, func(t *testing.T) {
 			m := NewContext(t.Context(), &setupBackendFixture{})
 			m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
-			m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
-			m.workspace = &workspaceState{Key: key, Active: true, Section: "Authentication"}
+			m.workspace = &workspaceState{Key: key, Active: true, Section: "Credentials"}
 			m.openSetupForm(viewmodel.SetupPreview{
-				Key: key, PackageName: "Cluster Inspector", CredentialState: state,
+				Key: key, PackageName: "Cluster Inspector", HasManifestUI: true,
+				Sections: []catalog.Section{{ID: "credentials", Title: "Credentials", Fields: []string{"token", "kubeconfig"}}},
 				Inputs: []viewmodel.SetupInput{
-					{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Value: "saved-token", HasValue: true, Editable: true},
-					{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"}, Value: "/tmp/source-kubeconfig.yaml", HasValue: true, Provenance: "saved", Editable: true},
+					{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "credential-source"}, Value: "saved-token", HasValue: true, Editable: true},
+					{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "credential-source", Hint: "Credential observation · " + credentialState}, Value: "/tmp/source-kubeconfig.yaml", HasValue: true, Provenance: "saved", Editable: true},
 				},
 			})
-			m.form.SelectSection("Authentication")
+			m.form.SelectSection("Credentials")
 			view := ansi.Strip(m.View().Content)
-			if !strings.Contains(view, "Imported credentials: "+state) {
-				t.Fatalf("Authentication does not show the managed-material observation %q:\n%s", state, view)
+			if !strings.Contains(view, "Credential observation") || !strings.Contains(view, credentialState) {
+				t.Fatalf("declared credential hint %q is not visible:\n%s", credentialState, view)
 			}
 			if !strings.Contains(view, "Source kubeconfig") || !strings.Contains(view, "/tmp/source-kubeconfig.yaml") {
-				t.Fatalf("saved source path is not shown separately as an editable input:\n%s", view)
+				t.Fatalf("saved source path is not shown as an editable input:\n%s", view)
 			}
 		})
 	}
@@ -95,6 +95,8 @@ func TestUXPackageDefaultHasConciseFieldOriginAndDetailedInformation(t *testing.
 			Definition: catalog.Input{Name: "endpoint", Label: "Endpoint", Type: "string"},
 			Value:      "https://fixture.invalid", HasValue: true, Provenance: "package", ProvenancePath: "/source/tree/with/a/long/path/demo/package.toml", Editable: true,
 		}},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
 	})
 	m.form.SelectSection("Connection")
 	m.form.Update(tea.KeyPressMsg{Code: tea.KeyRight})

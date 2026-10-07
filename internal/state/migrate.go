@@ -124,7 +124,7 @@ func PlanMigration(ctx context.Context, source config.Source, store *Store) (Mig
 		return plan, e
 	}
 	for _, p := range source.Catalog {
-		if p.MCP == nil {
+		if !p.HasMCP() {
 			continue
 		}
 		legacyRoot := filepath.Join(store.Root(), p.ID)

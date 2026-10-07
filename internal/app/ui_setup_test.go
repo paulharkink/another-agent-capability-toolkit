@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -61,6 +63,140 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	}
 	if got.Inputs[3].ProvenancePath != targetPath {
 		t.Fatalf("target provenance path: %#v", got.Inputs[3])
+	}
+}
+
+func TestUISetupReadinessAllowsDetectedJSONAgentWithoutConfigAndDisablesCodexDesktopWithoutCLI(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	t.Setenv("CODEX_HOME", "")
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	apps := filepath.Join(home, "Applications")
+	if err := os.MkdirAll(filepath.Join(apps, "Codex.app"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	probe := agents.DiscoveryProbe{
+		GOOS: "darwin", Home: home, AppRoots: []string{apps}, Getenv: func(string) string { return "" },
+		LookPath: func(name string) (string, error) {
+			if name == "opencode" {
+				return "/usr/local/bin/opencode", nil
+			}
+			return "", exec.ErrNotFound
+		},
+	}
+	svc.Options.DiscoveryProbe = &probe
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]viewmodel.SetupDestination{}
+	for _, destination := range preview.Destinations {
+		byID[destination.ID] = destination
+	}
+	if got := byID["opencode"]; got.ID == "" || got.DisabledReason != "" || !strings.Contains(got.Note, "will be created") {
+		t.Fatalf("detected JSON client with absent config should remain selectable: %+v", got)
+	}
+	if got := byID["codex"]; got.DisabledReason != "Codex desktop detected; this adapter requires the codex CLI, which is unavailable" {
+		t.Fatalf("Codex CLI prerequisite should be precise: %+v", got)
+	}
+}
+
+func TestUISetupPreviewCarriesCapabilityPresentationAndMCPDefinitions(t *testing.T) {
+	svc, _, _ := fixture(t)
+	section := catalog.Section{ID: "advanced", Title: "Advanced", Fields: []string{"token"}}
+	primary := catalog.MCP{Name: "primary", Transport: "streamable-http"}
+	secondary := catalog.MCP{Name: "secondary", Transport: "stdio"}
+	svc.Source.Catalog[0].UI = &catalog.Presentation{Sections: []catalog.Section{section}}
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{primary, secondary}
+
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.HasManifestUI || !reflect.DeepEqual(preview.Sections, []catalog.Section{section}) {
+		t.Fatalf("presentation missing from preview: %#v", preview)
+	}
+	if !reflect.DeepEqual(preview.MCPDefinitions, []catalog.MCP{primary, secondary}) {
+		t.Fatalf("MCP definitions missing from preview: %#v", preview.MCPDefinitions)
+	}
+}
+
+func TestUIInstallEmptyDestinationsRemovesPreviouslyInstalledCapability(t *testing.T) {
+	svc, _, store := fixture(t)
+	home := filepath.Join(t.TempDir(), "home")
+	isolateUXUserHome(t, home)
+	request := viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}
+	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	request.DestinationIDs = nil
+	_, err := svc.UIInstall(context.Background(), request)
+	if err != nil {
+		t.Fatalf("empty desired destinations should remove the binding: %v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("installation ledger after removal = %#v, %v", rows, err)
+	}
+}
+
+func TestUIInstallUncheckingCapabilityRemovesSkillAndMCPWithoutRuntimeLifecycle(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	runtime := &changedRuntime{}
+	svc.Options.Runtime = runtime
+	request := viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"claude"},
+		ExternalURL: "http://foreign.example/mcp",
+	}
+	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+		t.Fatalf("initial capability attach: %v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("initial attach was not complete: %+v, %v", rows, err)
+	}
+	request.DestinationIDs = nil
+	request.Inputs = map[string]any{"required_but_invalid": nil}
+	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+		t.Fatalf("unchecking binding should not resolve install inputs: %v", err)
+	}
+	rows, err = store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("binding rows remain after removal: %+v, %v", rows, err)
+	}
+	if runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("unchecking a binding changed shared runtime lifecycle: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
+}
+
+func TestUIInstallEmptyDesiredDestinationsSavesPartialAnswers(t *testing.T) {
+	isolateUXUserHome(t, t.TempDir())
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "note", Type: "string", Required: false}}
+	request := viewmodel.SetupInstallRequest{
+		SetupRequest:   viewmodel.SetupRequest{PackageID: "demo"},
+		DestinationIDs: []string{"codex"}, Inputs: map[string]any{"note": "before"},
+	}
+	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	request.DestinationIDs = nil
+	request.Inputs = map[string]any{"note": "after"}
+	result, err := svc.UIInstall(context.Background(), request)
+	if err != nil || !result.Saved {
+		t.Fatalf("empty desired apply did not save partial answers: %+v %v", result, err)
+	}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Value != "after" || preview.Inputs[0].Provenance != "saved" {
+		t.Fatalf("saved partial answer missing from preview: %+v %v", preview.Inputs, err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("answer save recreated removed installation state: %+v %v", rows, err)
 	}
 }
 
@@ -174,7 +310,11 @@ func TestTargetPolicyRejectsUnknownInputAndKeepsDefaultEditable(t *testing.T) {
 }
 func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
 	svc, _, _ := fixture(t)
-	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}, {Name: "local_port", Type: "integer", Required: true}}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "api_server", Type: "string", Required: true},
+		{Name: "local_port", Type: "integer", Required: true},
+		{Name: "credential", Type: "string", Required: true, VisibleWhen: map[string]any{"api_server": "https://fixed.example"}},
+	}
 	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
 	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
@@ -186,18 +326,55 @@ func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
 	called := false
 	svc.Options.Editor = func(_ context.Context, defs []catalog.Input, values map[string]any) (map[string]any, error) {
 		called = true
-		if len(defs) != 1 || defs[0].Name != "local_port" {
+		if len(defs) != 2 || defs[0].Name != "local_port" || defs[1].Name != "credential" || len(defs[1].VisibleWhen) != 0 {
 			t.Fatalf("fixed input reached editor: %+v", defs)
 		}
 		if _, ok := values["api_server"]; ok {
 			t.Fatalf("fixed value reached editor: %+v", values)
 		}
 		values["local_port"] = int64(9000)
+		values["credential"] = "visible-because-fixed-controller-matches"
 		return values, nil
 	}
 	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false, false)
-	if err != nil || !called || values["api_server"] != "https://fixed.example" || values["local_port"] != int64(9000) {
+	if err != nil || !called || values["api_server"] != "https://fixed.example" || values["local_port"] != int64(9000) || values["credential"] != "visible-because-fixed-controller-matches" {
 		t.Fatalf("interactive fixed values: %+v %v", values, err)
+	}
+}
+
+func TestInteractiveInstallPreservesStoredInputHiddenByFixedTarget(t *testing.T) {
+	svc, env, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "mode", Type: "string", Required: true},
+		{Name: "local_label", Type: "string"},
+		{Name: "advanced_token", Type: "string", Required: true, VisibleWhen: map[string]any{"mode": "remote"}},
+	}
+	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("mode='local'\n[aact.input_policy]\nmode='fixed'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
+	if err := store.SaveAnswers(key, map[string]any{"advanced_token": "retain-me", "local_label": "before"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.Editor = func(_ context.Context, defs []catalog.Input, values map[string]any) (map[string]any, error) {
+		for _, def := range defs {
+			if def.Name == "advanced_token" {
+				t.Fatalf("field controlled by fixed local mode remained visible: %+v", defs)
+			}
+		}
+		return map[string]any{"local_label": "after"}, nil
+	}
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Environment: "company", Target: "production", Agents: []agents.Environment{env}, Interactive: true}); err != nil {
+		t.Fatal(err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil || answers["advanced_token"] != "retain-me" || answers["local_label"] != "after" || answers["mode"] != "local" {
+		t.Fatalf("interactive save lost inactive value or fixed controller: %#v %v", answers, err)
 	}
 }
 func TestInteractiveResolveSkipsEmptyFormWhenEveryInputFixed(t *testing.T) {
@@ -366,7 +543,7 @@ func TestSavedCredentialClearOverridesEditableTargetPrefillOnReopen(t *testing.T
 	}
 }
 
-func TestUISetupPreviewDoesNotOfferUnsupportedMCPAdapter(t *testing.T) {
+func TestUISetupPreviewDisablesUndetectedJetBrainsMCPAdapterWithReason(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
@@ -375,9 +552,19 @@ func TestUISetupPreviewDoesNotOfferUnsupportedMCPAdapter(t *testing.T) {
 	}
 	for _, destination := range got.Destinations {
 		if destination.ID == "intellij" {
-			t.Fatal("unsupported JetBrains adapter offered as an MCP destination")
+			if _, adapterErr := agents.For("intellij", nil); adapterErr != nil {
+				t.Fatalf("JetBrains adapter should be supported: %v", adapterErr)
+			}
+			if destination.DisabledReason != "JetBrains AI Assistant was not detected" {
+				t.Fatalf("undetected JetBrains destination should be disabled with a detection reason: %+v", destination)
+			}
+			if strings.Contains(destination.DisabledReason, "not implemented") {
+				t.Fatalf("JetBrains adapter incorrectly reported unsupported: %+v", destination)
+			}
+			return
 		}
 	}
+	t.Fatal("JetBrains destination should remain visible while its application is undetected")
 }
 
 func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testing.T) {

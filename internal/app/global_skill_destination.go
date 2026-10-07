@@ -14,7 +14,7 @@ func validateGlobalSkillDestination(p catalog.Package, destinations []agents.Env
 		if destination.ID != "all" && destination.Kind != "all" {
 			continue
 		}
-		if p.MCP != nil || p.Skill == nil {
+		if p.HasMCP() || p.Skill == nil {
 			return errors.New("all is available only for skill-only packages")
 		}
 		global, err := agents.GlobalSkillsEnvironment(destination.Home)

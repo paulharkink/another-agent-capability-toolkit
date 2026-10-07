@@ -13,7 +13,7 @@ destination = "SKILL.md"
 [[inputs]]
 name = "local_port"
 type = "integer"
-label = "Local port"
+label = "Listen port"
 config_key = "mcp.local_port"
 default = 8765
 min = 1024
@@ -22,13 +22,21 @@ max = 65535
 [[inputs]]
 name = "host"
 type = "string"
-label = "Host"
+label = "Listen address"
 default = "127.0.0.1"
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+hint = "User-editable name shown by MCP clients for this server."
+config_key = "mcp.registration_name"
+required = true
 
 [[inputs]]
 name = "api_server"
 type = "string"
-label = "Api server"
+label = "API server"
 config_key = "cluster.api_server"
 required = true
 
@@ -42,6 +50,7 @@ exclusive_group = "cluster_credentials"
 name = "kubeconfig"
 type = "file"
 label = "Source kubeconfig"
+hint = "Import source; not a live path · AACT uses managed credential material at runtime"
 exclusive_group = "cluster_credentials"
 
 [[inputs]]
@@ -53,13 +62,13 @@ options_from = "dbms.*.tenants.*"
 [[inputs]]
 name = "ca_file"
 type = "file"
-label = "Ca file"
+label = "CA file"
 config_key = "cluster.ca_file"
 
 [[inputs]]
 name = "ca_data"
 type = "string"
-label = "Ca data"
+label = "CA data"
 config_key = "cluster.ca_data"
 
 [[inputs]]
@@ -71,7 +80,7 @@ config_key = "cluster.insecure_skip_tls_verify"
 [[inputs]]
 name = "verify_x509_strict"
 type = "boolean"
-label = "Verify x509 strict"
+label = "Verify X.509 strict"
 config_key = "cluster.verify_x509_strict"
 default = true
 
@@ -106,6 +115,7 @@ transport = "streamable-http"
 container_port = 8765
 endpoint_path = "/mcp"
 host_port_input = "local_port"
+registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
 
@@ -122,3 +132,25 @@ timeout_seconds = 300
 
 [mcp.actions.authenticate.windows]
 command = ["bin/inspector-helper.exe", "cluster-inspector", "authenticate"]
+
+[ui]
+[[ui.sections]]
+id = "connection"
+title = "Connection"
+fields = ["host", "local_port", "registration_name", "api_server"]
+[[ui.sections]]
+id = "authentication"
+title = "Authentication"
+fields = ["token", "kubeconfig"]
+[[ui.sections]]
+id = "databases"
+title = "Databases"
+fields = ["connections"]
+[[ui.sections]]
+id = "tls"
+title = "TLS"
+fields = ["ca_file", "ca_data", "insecure_skip_tls_verify", "verify_x509_strict"]
+[[ui.sections]]
+id = "tekton"
+title = "Tekton"
+fields = ["tekton_default_namespace", "tekton_branch_selector_key", "tekton_repository_selector_key", "tekton_repository_context_hook"]

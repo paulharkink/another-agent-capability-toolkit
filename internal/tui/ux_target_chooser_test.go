@@ -15,7 +15,7 @@ import (
 type chooserSetupBackend struct{ fixtureBackend }
 
 func (chooserSetupBackend) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: q.SourceID, Package: q.PackageID, Environment: q.Environment, Target: q.Target}, Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "value", Label: "Value", Type: "string"}, Editable: true}}}, nil
+	return viewmodel.SetupPreview{Key: state.Key{Source: q.SourceID, Package: q.PackageID, Environment: q.Environment, Target: q.Target}, PackageName: "Inspector", MCP: true, HasManifestUI: true, Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"value"}}}, Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "value", Label: "Value", Type: "string"}, Editable: true}}}, nil
 }
 func (chooserSetupBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return viewmodel.OperationResult{}, nil
@@ -28,7 +28,7 @@ func TestUXMultipleTargetsOpenLocalChooserAndSelectionOpensCorrectKey(t *testing
 		{SourceID: "one", Environment: "dev", PackageID: "inspect", Name: "local", Path: "/tmp/dev/inspect/local.toml"},
 		{SourceID: "one", Environment: "prod", PackageID: "inspect", Name: "live", Path: "/tmp/prod/inspect/live.toml"},
 	}}
-	m.homeOperation("parameters")
+	m.homeOperation("choose-preset")
 	view := ansi.Strip(m.View().Content)
 	if !strings.Contains(view, "dev / local") || !strings.Contains(view, "prod / live") {
 		t.Fatalf("chooser does not list applicable targets in place:\n%s", view)
@@ -43,6 +43,63 @@ func TestUXMultipleTargetsOpenLocalChooserAndSelectionOpensCorrectKey(t *testing
 	}
 	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "prod" || m.pendingSetup.Key.Target != "live" {
 		t.Fatalf("selected target did not open its exact setup key: %#v", m.pendingSetup)
+	}
+}
+
+func TestMCPConfigureUsesPresetChooserWhenTargetsAreAvailable(t *testing.T) {
+	for _, action := range []string{"parameters", "i"} {
+		t.Run(action, func(t *testing.T) {
+			m, _ := homeFixture()
+			m.backend = chooserSetupBackend{}
+			m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{
+				{SourceID: "one", Environment: "home", PackageID: "inspect", Name: "pms15", Path: "/environments/home/inspect/pms15.toml"},
+			}}
+			m.home.Modal = &modalState{Kind: "actions"}
+			for _, item := range m.homeMenuItems() {
+				if item.Action == "parameters" && item.Label != "Set up another target…" {
+					t.Fatalf("MCP primary setup label hid target selection: %q", item.Label)
+				}
+			}
+			m.home.Modal = nil
+			if cmd := m.homeOperation(action); cmd != nil {
+				t.Fatal("MCP Configure bypassed the available target chooser")
+			}
+			if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
+				t.Fatalf("MCP Configure did not open preset chooser: modal=%+v output=%q", m.home.Modal, m.output)
+			}
+			view := ansi.Strip(m.View().Content)
+			if !strings.Contains(view, "home / pms15") || !strings.Contains(view, "Without an environment preset") {
+				t.Fatalf("preset chooser omitted the named target or explicit no-preset choice:\n%s", view)
+			}
+			cmd := m.chooseTarget(0)
+			if cmd == nil {
+				t.Fatal("selecting the named preset did not start setup")
+			}
+			m.Update(cmd())
+			want := state.Key{Source: "one", Package: "inspect", Environment: "home", Target: "pms15"}
+			if m.pendingSetup == nil || m.pendingSetup.Key != want {
+				t.Fatalf("named target was not retained through setup: %+v want %+v", m.pendingSetup, want)
+			}
+			if !strings.Contains(ansi.Strip(m.View().Content), "Inspector · home / pms15") {
+				t.Fatalf("workspace title omitted selected MCP target identity:\n%s", ansi.Strip(m.View().Content))
+			}
+		})
+	}
+}
+
+func TestMCPConfigureWithoutNamedPresetsOpensFullInputsDirectly(t *testing.T) {
+	m, _ := homeFixture()
+	m.backend = chooserSetupBackend{}
+	cmd := m.homeOperation("parameters")
+	if cmd == nil {
+		t.Fatal("MCP setup without presets did not start")
+	}
+	if m.home.TargetChooser != nil || m.home.Modal != nil {
+		t.Fatalf("MCP setup without a named preset received an empty chooser: chooser=%+v modal=%+v", m.home.TargetChooser, m.home.Modal)
+	}
+	m.Update(cmd())
+	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "" || m.pendingSetup.Key.Target != "" || m.form == nil {
+		t.Fatalf("preset-free setup did not open full inputs for the no-preset target: preview=%+v form=%v", m.pendingSetup, m.form != nil)
 	}
 }
 
@@ -79,7 +136,7 @@ func TestUXNoPresetIsExplicitChoice(t *testing.T) {
 	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{
 		{SourceID: "one", Environment: "dev", PackageID: "inspect", Name: "local", Path: "/tmp/dev/inspect/local.toml"},
 	}}
-	m.homeOperation("parameters")
+	m.homeOperation("choose-preset")
 	if !strings.Contains(ansi.Strip(m.View().Content), "Without an environment preset") {
 		t.Fatalf("chooser has no explicit no-preset option:\n%s", ansi.Strip(m.View().Content))
 	}
@@ -96,7 +153,7 @@ func TestUXUnavailableSourceHasRecoveryInsteadOfDeadConfigure(t *testing.T) {
 	m.home.Capabilities.ID = rows[len(rows)-1].ID
 	m.reconcileHome()
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Package unavailable", "Locate source", "View saved information", "Remove local registration"} {
+	for _, want := range []string{"Package unavailable", "Locate source", "View saved information"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("unavailable source lacks %q recovery:\n%s", want, view)
 		}
@@ -164,7 +221,7 @@ func TestUXTargetInformationShowsRawAndResolvedPath(t *testing.T) {
 		Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "certificate", Label: "Certificate", Type: "file"}, Value: "/env/prod/cert/client.pem", HasValue: true, Provenance: "target", ProvenancePath: "/env/prod/inspect/live.toml", Editable: true}},
 	}
 	m.Update(setupPreviewMsg{preview: preview})
-	if !strings.Contains(ansi.Strip(m.View().Content), "F3 Target information") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "F3 Information") {
 		t.Fatal("setup offers no target information action")
 	}
 	press(m, tea.KeyF3, "")

@@ -28,9 +28,9 @@ func For(kind string, runner process.Executor) (Adapter, error) {
 	case "claude":
 		return jsonAdapter{kind: kind, parent: "mcpServers"}, nil
 	case "intellij", "intellij-ai-assistant":
-		return nil, errors.New("JetBrains AI Assistant stores MCP settings in IDE XML; its adapter is not implemented")
+		return jsonAdapter{kind: "intellij", parent: "mcpServers"}, nil
 	case "copilot-intellij":
-		return jsonAdapter{kind: kind, parent: "servers", requireExisting: true}, nil
+		return jsonAdapter{kind: kind, parent: "servers"}, nil
 	case "generic", "generic-mcp":
 		return jsonAdapter{kind: kind, parent: "servers"}, nil
 	default:

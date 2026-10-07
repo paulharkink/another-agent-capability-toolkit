@@ -99,13 +99,13 @@ func TestSplitL4ScrollDoesNotScrollL3(t *testing.T) {
 func TestSplitFormDistinguishesSectionsFieldsAndHeadings(t *testing.T) {
 	m := splitIsolationFixture()
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"L3 Sections · FOCUSED", "> Connection", "› Authentication", "› Listen address:"} {
+	for _, want := range []string{"── Sections", "> Connection", "› Authentication", "› Listen address:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("split form lacks row cue %q:\n%s", want, view)
 		}
 	}
 	m.Update(key(tea.KeyRight, ""))
-	if view = ansi.Strip(m.View().Content); !strings.Contains(view, "L4 · Connection · FOCUSED") {
-		t.Fatalf("split form lacks a focused L4 title:\n%s", view)
+	if view = ansi.Strip(m.View().Content); !strings.Contains(view, "── Connection") || strings.Contains(view, "L3") || strings.Contains(view, "L4") || strings.Contains(view, "FOCUSED") {
+		t.Fatalf("split form title contains hierarchy labels or omits the selected section:\n%s", view)
 	}
 }

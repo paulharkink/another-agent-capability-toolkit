@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/app"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -116,9 +117,19 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	source := config.Source{
 		ID: "cluster-source", Root: repoRoot, ManifestPath: filepath.Join(repoRoot, "aact.toml"),
 		EnvironmentRoot: environmentRoot, Catalog: []catalog.Package{pkg},
-		PackageDefaults: map[string]map[string]any{},
+		PackageDefaults: map[string]map[string]any{pkg.ID: {"registration_name": "cluster-inspector-pms15"}},
 	}
-	service := app.New(source, store, app.Options{})
+	probe, err := agents.DefaultDiscoveryProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.LookPath = func(name string) (string, error) {
+		if name == "opencode" || name == "codex" {
+			return filepath.Join(home, "bin", name), nil
+		}
+		return "", os.ErrNotExist
+	}
+	service := app.New(source, store, app.Options{DiscoveryProbe: &probe})
 	docker := &emptyDockerPS{}
 	realRuntime := mcp.NewDockerRuntime(store)
 	realRuntime.Executor = docker
@@ -154,8 +165,8 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if got := m.form.Values()["host"]; got != "127.0.0.1" {
 		t.Fatalf("unexpected initial host draft: %v", got)
 	}
-	if view := m.form.View().Content; !strings.Contains(view, "build, start, register") || !strings.Contains(view, "Save and apply") {
-		t.Fatalf("local Docker target does not expose Save and Apply/build-start:\n%s", view)
+	if view := m.form.View().Content; !strings.Contains(view, "Save and apply") || !strings.Contains(view, "Connection") || !strings.Contains(view, "Runtime") {
+		t.Fatalf("local Docker target does not expose its declared settings and Save and apply action:\n%s", view)
 	}
 
 	// Edit the live form draft through its normal keyboard path before choosing
@@ -163,7 +174,8 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	m.form.SelectSection("Connection")
 	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // host
+	// Right focuses the first declared Connection field (host); do not advance
+	// to the next field before editing it.
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	for _, r := range "draft-listen-host" {
@@ -184,23 +196,16 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatalf("keyboard selection did not mark the OpenCode destination: %#v", got)
 	}
 
-	m.form.SelectSection("Overview")
-	m.form.FocusSection()
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	_, actionCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if actionCmd == nil {
-		t.Fatal("selecting the enabled Overview apply action did not emit an action")
-	}
-	_, installCmd := m.Update(actionCmd())
+	_, installCmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if installCmd == nil {
-		t.Fatal("Overview action did not dispatch the local unified UIInstall operation")
+		t.Fatalf("bottom Save and apply did not dispatch UIInstall: values=%#v view=%s", m.form.Values(), m.form.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, installCmd))
 	if backend.installRequest == nil {
-		t.Fatal("Overview action did not call UIInstall")
+		t.Fatal("bottom Save and apply did not call UIInstall")
 	}
 	if backend.uiRunCalls != 0 {
-		t.Fatalf("Overview action fell back to legacy UIRun %d times", backend.uiRunCalls)
+		t.Fatalf("bottom Save and apply fell back to legacy UIRun %d times", backend.uiRunCalls)
 	}
 	got := backend.installRequest
 	if got.SetupRequest != request || got.ExternalURL != "" || got.Inputs["host"] != "draft-listen-host" || !containsString(got.DestinationIDs, "opencode") {
@@ -238,12 +243,12 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatalf("observed foreign runtime was not guarded despite its loopback registration: %+v", foreignProfile)
 	}
 	foreignView := foreignModel.form.View().Content
-	if !strings.Contains(foreignView, "Build and start MCP") || !strings.Contains(foreignView, "another AACT installation") {
-		t.Fatalf("foreign runtime lifecycle action did not explain its disabled state:\n%s", foreignView)
+	if !strings.Contains(foreignView, "Save and apply") || strings.Contains(foreignView, "Build and start MCP") {
+		t.Fatalf("foreign runtime lost capability configuration or exposed a lifecycle shortcut:\n%s", foreignView)
 	}
-	foreignModel.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
-	if backend.installCalls != 1 || !strings.Contains(foreignModel.output, "another AACT installation") {
-		t.Fatalf("start shortcut bypassed observed foreign ownership guard: installs=%d output=%q", backend.installCalls, foreignModel.output)
+	foreignRow := ProfileRow{Key: foreignProfile.Key, Profile: foreignProfile, URL: foreignProfile.URL, Status: foreignProfile.RuntimeStatus}
+	if reason := foreignModel.profileActionReason(foreignRow, "s"); reason == "" {
+		t.Fatal("foreign runtime lifecycle controls were not disabled")
 	}
 }
 

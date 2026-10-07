@@ -23,7 +23,7 @@ default = "127.0.0.1"
 [[inputs]]
 name = "base_url"
 type = "string"
-label = "Base url"
+label = "Base URL"
 config_key = "forgejo.base_url"
 required = true
 
@@ -54,3 +54,13 @@ timeout_seconds = 300
 
 [mcp.actions.authenticate.windows]
 command = ["bin/inspector-helper.exe", "forgejo", "authenticate"]
+
+[ui]
+[[ui.sections]]
+id = "connection"
+title = "Connection"
+fields = ["host", "local_port", "base_url"]
+[[ui.sections]]
+id = "authentication"
+title = "Authentication"
+fields = ["token"]

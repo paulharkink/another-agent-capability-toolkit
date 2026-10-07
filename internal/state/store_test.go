@@ -14,6 +14,22 @@ func sampleKey(source string) Key {
 	return Key{Source: source, Package: "cluster-inspector", Environment: "company", Target: "prod"}
 }
 
+func TestMCPKeyIdentityIsAdditiveAndLegacyCompatible(t *testing.T) {
+	legacy := sampleKey("fixture")
+	withLegacyMCP := legacy
+	withLegacyMCP.MCP = ""
+	if legacy.ID() != withLegacyMCP.ID() {
+		t.Fatal("empty MCP identity changed the legacy key ID")
+	}
+	first := legacy
+	first.MCP = "primary"
+	second := legacy
+	second.MCP = "secondary"
+	if first.ID() == second.ID() || first.ID() == legacy.ID() {
+		t.Fatal("named MCPs must have distinct identities from each other and the legacy key")
+	}
+}
+
 func TestReadOnlyOpenHasNoWrites(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "absent")
 	s, e := OpenReadOnly(root)

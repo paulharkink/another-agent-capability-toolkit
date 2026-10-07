@@ -55,6 +55,26 @@ func TestFailedOperationShowsConcreteCauseOnFirstPage(t *testing.T) {
 	}
 }
 
+func TestResultStatusIsProminentAndFailuresUseHighContrastErrorRows(t *testing.T) {
+	m, _ := homeFixture()
+	m.action = "install"
+	m.Update(operationMsg{origin: "Catalog", output: "Installed", err: errors.New("repo-map failed: exact fixture cause")})
+	view := m.View().Content
+	if !strings.Contains(ansi.Strip(view), "FAILED") || !strings.Contains(view, "\x1b[1;38;2;255;77;95m") {
+		t.Fatalf("failed outcome lacks a bold, high-contrast status label: %q", view)
+	}
+	if !strings.Contains(ansi.Strip(view), "repo-map failed: exact fixture cause") || !strings.Contains(view, "\x1b[1;38;2;255;77;95m║ Failed:") {
+		t.Fatalf("actual error was changed or not emphasized: %q", view)
+	}
+
+	m, _ = homeFixture()
+	m.action = "install"
+	m.Update(operationMsg{origin: "Catalog", output: "Installed"})
+	if !strings.Contains(ansi.Strip(m.View().Content), "SUCCESS") {
+		t.Fatalf("successful outcome lacks an explicit SUCCESS label: %q", m.View().Content)
+	}
+}
+
 func TestFailedInstallResultShowsChildDiagnosticAndNavigation(t *testing.T) {
 	m, _ := homeFixture()
 	m.setupRetry = &setupRetryDraft{}
@@ -120,7 +140,7 @@ func TestOperationResultMatchesMockDialogPaletteAcrossFullSurface(t *testing.T) 
 		want string
 	}{
 		{name: "success", want: "38;2;217;246;228m"},
-		{name: "error", err: errors.New("permission denied"), want: "38;2;255;220;200m"},
+		{name: "error", err: errors.New("permission denied"), want: "1;38;2;255;77;95m"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := homeFixture()
@@ -153,12 +173,39 @@ func TestOperationResultViewerPansLongRowsHorizontally(t *testing.T) {
 	}
 }
 
-func TestOperationResultOverlayRetainsDimmedUnderlyingScreen(t *testing.T) {
+func TestOperationResultOverlayPreservesUnderlyingPalette(t *testing.T) {
 	m, _ := homeFixture()
 	m.action = "save"
+	underlying := m.View().Content
 	m.Update(operationMsg{origin: "Catalog", output: "Inputs saved"})
-	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "AACT · Another Agent Capability Toolkit") || !strings.Contains(view, "Operation result") {
-		t.Fatalf("result overlay should retain the underlying screen and modal:\n%s", view)
+	view := m.View().Content
+	if !strings.Contains(ansi.Strip(view), "AACT · Another Agent Capability Toolkit") || !strings.Contains(ansi.Strip(view), "Operation result") {
+		t.Fatalf("result overlay should retain the underlying screen and modal:\n%s", ansi.Strip(view))
+	}
+	if strings.Contains(view, "48;2;6;22;74m") || strings.Contains(view, "38;2;82;103;143m") {
+		t.Fatal("result overlay recolored the underlying layer with a darkened palette")
+	}
+	if !strings.Contains(view, "48;2;9;38;111m") || !strings.Contains(view, "38;2;255;227;138m") {
+		t.Fatal("result overlay removed the home screen's fixed background or selection palette")
+	}
+	if ansi.Strip(underlying) == ansi.Strip(view) {
+		t.Fatal("result dialog was not drawn over the retained screen")
+	}
+}
+
+func TestProgressOverlayPreservesUnderlyingPalette(t *testing.T) {
+	m, _ := homeFixture()
+	m.width, m.height = 110, 30
+	m.action = "check connection"
+	underlying := m.View().Content
+	view := m.progressView().Content
+	if strings.Contains(view, "48;2;6;22;74m") || strings.Contains(view, "38;2;82;103;143m") {
+		t.Fatal("progress overlay recolored the underlying layer with a darkened palette")
+	}
+	if !strings.Contains(view, "48;2;9;38;111m") || !strings.Contains(view, "38;2;255;227;138m") {
+		t.Fatal("progress overlay removed the home screen's fixed background or selection palette")
+	}
+	if !strings.Contains(ansi.Strip(view), "Operation in progress") || ansi.Strip(underlying) == ansi.Strip(view) {
+		t.Fatal("progress dialog was not drawn over the retained screen")
 	}
 }

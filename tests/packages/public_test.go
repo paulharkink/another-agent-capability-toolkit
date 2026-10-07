@@ -74,7 +74,7 @@ func TestClusterInspectorRejectsBothCredentialMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := map[string]any{"api_server": "https://cluster.example", "token": "private", "kubeconfig": "/tmp/config"}
+	values := map[string]any{"registration_name": "cluster-inspector-test", "api_server": "https://cluster.example", "token": "private", "kubeconfig": "/tmp/config"}
 	if err := forms.Validate(p.Inputs, values); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("public package accepted incompatible credentials: %v", err)
 	}

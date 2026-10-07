@@ -68,6 +68,27 @@ func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 	}
 }
 
+func TestUIEnvironmentRestoresCustomHomeFromNamedMCPChildren(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	t.Setenv("CODEX_HOME", "")
+	svc, _, store := fixture(t)
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
+	customHome := filepath.Join(home, "custom-agent-home")
+	configPath := filepath.Join(customHome, ".codex", "config.toml")
+	for _, name := range []string{"inspector", "metrics"} {
+		childKey := key
+		childKey.MCP = name
+		if err := store.Record(state.Installation{Key: childKey, AgentID: "codex", AgentHome: customHome, AgentKind: "codex", Component: "mcp", Destination: configPath, RegistrationName: "demo-home-" + name, URL: "http://127.0.0.1/mcp"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := svc.uiEnvironment("codex", key)
+	if err != nil || resolved.Home != customHome || resolved.ConfigPath != configPath {
+		t.Fatalf("named child rows lost prior custom agent paths: %+v %v", resolved, err)
+	}
+}
+
 func TestUIAgentConfigShowsExactContentsAndRejectsUndiscoveredPaths(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS Codex path fixture")
