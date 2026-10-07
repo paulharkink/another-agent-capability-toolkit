@@ -23,7 +23,11 @@ func (s *Service) registrationTimeoutForKey(key state.Key) int {
 	if key.Source == s.Source.ID {
 		for _, p := range s.Source.Catalog {
 			if p.ID == key.Package {
-				return registrationTimeoutMS(p.MCP)
+				for _, profile := range p.MCPProfiles() {
+					if key.Profile == "" || profile.Name == key.Profile {
+						return registrationTimeoutMS(&profile)
+					}
+				}
 			}
 		}
 	}

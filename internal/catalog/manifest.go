@@ -12,6 +12,7 @@ import (
 )
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func Load(dir string) (Package, error) {
 	abs, err := filepath.Abs(dir)
@@ -49,10 +50,10 @@ func Load(dir string) (Package, error) {
 	if p.Generator != nil {
 		defaultCommand(p.Generator)
 	}
-	if p.MCP != nil {
-		for name, c := range p.MCP.Actions {
+	for _, profile := range p.MCPProfiles() {
+		for name, c := range profile.Actions {
 			defaultCommand(&c)
-			p.MCP.Actions[name] = c
+			profile.Actions[name] = c
 		}
 	}
 	return p, nil
@@ -72,17 +73,12 @@ func Validate(p Package) error {
 	if !identifier.MatchString(p.ID) {
 		return fmt.Errorf("invalid package id %q", p.ID)
 	}
-	if p.Skill == nil && p.MCP == nil {
+	profiles := p.MCPProfiles()
+	if p.Skill == nil && len(profiles) == 0 {
 		return fmt.Errorf("package must declare skill or mcp")
 	}
 	if p.Skill != nil && !identifier.MatchString(p.Skill.Name) {
 		return fmt.Errorf("invalid skill name %q", p.Skill.Name)
-	}
-	if p.MCP != nil && !identifier.MatchString(p.MCP.Name) {
-		return fmt.Errorf("invalid mcp name %q", p.MCP.Name)
-	}
-	if p.MCP != nil && p.MCP.RegistrationTimeoutMS < 0 {
-		return fmt.Errorf("mcp registration_timeout_ms must be positive")
 	}
 	seen := map[string]bool{}
 	for _, in := range p.Inputs {
@@ -125,16 +121,123 @@ func Validate(p Package) error {
 			return fmt.Errorf("input %s: invalid item bounds", in.Name)
 		}
 	}
+	profileNames := map[string]bool{}
+	inputsByName := make(map[string]Input, len(p.Inputs))
+	for _, in := range p.Inputs {
+		inputsByName[in.Name] = in
+	}
+	for _, profile := range profiles {
+		if !identifier.MatchString(profile.Name) {
+			return fmt.Errorf("invalid mcp name %q", profile.Name)
+		}
+		if profileNames[profile.Name] {
+			return fmt.Errorf("duplicate mcp profile name %q", profile.Name)
+		}
+		profileNames[profile.Name] = true
+		if profile.RegistrationTimeoutMS < 0 {
+			return fmt.Errorf("mcp %s registration_timeout_ms must be positive", profile.Name)
+		}
+		if profile.EnabledInput != "" {
+			in, ok := inputsByName[profile.EnabledInput]
+			if !ok {
+				return fmt.Errorf("mcp %s enabled_input %q does not name a package input", profile.Name, profile.EnabledInput)
+			}
+			if in.Type != "boolean" {
+				return fmt.Errorf("mcp %s enabled_input %q must be boolean", profile.Name, profile.EnabledInput)
+			}
+		}
+		for _, ref := range []struct{ field, name, wantType string }{
+			{"registration_name_input", profile.RegistrationNameInput, "string"},
+			{"token_input", profile.TokenInput, "secret"},
+			{"token_file_input", profile.TokenFileInput, "file"},
+			{"token_env_input", profile.TokenEnvInput, "string"},
+		} {
+			if ref.name == "" {
+				continue
+			}
+			in, ok := inputsByName[ref.name]
+			if !ok {
+				return fmt.Errorf("mcp %s %s %q does not name a package input", profile.Name, ref.field, ref.name)
+			}
+			if in.Type != ref.wantType {
+				return fmt.Errorf("mcp %s %s %q must reference a %s input", profile.Name, ref.field, ref.name, ref.wantType)
+			}
+		}
+		if profile.TokenHeader != "" && profile.TokenContainerEnv != "" {
+			return fmt.Errorf("mcp %s cannot set both token_header and token_container_env", profile.Name)
+		}
+		if profile.TokenHeader != "" && profile.TokenInput == "" && profile.TokenFileInput == "" && profile.TokenEnvInput == "" {
+			return fmt.Errorf("mcp %s token_header requires a token source input", profile.Name)
+		}
+		if profile.TokenHeader != "" && (strings.TrimSpace(profile.TokenHeader) != profile.TokenHeader || strings.ContainsAny(profile.TokenHeader, ":\r\n\x00")) {
+			return fmt.Errorf("mcp %s token_header must be a valid HTTP header name", profile.Name)
+		}
+		if strings.ContainsAny(profile.TokenPrefix, "\r\n\x00") {
+			return fmt.Errorf("mcp %s token_prefix cannot contain line breaks or NUL", profile.Name)
+		}
+		if profile.TokenContainerEnv != "" && profile.TokenInput == "" && profile.TokenFileInput == "" && profile.TokenEnvInput == "" {
+			return fmt.Errorf("mcp %s token_container_env requires a token source input", profile.Name)
+		}
+		if profile.HostPortInput != "" {
+			in, ok := inputsByName[profile.HostPortInput]
+			if !ok {
+				return fmt.Errorf("mcp %s host_port_input %q does not name a package input", profile.Name, profile.HostPortInput)
+			}
+			if in.Type != "integer" {
+				return fmt.Errorf("mcp %s host_port_input %q must be integer", profile.Name, profile.HostPortInput)
+			}
+		}
+		usedEnvironment := map[string]bool{}
+		for name := range profile.Env {
+			if !environmentName.MatchString(name) {
+				return fmt.Errorf("mcp %s env has invalid environment variable name %q", profile.Name, name)
+			}
+			usedEnvironment[name] = true
+		}
+		for name, inputName := range profile.EnvInputs {
+			if !environmentName.MatchString(name) {
+				return fmt.Errorf("mcp %s env_inputs has invalid environment variable name %q", profile.Name, name)
+			}
+			if usedEnvironment[name] {
+				return fmt.Errorf("mcp %s environment variable %q is declared more than once", profile.Name, name)
+			}
+			usedEnvironment[name] = true
+			input, ok := inputsByName[inputName]
+			if !ok {
+				return fmt.Errorf("mcp %s env_inputs %s references unknown input %q", profile.Name, name, inputName)
+			}
+			if input.Type == "secret" || input.Type == "file" || input.Type == "directory" || input.Type == "multichoice" || input.Type == "multiple-choice" {
+				return fmt.Errorf("mcp %s env_inputs %s must reference a non-secret scalar input", profile.Name, name)
+			}
+		}
+		for name, inputName := range profile.SecretEnvInputs {
+			if !environmentName.MatchString(name) {
+				return fmt.Errorf("mcp %s secret_env_inputs has invalid environment variable name %q", profile.Name, name)
+			}
+			if usedEnvironment[name] {
+				return fmt.Errorf("mcp %s environment variable %q is declared more than once", profile.Name, name)
+			}
+			usedEnvironment[name] = true
+			input, ok := inputsByName[inputName]
+			if !ok {
+				return fmt.Errorf("mcp %s secret_env_inputs %s references unknown input %q", profile.Name, name, inputName)
+			}
+			if input.Type != "secret" {
+				return fmt.Errorf("mcp %s secret_env_inputs %s must reference a secret input", profile.Name, name)
+			}
+		}
+		if profile.TokenContainerEnv != "" && !environmentName.MatchString(profile.TokenContainerEnv) {
+			return fmt.Errorf("mcp %s token_container_env has invalid environment variable name %q", profile.Name, profile.TokenContainerEnv)
+		}
+		for name, c := range profile.Actions {
+			if err := validateCommand(c); err != nil {
+				return fmt.Errorf("mcp %s action %s: %w", profile.Name, name, err)
+			}
+		}
+	}
 	if p.Generator != nil {
 		if err := validateCommand(*p.Generator); err != nil {
 			return fmt.Errorf("generator: %w", err)
-		}
-	}
-	if p.MCP != nil {
-		for name, c := range p.MCP.Actions {
-			if err := validateCommand(c); err != nil {
-				return fmt.Errorf("mcp action %s: %w", name, err)
-			}
 		}
 	}
 	return nil
@@ -169,6 +272,23 @@ func validateDeclaredTimeouts(data []byte) error {
 				if command, ok := value.(map[string]any); ok {
 					if err := declaredTimeout(command); err != nil {
 						return fmt.Errorf("mcp action %s: %w", name, err)
+					}
+				}
+			}
+		}
+	}
+	if mcps, ok := raw["mcps"].([]any); ok {
+		for index, value := range mcps {
+			profile, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			if actions, ok := profile["actions"].(map[string]any); ok {
+				for name, value := range actions {
+					if command, ok := value.(map[string]any); ok {
+						if err := declaredTimeout(command); err != nil {
+							return fmt.Errorf("mcp profile %d action %s: %w", index+1, name, err)
+						}
 					}
 				}
 			}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -37,7 +38,27 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	return New(src, s, Options{}), env, s
 }
 
-type fakeRuntime struct{ starts int }
+type fakeRuntime struct {
+	starts   int
+	lastKey  state.Key
+	lastSpec mcp.RunSpec
+}
+
+type multiProfileRuntime struct {
+	keys  []state.Key
+	specs []mcp.RunSpec
+}
+
+func (r *multiProfileRuntime) Start(_ context.Context, key state.Key, spec mcp.RunSpec) (mcp.Instance, error) {
+	r.keys = append(r.keys, key)
+	r.specs = append(r.specs, spec)
+	return mcp.Instance{Key: key, URL: "http://127.0.0.1:" + fmt.Sprint(spec.HostPort) + "/mcp", Status: "running", Ownership: "local"}, nil
+}
+func (*multiProfileRuntime) Stop(context.Context, state.Key) error        { return nil }
+func (*multiProfileRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (*multiProfileRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
 
 type failingRuntime struct{ fakeRuntime }
 
@@ -67,8 +88,10 @@ func (f *failingRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Ins
 	return mcp.Instance{}, errors.New("Docker: port 9000 is already allocated")
 }
 
-func (f *fakeRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
+func (f *fakeRuntime) Start(_ context.Context, k state.Key, spec mcp.RunSpec) (mcp.Instance, error) {
 	f.starts++
+	f.lastKey = k
+	f.lastSpec = spec
 	return mcp.Instance{URL: "http://127.0.0.1:8765/mcp"}, nil
 }
 func (*fakeRuntime) Stop(context.Context, state.Key) error        { return nil }
@@ -76,6 +99,196 @@ func (*fakeRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, 
 func (*fakeRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("fixture")), nil
 }
+
+func TestPackageMCPProfilesHonorsOptionalProviderInputs(t *testing.T) {
+	p := catalog.Package{MCPs: []catalog.MCP{
+		{Name: "github", EnabledInput: "github_enabled"},
+		{Name: "gitlab", EnabledInput: "gitlab_enabled"},
+		{Name: "bitbucket"},
+	}}
+	got := packageMCPProfiles(p, map[string]any{"github_enabled": true, "gitlab_enabled": false})
+	if len(got) != 2 || got[0].Name != "github" || got[1].Name != "bitbucket" {
+		t.Fatalf("enabled profiles = %#v", got)
+	}
+}
+
+func TestSelectMCPProfileRequiresExplicitChoiceWhenSeveralExist(t *testing.T) {
+	p := catalog.Package{ID: "git-forge", MCPs: []catalog.MCP{{Name: "github"}, {Name: "gitlab"}}}
+	if _, err := selectMCPProfile(p, ""); err == nil || !strings.Contains(err.Error(), "multiple MCP profiles") {
+		t.Fatalf("missing profile should fail with actionable message, got %v", err)
+	}
+	profile, err := selectMCPProfile(p, "gitlab")
+	if err != nil || profile.Name != "gitlab" {
+		t.Fatalf("selected profile = %#v, %v", profile, err)
+	}
+}
+
+func TestMCPProfileKeysSeparateNewProfilesButKeepLegacyKey(t *testing.T) {
+	base := state.Key{Source: "source", Package: "git-forge", Environment: "home", Target: "pms15"}
+	legacy := catalog.Package{MCP: &catalog.MCP{Name: "github"}}
+	if got := mcpProfileKey(base, legacy, *legacy.MCP); got != base {
+		t.Fatalf("legacy key changed: %#v", got)
+	}
+	p := catalog.Package{MCPs: []catalog.MCP{{Name: "github"}, {Name: "gitlab"}}}
+	github := mcpProfileKey(base, p, p.MCPs[0])
+	gitlab := mcpProfileKey(base, p, p.MCPs[1])
+	if github.Profile != "github" || gitlab.Profile != "gitlab" || github.ID() == gitlab.ID() {
+		t.Fatalf("provider keys not separated: github=%#v gitlab=%#v", github, gitlab)
+	}
+}
+
+func TestResolveProfileTokenFromRawFileOrEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("file-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_TEST_PROVIDER_TOKEN", "environment-token")
+	cases := []struct {
+		name    string
+		profile catalog.MCP
+		values  map[string]any
+		want    string
+	}{
+		{"raw", catalog.MCP{TokenInput: "raw"}, map[string]any{"raw": "raw-token"}, "raw-token"},
+		{"file", catalog.MCP{TokenFileInput: "file"}, map[string]any{"file": path}, "file-token"},
+		{"environment", catalog.MCP{TokenEnvInput: "env"}, map[string]any{"env": "AACT_TEST_PROVIDER_TOKEN"}, "environment-token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveProfileToken(tc.profile, tc.values)
+			if err != nil || got != tc.want {
+				t.Fatalf("resolveProfileToken() = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveProfileTokenRejectsMultipleSources(t *testing.T) {
+	_, err := resolveProfileToken(catalog.MCP{TokenInput: "raw", TokenEnvInput: "env"}, map[string]any{"raw": "x", "env": "Y"})
+	if err == nil || !strings.Contains(err.Error(), "choose exactly one") {
+		t.Fatalf("multiple token sources should fail clearly, got %v", err)
+	}
+}
+
+func TestProfileRegistrationHeadersUseResolvedToken(t *testing.T) {
+	profile := catalog.MCP{TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}
+	got, err := profileRegistrationHeaders(profile, map[string]any{"token": "provider-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["Authorization"] != "Bearer provider-token" {
+		t.Fatalf("profile headers = %#v", got)
+	}
+}
+
+func TestProfileRegistrationHeadersRequireConfiguredToken(t *testing.T) {
+	profile := catalog.MCP{TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}
+	if _, err := profileRegistrationHeaders(profile, map[string]any{}); err == nil || !strings.Contains(err.Error(), "choose exactly one provider token source") {
+		t.Fatalf("missing provider token should fail clearly, got %v", err)
+	}
+}
+
+func TestStartProfilePassesResolvedTokenAsContainerSecret(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &fakeRuntime{}
+	svc.Options.Runtime = runtime
+	svc.Source.Catalog[0].Dir = t.TempDir()
+	t.Setenv("AACT_TEST_PROVIDER_TOKEN", "secret-token")
+	profile := catalog.MCP{Name: "bitbucket", TokenEnvInput: "token_env", TokenContainerEnv: "BITBUCKET_TOKEN", Image: "example/mcp:1", Transport: "streamable-http", ContainerPort: 8080, HostPortInput: "port"}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "hopp", Target: "work", Profile: "bitbucket"}
+	instance, err := svc.startProfile(context.Background(), svc.Source.Catalog[0], profile, config.Target{}, key, map[string]any{"token_env": "AACT_TEST_PROVIDER_TOKEN", "port": int64(8811)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.URL == "" || runtime.lastKey != key || runtime.lastSpec.HostPort != 8811 || runtime.lastSpec.SecretEnv["BITBUCKET_TOKEN"] != "secret-token" {
+		t.Fatalf("start profile did not receive expected key/port/secret: key=%#v spec=%#v instance=%#v", runtime.lastKey, runtime.lastSpec, instance)
+	}
+}
+
+func TestStartProfileAppliesDeclaredContainerArgsAndEnvironment(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &fakeRuntime{}
+	svc.Options.Runtime = runtime
+	svc.Source.Catalog[0].Dir = t.TempDir()
+	profile := catalog.MCP{
+		Name: "gitlab", Image: "example/gitlab:1", Transport: "streamable-http", ContainerPort: 3002,
+		Args: []string{"--http"}, Env: map[string]string{"STREAMABLE_HTTP": "true"},
+		EnvInputs:       map[string]string{"GITLAB_API_URL": "api_url"},
+		SecretEnvInputs: map[string]string{"GITLAB_TOKEN": "token"},
+	}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "work", Target: "hopp", Profile: "gitlab"}
+	_, err := svc.startProfile(context.Background(), svc.Source.Catalog[0], profile, config.Target{}, key, map[string]any{"api_url": "https://gitlab.example/api/v4", "token": "secret"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runtime.lastSpec.Args, []string{"--http"}) || runtime.lastSpec.Env["STREAMABLE_HTTP"] != "true" || runtime.lastSpec.Env["GITLAB_API_URL"] != "https://gitlab.example/api/v4" || runtime.lastSpec.SecretEnv["GITLAB_TOKEN"] != "secret" {
+		t.Fatalf("profile launch settings were not applied: %#v", runtime.lastSpec)
+	}
+}
+
+func TestInstallCapabilityStartsSelectedProviderProfilesAndInstallsSkillOnce(t *testing.T) {
+	svc, env, store := fixture(t)
+	packageDir := svc.Source.Catalog[0].Dir
+	configPath := filepath.Join(t.TempDir(), "generic-agent.json")
+	env.ID, env.Kind, env.ConfigPath = "generic:temporary", "generic", configPath
+	profiles := []catalog.MCP{
+		{Name: "github", EnabledInput: "github_enabled", Image: "example/github:1", Transport: "streamable-http", ContainerPort: 8080, EndpointPath: "/mcp", HostPortInput: "github_port"},
+		{Name: "bitbucket", EnabledInput: "bitbucket_enabled", Image: "example/bitbucket:1", Transport: "streamable-http", ContainerPort: 8080, EndpointPath: "/mcp", HostPortInput: "bitbucket_port"},
+		{Name: "gitlab", EnabledInput: "gitlab_enabled", Image: "example/gitlab:1", Transport: "streamable-http", ContainerPort: 8080, EndpointPath: "/mcp", HostPortInput: "gitlab_port"},
+	}
+	inputs := []catalog.Input{
+		{Name: "github_enabled", Type: "boolean", Default: true},
+		{Name: "github_port", Type: "integer", Default: int64(18101)},
+		{Name: "bitbucket_enabled", Type: "boolean", Default: true},
+		{Name: "bitbucket_port", Type: "integer", Default: int64(18102)},
+		{Name: "gitlab_enabled", Type: "boolean", Default: false},
+		{Name: "gitlab_port", Type: "integer", Default: int64(18103)},
+	}
+	svc.Source.Catalog[0].MCPs = profiles
+	svc.Source.Catalog[0].Inputs = inputs
+	svc.Source.Catalog[0].Dir = packageDir
+	runtime := &multiProfileRuntime{}
+	svc.Options.Runtime = runtime
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.keys) != 2 || runtime.keys[0].Profile != "github" || runtime.keys[1].Profile != "bitbucket" {
+		t.Fatalf("started profiles = %#v", runtime.keys)
+	}
+	if len(result.Changes) != 3 {
+		t.Fatalf("expected one skill and two MCP registration changes, got %#v", result.Changes)
+	}
+	var registrations map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &registrations); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := registrations["servers"].(map[string]any)
+	if len(servers) != 2 {
+		t.Fatalf("generic agent registrations = %#v", registrations)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillCount, mcpCount := 0, 0
+	for _, row := range rows {
+		if row.Component == "skill" {
+			skillCount++
+		}
+		if row.Component == "mcp" {
+			mcpCount++
+		}
+	}
+	if skillCount != 1 || mcpCount != 2 {
+		t.Fatalf("installation records: skills=%d mcps=%d rows=%#v", skillCount, mcpCount, rows)
+	}
+}
+
 func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	svc, env, s := fixture(t)
 	env.Kind = "generic"
@@ -371,7 +584,7 @@ func TestUIUninstallUsesPersistedCustomAgentHome(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "generic:work", "", "default")
+	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "generic:work", "", "default")
 	if e != nil {
 		t.Fatal(e)
 	}

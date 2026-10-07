@@ -29,13 +29,13 @@ aact install PACKAGE --agent AGENT       Install skill and register its MCP
 aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
 aact mcp list|status [--json]             Show MCPs from every source
-aact mcp start|stop|logs|prepare|authenticate PACKAGE
+aact mcp start|stop|logs|prepare|authenticate PACKAGE [--profile NAME]
 aact agents | settings                   Show supported agents / configuration
 aact config set-environment-root PATH    Save the environment checkout
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
 Flags: --config PATH --state-dir PATH --environment-root PATH
-       --environment NAME --target NAME --agent-home [AGENT=]PATH
+       --environment NAME --target NAME --profile NAME --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
        --external-url URL --skills-only --update-source --json --help --version
 
@@ -223,7 +223,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, "usage: aact config set-environment-root PATH")
 			return 2
 		}
-		message, e := svc.UIRun(ctx, "set-environment-root", "", "", "", "", f.args[2])
+		message, e := svc.UIRun(ctx, "set-environment-root", "", "", "", "", "", f.args[2])
 		if e != nil {
 			return fail(e)
 		}
@@ -291,7 +291,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		r, e := svc.MCP(ctx, app.MCPRequest{Action: action, Package: p, Environment: f.environment, Target: f.target, Inputs: inputs, Interactive: f.interactive})
+		r, e := svc.MCP(ctx, app.MCPRequest{Action: action, Package: p, Environment: f.environment, Target: f.target, Profile: f.profile, Inputs: inputs, Interactive: f.interactive})
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
 		}

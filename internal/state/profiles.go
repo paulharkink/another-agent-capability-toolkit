@@ -63,3 +63,23 @@ func (s *Store) RecordProfile(profile ProfileRecord) error {
 	saved.Profiles = append(saved.Profiles, profile)
 	return WriteJSON(s.profilesPath(), saved)
 }
+
+func (s *Store) RemoveProfile(key Key) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	saved, err := s.loadProfiles()
+	if err != nil {
+		return err
+	}
+	kept := saved.Profiles[:0]
+	for _, profile := range saved.Profiles {
+		if profile.Key != key {
+			kept = append(kept, profile)
+		}
+	}
+	saved.Profiles = kept
+	return WriteJSON(s.profilesPath(), saved)
+}

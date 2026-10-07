@@ -79,3 +79,23 @@ func TestExclusiveGroupRejectsTwoCredentialMethods(t *testing.T) {
 		}
 	}
 }
+
+func TestRequiredExclusiveGroupAcceptsAnyOneCredentialSource(t *testing.T) {
+	defs := []catalog.Input{
+		{Name: "token", Type: "secret", ExclusiveGroup: "github_auth", Required: true},
+		{Name: "token_file", Type: "file", ExclusiveGroup: "github_auth"},
+		{Name: "token_env", Type: "string", ExclusiveGroup: "github_auth"},
+	}
+	if err := Validate(defs, nil); err == nil || !strings.Contains(err.Error(), "github_auth") {
+		t.Fatalf("missing required credential source should identify its group, got %v", err)
+	}
+	for _, values := range []map[string]any{
+		{"token": "ghp-test"},
+		{"token_file": "/run/secrets/github-token"},
+		{"token_env": "GITHUB_TOKEN"},
+	} {
+		if err := Validate(defs, values); err != nil {
+			t.Fatalf("one credential source should satisfy required group: %#v: %v", values, err)
+		}
+	}
+}

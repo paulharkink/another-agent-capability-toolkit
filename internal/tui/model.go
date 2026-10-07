@@ -28,7 +28,7 @@ type Backend interface {
 	UIAgents(context.Context) ([]string, error)
 	UISettings(context.Context) (map[string]string, error)
 	UISourceLabels(context.Context) (map[string]string, error)
-	UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error)
+	UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error)
 }
 
 type agentManagementBackend interface {
@@ -70,7 +70,7 @@ type Model struct {
 	pending                    operation
 	management                 managementState
 }
-type operation struct{ action, source, packageID, agent, environment, target string }
+type operation struct{ action, source, packageID, profile, agent, environment, target string }
 type loadedMsg struct {
 	catalog             []catalog.Package
 	inventory           []state.Installation
@@ -434,7 +434,7 @@ func (m *Model) rows() []string {
 			if p.Skill != nil {
 				components = append(components, "skill")
 			}
-			if p.MCP != nil {
+			if p.HasMCP() {
 				components = append(components, "MCP")
 			}
 			rows = append(rows, name+" ["+strings.Join(components, " + ")+"] · "+m.label(m.sourceLabels[p.Dir]))
@@ -477,7 +477,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 		if m.selected < len(m.catalog) {
 			if stroke == "a" || stroke == "s" {
 				p := m.catalog[m.selected]
-				if p.MCP == nil {
+				if !p.HasMCP() {
 					m.output = "This package has no MCP server to authenticate or start."
 					return nil
 				}
@@ -517,7 +517,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 					m.output = "External registrations support status; use profile Actions to configure registrations."
 					return nil
 				}
-				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target}
+				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, profile: inst.Key.Profile, environment: inst.Key.Environment, target: inst.Key.Target}
 				return m.run(op)
 			}
 		}
@@ -541,7 +541,7 @@ func (m *Model) contextForm() {
 		if source == "" {
 			source = m.settings["source"]
 		}
-		if p.ID == m.pending.packageID && source == m.pending.source && p.Skill != nil && p.MCP == nil {
+		if p.ID == m.pending.packageID && source == m.pending.source && p.Skill != nil && !p.HasMCP() {
 			allowAll = true
 			break
 		}
@@ -612,7 +612,7 @@ type operationExec struct {
 }
 
 func (e *operationExec) Run() error {
-	output, err := e.backend.UIRun(e.ctx, e.op.action, e.op.source, e.op.packageID, e.op.agent, e.op.environment, e.op.target)
+	output, err := e.backend.UIRun(e.ctx, e.op.action, e.op.source, e.op.packageID, e.op.profile, e.op.agent, e.op.environment, e.op.target)
 	e.output = output
 	return err
 }

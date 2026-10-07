@@ -38,7 +38,7 @@ func (m *Model) openProfileLogs(p ProfileRow) tea.Cmd {
 func (m *Model) fetchLogs(session uint64) tea.Cmd {
 	backend, ctx, key, label := m.backend, m.ctx, m.logProfile, m.logLabel
 	return func() tea.Msg {
-		content, err := backend.UIRun(ctx, "logs", key.Source, key.Package, "", key.Environment, key.Target)
+		content, err := backend.UIRun(ctx, "logs", key.Source, key.Package, key.Profile, "", key.Environment, key.Target)
 		return logsMsg{label: label, content: content, err: err, session: session}
 	}
 }

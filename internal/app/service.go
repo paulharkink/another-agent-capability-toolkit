@@ -76,9 +76,9 @@ type InstallRequest struct {
 	UpdateSource                 bool
 }
 type MCPRequest struct {
-	Action, Package, Environment, Target string
-	Inputs                               map[string]any
-	Interactive                          bool
+	Action, Package, Environment, Target, Profile string
+	Inputs                                        map[string]any
+	Interactive                                   bool
 }
 type Result struct {
 	Changes   []state.Installation `json:"changes"`
@@ -113,6 +113,34 @@ func (s *Service) key(p, env, target string) state.Key {
 	}
 	return state.Key{Source: s.Source.ID, Package: p, Environment: env, Target: target}
 }
+
+func packageMCPProfiles(p catalog.Package, values map[string]any) []catalog.MCP {
+	profiles := p.MCPProfiles()
+	enabled := make([]catalog.MCP, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.EnabledInput != "" {
+			value, ok := values[profile.EnabledInput].(bool)
+			if !ok || !value {
+				continue
+			}
+		}
+		enabled = append(enabled, profile)
+	}
+	return enabled
+}
+
+func mcpProfileKey(base state.Key, p catalog.Package, profile catalog.MCP) state.Key {
+	if p.MCP != nil && len(p.MCPs) == 0 {
+		return base
+	}
+	base.Profile = profile.Name
+	return base
+}
+
+func sameCapabilityTarget(a, b state.Key) bool {
+	return a.Source == b.Source && a.Package == b.Package && a.Environment == b.Environment && a.Target == b.Target
+}
+
 func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target string, cli map[string]any, interactive, prepare, skillsOnly bool) (map[string]any, config.Target, state.Key, error) {
 	if env == "" && target == "default" {
 		target = ""
@@ -180,8 +208,8 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 			return nil, t, k, invalid(errors.New("interactive editor is unavailable"))
 		}
 		seedDefs := skillInstallInputs(p, skillsOnly)
-		if prepare && p.MCP != nil {
-			if _, ok := p.MCP.Actions["prepare"]; ok {
+		if prepare && p.HasMCP() {
+			if hasMCPAction(p, "prepare") {
 				for n, d := range seedDefs {
 					if (d.Type == "choice" || d.Type == "multichoice" || d.Type == "multiple-choice") && len(d.Options) == 0 {
 						seedDefs[n].Required = false
@@ -202,8 +230,8 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 		if e != nil {
 			return nil, t, k, invalid(e)
 		}
-		if prepare && p.MCP != nil {
-			if _, ok := p.MCP.Actions["prepare"]; ok {
+		if prepare && p.HasMCP() {
+			if hasMCPAction(p, "prepare") {
 				if e = forms.Validate(seedDefs, values); e != nil {
 					return nil, t, k, invalid(e)
 				}
@@ -249,7 +277,7 @@ func (s *Service) resolve(ctx context.Context, p catalog.Package, env, target st
 // values, but a skill install does not need an MCP endpoint or credentials.
 func skillInstallInputs(p catalog.Package, skillsOnly bool) []catalog.Input {
 	defs := append([]catalog.Input{}, p.Inputs...)
-	if !skillsOnly || p.MCP == nil {
+	if !skillsOnly || !p.HasMCP() {
 		return defs
 	}
 	for n := range defs {
@@ -272,20 +300,28 @@ func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]
 	if err := s.Store.SaveAnswers(k, safe); err != nil {
 		return err
 	}
-	if p.MCP != nil && !skillsOnly {
-		return s.Store.RecordProfile(state.ProfileRecord{Key: k})
+	if p.HasMCP() && !skillsOnly {
+		for _, profile := range packageMCPProfiles(p, values) {
+			profileKey := mcpProfileKey(k, p, profile)
+			if err := s.Store.RecordProfile(state.ProfileRecord{Key: profileKey}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 func registrationName(k state.Key) string {
 	parts := []string{k.Package}
+	if k.Profile != "" {
+		parts = append(parts, k.Profile)
+	}
 	if k.Environment != "" {
-		parts = append(parts, k.Environment)
+		parts = append(parts, "env", k.Environment)
 	}
 	if k.Target != "default" {
-		parts = append(parts, k.Target)
+		parts = append(parts, "target", k.Target)
 	}
-	return strings.Join(parts, "-") + "-" + k.ID()[:16]
+	return strings.Join(parts, "-")
 }
 func (s *Service) ownedEnvironment(e agents.Environment, rows []state.Installation) agents.Environment {
 	e.Owned = map[string]agents.Registration{}
@@ -312,7 +348,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e := validateGlobalSkillDestination(p, q.Agents); e != nil {
 		return out, invalid(e)
 	}
-	if p.MCP != nil && !q.SkillsOnly {
+	if p.HasMCP() && !q.SkillsOnly {
 		for _, env := range q.Agents {
 			if _, e := agents.For(env.Kind, s.Options.Runner); e != nil {
 				return out, invalid(fmt.Errorf("agent %s: %w", env.ID, e))
@@ -333,6 +369,13 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	values, t, k, e := s.resolve(ctx, p, q.Environment, q.Target, q.Inputs, q.Interactive, q.ExternalURL == "" && !q.SkillsOnly, q.SkillsOnly)
 	if e != nil {
 		return out, e
+	}
+	profiles := []catalog.MCP{}
+	if !q.SkillsOnly {
+		profiles = packageMCPProfiles(p, values)
+	}
+	if q.ExternalURL != "" && len(profiles) > 1 {
+		return out, invalid(errors.New("--external-url can configure only one MCP profile at a time"))
 	}
 	// Save the requested configuration before applying it. An apply failure
 	// leaves these answers available for correction and retry; installation
@@ -366,14 +409,27 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	err = s.Store.WithLock(ctx, func() error {
 		applied := false
 		succeeded := map[string]bool{}
-		url := q.ExternalURL
-		if p.MCP != nil && url == "" && !q.SkillsOnly {
-			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
-			if e != nil {
-				return e
+		urls := map[string]string{}
+		registrationHeaders := map[string]map[string]string{}
+		for _, profile := range profiles {
+			profileKey := mcpProfileKey(k, p, profile)
+			headers, headerErr := profileRegistrationHeaders(profile, values)
+			if headerErr != nil {
+				out.Errors = append(out.Errors, profile.Name+": authentication: "+headerErr.Error())
+				continue
 			}
-			applied = true
-			url = instance.URL
+			registrationHeaders[profile.Name] = headers
+			url := q.ExternalURL
+			if url == "" {
+				instance, startErr := s.startProfile(ctx, p, profile, t, profileKey, values, q.Interactive)
+				if startErr != nil {
+					out.Errors = append(out.Errors, profile.Name+": start: "+startErr.Error())
+					continue
+				}
+				applied = true
+				url = instance.URL
+			}
+			urls[profile.Name] = url
 		}
 		skills := install.NewSkills(s.Store)
 		skills.AllowSourceUpdate = q.UpdateSource
@@ -386,10 +442,10 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				agentErr = skills.Install(ctx, p, env, k, generated)
 				if agentErr == nil {
 					applied = true
-					succeeded[env.ID+"\x00skill"] = true
+					succeeded[env.ID+"\x00skill\x00"+k.ID()] = true
 				}
 			}
-			if agentErr == nil && p.MCP != nil && !q.SkillsOnly {
+			if agentErr == nil && len(profiles) > 0 {
 				if env.ConfigPath == "" && agents.IsManual(env.Kind) {
 					env.ConfigPath = s.manualConfigPath(env)
 				}
@@ -401,26 +457,39 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				adapter, e := agents.For(env.Kind, s.Options.Runner)
 				if e != nil {
 					agentErr = e
-				} else {
-					reg := agents.Registration{Name: registrationName(k), URL: url, Transport: p.MCP.Transport, TimeoutMS: registrationTimeoutMS(p.MCP)}
-					files, snapshotErr := snapshotRegistration(env)
-					agentErr = snapshotErr
-					if agentErr == nil {
-						agentErr = adapter.Register(ctx, env, reg)
+				}
+				for _, profile := range profiles {
+					url, started := urls[profile.Name]
+					if !started {
+						continue
 					}
-					if agentErr == nil {
-						row := state.Installation{Key: k, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS}
+					if agentErr != nil {
+						out.Errors = append(out.Errors, env.ID+" / "+profile.Name+": "+agentErr.Error())
+						continue
+					}
+					profileKey := mcpProfileKey(k, p, profile)
+					reg := agents.Registration{Name: profileRegistrationName(profile, profileKey, values), URL: url, Transport: profile.Transport, TimeoutMS: registrationTimeoutMS(&profile), Headers: registrationHeaders[profile.Name]}
+					files, snapshotErr := snapshotRegistration(env)
+					registrationErr := snapshotErr
+					if registrationErr == nil {
+						registrationErr = adapter.Register(ctx, env, reg)
+					}
+					if registrationErr == nil {
+						row := state.Installation{Key: profileKey, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS}
 						if agents.IsManual(env.Kind) {
 							row.Mode = "manual"
 							out.Message = "Manual MCP configuration: " + env.ConfigPath
 						}
-						agentErr = s.recordRegistration(row)
-						if agentErr != nil {
-							agentErr = errors.Join(agentErr, restoreRegistration(files))
+						registrationErr = s.recordRegistration(row)
+						if registrationErr != nil {
+							registrationErr = errors.Join(registrationErr, restoreRegistration(files))
 						} else {
 							applied = true
-							succeeded[env.ID+"\x00mcp"] = true
+							succeeded[env.ID+"\x00mcp\x00"+profileKey.ID()] = true
 						}
+					}
+					if registrationErr != nil {
+						out.Errors = append(out.Errors, env.ID+" / "+profile.Name+": "+registrationErr.Error())
 					}
 				}
 			}
@@ -433,7 +502,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			return e
 		}
 		for _, r := range rows {
-			if r.Key == k && succeeded[r.AgentID+"\x00"+r.Component] {
+			if succeeded[r.AgentID+"\x00"+r.Component+"\x00"+r.Key.ID()] {
 				out.Changes = append(out.Changes, r)
 			}
 		}
@@ -476,7 +545,7 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 			env = s.ownedEnvironment(env, rows)
 			failed := false
 			for _, r := range rows {
-				if r.Key != k || r.AgentID != env.ID || r.Component != "mcp" || r.Destination != env.ConfigPath {
+				if !sameCapabilityTarget(r.Key, k) || r.AgentID != env.ID || r.Component != "mcp" || r.Destination != env.ConfigPath {
 					continue
 				}
 				adapter, e := agents.For(env.Kind, s.Options.Runner)
@@ -514,14 +583,45 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 	return out, err
 }
 func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
-	if p.MCP == nil {
+	profiles := p.MCPProfiles()
+	if len(profiles) == 0 {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
-	spec := mcp.RunSpec{Image: p.MCP.Image, Host: "127.0.0.1", ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
-	if p.MCP.BuildContext != "" {
-		spec.BuildContext = filepath.Join(p.Dir, p.MCP.BuildContext)
+	return s.startProfile(ctx, p, profiles[0], t, mcpProfileKey(k, p, profiles[0]), values, interactive)
+}
+
+func (s *Service) startProfile(ctx context.Context, p catalog.Package, profile catalog.MCP, t config.Target, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+	spec := mcp.RunSpec{Image: profile.Image, Args: append([]string(nil), profile.Args...), Host: "127.0.0.1", ContainerPort: profile.ContainerPort, Transport: profile.Transport, EndpointPath: profile.EndpointPath}
+	for name, value := range profile.Env {
+		if spec.Env == nil {
+			spec.Env = map[string]string{}
+		}
+		spec.Env[name] = value
 	}
-	switch port := values[p.MCP.HostPortInput].(type) {
+	for name, input := range profile.EnvInputs {
+		value, ok := values[input]
+		if !ok || value == nil {
+			continue
+		}
+		if spec.Env == nil {
+			spec.Env = map[string]string{}
+		}
+		spec.Env[name] = fmt.Sprint(value)
+	}
+	for name, input := range profile.SecretEnvInputs {
+		value, ok := values[input].(string)
+		if !ok || value == "" {
+			continue
+		}
+		if spec.SecretEnv == nil {
+			spec.SecretEnv = map[string]string{}
+		}
+		spec.SecretEnv[name] = value
+	}
+	if profile.BuildContext != "" {
+		spec.BuildContext = filepath.Join(p.Dir, profile.BuildContext)
+	}
+	switch port := values[profile.HostPortInput].(type) {
 	case int64:
 		spec.HostPort = int(port)
 	case int:
@@ -530,16 +630,31 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 	if h, ok := values["host"].(string); ok && h != "" {
 		spec.Host = h
 	}
-	if _, ok := p.MCP.Actions["prepare"]; ok {
+	if profile.TokenContainerEnv != "" {
+		token, err := resolveProfileToken(profile, values)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		if token != "" {
+			if spec.SecretEnv == nil {
+				spec.SecretEnv = map[string]string{}
+			}
+			spec.SecretEnv[profile.TokenContainerEnv] = token
+		}
+	}
+	if _, ok := profile.Actions["prepare"]; ok {
+		profilePackage := p
+		profilePackage.MCP = &profile
+		profilePackage.MCPs = nil
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
-		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
+		result, e := runner.Run(ctx, profilePackage, mcp.ActionRequest{Action: "prepare", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
 		if e != nil {
 			return mcp.Instance{}, e
 		}
 		if result.AuthRequired {
 			return mcp.Instance{}, fmt.Errorf("%s authentication required; run aact mcp authenticate %s with credentials or --interactive", p.ID, p.ID)
 		}
-		if e = forms.Validate(withChoices(p.Inputs, result.Choices), values); e != nil {
+		if e = forms.Validate(withChoices(profilePackage.Inputs, result.Choices), values); e != nil {
 			return mcp.Instance{}, invalid(e)
 		}
 		if result.Runtime == nil {
@@ -567,12 +682,17 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 		return out, e
 	}
 	k := s.key(p.ID, q.Environment, q.Target)
+	profile, profileErr := selectMCPProfile(p, q.Profile)
+	if profileErr != nil {
+		return out, invalid(profileErr)
+	}
+	profileKey := mcpProfileKey(k, p, profile)
 	switch q.Action {
 	case "stop":
-		err = s.Store.WithLock(ctx, func() error { return s.Options.Runtime.Stop(ctx, k) })
+		err = s.Store.WithLock(ctx, func() error { return s.Options.Runtime.Stop(ctx, profileKey) })
 		return out, err
 	case "logs":
-		r, e := s.Options.Runtime.Logs(ctx, k)
+		r, e := s.Options.Runtime.Logs(ctx, profileKey)
 		if e != nil {
 			return out, e
 		}
@@ -585,19 +705,23 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 		if e != nil {
 			return out, e
 		}
+		profileKey = mcpProfileKey(k, p, profile)
 		err = s.Store.WithLock(ctx, func() error {
 			if e := s.rememberSource(); e != nil {
 				return e
 			}
 			if q.Action == "start" {
-				i, e := s.start(ctx, p, t, k, values, q.Interactive)
+				i, e := s.startProfile(ctx, p, profile, t, profileKey, values, q.Interactive)
 				out.Instances = []mcp.Instance{i}
 				if e != nil {
 					return e
 				}
 			} else {
+				profilePackage := p
+				profilePackage.MCP = &profile
+				profilePackage.MCPs = nil
 				runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
-				r, e := runner.Run(ctx, p, mcp.ActionRequest{Action: q.Action, Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: q.Interactive})
+				r, e := runner.Run(ctx, profilePackage, mcp.ActionRequest{Action: q.Action, Target: t, Inputs: values, StateDir: s.Store.AuthDir(profileKey), Interactive: q.Interactive})
 				if e != nil {
 					return e
 				}

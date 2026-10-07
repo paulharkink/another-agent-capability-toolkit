@@ -9,7 +9,7 @@ import (
 type flags struct {
 	args, agents, homes                                                       []string
 	sets                                                                      map[string][]string
-	config, envroot, state, environment, target, url                          string
+	config, envroot, state, environment, target, profile, url                 string
 	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
 }
 
@@ -43,7 +43,7 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--config", "--environment-root", "--state-dir", "--environment", "--target", "--external-url", "--agent", "--agent-home", "--set":
+		case "--config", "--environment-root", "--state-dir", "--environment", "--target", "--profile", "--external-url", "--agent", "--agent-home", "--set":
 			if !has {
 				n++
 				if n == len(args) {
@@ -65,6 +65,8 @@ func parse(args []string) (flags, error) {
 				f.environment = value
 			case "--target":
 				f.target = value
+			case "--profile":
+				f.profile = value
 			case "--external-url":
 				f.url = value
 			case "--agent":
@@ -81,7 +83,7 @@ func parse(args []string) (flags, error) {
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--config" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--external-url" && name != "--agent" && name != "--agent-home" && name != "--set" {
+		if has && name != "--config" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--profile" && name != "--external-url" && name != "--agent" && name != "--agent-home" && name != "--set" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}

@@ -51,9 +51,13 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		profile := &viewmodel.Profile{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
 		if k.Source == s.Source.ID {
 			for _, packageInfo := range s.Source.Catalog {
-				if packageInfo.ID == k.Package && packageInfo.MCP != nil {
-					profile.Transport = packageInfo.MCP.Transport
-					break
+				if packageInfo.ID == k.Package {
+					for _, mcpProfile := range packageInfo.MCPProfiles() {
+						if k.Profile == "" || mcpProfile.Name == k.Profile {
+							profile.Transport = mcpProfile.Transport
+							break
+						}
+					}
 				}
 			}
 		}

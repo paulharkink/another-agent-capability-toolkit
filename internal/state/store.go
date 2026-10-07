@@ -23,10 +23,15 @@ type Key struct {
 	Package     string `json:"package"`
 	Environment string `json:"environment"`
 	Target      string `json:"target"`
+	Profile     string `json:"profile,omitempty"`
 }
 
 func (k Key) ID() string {
-	h := sha256.Sum256([]byte(strings.Join([]string{k.Source, k.Package, k.Environment, k.Target}, "\x00")))
+	parts := []string{k.Source, k.Package, k.Environment, k.Target}
+	if k.Profile != "" {
+		parts = append(parts, k.Profile)
+	}
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:])
 }
 

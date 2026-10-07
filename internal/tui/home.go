@@ -166,7 +166,7 @@ func (m *Model) capabilities() []CapabilityRow {
 		if name == "" {
 			name = p.ID
 		}
-		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.Skill != nil, MCP: p.MCP != nil, CatalogIndex: i})
+		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.Skill != nil, MCP: p.HasMCP(), CatalogIndex: i})
 	}
 	if m.profileSnapshot != nil {
 		seen := map[string]bool{}
@@ -594,7 +594,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 				return nil
 			}
 			m.home.Modal = nil
-			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target}
+			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, profile: p.Key.Profile, environment: p.Key.Environment, target: p.Key.Target}
 			return m.run(op)
 		}
 	}

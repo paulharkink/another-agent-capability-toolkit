@@ -120,7 +120,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 	selected := []string{}
 	requiresNamedDestination := false
 	for _, pkg := range m.catalog {
-		if pkg.ID == preview.Key.Package && pkg.MCP != nil {
+		if pkg.ID == preview.Key.Package && pkg.HasMCP() {
 			requiresNamedDestination = true
 			break
 		}

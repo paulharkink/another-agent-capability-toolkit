@@ -94,4 +94,5 @@ func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
 type Registration struct {
 	Name, URL, Transport string
 	TimeoutMS            int
+	Headers              map[string]string
 }

@@ -72,7 +72,7 @@ func specURL(s RunSpec) string {
 func labels(k state.Key, s RunSpec) map[string]string {
 	b, _ := json.Marshal(s)
 	h := sha256.Sum256(b)
-	return map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	return map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.profile": k.Profile, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
 }
 
 type dockerConfig struct {
@@ -386,7 +386,7 @@ func instance(d dockerInfo) Instance {
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], Profile: l["aact.profile"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	installationID, err := r.Store.InstallationID()

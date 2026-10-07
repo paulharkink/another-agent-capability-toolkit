@@ -244,7 +244,7 @@ func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	}
 	return labels, nil
 }
-func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error) {
+func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error) {
 	svc, e := s.forSource(sourceID)
 	if e != nil {
 		return "", e
@@ -306,7 +306,7 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 			out, e = svc.Uninstall(ctx, q)
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Interactive: action == "start" || action == "authenticate"})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Profile: profile, Interactive: action == "start" || action == "authenticate"})
 	}
 	if out.Logs != "" {
 		return out.Logs, e
@@ -328,7 +328,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	}
 	matching := []state.Installation{}
 	for _, r := range rows {
-		if r.AgentID == id && r.Key == k && r.Component != "runtime" {
+		if r.AgentID == id && sameCapabilityTarget(r.Key, k) && r.Component != "runtime" {
 			matching = append(matching, r)
 		}
 	}

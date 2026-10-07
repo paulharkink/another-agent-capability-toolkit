@@ -148,7 +148,7 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		return viewmodel.SetupPreview{}, err
 	}
 	defaultAgents := map[string]bool{}
-	if p.MCP != nil {
+	if p.HasMCP() {
 		settings, settingsErr := s.UISettings(ctx)
 		if settingsErr != nil {
 			return viewmodel.SetupPreview{}, settingsErr
@@ -161,25 +161,25 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		}
 	}
 	for _, id := range ids {
-		if id == "all" && (p.Skill == nil || p.MCP != nil) {
+		if id == "all" && (p.Skill == nil || p.HasMCP()) {
 			continue
 		}
 		env, envErr := s.uiEnvironment(id, key)
 		if envErr != nil {
 			return viewmodel.SetupPreview{}, envErr
 		}
-		if p.MCP != nil {
+		if p.HasMCP() {
 			if _, adapterErr := agents.For(env.Kind, s.Options.Runner); adapterErr != nil {
 				continue
 			}
 		}
 		path := env.SkillsDir
-		if p.MCP != nil {
+		if p.HasMCP() {
 			path = env.ConfigPath
 		}
 		selected := id == "all" || defaultAgents[id]
 		if attempted {
-			selected = (p.Skill == nil || installed[id]["skill"]) && (p.MCP == nil || installed[id]["mcp"])
+			selected = (p.Skill == nil || installed[id]["skill"]) && (!p.HasMCP() || installed[id]["mcp"])
 		}
 		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{ID: id, Path: path, Selected: selected})
 	}

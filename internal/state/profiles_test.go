@@ -45,3 +45,25 @@ func TestRecordProfileUpdatesNameWithoutDuplicatingIdentity(t *testing.T) {
 		t.Fatalf("profile identity duplicated on rename: %+v, %v", profiles, err)
 	}
 }
+
+func TestRemoveProfileClearsOnlyThatProfile(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := ProfileRecord{Key: Key{Source: "company", Package: "git-forge", Environment: "hopp", Target: "work", Profile: "github"}}
+	bitbucket := ProfileRecord{Key: Key{Source: "company", Package: "git-forge", Environment: "hopp", Target: "work", Profile: "bitbucket"}}
+	if err := store.RecordProfile(github); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordProfile(bitbucket); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveProfile(github.Key); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := store.Profiles()
+	if err != nil || len(profiles) != 1 || profiles[0].Key != bitbucket.Key {
+		t.Fatalf("wrong profile records after removal: %#v, %v", profiles, err)
+	}
+}
