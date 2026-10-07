@@ -217,7 +217,46 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		provenance[name] = "target"
 		provenancePaths[name] = target.Path
 	}
+	// If no package, source, target, or saved value is configured, show the
+	// name currently recorded for the sole MCP definition. This describes the
+	// active registration without overriding a maintainer's future-edit value.
+	activeRegistrationName := ""
+	if len(preview.MCPDefinitions) == 1 {
+		nameInput := preview.MCPDefinitions[0].RegistrationNameInput
+		if nameInput != "" {
+			ambiguous := false
+			for _, row := range installations {
+				if !sameCapabilityKey(row.Key, key) || row.Component != "mcp" || row.RegistrationName == "" ||
+					(row.Key.MCP != "" && row.Key.MCP != preview.MCPDefinitions[0].Name) {
+					continue
+				}
+				if activeRegistrationName != "" && activeRegistrationName != row.RegistrationName {
+					ambiguous = true
+					break
+				}
+				activeRegistrationName = row.RegistrationName
+			}
+			if ambiguous {
+				activeRegistrationName = ""
+			} else if activeRegistrationName != "" {
+				if _, configured := values[nameInput]; !configured {
+					values[nameInput] = activeRegistrationName
+					provenance[nameInput] = "registration"
+				}
+			}
+		}
+	}
 	for _, def := range p.Inputs {
+		if len(preview.MCPDefinitions) == 1 && def.Name == preview.MCPDefinitions[0].RegistrationNameInput && activeRegistrationName != "" {
+			if configured, ok := values[def.Name].(string); ok && configured != activeRegistrationName {
+				current := "Currently registered as: " + activeRegistrationName
+				if def.Hint == "" {
+					def.Hint = current
+				} else {
+					def.Hint += " Current registration: " + activeRegistrationName
+				}
+			}
+		}
 		if def.OptionsFrom != "" {
 			def.Options, err = targetInputChoices(target.Raw, def.OptionsFrom)
 			if err != nil {

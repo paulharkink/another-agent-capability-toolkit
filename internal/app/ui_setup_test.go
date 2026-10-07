@@ -453,7 +453,8 @@ func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "registration_name", Label: "MCP registration name", Type: "string"}}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationNameInput: "registration_name"}
 	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +462,7 @@ func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
 	if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", Component: "mcp", Destination: "/tmp/opencode.json", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
+	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", Component: "mcp", Destination: "/tmp/opencode.json", RegistrationName: "demo-home-production-current", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
 		t.Fatal(err)
 	}
 	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
@@ -474,6 +475,75 @@ func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
 	}
 	if selected["codex"] || !selected["opencode"] {
 		t.Fatalf("saved defaults replaced actual registration state: %#v", selected)
+	}
+	if got := preview.Inputs[0]; !got.HasValue || got.Value != "demo-home-production-current" || got.Provenance != "registration" {
+		t.Fatalf("unset editable name did not show the currently registered MCP name: %#v", got)
+	}
+	svc.Source.PackageDefaults["demo"] = map[string]any{"registration_name": "maintainer-default"}
+	preview, err = svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := preview.Inputs[0]; got.Value != "maintainer-default" || got.Provenance != "source" || !strings.Contains(got.Definition.Hint, "demo-home-production-current") {
+		t.Fatalf("configured name must remain the edit value while identifying the active registration: %#v", got)
+	}
+}
+
+func TestUISetupPreviewRegistrationNameFallbackRequiresMatchingUnambiguousRows(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rows      []state.Installation
+		wantValue string
+		wantSet   bool
+	}{
+		{
+			name: "divergent matching registration names are suppressed",
+			rows: []state.Installation{
+				{Key: state.Key{Source: "fixture", Package: "demo", Target: "default"}, AgentID: "codex", Component: "mcp", RegistrationName: "demo-codex"},
+				{Key: state.Key{Source: "fixture", Package: "demo", Target: "default"}, AgentID: "opencode", Component: "mcp", RegistrationName: "demo-opencode"},
+			},
+		},
+		{
+			name: "sibling MCP registration is ignored",
+			rows: []state.Installation{
+				{Key: state.Key{Source: "fixture", Package: "demo", Target: "default"}, AgentID: "codex", Component: "mcp", RegistrationName: "demo-current"},
+				{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "sibling"}, AgentID: "opencode", Component: "mcp", RegistrationName: "sibling-current"},
+			},
+			wantValue: "demo-current",
+			wantSet:   true,
+		},
+		{
+			name: "sibling-only row does not populate this MCP name",
+			rows: []state.Installation{
+				{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "sibling"}, AgentID: "opencode", Component: "mcp", RegistrationName: "sibling-current"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, store := fixture(t)
+			svc.Source.Catalog[0].Skill = nil
+			svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "registration_name", Label: "MCP registration name", Type: "string"}}
+			svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationNameInput: "registration_name"}
+			for _, row := range tc.rows {
+				if err := store.Record(row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var field viewmodel.SetupInput
+			for _, input := range preview.Inputs {
+				if input.Definition.Name == "registration_name" {
+					field = input
+					break
+				}
+			}
+			if field.Definition.Name == "" || field.HasValue != tc.wantSet || (tc.wantSet && field.Value != tc.wantValue) {
+				t.Fatalf("registration name fallback = %#v; want set=%t value=%q", field, tc.wantSet, tc.wantValue)
+			}
+		})
 	}
 }
 
