@@ -248,13 +248,11 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	}
 	for _, def := range p.Inputs {
 		if len(preview.MCPDefinitions) == 1 && def.Name == preview.MCPDefinitions[0].RegistrationNameInput && activeRegistrationName != "" {
-			if configured, ok := values[def.Name].(string); ok && configured != activeRegistrationName {
-				current := "Currently registered as: " + activeRegistrationName
-				if def.Hint == "" {
-					def.Hint = current
-				} else {
-					def.Hint += " Current registration: " + activeRegistrationName
-				}
+			current := "Currently registered as: " + activeRegistrationName
+			if def.Hint == "" {
+				def.Hint = current
+			} else {
+				def.Hint += " " + current
 			}
 		}
 		if def.OptionsFrom != "" {

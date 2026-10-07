@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -470,6 +471,47 @@ func TestNoEnvironmentSetupTitleHasNoBlankSegment(t *testing.T) {
 	view := m.View().Content
 	if strings.Contains(view, "·  / default") || strings.Contains(view, "Environment:") || !strings.Contains(view, "Install · Inspector") || !strings.Contains(view, "Agents") {
 		t.Fatalf("no-environment title/context is unclear: %s", view)
+	}
+}
+
+func TestSetupFormRendersCurrentMCPRegistrationName(t *testing.T) {
+	const activeName = "grafana-inspector-home-pms15-a7a19beabe523073"
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key:            state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "pms15"},
+		PackageName:    "Grafana Inspector",
+		MCP:            true,
+		MCPDefinitions: []catalog.MCP{{Name: "grafana-inspector", RegistrationNameInput: "registration_name"}},
+		HasManifestUI:  true,
+		Sections:       []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"registration_name"}}},
+		Inputs: []viewmodel.SetupInput{{
+			Definition: catalog.Input{Name: "registration_name", Label: "MCP registration name", Type: "string", Hint: "User-editable name shown by MCP clients for this server. Currently registered as: " + activeName},
+			Value:      activeName, HasValue: true, Provenance: "registration", Editable: true,
+		}},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
+	})
+	m.form.SelectSection("Connection")
+	form := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(form, "MCP registration name") {
+		t.Fatalf("registration form omitted its label:\n%s", form)
+	}
+	compactRightPane := func(content string) string {
+		var right []string
+		for _, line := range strings.Split(content, "\n") {
+			if separator := strings.Index(line, "│"); separator >= 0 {
+				right = append(right, line[separator+len("│"):])
+			}
+		}
+		compact := strings.Join(strings.Fields(strings.Join(right, "")), "")
+		return strings.ReplaceAll(compact, "║", "")
+	}
+	if !strings.Contains(compactRightPane(form), activeName) {
+		t.Fatalf("registration form did not render the complete wrapped name %q:\n%s", activeName, form)
+	}
+	screen := ansi.Strip(m.View().Content)
+	if !strings.Contains(compactRightPane(screen), activeName) {
+		t.Fatalf("visible setup screen omitted complete active registration name %q:\n%s", activeName, screen)
 	}
 }
 
