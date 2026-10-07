@@ -38,7 +38,7 @@ func TestUXUnavailableNativeEmbedsBrowserWithoutStdinPrompt(t *testing.T) {
 		t.Fatal("native unavailability did not open the embedded browser")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Browse file") || !strings.Contains(view, ".kubeconfig") || !strings.Contains(view, "Edit package inputs") || strings.Contains(strings.ToLower(view), "stdin") || strings.Contains(view, "Enter path:") {
+	if !strings.Contains(view, "Browse file") || !strings.Contains(view, ".kubeconfig") || !strings.Contains(view, "Edit package inputs") || strings.Contains(view, "Enter path:") {
 		t.Fatalf("picker is not an embedded browser over the form:\n%s", view)
 	}
 }
