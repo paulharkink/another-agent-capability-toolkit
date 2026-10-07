@@ -72,7 +72,22 @@ func (b *workspaceRouteBackend) UISetupPreview(_ context.Context, request viewmo
 	b.previewRequest = request
 	return viewmodel.SetupPreview{
 		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
-		PackageName: "Inspector", Configured: true,
+		PackageName: "Inspector", Configured: true, MCP: true,
+	}, nil
+}
+
+type workspaceApplyBackend struct {
+	setupBackendFixture
+	withMCP bool
+}
+
+func (b *workspaceApplyBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	b.previewRequest = request
+	return viewmodel.SetupPreview{
+		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		PackageName: "Inspector", Configured: true, MCP: b.withMCP,
+		Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string", Required: true}, Value: "/repos/team", HasValue: true, Editable: true}},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/tmp/codex/config.toml", Selected: true}},
 	}, nil
 }
 
@@ -181,21 +196,77 @@ func TestUXEnvironmentTargetUsesSharedInsetEditorAndBackRestoresParent(t *testin
 }
 
 func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T) {
-	preview := viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "forgejo-inspector", Target: "prod"}, Configured: true}
+	preview := viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "forgejo-inspector", Target: "prod"}, Configured: true, MCP: true}
 	profile := &viewmodel.Profile{
 		Key: preview.Key, RuntimeStatus: "running", Ownership: "unknown", URL: "https://mcp.example.test/mcp",
 		ObservedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC), ObservationStale: true,
 		RegisteredAgents: []string{"codex"},
 	}
 	lines := workspaceOverviewLines(preview, true, profile)
-	if !strings.Contains(strings.Join(lines, "\n"), "[d] Databases") {
-		t.Error("Overview shortcut legend omitted the Databases section")
+	if strings.Contains(strings.Join(lines, "\n"), "Actions: [c]") {
+		t.Error("Overview still presents section navigation as runtime actions")
 	}
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"Target configuration: saved", "Package installation: recorded", "MCP runtime: running", "Ownership: unknown", "Reachability: not checked", "Agent registration: codex", "Observation: stale"} {
+	for _, want := range []string{"Configuration: saved · package installation: recorded", "MCP runtime: running", "Ownership: unknown", "Endpoint: https://mcp.example.test/mcp"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Overview omitted distinct state %q:\n%s", want, joined)
 		}
+	}
+	profileFacts := strings.Join(workspaceProfileInformationLines(profile), "\n")
+	for _, want := range []string{"Local registrations: codex", "Live observation: stale"} {
+		if !strings.Contains(profileFacts, want) {
+			t.Errorf("Information omitted observed profile fact %q:\n%s", want, profileFacts)
+		}
+	}
+}
+
+func TestUXOverviewApplyActionIsVisibleAndSubmitsCurrentConfiguration(t *testing.T) {
+	setup := &workspaceApplyBackend{withMCP: true}
+	m := NewContext(t.Context(), setup)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	m.Update(cmd())
+	view := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(view, "Save and apply") || !strings.Contains(view, "build, start, register") {
+		t.Fatalf("fresh target Overview does not expose the package build/start action:\n%s", view)
+	}
+	// The Overview action is reachable from the rendered L3/L4 workspace with
+	// normal navigation keys; exercise that route instead of dispatching an
+	// ActionMsg directly.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("activating the Overview action did not submit Save and Apply")
+	}
+	_, cmd = m.Update(cmd()) // Form action message dispatches the service operation.
+	if cmd == nil {
+		t.Fatal("Overview action message did not invoke UIInstall")
+	}
+	m.Update(cmd())
+	if setup.installRequest == nil {
+		t.Fatal("Overview action bypassed the unified Save and Apply service")
+	}
+	if setup.installRequest.SetupRequest.Target != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
+		t.Fatalf("Overview action did not submit the current target draft: %+v", setup.installRequest)
+	}
+}
+
+func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
+	setup := &workspaceApplyBackend{}
+	m := NewContext(t.Context(), setup)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	key := state.Key{Source: "team-source", Package: "skill-only", Environment: "dev", Target: "default"}
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	m.Update(cmd())
+	view := ansi.Strip(m.form.View().Content)
+	for _, forbidden := range []string{"MCP runtime", "Build and start MCP", "Stop MCP", "build, start, register"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("skill-only target exposed runtime action %q:\n%s", forbidden, view)
+		}
+	}
+	if !strings.Contains(view, "Save and apply configuration") {
+		t.Fatalf("skill-only target lost its Save and Apply action:\n%s", view)
 	}
 }
 

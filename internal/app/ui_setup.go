@@ -115,7 +115,7 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	}
 	credentialState, credentialNote := s.credentialObservation(p, key)
 	preview := viewmodel.SetupPreview{
-		Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path, Configured: attempted,
+		Key: key, PackageName: p.Name, SourceRoot: s.Source.Root, TargetPath: target.Path, Configured: attempted, MCP: p.MCP != nil,
 		CredentialState: credentialState, CredentialNote: credentialNote,
 	}
 	if target.Path != "" {

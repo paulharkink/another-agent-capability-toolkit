@@ -25,7 +25,7 @@ func (b *homeWorkspaceSetupBackend) UISetupPreview(_ context.Context, request vi
 	b.setup.previewRequest = request
 	return viewmodel.SetupPreview{
 		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
-		PackageName: request.PackageID, Configured: true,
+		PackageName: request.PackageID, Configured: true, MCP: request.PackageID == "inspect",
 	}, nil
 }
 

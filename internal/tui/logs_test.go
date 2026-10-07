@@ -65,7 +65,7 @@ type logWorkspaceBackend struct {
 }
 
 func (b *logWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID}, nil
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true}, nil
 }
 
 func (b *logWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -248,14 +248,15 @@ func TestLogFollowControlRespondsToMouse(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRuntimeActionsUseServiceActionNames(t *testing.T) {
+func TestWorkspaceStartAppliesCurrentDraftAndStopUsesRuntimeAction(t *testing.T) {
 	for _, tc := range []struct{ shortcut, want string }{{"s", "start"}, {"x", "stop"}} {
 		t.Run(tc.want, func(t *testing.T) {
 			m, base := typedProfileFixture()
 			m.backend = &logProfileBackend{profileBackend: base}
 			cmd := openLogAction(t, m)
 			_ = cmd
-			logsBackend := m.backend.(*logWorkspaceBackend).logProfileBackend
+			workspaceBackend := m.backend.(*logWorkspaceBackend)
+			logsBackend := workspaceBackend.logProfileBackend
 			m.home.Modal = nil
 			m.busy = false
 			m.workspace.Section = "Overview"
@@ -267,6 +268,15 @@ func TestWorkspaceRuntimeActionsUseServiceActionNames(t *testing.T) {
 				t.Fatalf("workspace %s did not submit an operation", tc.shortcut)
 			}
 			m.Update(operation())
+			if tc.shortcut == "s" {
+				if workspaceBackend.setup.installRequest == nil {
+					t.Fatal("workspace Start did not Save and apply the current setup draft")
+				}
+				if len(logsBackend.actions) != 0 {
+					t.Fatalf("workspace Start bypassed the setup lifecycle: runtime actions=%v", logsBackend.actions)
+				}
+				return
+			}
 			if len(logsBackend.actions) != 1 || logsBackend.actions[0] != tc.want {
 				t.Fatalf("workspace %s sent service action %v, want %q", tc.shortcut, logsBackend.actions, tc.want)
 			}

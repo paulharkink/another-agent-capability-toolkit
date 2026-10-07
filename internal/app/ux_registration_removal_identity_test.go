@@ -15,7 +15,7 @@ import (
 
 func TestUXRegistrationRemovalRejectsAmbiguousAgentOnlyIdentity(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("HOME", base)
+	isolateUXUserHome(t, base)
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
@@ -77,7 +77,7 @@ func TestUXRegistrationRemovalRejectsAmbiguousAgentOnlyIdentity(t *testing.T) {
 
 func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("HOME", base)
+	isolateUXUserHome(t, base)
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
@@ -101,7 +101,13 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 		t.Fatal(err)
 	}
 	var request viewmodel.RegistrationRequest
-	if err := json.Unmarshal([]byte(`{"Key":{"Source":"foreign-windows","Package":"demo","Target":"cluster"},"RemoveRegistrations":[{"AgentID":"claude","Destination":"`+pathA+`"}]}`), &request); err != nil {
+	requestJSON, err := json.Marshal(viewmodel.RegistrationRequest{
+		Key: key, RemoveRegistrations: []viewmodel.RegistrationIdentity{{AgentID: "claude", Destination: pathA}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		t.Fatal(err)
 	}
 	result, err := svc.UIConfigureRegistrations(context.Background(), request)
@@ -145,7 +151,7 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 
 func TestUXMixedExactAndAmbiguousLegacyRemovalRejectsBeforeMutation(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("HOME", base)
+	isolateUXUserHome(t, base)
 	svc, _, store := fixture(t)
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
 	homeA := filepath.Join(base, "home-a")
@@ -166,7 +172,14 @@ func TestUXMixedExactAndAmbiguousLegacyRemovalRejectsBeforeMutation(t *testing.T
 	// ambiguous. The service must reject the mixed request before touching
 	// either actual config or its ledger.
 	var request viewmodel.RegistrationRequest
-	if err := json.Unmarshal([]byte(`{"Key":{"Source":"foreign-windows","Package":"demo","Target":"cluster"},"RemoveAgentIDs":["claude"],"RemoveRegistrations":[{"AgentID":"claude","Destination":"`+pathA+`"}]}`), &request); err != nil {
+	requestJSON, err := json.Marshal(viewmodel.RegistrationRequest{
+		Key: key, RemoveAgentIDs: []string{"claude"},
+		RemoveRegistrations: []viewmodel.RegistrationIdentity{{AgentID: "claude", Destination: pathA}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		t.Fatal(err)
 	}
 	result, err := svc.UIConfigureRegistrations(context.Background(), request)

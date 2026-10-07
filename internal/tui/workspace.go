@@ -140,20 +140,15 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 	if installed {
 		installation = "recorded"
 	}
-	lines := []string{
-		"Target configuration: " + configuration,
-		"Package installation: " + installation,
-	}
-	if profile == nil {
-		lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
-		lines = append(lines, "MCP runtime: not observed", "Ownership: unknown", "Endpoint: not configured", "Reachability: not checked", "Agent registration: none")
-		lines = append(lines, "Next: review configuration, then save and apply.")
+	lines := []string{"Configuration: " + configuration + " · package installation: " + installation}
+	if !preview.MCP {
+		lines = append(lines, "Next: review package settings, then Save and apply.")
 		return lines
 	}
-	if profile.CanConfigureRegistrations || len(profile.RegisteredAgents) > 0 {
-		lines = append(lines, "[g] Manage agent registrations")
-	} else if profile.RegistrationDisabledReason != "" {
-		lines = append(lines, "Registrations unavailable · "+profile.RegistrationDisabledReason)
+	if profile == nil {
+		lines = append(lines, "MCP runtime: not observed", "Ownership: unknown", "Endpoint: not configured")
+		lines = append(lines, "Next: edit configuration, then use Save and apply.")
+		return lines
 	}
 	runtime := profile.RuntimeStatus
 	if runtime == "" {
@@ -163,42 +158,7 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 	if owner == "" {
 		owner = "unknown"
 	}
-	lines = append(lines, "MCP runtime: "+runtime, "Ownership: "+owner, "Endpoint: "+profile.URL)
-	lines = append(lines, "Reachability: not checked")
-	lines = append(lines, "Actions: [c] Connection · [a] Authentication · [d] Databases · [l] Logs · [i] Information")
-	if len(profile.RegisteredAgents) == 0 {
-		lines = append(lines, "Agent registration: none")
-	} else {
-		lines = append(lines, "Agent registration: "+strings.Join(profile.RegisteredAgents, ", "))
-	}
-	observedAt := profile.ObservedAt
-	if observedAt.IsZero() {
-		observedAt = profile.LastActionAt
-	}
-	if observedAt.IsZero() {
-		lines = append(lines, "Observation: timestamp unavailable")
-	} else if profile.ObservationStale {
-		lines = append(lines, "Observation: stale · "+observedAt.Format(time.RFC3339))
-	} else {
-		lines = append(lines, "Observation: current · "+observedAt.Format(time.RFC3339))
-	}
-	if profile.CanStart {
-		lines = append(lines, "Start: available · press s")
-	} else if profile.CanConfigureRegistrations {
-		lines = append(lines, "Start: unavailable · "+nonempty(profile.StartDisabledReason, "runtime is not startable"))
-	} else if profile.StartDisabledReason != "" {
-		lines = append(lines, "Start: unavailable · "+profile.StartDisabledReason)
-	} else {
-		lines = append(lines, "Start: unavailable · runtime action is not available")
-	}
-	if profile.CanStop {
-		lines = append(lines, "Stop: available · press x")
-	} else if profile.StopDisabledReason != "" {
-		lines = append(lines, "Stop: unavailable · "+profile.StopDisabledReason)
-	}
-	if len(profile.RegisteredAgents) > 0 {
-		lines = append(lines, "[r] Remove registrations")
-	}
+	lines = append(lines, "MCP runtime: "+runtime, "Ownership: "+owner, "Endpoint: "+nonempty(profile.URL, "not configured"))
 	return lines
 }
 
@@ -287,19 +247,37 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "s", "x":
+		shortcut := strings.ToLower(stroke)
+		if shortcut == "s" {
+			if m.workspace.ObservedOnly {
+				m.output = "This observed target is read-only; use its existing endpoint and agent registration controls."
+				return true, nil
+			}
+			if m.workspace.Preview == nil || (!m.workspace.Preview.MCP && (m.workspace.Profile == nil || m.workspace.Profile.Ownership == "local")) {
+				return false, nil
+			}
+			if m.profileError != nil {
+				m.output = "Runtime observation failed: " + m.profileError.Error() + "; refresh this target before building and starting it."
+				return true, nil
+			}
+			if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
+				m.output = nonempty(profile.StartDisabledReason, "Runtime owner is unknown")
+				return true, nil
+			}
+			m.workspace.cacheDraft(m.form.Values())
+			return true, m.applySetup(m.form.Values())
+		}
 		if m.workspace.Profile == nil {
-			m.output = "MCP runtime action is unavailable without an observed profile"
+			m.output = "No locally owned MCP runtime is available to stop."
 			return true, nil
 		}
-		shortcut := strings.ToLower(stroke)
-		action := map[string]string{"s": "start", "x": "stop"}[shortcut]
 		reason := m.profileActionReason(ProfileRow{Key: m.workspace.Key, Profile: m.workspace.Profile, URL: m.workspace.Profile.URL, Status: m.workspace.Profile.RuntimeStatus}, shortcut)
 		if reason != "" {
 			m.output = reason
 			return true, nil
 		}
 		m.workspace.cacheDraft(m.form.Values())
-		return true, m.run(operation{action: action, source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target})
+		return true, m.run(operation{action: "stop", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target})
 	default:
 		return false, nil
 	}
@@ -396,6 +374,46 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		information = append(profileInformation, information...)
 	}
 	m.form.SetSectionContent("Information", information)
+	applyLabel := "Save and apply configuration"
+	applyDisabled := ""
+	if preview.MCP {
+		applyLabel = "Save and apply · build, start, register"
+		if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
+			applyLabel = "Save and apply configuration"
+			if strings.TrimSpace(profile.URL) == "" {
+				applyDisabled = nonempty(profile.StartDisabledReason, "Runtime owner is unknown; no endpoint is available for a safe registration.")
+			}
+		}
+	}
+	stopDisabled := "No locally owned MCP runtime is available to stop."
+	if profile := m.workspace.Profile; profile != nil {
+		if profile.StopDisabledReason != "" {
+			stopDisabled = profile.StopDisabledReason
+		}
+		if profile.CanStop {
+			stopDisabled = ""
+		}
+	}
+	actions := []forms.FormAction{}
+	if !m.workspace.ObservedOnly {
+		actions = append(actions, forms.FormAction{ID: "apply", Label: applyLabel, Disabled: applyDisabled})
+	}
+	if preview.MCP && !m.workspace.ObservedOnly {
+		registrationDisabled := "No observed MCP endpoint is available for registration."
+		if profile := m.workspace.Profile; profile != nil {
+			registrationDisabled = nonempty(profile.RegistrationDisabledReason, registrationDisabled)
+			if profile.CanConfigureRegistrations {
+				registrationDisabled = ""
+			}
+		}
+		actions = append(actions, forms.FormAction{ID: "registrations", Label: "Manage agent registrations", Disabled: registrationDisabled})
+		actions = append(actions, forms.FormAction{ID: "stop", Label: "Stop MCP", Disabled: stopDisabled})
+		if profile := m.workspace.Profile; profile != nil && profile.Ownership != "local" {
+			startDisabled := nonempty(profile.StartDisabledReason, "Runtime owner is unknown")
+			actions = append(actions, forms.FormAction{ID: "start", Label: "Build and start MCP", Disabled: startDisabled})
+		}
+	}
+	m.form.SetSectionActions("Overview", actions...)
 	if !m.formHasSection(m.workspace.Section) {
 		m.workspace.Section = "Overview"
 	}

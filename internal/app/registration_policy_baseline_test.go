@@ -16,7 +16,7 @@ import (
 // source archive to demonstrate that the old UI boundary accepted generic MCP
 // choices instead of enforcing named-agent-only policy.
 func TestRegistrationPolicyBaselineRejectsNonNamedDestinations(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, _ := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -156,6 +157,39 @@ func TestUXOpenCodePreviewMatchesActualJSONCWrite(t *testing.T) {
 	}
 }
 
+func TestUXUIInstallRecordsTheOpenCodeConfigFileItWrites(t *testing.T) {
+	svc, _, store := fixture(t)
+	home := t.TempDir()
+	isolateUXNativeConfigs(t, home)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	svc.Options.Runtime = &fakeRuntime{}
+
+	_, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"opencode"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.AgentID != "opencode" || row.Component != "mcp" {
+			continue
+		}
+		if row.Destination != want {
+			t.Fatalf("installation ledger destination = %q, want actual OpenCode write path %q", row.Destination, want)
+		}
+		if _, err := os.Stat(row.Destination); err != nil {
+			t.Fatalf("recorded OpenCode configuration was not written: %v", err)
+		}
+		return
+	}
+	t.Fatal("UIInstall did not record an OpenCode MCP registration")
+}
+
 func TestUXProfileOverrideIsExplained(t *testing.T) {
 	svc, _, store := fixture(t)
 	nativeHome, customHome := t.TempDir(), t.TempDir()
@@ -284,7 +318,13 @@ func TestUXMultipleRecordedHomesRemainProfileSpecific(t *testing.T) {
 func TestUXMissingConfigDoesNotHideDetectedCLI(t *testing.T) {
 	home, bin := t.TempDir(), t.TempDir()
 	isolateUXNativeConfigs(t, home)
-	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+	command := "opencode"
+	contents := []byte("#!/bin/sh\nexit 0\n")
+	if runtime.GOOS == "windows" {
+		command = "opencode.exe"
+		contents = []byte("fixture executable marker")
+	}
+	if err := os.WriteFile(filepath.Join(bin, command), contents, 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)

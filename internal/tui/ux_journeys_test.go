@@ -478,8 +478,8 @@ func openWorkspaceGeometryFixture(t *testing.T, size tea.WindowSizeMsg) *Model {
 	m.catalog = []catalog.Package{{ID: "demo", Name: "Demo", Dir: "/fixture/demo", MCP: &catalog.MCP{Name: "demo"}}}
 	m.Update(size)
 	preview := viewmodel.SetupPreview{
-		Key:          state.Key{Source: "fixture-source", Package: "demo", Environment: "dev", Target: "local"},
-		PackageName:  "Demo",
+		Key:         state.Key{Source: "fixture-source", Package: "demo", Environment: "dev", Target: "local"},
+		PackageName: "Demo", MCP: true,
 		Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint", Type: "string"}, Value: "fixture", HasValue: true, Editable: true}},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/fixture/codex", Selected: true}},
 	}
@@ -722,7 +722,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 
 	const fixtureKubeconfig = "/fixtures/cluster/source-kubeconfig.yaml"
 	for _, msg := range []tea.Msg{
-		tea.KeyPressMsg{Code: tea.KeyDown}, // Select Source kubeconfig.
+		tea.KeyPressMsg{Code: tea.KeyDown},    // Select Source kubeconfig.
 		tea.KeyPressMsg{Code: 'm', Text: "m"}, // Type a path; never open a picker.
 		tea.PasteStartMsg{}, tea.PasteMsg{Content: fixtureKubeconfig}, tea.PasteEndMsg{},
 		tea.KeyPressMsg{Code: tea.KeyEnter},

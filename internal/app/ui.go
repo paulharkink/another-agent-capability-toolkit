@@ -439,6 +439,15 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 			env.ConfigPath = r.Destination
 		}
 	}
+	// OpenCode's adapter prefers the effective JSONC sibling and creates JSONC
+	// when neither sibling exists. Keep the TUI preview, adapter write, and
+	// installation ledger on that same concrete path.
+	if env.Kind == "opencode" {
+		env.ConfigPath, e = agents.ResolveConfigWritePath(env)
+		if e != nil {
+			return env, e
+		}
+	}
 	return env, nil
 }
 func (s *Service) Sources() ([]string, error) {

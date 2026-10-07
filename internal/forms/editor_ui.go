@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
-	"io"
 	"strings"
 	"unicode/utf8"
 )
@@ -35,7 +34,6 @@ type FormModel struct {
 	choiceIndex, rowIndex       map[string]int
 	browser                     *picker.BrowserModel
 	pickerPending               pickedMsg
-	nativePicker                func(context.Context, string, string) (string, error)
 	hints                       map[string]string
 	conditions                  map[string]fieldCondition
 	disabled                    map[string]string
@@ -46,6 +44,10 @@ type FormModel struct {
 	err                         error
 	sections                    []FormSection
 	sectionContent              map[string][]string
+	sectionActions              map[string][]FormAction
+	focusedAction               bool
+	sectionActionIndex          int
+	resumeEditAfterPicker       bool
 	sectionOffset               int
 	detailOffset                int
 	detailScrolled              bool
@@ -62,6 +64,15 @@ type FormSection struct {
 	Title  string
 	Fields []string
 }
+
+// FormAction is a selectable operation shown beside a section's read-only content.
+type FormAction struct {
+	ID, Label string
+	Disabled  string
+}
+
+// ActionMsg is emitted when the user activates an enabled section action.
+type ActionMsg struct{ Section, ID string }
 
 func (m *FormModel) SetSections(sections ...FormSection) {
 	m.sections = append([]FormSection(nil), sections...)
@@ -82,6 +93,18 @@ func (m *FormModel) SetSections(sections ...FormSection) {
 }
 
 func (m *FormModel) SetSectionHeading(heading string) { m.sectionHeading = heading }
+
+// SetSectionActions adds selectable actions to a section's details pane.
+func (m *FormModel) SetSectionActions(title string, actions ...FormAction) {
+	if m.sectionActions == nil {
+		m.sectionActions = map[string][]FormAction{}
+	}
+	m.sectionActions[title] = append([]FormAction(nil), actions...)
+	if title == m.SectionTitle() && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
+		m.focusedAction = len(actions) > 0
+		m.sectionActionIndex = 0
+	}
+}
 
 // Sections returns a copy of the current navigation metadata.
 func (m *FormModel) Sections() []FormSection {
@@ -342,9 +365,27 @@ func (m *FormModel) selectSectionField() {
 	indices := m.splitFieldIndices(m.sectionIndex)
 	if len(indices) > 0 {
 		m.selected = indices[0]
+		m.focusedAction = false
 	} else {
 		m.selected = len(m.defs)
+		actions := m.sectionActions[m.SectionTitle()]
+		m.focusedAction = len(actions) > 0
+		m.sectionActionIndex = 0
 	}
+}
+
+func (m *FormModel) activateSectionAction() tea.Cmd {
+	actions := m.sectionActions[m.SectionTitle()]
+	if m.sectionActionIndex < 0 || m.sectionActionIndex >= len(actions) {
+		return nil
+	}
+	action := actions[m.sectionActionIndex]
+	if action.Disabled != "" {
+		m.message = action.Disabled
+		return nil
+	}
+	section := m.SectionTitle()
+	return func() tea.Msg { return ActionMsg{Section: section, ID: action.ID} }
 }
 
 func (m *FormModel) moveSection(delta int) {
@@ -364,6 +405,12 @@ func (m *FormModel) moveSplitControl(delta int) {
 	m.detailScrolled = false
 	indices := m.splitFieldIndices(m.sectionIndex)
 	if len(indices) == 0 {
+		actions := m.sectionActions[m.SectionTitle()]
+		if len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = min(max(0, m.sectionActionIndex+delta), len(actions)-1)
+			return
+		}
 		if m.sectionIndex >= 0 && m.sectionIndex < len(m.sections) {
 			content := m.sectionContent[m.sections[m.sectionIndex].Title]
 			m.sectionOffset = min(max(0, m.sectionOffset+delta), max(0, len(content)-1))
@@ -410,7 +457,6 @@ type fieldCondition struct{ Selector, Choice string }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
 	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}}
-	m.nativePicker = picker.TryNative
 	values := m.editor.Values()
 	for _, def := range defs {
 		if def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice" {
@@ -538,6 +584,7 @@ type pickedMsg struct {
 	name, path, action string
 	kind, initial      string
 	index              int
+	resumeEdit         bool
 	err                error
 }
 
@@ -550,6 +597,13 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width, m.height = size.Width, size.Height
 			m.resizeBrowser()
 			return m, nil
+		}
+		if mouse, ok := msg.(tea.MouseMsg); ok {
+			translated, inside := m.pickerMouse(mouse)
+			if !inside {
+				return m, nil
+			}
+			msg = translated
 		}
 		_, cmd := m.browser.Update(msg)
 		if _, err := m.browser.Result(); !errors.Is(err, picker.ErrNotSubmitted) {
@@ -575,13 +629,6 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case pickedMsg:
-		if errors.Is(msg.err, picker.ErrUnavailable) {
-			msg = m.pickerMetadata(msg)
-			m.pickerPending = msg
-			m.browser = picker.NewBrowser(m.ctx, msg.kind, msg.initial)
-			m.resizeBrowser()
-			return m, nil
-		}
 		m.applyPicked(msg)
 	case tea.MouseMsg:
 		return m.mouseUpdate(msg)
@@ -755,7 +802,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.area == 1 && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
-					return m, nil
+					return m, m.activateSectionAction()
 				}
 			}
 		}
@@ -904,7 +951,7 @@ func (m *FormModel) save() (tea.Model, tea.Cmd) {
 		for i, def := range m.defs {
 			validationErr := Validate([]catalog.Input{def}, m.editor.Values())
 			if m.editor.initialErrors[def.Name] != nil || validationErr != nil {
-				m.selected = i
+				m.focusValidationField(i, def.Name)
 				if m.fieldErrors == nil {
 					m.fieldErrors = map[string]string{}
 				}
@@ -934,6 +981,24 @@ func (m *FormModel) save() (tea.Model, tea.Cmd) {
 	m.result = values
 	return m, tea.Quit
 }
+
+func (m *FormModel) focusValidationField(index int, name string) {
+	m.selected = index
+	m.area = 1
+	m.focusedAction = false
+	m.sectionOffset = 0
+	m.detailOffset = 0
+	m.detailScrolled = false
+	for sectionIndex, section := range m.sections {
+		for _, field := range section.Fields {
+			if field == name {
+				m.sectionIndex = sectionIndex
+				return
+			}
+		}
+	}
+}
+
 func (m *FormModel) beginEdit(action, buffer string) {
 	m.editing = true
 	m.editAction = action
@@ -1056,8 +1121,14 @@ func editViewport(buffer string, cursor, width int) string {
 }
 func (m *FormModel) pick(def catalog.Input, action, initial string) tea.Cmd {
 	index := m.rowIndex[def.Name]
-	runner, complete := m.pickerCommand(def.Name, def.Type, action, initial, index)
-	return tea.Exec(runner, complete)
+	m.pickerPending = pickedMsg{
+		name: def.Name, action: action, index: index,
+		kind: def.Type, initial: initial, resumeEdit: m.resumeEditAfterPicker,
+	}
+	m.resumeEditAfterPicker = false
+	m.browser = picker.NewBrowser(m.ctx, def.Type, initial)
+	m.resizeBrowser()
+	return m.browser.Init()
 }
 
 func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -1137,7 +1208,29 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		field := layout.splitFields[bodyY]
 		if field < 0 || field >= len(m.defs) {
+			if field < 0 && bodyY < len(layout.splitChoices) && layout.splitChoices[bodyY] >= 0 {
+				m.area = 1
+				m.focusedAction = true
+				m.sectionActionIndex = layout.splitChoices[bodyY]
+				return m, m.activateSectionAction()
+			}
 			return m, nil
+		}
+		if bodyY < len(layout.splitChoices) && layout.splitChoices[bodyY] == -2 {
+			def := m.defs[field]
+			if reason := m.disabledReason(def.Name); reason != "" {
+				m.message = reason
+				return m, nil
+			}
+			initial := textValue(m.editor.Values()[def.Name])
+			if m.editing {
+				initial = m.buffer
+				m.resumeEditAfterPicker = true
+				m.message = ""
+			}
+			m.area = 1
+			m.selected = field
+			return m, m.pick(def, "apply", initial)
 		}
 		if reason := m.disabledReason(m.defs[field].Name); reason != "" {
 			m.message = reason
@@ -1170,6 +1263,20 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if field < 0 {
 		return m, nil
 	}
+	if bodyY < len(layout.visibleRows) && layout.visibleRows[bodyY] == -2 && (m.defs[field].Type == "file" || m.defs[field].Type == "directory") {
+		if reason := m.disabledReason(m.defs[field].Name); reason != "" {
+			m.message = reason
+			return m, nil
+		}
+		initial := textValue(m.editor.Values()[m.defs[field].Name])
+		if m.editing {
+			initial = m.buffer
+			m.resumeEditAfterPicker = true
+			m.message = ""
+		}
+		m.selected = field
+		return m, m.pick(m.defs[field], "apply", initial)
+	}
 	if reason := m.disabledReason(m.defs[field].Name); reason != "" {
 		m.message = reason
 		return m, nil
@@ -1196,23 +1303,6 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
-
-type pickerExec struct {
-	ctx                 context.Context
-	kind, initial, path string
-	native              func(context.Context, string, string) (string, error)
-	in                  io.Reader
-	out, err            io.Writer
-}
-
-func (e *pickerExec) Run() error {
-	path, err := e.native(e.ctx, e.kind, e.initial)
-	e.path = path
-	return err
-}
-func (e *pickerExec) SetStdin(in io.Reader)   { e.in = in }
-func (e *pickerExec) SetStdout(out io.Writer) { e.out = out }
-func (e *pickerExec) SetStderr(out io.Writer) { e.err = out }
 
 type formLayout struct {
 	content        string
@@ -1294,11 +1384,11 @@ func (m *FormModel) layout() formLayout {
 		if m.editing && i == m.selected && !scalarDefinition(def).Multiple && def.OptionsFrom == "" {
 			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-lipgloss.Width(label)-14))
 		}
-		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
-			display += "  [Browse]"
-		}
 		if validation := m.fieldErrors[def.Name]; validation != "" {
 			display += "\n    ! " + validation
+		}
+		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
+			display += "\n    [Browse · b]"
 		}
 		if i == m.selected && len(def.Options) > 0 && def.Type != "multichoice" && def.Type != "multiple-choice" && !def.Multiple {
 			option := def.Options[m.choiceIndex[def.Name]%len(def.Options)]
@@ -1347,9 +1437,16 @@ func (m *FormModel) layout() formLayout {
 			}
 		}
 		for part, line := range strings.Split(row, "\n") {
+			if i == m.selected && strings.Contains(line, "[Browse · b]") {
+				selectedLine = len(bodyLines) + part
+			}
 			bodyLines = append(bodyLines, line)
 			fieldLines = append(fieldLines, i)
-			rowLines = append(rowLines, part-1)
+			rowLine := part - 1
+			if strings.Contains(line, "[Browse · b]") {
+				rowLine = -2
+			}
+			rowLines = append(rowLines, rowLine)
 			choice := -1
 			if len(m.defs[i].Options) > 0 && (m.defs[i].Type == "multichoice" || m.defs[i].Type == "multiple-choice" || m.defs[i].Multiple) && part > 0 {
 				choice = part - 1
@@ -1504,6 +1601,24 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLineChoices = append(rightLineChoices, -1)
 		}
 	}
+	sectionActions := m.sectionActions[m.sections[m.sectionIndex].Title]
+	for actionIndex, action := range sectionActions {
+		label := "› [ " + action.Label + " ]"
+		if action.Disabled != "" {
+			label += " · " + action.Disabled
+		}
+		if actionIndex == m.sectionActionIndex && m.focusedAction {
+			label = "> [ " + action.Label + " ]"
+			if action.Disabled != "" {
+				label += " · " + action.Disabled
+			}
+		}
+		for _, wrapped := range wrapCellText(label, max(1, rightWidth-2)) {
+			rightLines = append(rightLines, wrapped)
+			rightFields = append(rightFields, -1)
+			rightLineChoices = append(rightLineChoices, actionIndex)
+		}
+	}
 	for _, index := range indices {
 		def := m.defs[index]
 		label := def.Label
@@ -1560,9 +1675,6 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 		if m.editing && index == m.selected && !isEditableCollection(def) && def.OptionsFrom == "" {
 			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-lipgloss.Width(label)-14))
-		}
-		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
-			display += "  [Browse]"
 		}
 		if validation := m.fieldErrors[def.Name]; validation != "" {
 			display += "\n    ! " + validation
@@ -1627,6 +1739,15 @@ func (m *FormModel) splitLayout() formLayout {
 				rightLineChoices = append(rightLineChoices, -1)
 			}
 		}
+		if (def.Type == "directory" || def.Type == "file") && !def.Multiple {
+			control := "  › [Browse · b]"
+			if index == m.selected && m.area == 1 {
+				control = "  > [Browse · b]"
+			}
+			rightLines = append(rightLines, control)
+			rightFields = append(rightFields, index)
+			rightLineChoices = append(rightLineChoices, -2)
+		}
 	}
 	if len(indices) == 0 {
 		if len(sectionContent) == 0 {
@@ -1646,7 +1767,7 @@ func (m *FormModel) splitLayout() formLayout {
 			field, choice := -1, -1
 			if i < len(rightFields) {
 				field = rightFields[i]
-				if i < len(rightLineChoices) && rightLineChoices[i] >= 0 {
+				if i < len(rightLineChoices) && rightLineChoices[i] != -1 {
 					choice = rightLineChoices[i]
 				} else if part > 0 && field >= 0 && (isChoiceList(m.defs[field]) || isEditableCollection(m.defs[field])) {
 					choice = part - 1
@@ -1715,6 +1836,14 @@ func (m *FormModel) splitLayout() formLayout {
 	if len(indices) == 0 && len(sectionContent) > 0 {
 		rightTarget = min(max(0, m.sectionOffset+1), len(rightRows)-1)
 	}
+	if m.focusedAction {
+		for row, actionIndex := range rightRowChoices {
+			if actionIndex == m.sectionActionIndex && rightRowFields[row] < 0 {
+				rightTarget = row
+				break
+			}
+		}
+	}
 	for row, field := range rightRowFields {
 		if m.detailScrolled {
 			break
@@ -1726,7 +1855,14 @@ func (m *FormModel) splitLayout() formLayout {
 			continue
 		}
 		def := m.defs[field]
-		if isEditableCollection(def) {
+		if !isEditableCollection(def) && (def.Type == "file" || def.Type == "directory") {
+			for row, rowField := range rightRowFields {
+				if rowField == field && rightRowChoices[row] == -2 {
+					rightTarget = row
+					break
+				}
+			}
+		} else if isEditableCollection(def) {
 			if rightRowChoices[row] == m.rowIndex[def.Name] {
 				rightTarget = row
 			}
@@ -1775,6 +1911,9 @@ func (m *FormModel) splitLayout() formLayout {
 				def := m.defs[m.selected]
 				selected = choice == m.choiceIndex[def.Name]
 			}
+		}
+		if m.area == 1 && m.focusedAction && i < len(splitFields) && splitFields[i] < 0 && i < len(splitChoices) {
+			selected = splitChoices[i] == m.sectionActionIndex
 		}
 		if selected {
 			rightCell = selectedStyle.Render(rightCell)

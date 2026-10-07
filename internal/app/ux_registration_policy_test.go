@@ -15,7 +15,7 @@ import (
 )
 
 func TestUXRegistrationOptionsAndBoundaryRejectGenericAll(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
 	for _, id := range []string{"all", "generic", "generic:work", "generic-mcp:work"} {
@@ -37,7 +37,7 @@ func TestUXRegistrationOptionsAndBoundaryRejectGenericAll(t *testing.T) {
 func seedLegacyAndNamedRegistrations(t *testing.T) (*Service, *state.Store, state.Key, *changedRuntime, string, string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
@@ -123,7 +123,7 @@ func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(
 }
 
 func TestUXCancelledRegistrationRequestIsQuietAndHasNoFalseEffects(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -145,7 +145,7 @@ func TestUXCancelledRegistrationRequestIsQuietAndHasNoFalseEffects(t *testing.T)
 
 func TestUXPartialRegistrationFailureReportsAgentStepAndTarget(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	svc, _, _ := fixture(t)
 	// A directory at the adapter's real config-file location causes an actual
 	// filesystem failure; it cannot be mistaken for a successful registration.
@@ -166,7 +166,7 @@ func TestUXPartialRegistrationFailureReportsAgentStepAndTarget(t *testing.T) {
 
 func TestUXRemoveDoesNotStopServer(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime

@@ -37,6 +37,12 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	return New(src, s, Options{}), env, s
 }
 
+func isolateUXUserHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 type fakeRuntime struct{ starts int }
 
 type failingRuntime struct{ fakeRuntime }

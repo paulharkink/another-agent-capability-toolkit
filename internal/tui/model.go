@@ -234,6 +234,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.Section == "Overview" {
+		switch action.ID {
+		case "apply":
+			if m.form != nil && m.pendingSetup != nil {
+				return m, m.applySetup(m.form.Values())
+			}
+		case "stop":
+			if handled, cmd := m.workspaceOverviewAction("x"); handled {
+				return m, cmd
+			}
+		case "registrations":
+			if m.form != nil && m.workspace.Profile != nil {
+				profile := m.workspace.Profile
+				m.workspace.cacheDraft(m.form.Values())
+				m.registrationForm(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+			}
+			return m, nil
+		}
+		return m, nil
+	}
 	if m.setupInformation {
 		if key, ok := msg.(tea.KeyPressMsg); ok {
 			switch key.String() {

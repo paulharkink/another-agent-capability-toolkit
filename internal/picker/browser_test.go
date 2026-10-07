@@ -3,7 +3,9 @@ package picker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,7 +91,10 @@ func TestUXBrowserSymlinkFileAndDirectorySelection(t *testing.T) {
 }
 
 func browserKey(m *BrowserModel, code rune, text string) {
-	m.Update(tea.KeyPressMsg{Code: code, Text: text})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: code, Text: text})
+	if cmd != nil {
+		m.Update(cmd())
+	}
 }
 
 func TestUXBrowserFileEnterNavigatesThenSelects(t *testing.T) {
@@ -193,10 +198,120 @@ func TestUXBrowserPasteManualPathPreservesInput(t *testing.T) {
 	}
 }
 
+func TestUXBrowserAddressUsesInvokingShellExpansion(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is not installed")
+	}
+	t.Setenv("AACT_PICKER_SHELL", shell)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewBrowser(context.Background(), "directory", "")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	browserKey(m, tea.KeyTab, "")
+	m.Update(tea.PasteMsg{Content: "~"})
+	browserKey(m, tea.KeyEnter, "")
+	if m.dir != home {
+		t.Fatalf("shell-expanded address navigated to %q, want invoking-shell home %q; message=%q", m.dir, home, m.message)
+	}
+}
+
+func TestUXBrowserAddressCanReplaceCurrentPathWithPaste(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "selected file")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewBrowser(context.Background(), "file", filepath.Join(root, "old file"))
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
+	m.Update(tea.PasteMsg{Content: path})
+	if m.pathText != path {
+		t.Fatalf("pasted address did not replace current path: got %q want %q", m.pathText, path)
+	}
+	browserKey(m, tea.KeyEnter, "")
+	if got, err := m.Result(); err != nil || got != path {
+		t.Fatalf("address selection = %q, %v; want %q", got, err, path)
+	}
+}
+
+func TestUXBrowserIgnoresResolverResultAfterCancel(t *testing.T) {
+	m := NewBrowser(context.Background(), "directory", "")
+	cmd := m.resolvePath("~", false)
+	browserKey(m, tea.KeyEscape, "")
+	m.Update(cmd())
+	if _, err := m.Result(); !errors.Is(err, ErrCancelled) {
+		t.Fatalf("late resolver result changed cancelled picker: %v", err)
+	}
+}
+
+func TestUXBrowserMouseNavigatesAddressAndCancels(t *testing.T) {
+	root := t.TempDir()
+	hiddenDir := filepath.Join(root, ".hidden-dir")
+	if err := os.Mkdir(hiddenDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hiddenDir, ".hidden-file"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewBrowser(context.Background(), "file", root)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	browserClickText(t, m, ".hidden-dir/")
+	if !strings.Contains(ansi.Strip(m.View().Content), "› .hidden-dir/") {
+		t.Fatalf("mouse did not highlight hidden directory:\n%s", ansi.Strip(m.View().Content))
+	}
+	browserClickText(t, m, "[ Open directory ]")
+	if m.dir != hiddenDir || !strings.Contains(ansi.Strip(m.View().Content), ".hidden-file") {
+		t.Fatalf("Open directory did not navigate into hidden directory:\n%s", ansi.Strip(m.View().Content))
+	}
+	browserClickText(t, m, "Path (Ctrl+L):")
+	if m.focus != 1 {
+		t.Fatal("mouse click did not focus the address bar")
+	}
+	browserClickText(t, m, "[ Cancel ]")
+	if _, err := m.Result(); !errors.Is(err, ErrCancelled) {
+		t.Fatalf("Cancel button result = %v, want ErrCancelled", err)
+	}
+}
+
+func TestUXBrowserMouseWheelScrollsFileList(t *testing.T) {
+	root := t.TempDir()
+	for i := range 12 {
+		path := filepath.Join(root, fmt.Sprintf("file-%02d", i))
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := NewBrowser(context.Background(), "file", root)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 9})
+	m.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelDown})
+	if !strings.Contains(ansi.Strip(m.View().Content), "› file-01") {
+		t.Fatalf("wheel down did not advance selection to first file:\n%s", ansi.Strip(m.View().Content))
+	}
+}
+
+func browserClickText(t *testing.T, m *BrowserModel, text string) {
+	t.Helper()
+	for y, line := range strings.Split(ansi.Strip(m.View().Content), "\n") {
+		if byteOffset := strings.Index(line, text); byteOffset >= 0 {
+			x := ansi.StringWidth(line[:byteOffset])
+			m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			return
+		}
+	}
+	t.Fatalf("browser did not render %q:\n%s", text, ansi.Strip(m.View().Content))
+}
+
 func TestUXBrowserUnreadableOrMissingPathStaysOpen(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	m := NewBrowser(context.Background(), "file", missing)
 	m.Update(tea.WindowSizeMsg{Width: 90, Height: 20})
+	if cmd := m.Init(); cmd != nil {
+		m.Update(cmd())
+	}
 	if _, err := m.Result(); !errors.Is(err, ErrNotSubmitted) {
 		t.Fatalf("initial path error closed picker: %v", err)
 	}

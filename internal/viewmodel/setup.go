@@ -34,6 +34,7 @@ type SetupPreview struct {
 	TargetPath      string
 	TargetTOML      string
 	Configured      bool
+	MCP             bool
 	CredentialState string
 	CredentialNote  string
 	Inputs          []SetupInput

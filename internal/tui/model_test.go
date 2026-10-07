@@ -20,6 +20,9 @@ func (b *modelWorkspaceBackend) UISetupPreview(ctx context.Context, request view
 	preview, err := b.setupBackendFixture.UISetupPreview(ctx, request)
 	preview.Key = state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
 	preview.PackageName = "Inspector"
+	// This backend is used for observed MCP profile fixtures; keep the package
+	// metadata consistent with the profile rows it returns.
+	preview.MCP = request.PackageID == "inspect"
 	return preview, err
 }
 

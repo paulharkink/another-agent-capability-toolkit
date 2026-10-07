@@ -111,6 +111,7 @@ func TestUXDirectoryEnterEditAndBackspaceRoles(t *testing.T) {
 }
 
 func TestUXExclusiveAlternativeSwitchIsVisible(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source kubeconfig")
 	m := NewForm(context.Background(), []catalog.Input{
 		{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"},
 		{Name: "source", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"},
@@ -121,10 +122,10 @@ func TestUXExclusiveAlternativeSwitchIsVisible(t *testing.T) {
 	if !strings.Contains(m.View().Content, "Source kubeconfig") || !strings.Contains(m.View().Content, "secret-value") {
 		t.Fatalf("editing inactive alternative hid existing credential or label:\n%s", m.View().Content)
 	}
-	m.Update(tea.PasteMsg{Content: "/tmp/source kubeconfig"})
+	m.Update(tea.PasteMsg{Content: source})
 	m.Update(key(tea.KeyEnter, ""))
 	values := m.editor.Values()
-	if values["source"] != "/tmp/source kubeconfig" || values["token"] != "" {
+	if values["source"] != source || values["token"] != "" {
 		t.Fatalf("switching alternative did not clear prior value: %#v", values)
 	}
 }

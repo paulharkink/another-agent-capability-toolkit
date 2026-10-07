@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -183,7 +184,7 @@ func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEf
 
 func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
 	svc, env, store := fixture(t)
-	kubeconfig := t.TempDir() + "/source.kubeconfig"
+	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
 
 func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 	svc, env, store := fixture(t)
-	kubeconfig := t.TempDir() + "/source.kubeconfig"
+	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +247,7 @@ func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 
 func TestUXCancellationPhraseInUnrelatedAuthErrorRemainsVisible(t *testing.T) {
 	svc, env, store := fixture(t)
-	kubeconfig := t.TempDir() + "/source.kubeconfig"
+	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +438,7 @@ func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing
 	pkg.ID = "cluster-inspector"
 	svc.Source.Catalog[0] = pkg
 	key := state.Key{Source: "fixture", Package: pkg.ID, Target: "default"}
-	sourcePath := t.TempDir() + "/source.kubeconfig"
+	sourcePath := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": sourcePath}); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +446,7 @@ func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing
 	if state != "missing" || note == "" {
 		t.Fatalf("missing managed credential observation = %q, %q", state, note)
 	}
-	managedPath := svc.Store.AuthDir(key) + "/kubeconfig"
+	managedPath := filepath.Join(svc.Store.AuthDir(key), "kubeconfig")
 	if err := os.MkdirAll(svc.Store.AuthDir(key), 0700); err != nil {
 		t.Fatal(err)
 	}

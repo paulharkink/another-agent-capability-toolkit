@@ -15,7 +15,8 @@ import (
 func TestUXJourney13RememberedSourcePreviewAndInstallIgnoreProcessWorkingDirectory(t *testing.T) {
 	svc, _, store := fixture(t)
 	root, packageDir := rememberedSkillSource(t, svc)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
 	manifest := `schema_version = 1
 id = "demo"
 name = "Remembered Demo"
@@ -74,7 +75,7 @@ type = "directory"
 			t.Fatalf("installation ledger identity came from another checkout/target: %+v", row)
 		}
 	}
-	installedSkill := filepath.Join(os.Getenv("HOME"), ".agents", "skills", "demo", "SKILL.md")
+	installedSkill := filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")
 	content, err := os.ReadFile(installedSkill)
 	if err != nil || string(content) != "---\nname: demo\ndescription: demo\n---\nRemembered" {
 		t.Fatalf("installed content did not come from remembered source: content=%q err=%v", content, err)

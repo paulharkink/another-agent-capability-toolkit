@@ -456,6 +456,14 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		m.output = "Unified setup service unavailable"
 		return nil
 	}
+	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Preview != nil && workspace.Preview.MCP && m.profileError != nil {
+		m.output = "Runtime observation failed; refresh this target before applying an MCP configuration."
+		return nil
+	}
+	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Profile != nil && workspace.Profile.Ownership != "local" && strings.TrimSpace(workspace.Profile.URL) == "" {
+		m.output = nonempty(workspace.Profile.StartDisabledReason, "Cannot safely apply configuration: runtime ownership is unknown and no observed endpoint is available.")
+		return nil
+	}
 	preview := *m.pendingSetup
 	destinationField := m.pendingSetupField
 	section := ""

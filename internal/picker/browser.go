@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 )
 
 type BrowserModel struct {
@@ -25,6 +24,17 @@ type BrowserModel struct {
 	err                 error
 	done                bool
 	message             string
+	resolveCancel       context.CancelFunc
+	resolveRequest      uint64
+}
+
+type resolvedPathMsg struct {
+	owner      *BrowserModel
+	request    uint64
+	expression string
+	initial    bool
+	path       string
+	err        error
 }
 
 var browserBlue = lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))
@@ -48,35 +58,36 @@ func NewBrowser(ctx context.Context, kind, initial string) *BrowserModel {
 	}
 	m.dir = cwd
 	if initial != "" {
-		resolved, e := config.ResolvePath(initial, filepath.Join(cwd, "picker"))
-		if e != nil {
-			m.message = e.Error()
-			m.pathText = initial
-		} else if info, e := os.Stat(resolved); e == nil {
-			if info.IsDir() {
-				m.dir = resolved
-				m.pathText = resolved
+		if resolved, e := filepath.Abs(initial); e == nil {
+			if info, statErr := os.Stat(resolved); statErr == nil {
+				if info.IsDir() {
+					m.dir = resolved
+					m.pathText = resolved
+				} else {
+					m.dir = filepath.Dir(resolved)
+					m.pathText = resolved
+				}
 			} else {
-				m.dir = filepath.Dir(resolved)
-				m.pathText = resolved
+				m.pathText = initial
 			}
 		} else {
-			m.dir = filepath.Dir(resolved)
-			m.pathText = resolved
-			m.message = fmt.Sprintf("Path unavailable: %v", e)
+			m.pathText = initial
 		}
 	}
 	m.reload()
-	if initial != "" {
-		if _, err := os.Stat(m.pathText); err != nil {
-			m.message = fmt.Sprintf("Path unavailable: %v", err)
-		}
-	}
 	m.pathCursor = len([]rune(m.pathText))
 	return m
 }
 
-func (m *BrowserModel) Init() tea.Cmd { return nil }
+func (m *BrowserModel) Init() tea.Cmd {
+	if m.pathText != "" {
+		if _, err := os.Stat(m.pathText); err == nil {
+			return nil
+		}
+		return m.resolvePath(m.pathText, true)
+	}
+	return nil
+}
 
 func (m *BrowserModel) Result() (string, error) {
 	if !m.done {
@@ -138,11 +149,14 @@ func browserEntries(dir, kind string) ([]Entry, error) {
 
 func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ctx != nil && m.ctx.Err() != nil && !m.done {
+		m.cancelResolve()
 		m.done = true
 		m.err = m.ctx.Err()
 		return m, nil
 	}
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		return m, m.mouseUpdate(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.width < 1 {
@@ -151,6 +165,13 @@ func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.height < 1 {
 			m.height = 1
 		}
+		return m, nil
+	case resolvedPathMsg:
+		if msg.owner != m || msg.request != m.resolveRequest || m.done {
+			return m, nil
+		}
+		m.cancelResolve()
+		m.applyResolvedPath(msg)
 		return m, nil
 	case tea.PasteMsg:
 		if m.focus == 1 {
@@ -163,6 +184,7 @@ func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Code == tea.KeyEscape {
+			m.cancelResolve()
 			m.done = true
 			m.err = ErrCancelled
 			return m, nil
@@ -175,9 +197,19 @@ func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 5
 			return m, nil
 		}
-		if m.focus == 1 {
-			m.editPath(msg)
+		if msg.Code == 'l' && msg.Mod&tea.ModCtrl != 0 {
+			m.focus = 1
+			m.pathCursor = len([]rune(m.pathText))
 			return m, nil
+		}
+		if msg.Code == 'a' && msg.Mod&tea.ModCtrl != 0 && m.focus == 1 {
+			m.pathText = ""
+			m.pathCursor = 0
+			m.message = ""
+			return m, nil
+		}
+		if m.focus == 1 {
+			return m, m.editPath(msg)
 		}
 		if m.focus == 0 {
 			m.handleListKey(msg)
@@ -194,10 +226,11 @@ func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Code == tea.KeyEnter || msg.Code == tea.KeySpace {
 			switch m.focus {
 			case 2:
-				m.openSelected()
+				return m, m.openSelected()
 			case 3:
-				m.selectCurrentOrEntry()
+				return m, m.selectCurrentOrEntry()
 			case 4:
+				m.cancelResolve()
 				m.done = true
 				m.err = ErrCancelled
 			}
@@ -207,7 +240,81 @@ func (m *BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *BrowserModel) editPath(key tea.KeyPressMsg) {
+func (m *BrowserModel) mouseUpdate(msg tea.MouseMsg) tea.Cmd {
+	if m.done {
+		return nil
+	}
+	mouse := msg.Mouse()
+	if _, ok := msg.(tea.MouseWheelMsg); ok {
+		if mouse.Button != tea.MouseWheelUp && mouse.Button != tea.MouseWheelDown {
+			return nil
+		}
+		m.focus = 0
+		code := tea.KeyDown
+		if mouse.Button == tea.MouseWheelUp {
+			code = tea.KeyUp
+		}
+		m.handleListKey(tea.KeyPressMsg{Code: code})
+		return nil
+	}
+	if mouse.Button != tea.MouseLeft {
+		return nil
+	}
+	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+	visibleStart := m.offset
+	visibleEnd := min(len(m.entries), visibleStart+m.visibleRows())
+	for index := visibleStart; index < visibleEnd; index++ {
+		entry := m.entries[index]
+		label := entry.Name
+		if entry.Directory {
+			label += "/"
+		} else if !entry.Selectable {
+			label += " (unavailable)"
+		}
+		if mouse.Y < len(lines) && strings.Contains(lines[mouse.Y], label) {
+			m.focus = 0
+			m.selected = index
+			return nil
+		}
+	}
+	if mouse.Y < len(lines) && strings.Contains(lines[mouse.Y], "Path") {
+		m.focus = 1
+		m.pathCursor = len([]rune(m.pathText))
+		return nil
+	}
+	// Locate buttons from the actual rendered rows so wrapped controls remain clickable.
+	labels := []string{"Open directory", "Select file", "Cancel"}
+	if m.kind == "directory" {
+		labels[1] = "Select this directory"
+	}
+	for action, label := range labels {
+		needle := "[ " + label + " ]"
+		for y, line := range lines {
+			plain := line
+			if y == mouse.Y {
+				start := strings.Index(plain, needle)
+				if start < 0 || mouse.X < start || mouse.X >= start+len(needle) {
+					continue
+				}
+				m.focus = action + 2
+				switch action {
+				case 0:
+					return m.openSelected()
+				case 1:
+					return m.selectCurrentOrEntry()
+				default:
+					m.cancelResolve()
+					m.done = true
+					m.err = ErrCancelled
+					return nil
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (m *BrowserModel) editPath(key tea.KeyPressMsg) tea.Cmd {
 	switch key.Code {
 	case tea.KeyBackspace, tea.KeyDelete:
 		chars := []rune(m.pathText)
@@ -219,7 +326,7 @@ func (m *BrowserModel) editPath(key tea.KeyPressMsg) {
 		}
 		m.pathText = string(chars)
 	case tea.KeyEnter:
-		m.navigatePath()
+		return m.navigatePath()
 	case tea.KeyLeft:
 		if m.pathCursor > 0 {
 			m.pathCursor--
@@ -238,6 +345,7 @@ func (m *BrowserModel) editPath(key tea.KeyPressMsg) {
 			m.message = ""
 		}
 	}
+	return nil
 }
 
 func (m *BrowserModel) insertPathText(text string) {
@@ -254,30 +362,63 @@ func (m *BrowserModel) insertPathText(text string) {
 	m.pathCursor += len(insert)
 }
 
-func (m *BrowserModel) navigatePath() {
-	p, err := config.ResolvePath(strings.TrimSpace(m.pathText), filepath.Join(m.dir, "picker"))
-	if err != nil {
-		m.message = err.Error()
+func (m *BrowserModel) navigatePath() tea.Cmd {
+	return m.resolvePath(strings.TrimSpace(m.pathText), false)
+}
+
+func (m *BrowserModel) resolvePath(expression string, initial bool) tea.Cmd {
+	m.cancelResolve()
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.resolveCancel = cancel
+	m.resolveRequest++
+	request, owner, cwd := m.resolveRequest, m, m.dir
+	m.message = "Resolving path with invoking shell…"
+	return func() tea.Msg {
+		path, err := ResolveShellPath(ctx, expression, cwd)
+		return resolvedPathMsg{owner: owner, request: request, expression: expression, initial: initial, path: path, err: err}
+	}
+}
+
+func (m *BrowserModel) cancelResolve() {
+	if m.resolveCancel != nil {
+		m.resolveCancel()
+		m.resolveCancel = nil
+	}
+}
+
+func (m *BrowserModel) applyResolvedPath(msg resolvedPathMsg) {
+	if msg.err != nil {
+		if msg.err == context.Canceled || msg.err == context.DeadlineExceeded {
+			return
+		}
+		m.message = msg.err.Error()
 		return
 	}
-	info, err := os.Stat(p)
+	info, err := os.Stat(msg.path)
 	if err != nil {
 		m.message = fmt.Sprintf("Path unavailable: %v", err)
 		return
 	}
 	if info.IsDir() {
-		m.dir = p
-		m.pathText = p
-		m.pathCursor = len([]rune(p))
+		m.dir = msg.path
+		m.pathText = msg.path
+		m.pathCursor = len([]rune(msg.path))
 		m.selected = -1
 		m.reload()
 		return
 	}
 	if m.kind == "file" && info.Mode().IsRegular() {
-		m.finish(p)
+		if msg.initial {
+			m.dir = filepath.Dir(msg.path)
+			m.pathText = msg.path
+			m.pathCursor = len([]rune(msg.path))
+			m.reload()
+			return
+		}
+		m.finish(msg.path)
 		return
 	}
-	m.message = fmt.Sprintf("%s is not a %s", p, m.kind)
+	m.message = fmt.Sprintf("%s is not a %s", msg.path, m.kind)
 }
 
 func (m *BrowserModel) handleListKey(key tea.KeyPressMsg) {
@@ -320,7 +461,7 @@ func (m *BrowserModel) handleListKey(key tea.KeyPressMsg) {
 }
 
 func (m *BrowserModel) visibleRows() int {
-	reserve := 3 + len(m.actionLines()) + 1 // heading/path, actions and one scroll cue
+	reserve := 3 + len(m.actionLines()) + 2 // heading/path, actions, address hint and scroll cue
 	if m.message != "" {
 		reserve++
 	}
@@ -330,27 +471,27 @@ func (m *BrowserModel) visibleRows() int {
 	}
 	return n
 }
-func (m *BrowserModel) openSelected() {
+func (m *BrowserModel) openSelected() tea.Cmd {
 	if m.selected >= 0 && m.selected < len(m.entries) && m.entries[m.selected].Directory {
 		m.dir = m.entries[m.selected].Path
 		m.pathText = m.dir
 		m.pathCursor = len([]rune(m.pathText))
 		m.selected = -1
 		m.reload()
-		return
+		return nil
 	}
-	m.navigatePath()
+	return m.navigatePath()
 }
-func (m *BrowserModel) selectCurrentOrEntry() {
+func (m *BrowserModel) selectCurrentOrEntry() tea.Cmd {
 	if m.kind == "directory" {
 		m.finish(m.dir)
-		return
+		return nil
 	}
 	if m.selected >= 0 && m.selected < len(m.entries) && m.entries[m.selected].Selectable {
 		m.finish(m.entries[m.selected].Path)
-		return
+		return nil
 	}
-	m.navigatePath()
+	return m.navigatePath()
 }
 func (m *BrowserModel) finish(path string) {
 	validated, err := selectedPath(path, m.kind, m.dir)
@@ -359,6 +500,7 @@ func (m *BrowserModel) finish(path string) {
 		return
 	}
 	m.done = true
+	m.cancelResolve()
 	m.result = validated
 	m.err = nil
 }
@@ -370,7 +512,7 @@ func (m *BrowserModel) View() tea.View {
 		return tea.NewView(strings.Join(lines, "\n"))
 	}
 	lines = append(lines, fitPickerLine(browserBlue.Bold(true).Render("Browse "+m.kind), m.width), fitPickerLine(browserMuted.Render("Current: "+m.dir), m.width))
-	pathLabel := "Path: " + m.pathText
+	pathLabel := "Path (Ctrl+L): " + m.pathText
 	if m.focus == 1 {
 		pathLabel = browserFocus.Render(activePathLine(m.pathText, m.pathCursor, m.width))
 		lines = append(lines, pathLabel)
@@ -397,7 +539,7 @@ func (m *BrowserModel) View() tea.View {
 	} else if end < len(m.entries) {
 		cue = "↓ more"
 	}
-	if cue != "" {
+	if cue != "" && m.message == "" {
 		lines = append(lines, fitPickerLine(browserMuted.Render(cue), m.width))
 	}
 	for i := start; i < end; i++ {
@@ -419,6 +561,7 @@ func (m *BrowserModel) View() tea.View {
 		lines = append(lines, fitPickerLine(label, m.width))
 	}
 	lines = append(lines, m.actionLines()...)
+	lines = append(lines, fitPickerLine(browserMuted.Render("Ctrl+L address · Ctrl+A replace · Tab controls"), m.width))
 	if m.message != "" {
 		lines = append(lines, fitPickerLine(browserError.Render(m.message), m.width))
 	}

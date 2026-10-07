@@ -102,7 +102,7 @@ func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request
 	b.previewRequest = request
 	return viewmodel.SetupPreview{
 		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
-		PackageName: "Plain",
+		PackageName: "Plain", MCP: true,
 		Destinations: []viewmodel.SetupDestination{
 			{ID: "codex", Path: "/home/test/.codex/skills", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"},
 			{ID: "claude", Path: "/home/test/.claude/skills", ConfigPath: "/home/test/.claude.json", Detection: "installed"},

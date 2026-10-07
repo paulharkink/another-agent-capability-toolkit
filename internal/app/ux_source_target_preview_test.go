@@ -46,7 +46,7 @@ func TestUXRememberedSourcePreviewAndInstallIgnoreCurrentCheckout(t *testing.T) 
 	if preview.Key.Source != "remembered" || preview.SourceRoot != root {
 		t.Fatalf("preview used current checkout identity: key=%#v root=%q", preview.Key, preview.SourceRoot)
 	}
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest:   viewmodel.SetupRequest{SourceID: "remembered", PackageID: "demo"},
 		DestinationIDs: []string{"all"}, Inputs: map[string]any{},

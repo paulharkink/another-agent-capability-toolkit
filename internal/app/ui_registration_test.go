@@ -12,7 +12,7 @@ import (
 )
 
 func TestUIConfigureRegistrationsTargetsCurrentEnvironmentOnly(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
@@ -33,7 +33,7 @@ func TestUIConfigureRegistrationsTargetsCurrentEnvironmentOnly(t *testing.T) {
 }
 
 func TestUIConfigureRegistrationsReportsUnreachableEndpointWithoutClaimingRuntime(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, _ := fixture(t)
 	svc.Options.Runtime = &fakeRuntime{}
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -49,7 +49,7 @@ func TestUIConfigureRegistrationsReportsUnreachableEndpointWithoutClaimingRuntim
 }
 
 func TestUIConfigureRegistrationsRejectsAmbiguousAgentConfigPaths(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
 	home := t.TempDir()

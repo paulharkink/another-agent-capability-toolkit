@@ -121,19 +121,21 @@ func TestSplitDirectoryBrowseEditsSelectedRowAndAddOpensPicker(t *testing.T) {
 	m.Update(key(tea.KeyRight, ""))
 	m.Update(key(tea.KeyDown, ""))
 	_, command := m.Update(key('b', "b"))
-	if command == nil {
+	if command != nil || !m.PickerActive() {
 		t.Fatal("explicit Browse on an existing directory did not open the picker")
 	}
-	m.Update(pickedMsg{name: "scan_roots", action: "edit", index: 1, path: three})
+	m.browser = nil
+	m.applyPicked(pickedMsg{name: "scan_roots", action: "edit", index: 1, path: three})
 	if got := m.editor.Values()["scan_roots"]; !reflect.DeepEqual(got, []string{one, three}) {
 		t.Fatalf("picker did not replace selected row: %v", got)
 	}
 	m.Update(key(tea.KeyDown, ""))
 	_, command = m.Update(key('a', "a"))
-	if command == nil {
+	if command != nil || !m.PickerActive() {
 		t.Fatal("Add directory did not open the one-item picker")
 	}
-	m.Update(pickedMsg{name: "scan_roots", action: "add", path: two})
+	m.browser = nil
+	m.applyPicked(pickedMsg{name: "scan_roots", action: "add", path: two})
 	if got := m.editor.Values()["scan_roots"]; !reflect.DeepEqual(got, []string{one, three, two}) {
 		t.Fatalf("picker did not append exactly one directory: %v", got)
 	}

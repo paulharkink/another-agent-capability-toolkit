@@ -2,7 +2,6 @@ package forms
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,30 +11,25 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 )
 
-func runPickerCommand(t *testing.T, m *FormModel, name, kind, action, initial string, index int) {
-	t.Helper()
-	runner, complete := m.pickerCommand(name, kind, action, initial, index)
-	err := runner.Run()
-	m.Update(complete(err))
+func updateFormCommand(m *FormModel, msg tea.Msg) {
+	_, cmd := m.Update(msg)
+	if cmd != nil {
+		m.Update(cmd())
+	}
 }
 
-func TestUXUnavailableNativeEmbedsBrowserWithoutStdinPrompt(t *testing.T) {
+func TestUXBrowseOpensEmbeddedBrowserOverForm(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".kubeconfig"), []byte("fixture"), 0600); err != nil {
+	path := filepath.Join(dir, ".kubeconfig")
+	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	m := NewForm(context.Background(), []catalog.Input{{Name: "source", Label: "Source", Type: "file"}}, map[string]any{"source": filepath.Join(dir, ".kubeconfig")})
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
+	m := NewForm(context.Background(), []catalog.Input{{Name: "source", Label: "Source", Type: "file"}}, map[string]any{"source": path})
 	_, cmd := m.Update(key('b', "b"))
-	if cmd == nil {
-		t.Fatal("explicit Browse returned no command")
-	}
-	runPickerCommand(t, m, "source", "file", "apply", filepath.Join(dir, ".kubeconfig"), 0)
-	if m.browser == nil {
-		t.Fatal("native unavailability did not open the embedded browser")
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Browse did not open the embedded picker directly")
 	}
 	view := ansi.Strip(m.View().Content)
 	if !strings.Contains(view, "Browse file") || !strings.Contains(view, ".kubeconfig") || !strings.Contains(view, "Edit package inputs") || strings.Contains(view, "Enter path:") {
@@ -54,22 +48,17 @@ func TestUXDirectoryCollectionAddUsesEmbeddedPickerAndAddsOneRow(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "roots", Type: "directory", Multiple: true}}, map[string]any{"roots": []string{current}})
 	m.SetSections(FormSection{Title: "Paths", Fields: []string{"roots"}})
 	m.Update(key(tea.KeyRight, ""))
-	m.Update(key(tea.KeyDown, "")) // the Add row
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
+	m.Update(key(tea.KeyDown, ""))
 	_, cmd := m.Update(key('a', "a"))
-	if cmd == nil {
-		t.Fatal("Add did not invoke the picker")
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Add did not open the embedded picker directly")
 	}
-	runPickerCommand(t, m, "roots", "directory", "add", "", 0)
-	if m.browser == nil {
-		t.Fatal("unavailable native Add did not open the embedded picker")
-	}
-	m.Update(key(tea.KeyTab, ""))
-	m.Update(tea.PasteMsg{Content: added})
-	m.Update(key(tea.KeyEnter, ""))
-	m.Update(key(tea.KeyTab, ""))
-	m.Update(key(tea.KeyTab, ""))
-	m.Update(key(tea.KeyEnter, ""))
+	updateFormCommand(m, key(tea.KeyTab, ""))
+	updateFormCommand(m, tea.PasteMsg{Content: added})
+	updateFormCommand(m, key(tea.KeyEnter, ""))
+	updateFormCommand(m, key(tea.KeyTab, ""))
+	updateFormCommand(m, key(tea.KeyTab, ""))
+	updateFormCommand(m, key(tea.KeyEnter, ""))
 	if got := m.Values()["roots"]; !reflect.DeepEqual(got, []string{current, added}) {
 		t.Fatalf("Add should append exactly one selected directory: got %#v", got)
 	}
@@ -82,20 +71,18 @@ func TestUXPickerEscapeReturnsSameFieldAndDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewForm(context.Background(), []catalog.Input{{Name: "root", Type: "directory"}}, map[string]any{"root": current})
-	m.SetSections(FormSection{Title: "Paths", Fields: []string{"root"}}, FormSection{Title: "Other", Fields: nil})
+	m.SetSections(FormSection{Title: "Paths", Fields: []string{"root"}}, FormSection{Title: "Other"})
 	m.Update(key(tea.KeyRight, ""))
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
 	_, cmd := m.Update(key('b', "b"))
-	if cmd == nil {
-		t.Fatal("explicit Browse returned no command")
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Browse did not open the embedded picker directly")
 	}
-	runPickerCommand(t, m, "root", "directory", "apply", current, 0)
 	m.Update(key(tea.KeyEscape, ""))
-	if m.browser != nil || m.selected != 0 || m.sectionIndex != 0 || m.area != 1 || m.editing {
-		t.Fatalf("cancel did not restore field focus and draft: browser=%v field=%d section=%d area=%d editing=%v", m.browser != nil, m.selected, m.sectionIndex, m.area, m.editing)
+	if m.PickerActive() || m.selected != 0 || m.sectionIndex != 0 || m.area != 1 || m.editing {
+		t.Fatalf("cancel did not restore field focus and draft: browser=%v field=%d section=%d area=%d editing=%v", m.PickerActive(), m.selected, m.sectionIndex, m.area, m.editing)
 	}
 	if got := m.Values()["root"]; got != current {
-		t.Fatalf("cancel changed the saved field value: got %#v want %q", got, current)
+		t.Fatalf("cancel changed saved value: got %#v want %q", got, current)
 	}
 }
 
@@ -111,27 +98,22 @@ func TestUXPickerSelectionUpdatesOneDirectoryRow(t *testing.T) {
 	m.SetSections(FormSection{Title: "Paths", Fields: []string{"roots"}})
 	m.Update(key(tea.KeyRight, ""))
 	m.Update(key(tea.KeyDown, ""))
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
 	_, cmd := m.Update(key('b', "b"))
-	if cmd == nil {
-		t.Fatal("explicit Browse returned no command")
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Browse did not open the embedded picker directly")
 	}
-	runPickerCommand(t, m, "roots", "directory", "edit", paths[1], 1)
-	if m.browser == nil {
-		t.Fatal("native unavailability did not enter embedded picker")
-	}
-	// Open the parent and then the selected sibling directory.
+	// Navigate to the parent, then into the chosen sibling directory.
 	m.Update(key(tea.KeyEnter, ""))
 	m.Update(key(tea.KeyEnter, ""))
 	for range 3 {
 		m.Update(key(tea.KeyTab, ""))
 	}
 	m.Update(key(tea.KeyEnter, ""))
-	if m.browser != nil {
+	if m.PickerActive() {
 		t.Fatalf("picker did not submit selected directory:\n%s", ansi.Strip(m.browser.View().Content))
 	}
 	if got := m.Values()["roots"]; !reflect.DeepEqual(got, []string{paths[0], paths[2]}) {
-		t.Fatalf("directory picker should replace only the selected row: got %#v message=%q", got, m.message)
+		t.Fatalf("picker should replace only selected row: got %#v message=%q", got, m.message)
 	}
 }
 
@@ -146,17 +128,15 @@ func TestUXPickerKeyboardDoesNotNavigateParentForm(t *testing.T) {
 	m.SetSections(FormSection{Title: "Paths", Fields: []string{"root"}}, FormSection{Title: "Other", Fields: []string{"other"}})
 	m.Update(key(tea.KeyRight, ""))
 	field, section := m.selected, m.sectionIndex
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
 	_, cmd := m.Update(key('b', "b"))
-	if cmd == nil {
-		t.Fatal("explicit Browse returned no command")
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Browse did not open the embedded picker directly")
 	}
-	runPickerCommand(t, m, "root", "directory", "apply", dir, 0)
 	m.Update(key(tea.KeyDown, ""))
 	m.Update(key(tea.KeyTab, ""))
 	m.Update(tea.PasteMsg{Content: filepath.Join(dir, "two")})
-	if m.selected != field || m.sectionIndex != section || m.browser == nil {
-		t.Fatalf("picker input escaped to parent form: selected %d→%d, section %d→%d, browser=%v", field, m.selected, section, m.sectionIndex, m.browser != nil)
+	if m.selected != field || m.sectionIndex != section || !m.PickerActive() {
+		t.Fatalf("picker input escaped to parent form: selected %d→%d section %d→%d picker=%v", field, m.selected, section, m.sectionIndex, m.PickerActive())
 	}
 }
 
@@ -167,59 +147,16 @@ func TestUXExplicitBrowseDoesNotReplaceEnterEditing(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewForm(context.Background(), []catalog.Input{{Name: "source", Type: "file"}}, map[string]any{"source": current})
-	m.nativePicker = func(context.Context, string, string) (string, error) { return "", picker.ErrUnavailable }
 	_, cmd := m.Update(key(tea.KeyEnter, ""))
-	if cmd != nil || !m.editing || m.browser != nil || m.buffer != current {
-		t.Fatalf("Enter should edit the current path in place: cmd=%v editing=%v browser=%v buffer=%q", cmd != nil, m.editing, m.browser != nil, m.buffer)
+	if cmd != nil || !m.editing || m.PickerActive() || m.buffer != current {
+		t.Fatalf("Enter should edit path in place: cmd=%v editing=%v picker=%v buffer=%q", cmd != nil, m.editing, m.PickerActive(), m.buffer)
 	}
 	_, cmd = m.Update(key(tea.KeyEscape, ""))
 	if cmd != nil || m.editing {
-		t.Fatal("Escape should finish the edit without opening a picker")
+		t.Fatal("Escape should finish edit without opening picker")
 	}
 	_, cmd = m.Update(key('b', "b"))
-	if cmd == nil {
-		t.Fatal("explicit Browse did not invoke the picker")
-	}
-}
-
-func TestUXNativePickerOutcomesAreScopedToTheForm(t *testing.T) {
-	dir := t.TempDir()
-	selected := filepath.Join(dir, "selected")
-	if err := os.WriteFile(selected, []byte("fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		path string
-		err  error
-	}{
-		{name: "success", path: selected},
-		{name: "cancel", err: picker.ErrCancelled},
-		{name: "unavailable", err: picker.ErrUnavailable},
-		{name: "error", err: errors.New("native failure")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := NewForm(context.Background(), []catalog.Input{{Name: "source", Type: "file"}}, nil)
-			m.nativePicker = func(context.Context, string, string) (string, error) { return tc.path, tc.err }
-			_, cmd := m.Update(key('b', "b"))
-			if cmd == nil {
-				t.Fatal("explicit Browse returned no command")
-			}
-			runPickerCommand(t, m, "source", "file", "apply", "", 0)
-			switch {
-			case tc.name == "success":
-				if m.browser != nil || m.Values()["source"] != selected {
-					t.Fatalf("native selection did not apply: browser=%v value=%v", m.browser != nil, m.Values()["source"])
-				}
-			case tc.name == "unavailable":
-				if m.browser == nil {
-					t.Fatal("unavailable native picker did not embed fallback")
-				}
-			default:
-				if m.browser != nil || m.Values()["source"] != nil {
-					t.Fatalf("native %s altered the form: browser=%v value=%v", tc.name, m.browser != nil, m.Values()["source"])
-				}
-			}
-		})
+	if cmd != nil || !m.PickerActive() {
+		t.Fatal("Browse did not open embedded picker")
 	}
 }
