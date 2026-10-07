@@ -182,7 +182,7 @@ func TestInteractionSetupCtrlSSavesFromKeyboard(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("Ctrl-S did not submit the setup form:\n%s", m.View().Content)
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.installRequest == nil {
 		t.Fatal("Ctrl-S did not apply the saved setup")
 	}

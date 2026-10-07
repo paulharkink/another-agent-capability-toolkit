@@ -267,7 +267,7 @@ func TestWorkspaceStartAppliesCurrentDraftAndStopUsesRuntimeAction(t *testing.T)
 			if operation == nil {
 				t.Fatalf("workspace %s did not submit an operation", tc.shortcut)
 			}
-			m.Update(operation())
+			m.Update(runTeaCmd(t, m, operation))
 			if tc.shortcut == "s" {
 				if workspaceBackend.setup.installRequest == nil {
 					t.Fatal("workspace Start did not Save and apply the current setup draft")

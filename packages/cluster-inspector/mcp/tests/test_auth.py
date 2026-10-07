@@ -34,6 +34,11 @@ def test_prepare_without_cache_requires_auth_and_ignores_host_default(tmp_path,m
         assert module.prepare_auth(request(tmp_path)) == {"auth_required":True}
         network.assert_not_called()
 
+def test_authenticate_without_explicit_credential_returns_actionable_error(tmp_path):
+    req=request(tmp_path);req["action"]="authenticate"
+    with pytest.raises(ValueError,match="Enter a Token or select a source kubeconfig"):
+        load_action().prepare_auth(req)
+
 def test_explicit_token_auth_writes_private_target_cache_and_prepares_again(tmp_path):
     module=load_action(); req=request(tmp_path,{"token":"synthetic-token"}); req["action"]="authenticate"
     with patch.object(kubernetes_auth.urllib.request,"urlopen",return_value=Response()):
@@ -62,6 +67,27 @@ def test_explicit_kubeconfig_requires_selected_api_match(tmp_path):
     with pytest.raises(ValueError,match="configured API"):
         module.prepare_auth(req)
     assert not (Path(req["state_dir"])/"kubeconfig").exists()
+
+def test_explicit_default_kubeconfig_is_imported_into_target_state(tmp_path, monkeypatch):
+    import kubernetes_auth
+    from types import SimpleNamespace
+    home=tmp_path/"home"; default=home/".kube"/"config"
+    default.parent.mkdir(parents=True); default.write_text("synthetic fixture")
+    alias=tmp_path/"selected"; alias.symlink_to(default)
+    monkeypatch.setattr(Path,"home",classmethod(lambda cls: home))
+    config={"clusters":[{"name":"c","cluster":{"server":"https://cluster.example.test"}}],"users":[{"name":"u","user":{"token":"synthetic"}}],"contexts":[{"name":"x","context":{"cluster":"c","user":"u"}}],"current-context":"x"}
+    def kubectl(args,**kwargs):
+        if "view" in args:
+            assert args[args.index("--kubeconfig")+1] == str(alias)
+            return SimpleNamespace(stdout=json.dumps(config))
+        return SimpleNamespace(stdout=json.dumps({"status":{"userInfo":{"username":"explicit-user"}}}))
+    monkeypatch.setattr(kubernetes_auth.subprocess,"run",kubectl)
+    req=request(tmp_path,{"kubeconfig":str(alias)});req["action"]="authenticate"
+    assert load_action().prepare_auth(req) == {"auth_required":False}
+    managed=Path(req["state_dir"])/"kubeconfig"
+    assert managed.stat().st_mode & 0o777 == 0o600
+    assert json.loads(managed.read_text()) == config
+    assert default.read_text() == "synthetic fixture"
 
 def test_unknown_database_selection_rejected_without_auth_lookup(tmp_path):
     module=load_action();req=request(tmp_path,{"connections":["unknown/tenant"]})

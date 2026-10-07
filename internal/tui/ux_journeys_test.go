@@ -237,7 +237,7 @@ func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *
 		t.Fatal("fixture did not submit a real setup operation")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
-	_, refresh := m.Update(save())
+	_, refresh := m.Update(runTeaCmd(t, m, save))
 	if m.result == nil || m.busy || !strings.Contains(ansi.Strip(m.View().Content), "Result · need 80×16") || !strings.Contains(ansi.Strip(m.View().Content), "Tab/Enter · Esc close") {
 		t.Fatalf("worker completion/result controls were lost behind the below-minimum viewport: busy=%t result=%+v\n%s", m.busy, m.result, ansi.Strip(m.View().Content))
 	}
@@ -688,7 +688,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	if submit == nil {
 		t.Fatal("failure fixture did not execute the production setup submit route")
 	}
-	_, refresh := failure.Update(submit())
+	_, refresh := failure.Update(runTeaCmd(t, failure, submit))
 	if refresh != nil {
 		failure.Update(refresh())
 	}
@@ -911,7 +911,7 @@ func TestUXAllScreensKeyboardOnlyNoBatch(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("keyboard Ctrl-S did not submit the setup form")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.installRequest == nil || backend.installRequest.PackageID == "" {
 		t.Fatalf("keyboard setup did not reach the real UI service boundary: %+v", backend.installRequest)
 	}
@@ -1242,7 +1242,7 @@ func editPasteJourney(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("in-place Unicode edit did not submit through the production Model.Update path")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.installRequest == nil || backend.installRequest.Inputs["token"] != want {
 		t.Fatalf("Model.Update edit/paste/save changed or lost the exact value: request=%+v", backend.installRequest)
 	}

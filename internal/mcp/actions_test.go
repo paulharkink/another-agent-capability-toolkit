@@ -135,3 +135,31 @@ func (f *actionFailureExec) Run(_ context.Context, _ []string, _ string, _ []byt
 	}
 	return nil, f.err
 }
+
+func TestActionFailureRetainsDistinctiveCauseAfterLongBuildOutput(t *testing.T) {
+	const cause = "compiler rejected configured entrypoint"
+	var progress string
+	r := ActionRunner{Executor: &chunkedActionFailureExec{err: errors.New("exit status 1"), stderr: strings.Repeat("build output ", 900) + cause}, OnStderr: func(b []byte) { progress += string(b) }}
+	_, err := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"})
+	if err == nil || !strings.Contains(err.Error(), cause) {
+		t.Fatalf("failure lost distinctive cause after long stderr: %v", err)
+	}
+	if !strings.Contains(progress, cause) {
+		t.Fatalf("streaming output lost distinctive cause: %q", progress[len(progress)-min(100, len(progress)):])
+	}
+}
+
+type chunkedActionFailureExec struct {
+	err    error
+	stderr string
+}
+
+func (f *chunkedActionFailureExec) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	if stderr != nil {
+		for start := 0; start < len(f.stderr); start += 256 {
+			end := min(start+256, len(f.stderr))
+			stderr([]byte(f.stderr[start:end]))
+		}
+	}
+	return nil, f.err
+}

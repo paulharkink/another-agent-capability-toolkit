@@ -220,18 +220,8 @@ def _marker(state: Path, mode: str, username: str, identity: ServiceAccountIdent
     _private_write(state / "auth.json", (json.dumps(data, sort_keys=True, indent=2) + "\n").encode())
 
 
-def _reject_default_kubeconfig(source: Path) -> None:
-    forbidden = Path.home() / ".kube" / "config"
-    try:
-        if Path(source).resolve() == forbidden.resolve():
-            raise ValueError("The Mac default kubeconfig cannot be selected")
-    except OSError:
-        pass
-
-
 def copy_kubeconfig(source: Path, destination: Path, expected_api_server: str) -> str:
     source, destination = Path(source), Path(destination)
-    _reject_default_kubeconfig(source)
     expected_api_server = _validate_api(expected_api_server)
     if not source.is_file():
         raise ValueError("Selected kubeconfig does not exist")

@@ -195,7 +195,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if installCmd == nil {
 		t.Fatal("Overview action did not dispatch the local unified UIInstall operation")
 	}
-	m.Update(installCmd())
+	m.Update(runTeaCmd(t, m, installCmd))
 	if backend.installRequest == nil {
 		t.Fatal("Overview action did not call UIInstall")
 	}

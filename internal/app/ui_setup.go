@@ -8,13 +8,77 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
+
+type operationProgressContextKey struct{}
+type operationProgressScopeContextKey struct{}
+
+type operationProgressScope struct {
+	mu       sync.Mutex
+	step     string
+	observer func(viewmodel.OperationProgress)
+}
+
+func (p *operationProgressScope) setStep(step string) {
+	if p == nil || step == "" || p.observer == nil {
+		return
+	}
+	p.mu.Lock()
+	p.step = step
+	p.mu.Unlock()
+	p.observer(viewmodel.OperationProgress{Step: step})
+}
+
+func (p *operationProgressScope) output(output []byte) {
+	if p == nil || len(output) == 0 || p.observer == nil {
+		return
+	}
+	p.mu.Lock()
+	step := p.step
+	p.mu.Unlock()
+	p.observer(viewmodel.OperationProgress{Step: step, Output: string(output)})
+}
+
+func reportOperationStep(ctx context.Context, step string) {
+	if progress, _ := ctx.Value(operationProgressContextKey{}).(*operationProgressScope); progress != nil {
+		progress.setStep(step)
+	}
+}
+
+func (s *Service) withOperationProgress(ctx context.Context, observer func(viewmodel.OperationProgress)) (*Service, context.Context) {
+	progress := &operationProgressScope{observer: observer}
+	options := s.Options
+	previousOnStderr := options.OnStderr
+	options.OnStderr = func(output []byte) {
+		if previousOnStderr != nil {
+			previousOnStderr(output)
+		}
+		progress.output(output)
+	}
+	if runtime, ok := options.Runtime.(*mcp.Runtime); ok {
+		runtimeCopy := *runtime
+		previousRuntimeOnStderr := runtimeCopy.OnStderr
+		runtimeCopy.OnStderr = func(output []byte) {
+			if previousRuntimeOnStderr != nil {
+				previousRuntimeOnStderr(output)
+			}
+			progress.output(output)
+		}
+		options.Runtime = &runtimeCopy
+	}
+	scoped := &Service{Source: s.Source, Store: s.Store, Options: options}
+	ctx = context.WithValue(ctx, operationProgressContextKey{}, progress)
+	ctx = context.WithValue(ctx, operationProgressScopeContextKey{}, true)
+	return scoped, ctx
+}
 
 // UISetupPreview resolves a form without validating missing required answers or
 // changing installed state. Values retain the source of their winning layer.
@@ -369,6 +433,12 @@ func targetInputChoices(raw map[string]any, path string) ([]catalog.Choice, erro
 // UIInstall applies the complete form through the existing noninteractive
 // service operation. A caller-supplied form never opens the legacy editor.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	if _, scoped := ctx.Value(operationProgressScopeContextKey{}).(bool); !scoped {
+		if observer := viewmodel.OperationProgressObserver(ctx); observer != nil {
+			scopedService, scopedCtx := s.withOperationProgress(ctx, observer)
+			return scopedService.UIInstall(scopedCtx, q)
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return viewmodel.OperationResult{}, err
 	}

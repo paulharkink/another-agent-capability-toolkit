@@ -111,11 +111,9 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 		return s
 	}
-	var diagnostics bytes.Buffer
+	var diagnostics []byte
 	redactor := process.NewRedactor(secrets, func(b []byte) {
-		if diagnostics.Len() < 8192 {
-			diagnostics.Write(b)
-		}
+		diagnostics = appendDiagnosticTail(diagnostics, b, 8192)
 		if r.OnStderr != nil {
 			r.OnStderr(b)
 		}
@@ -123,7 +121,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	out, e := executor.Run(ctx, argv, p.Dir, b, nil, redactor.Write)
 	redactor.Flush()
 	if e != nil {
-		message := fmt.Sprintf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(diagnostics.String()))
+		message := fmt.Sprintf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(string(diagnostics)))
 		return ActionResult{}, actionFailure{message: message, cause: e}
 	}
 	var result ActionResult
@@ -153,4 +151,17 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 	}
 	return result, nil
+}
+
+func appendDiagnosticTail(previous, chunk []byte, limit int) []byte {
+	if limit <= 0 {
+		return nil
+	}
+	if len(chunk) >= limit {
+		return append(previous[:0], chunk[len(chunk)-limit:]...)
+	}
+	if overflow := len(previous) + len(chunk) - limit; overflow > 0 {
+		previous = previous[overflow:]
+	}
+	return append(previous, chunk...)
 }

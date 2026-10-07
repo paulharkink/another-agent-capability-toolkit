@@ -395,6 +395,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	generated := ""
 	if p.Skill != nil && (len(p.Templates) > 0 || p.Generator != nil) {
 		out.Step = "generate"
+		reportOperationStep(ctx, out.Step)
 		out.Target = operationTarget(k)
 		r := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
 		stage, e := r.Stage(ctx, p, values, t, s.Store.GeneratedDir(k))
@@ -424,6 +425,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		if p.MCP != nil && url == "" && !q.SkillsOnly {
 			if _, hasAuthenticate := p.MCP.Actions["authenticate"]; hasAuthenticate && hasSubmittedAuthentication(s, p, k, q.Inputs, previousAnswers) {
 				out.Step = "authenticate"
+				reportOperationStep(ctx, out.Step)
 				out.Target = operationTarget(k)
 				runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
 				auth, authErr := runner.Run(ctx, p, mcp.ActionRequest{Action: "authenticate", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: false})
@@ -438,12 +440,14 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				}
 			}
 			out.Step = "start"
+			reportOperationStep(ctx, out.Step)
 			out.Target = operationTarget(k)
 			instance, e := s.start(ctx, p, t, k, values, q.Interactive)
 			if e != nil {
 				var failure operationFailure
 				if errors.As(e, &failure) {
 					out.Step = failure.step
+					reportOperationStep(ctx, out.Step)
 				}
 				return e
 			}
@@ -454,8 +458,10 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 		skills.AllowSourceUpdate = q.UpdateSource
 		for _, env := range q.Agents {
 			out.Step = "register"
+			reportOperationStep(ctx, out.Step)
 			if p.Skill != nil {
 				out.Step = "install"
+				reportOperationStep(ctx, out.Step)
 			}
 			out.Target = operationTarget(k)
 			if e = ctx.Err(); e != nil {
@@ -472,6 +478,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			}
 			if agentErr == nil && p.MCP != nil && !q.SkillsOnly {
 				out.Step = "register"
+				reportOperationStep(ctx, out.Step)
 				if env.ConfigPath == "" && agents.IsManual(env.Kind) {
 					env.ConfigPath = s.manualConfigPath(env)
 				}

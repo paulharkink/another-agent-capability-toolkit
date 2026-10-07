@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -21,6 +22,34 @@ type setupBackend interface {
 type setupPreviewMsg struct {
 	preview viewmodel.SetupPreview
 	err     error
+}
+
+type setupProgressEmitter struct {
+	ctx    context.Context
+	events chan viewmodel.OperationProgress
+	done   <-chan struct{}
+}
+
+func (e setupProgressEmitter) emit(progress viewmodel.OperationProgress) {
+	select {
+	case <-e.done:
+		return
+	case <-e.ctx.Done():
+		return
+	default:
+	}
+	select {
+	case e.events <- progress:
+	default:
+		select {
+		case <-e.events:
+		default:
+		}
+		select {
+		case e.events <- progress:
+		default:
+		}
+	}
 }
 
 func (m *Model) beginSetup(sourceID, packageID, environment, target string) tea.Cmd {
@@ -499,13 +528,26 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 	}
 	m.busy = true
 	m.action = "install"
+	m.progressStep = ""
+	m.progressOutput = ""
+	m.progressFrame = 0
+	m.progressStarted = time.Now()
+	m.progressLastOutput = time.Time{}
+	m.progressOffset = 0
 	m.home.Modal = nil
 	m.setupOperationID++
 	setupID := m.setupOperationID
 	ctx := m.ctx
 	request.Inputs = cloneSetupValues(request.Inputs)
 	request.DestinationIDs = append([]string(nil), request.DestinationIDs...)
-	return func() tea.Msg {
+	progressEvents := make(chan viewmodel.OperationProgress, 32)
+	progressDone := make(chan struct{})
+	m.setupProgressEvents = progressEvents
+	m.setupProgressDone = progressDone
+	emitter := setupProgressEmitter{ctx: ctx, events: progressEvents, done: progressDone}
+	ctx = viewmodel.WithOperationProgress(ctx, emitter.emit)
+	operationCmd := func() tea.Msg {
+		defer close(progressDone)
 		result, err := backend.UIInstall(ctx, request)
 		structured := result
 		structured.SavedApplicable = true
@@ -530,6 +572,26 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 		lines = append(lines, result.Errors...)
 		return operationMsg{origin: origin, output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, setupID: setupID, result: &structured}
 	}
+	return tea.Batch(operationCmd, waitSetupProgress(setupID, progressEvents, progressDone, ctx), setupProgressTick(setupID))
+}
+
+func waitSetupProgress(setupID uint64, events <-chan viewmodel.OperationProgress, done <-chan struct{}, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case progress := <-events:
+			return setupProgressMsg{setupID: setupID, progress: progress}
+		case <-done:
+			return setupProgressClosedMsg{setupID: setupID}
+		case <-ctx.Done():
+			return setupProgressClosedMsg{setupID: setupID}
+		}
+	}
+}
+
+func setupProgressTick(setupID uint64) tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return setupProgressTickMsg{setupID: setupID}
+	})
 }
 
 func cloneSetupValues(values map[string]any) map[string]any {

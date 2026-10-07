@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -109,22 +110,116 @@ func (m *Model) progressView() tea.View {
 			target = profile.URL
 		}
 	}
-	lines := []string{"Operation in progress"}
-	lines = append(lines, operationProgressRows(m.action, target, "", max(1, width-8))...)
-	if len(lines) > height {
-		lines = lines[:height]
+	var base tea.View
+	if m.form != nil && m.workspace != nil && m.workspace.Active {
+		base = m.setupOverlayView()
+	} else if isManagementView(m.view) {
+		base = m.managementView()
+	} else {
+		base = m.homeView()
 	}
-	canvas := make([]string, height)
-	for i := range canvas {
-		canvas[i] = strings.Repeat(" ", width)
+	if width < 12 || height < 12 {
+		return base
 	}
-	startY := max(0, (height-len(lines))/2)
-	for index, line := range lines {
-		line = fit(line, max(1, width-4))
-		startX := max(0, (width-ansi.StringWidth(line))/2)
-		canvas[startY+index] = strings.Repeat(" ", startX) + line + strings.Repeat(" ", max(0, width-startX-ansi.StringWidth(line)))
+	panelWidth := min(78, width-8)
+	innerWidth := max(1, panelWidth-4)
+	contentHeight := max(1, min(16, height-8))
+	header := operationProgressRows(m.action, target, m.progressStep, innerWidth)
+	if contentHeight <= 4 {
+		identity := "Operation: " + m.action
+		if target != "" {
+			identity += " · Target: " + target
+		}
+		header = wrapResultRows([]string{identity}, innerWidth)
+		if m.progressStep != "" {
+			header = append(header, wrapResultRows([]string{"Current step: " + m.progressStep}, innerWidth)...)
+		}
 	}
-	return tea.NewView(navyCanvas(strings.Join(canvas, "\n")))
+	elapsed := time.Duration(0)
+	if !m.progressStarted.IsZero() {
+		elapsed = time.Since(m.progressStarted)
+	}
+	spinner := []string{"|", "/", "-", "\\"}[m.progressFrame%4]
+	if !m.progressStarted.IsZero() {
+		quietSince := m.progressStarted
+		quietLabel := "Waiting for child output"
+		if !m.progressLastOutput.IsZero() {
+			quietSince = m.progressLastOutput
+			quietLabel = "Quiet"
+		}
+		header = append(header, fmt.Sprintf("%s  Elapsed: %s · %s: %s", spinner, elapsed.Truncate(time.Second), quietLabel, time.Since(quietSince).Truncate(time.Second)))
+	} else {
+		header = append(header, spinner+"  Working")
+	}
+	outputRows := wrapResultRows(strings.Split(strings.TrimSuffix(m.progressOutput, "\n"), "\n"), innerWidth)
+	if len(header) > max(1, contentHeight-3) {
+		header = header[:max(1, contentHeight-3)]
+	}
+	maxOutputRows := max(0, contentHeight-len(header)-3)
+	if m.progressOutput != "" && maxOutputRows > 0 {
+		maxOffset := max(0, len(outputRows)-maxOutputRows)
+		offset := min(maxOffset, max(0, m.progressOffset))
+		start := max(0, maxOffset-offset)
+		end := min(len(outputRows), start+maxOutputRows)
+		header = append(header, "Child output")
+		if start > 0 {
+			header = append(header, "↑ older output · use ↑/↓")
+		}
+		header = append(header, outputRows[start:end]...)
+		if end < len(outputRows) {
+			header = append(header, "↓ newer output · use ↑/↓")
+		}
+	} else {
+		header = header[:min(len(header), contentHeight)]
+	}
+	if len(header) > contentHeight {
+		header = header[:contentHeight]
+	}
+	const (
+		overlayBG = "\x1b[48;2;6;22;74m"
+		dialogBG  = "\x1b[48;2;12;49;133m"
+		goldFG    = "\x1b[38;2;255;223;134m"
+		bodyFG    = "\x1b[38;2;233;245;255m"
+		mutedFG   = "\x1b[38;2;82;103;143m"
+	)
+	dialogHeight := min(height-4, max(8, min(20, len(header)+4)))
+	bodyRows := max(1, dialogHeight-4)
+	if len(header) > bodyRows {
+		header = header[:bodyRows]
+	}
+	box := make([]string, dialogHeight)
+	box[0] = "╔" + strings.Repeat("═", panelWidth-2) + "╗"
+	box[1] = "║" + fit(" Operation in progress", panelWidth-2) + "║"
+	box[2] = "╠" + strings.Repeat("═", panelWidth-2) + "╣"
+	for index := 0; index < bodyRows; index++ {
+		line := ""
+		if index < len(header) {
+			line = header[index]
+		}
+		box[3+index] = bodyFG + "║" + fit(" "+line, panelWidth-2) + "║"
+	}
+	box[dialogHeight-1] = "╚" + strings.Repeat("═", panelWidth-2) + "╝"
+	underRows := strings.Split(ansi.Strip(base.Content), "\n")
+	baseRows := make([]string, height)
+	for index := range baseRows {
+		line := ""
+		if index < len(underRows) {
+			line = fit(underRows[index], width)
+		}
+		baseRows[index] = overlayBG + mutedFG + fit(line, width)
+	}
+	startY := max(0, (height-dialogHeight)/2)
+	startX := max(0, (width-panelWidth)/2)
+	for index, row := range box {
+		canvasRow := overlayBG + mutedFG + strings.Repeat(" ", startX) + dialogBG + goldFG + row + overlayBG + mutedFG + strings.Repeat(" ", max(0, width-startX-panelWidth))
+		baseRows[startY+index] = canvasRow
+	}
+	content := navySGR + strings.Join(baseRows, "\x1b[m\n") + "\x1b[m"
+	content = strings.ReplaceAll(content, "\x1b[m", overlayBG)
+	content = strings.TrimSuffix(content, overlayBG) + "\x1b[m"
+	v := tea.NewView(content)
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func operationEffectText(effect state.Installation) string {

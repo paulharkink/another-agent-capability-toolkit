@@ -148,13 +148,15 @@ func (h *Helper) command(ctx context.Context, args []string, stdin []byte, env m
 	}
 	var diagnostic bytes.Buffer
 	redactor := process.NewRedactor(secrets, func(p []byte) {
-		if diagnostic.Len() < 8192 {
-			remaining := 8192 - diagnostic.Len()
-			if len(p) > remaining {
-				diagnostic.Write(p[:remaining])
-			} else {
-				diagnostic.Write(p)
+		const diagnosticLimit = 8192
+		if len(p) >= diagnosticLimit {
+			diagnostic.Reset()
+			diagnostic.Write(p[len(p)-diagnosticLimit:])
+		} else {
+			if excess := diagnostic.Len() + len(p) - diagnosticLimit; excess > 0 {
+				diagnostic.Next(excess)
 			}
+			diagnostic.Write(p)
 		}
 		if h.OnStderr != nil {
 			h.OnStderr(p)
@@ -363,16 +365,30 @@ func (h *Helper) Run(ctx context.Context, id string, q mcp.ActionRequest) (mcp.A
 	if p.MCP.BuildContext != "" {
 		hash := sha256.Sum256([]byte(p.Dir))
 		spec.Image = "aact/" + id + "-" + hex.EncodeToString(hash[:])[:12] + ":local"
-		output, buildErr := h.command(ctx, []string{"build", "--quiet", "--tag", spec.Image, filepath.Join(p.Dir, p.MCP.BuildContext)}, nil, nil, secrets)
+		iidFile, fileErr := os.CreateTemp("", "aact-build-iid-*")
+		if fileErr != nil {
+			return mcp.ActionResult{}, fileErr
+		}
+		iidPath := iidFile.Name()
+		if err = iidFile.Close(); err != nil {
+			os.Remove(iidPath)
+			return mcp.ActionResult{}, err
+		}
+		defer os.Remove(iidPath)
+		_, buildErr := h.command(ctx, []string{"build", "--progress=plain", "--iidfile", iidPath, "--tag", spec.Image, filepath.Join(p.Dir, p.MCP.BuildContext)}, nil, nil, secrets)
 		if buildErr != nil {
 			return mcp.ActionResult{}, buildErr
 		}
-		imageID := strings.TrimSpace(string(output))
-		if strings.HasPrefix(imageID, "sha256:") && len(imageID) == 71 {
-			if decoded, decodeErr := hex.DecodeString(imageID[7:]); decodeErr == nil && len(decoded) == 32 {
-				spec.Image = imageID
-			}
+		imageIDBytes, readErr := os.ReadFile(iidPath)
+		if readErr != nil {
+			return mcp.ActionResult{}, fmt.Errorf("read built image identity: %w", readErr)
 		}
+		imageID := strings.TrimSpace(string(imageIDBytes))
+		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(imageID, "sha256:"))
+		if !strings.HasPrefix(imageID, "sha256:") || len(imageID) != 71 || decodeErr != nil || len(decoded) != 32 {
+			return mcp.ActionResult{}, errors.New("Docker build did not produce a valid image identity")
+		}
+		spec.Image = imageID
 	}
 	switch id {
 	case "cluster-inspector", "grafana-inspector":
@@ -398,10 +414,6 @@ func (h *Helper) Run(ctx context.Context, id string, q mcp.ActionRequest) (mcp.A
 			source, err = filepath.Abs(source)
 			if err != nil {
 				return mcp.ActionResult{}, err
-			}
-			home, _ := os.UserHomeDir()
-			if isDefaultKubeconfig(source, home) {
-				return mcp.ActionResult{}, errors.New("default host kubeconfig cannot be selected")
 			}
 			args = append(args, "--mount", "type=bind,src="+source+",dst=/selected-kubeconfig,readonly")
 			mapped.Inputs = map[string]any{}
@@ -599,23 +611,6 @@ func (h *Helper) forgejo(ctx context.Context, q mcp.ActionRequest, raw map[strin
 	spec.Args = []string{"--transport", "http", "--http-port", strconv.Itoa(spec.ContainerPort), "--url", endpoint}
 	spec.SecretEnv = map[string]string{"FORGEJO_ACCESS_TOKEN": token}
 	return mcp.ActionResult{Runtime: spec}, nil
-}
-
-func isDefaultKubeconfig(source, home string) bool {
-	forbidden := filepath.Join(home, ".kube", "config")
-	sourceAbs, err := filepath.Abs(source)
-	if err != nil {
-		return false
-	}
-	if sourceAbs == forbidden {
-		return true
-	}
-	selected, err := filepath.EvalSymlinks(sourceAbs)
-	if err != nil {
-		return false
-	}
-	expected, err := filepath.EvalSymlinks(forbidden)
-	return err == nil && selected == expected
 }
 
 func removeConfigKey(raw map[string]any, path string) {

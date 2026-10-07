@@ -24,11 +24,25 @@ type helperProcess struct {
 	AuthJSON    string
 	FailAuth    bool
 	BuildOutput string
+	BuildIID    string
+	BuildArgs   []string
 }
 
 func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
 	f.Calls = append(f.Calls, append([]string{}, argv...))
 	if len(argv) > 1 && argv[1] == "build" {
+		f.BuildArgs = append([]string(nil), argv[2:]...)
+		iid := f.BuildIID
+		if iid == "" {
+			iid = "sha256:" + strings.Repeat("b", 64)
+		}
+		for i, arg := range argv {
+			if arg == "--iidfile" && i+1 < len(argv) {
+				if err := os.WriteFile(argv[i+1], []byte(iid+"\n"), 0600); err != nil {
+					return nil, err
+				}
+			}
+		}
 		return []byte(f.BuildOutput), nil
 	}
 	if strings.Contains(strings.Join(argv, " "), "auth.py") {
@@ -261,20 +275,54 @@ func TestAzureExplicitDeviceFlowStreamsOnlyInteractiveAction(t *testing.T) {
 	}
 }
 
-func TestDefaultKubeconfigSymlinkRejectedWithoutReadingCredentials(t *testing.T) {
+func TestExplicitDefaultKubeconfigIsMountedReadOnly(t *testing.T) {
 	home := t.TempDir()
-	os.Mkdir(filepath.Join(home, ".kube"), 0700)
 	defaultFile := filepath.Join(home, ".kube", "config")
-	os.WriteFile(defaultFile, []byte("synthetic credential"), 0600)
-	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(defaultFile, alias); err != nil {
-		t.Skip("platform symlink privilege unavailable")
+	if err := os.MkdirAll(filepath.Dir(defaultFile), 0700); err != nil {
+		t.Fatal(err)
 	}
-	if !isDefaultKubeconfig(alias, home) {
-		t.Fatal("default kubeconfig symlink accepted")
+	if err := os.WriteFile(defaultFile, []byte("synthetic fixture"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if isDefaultKubeconfig(filepath.Join(t.TempDir(), "selected"), home) {
-		t.Fatal("explicit unrelated path rejected")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://changed.example.test"}})
+	q.Action = "authenticate"
+	q.Inputs = map[string]any{"kubeconfig": defaultFile}
+	f := &helperProcess{AuthJSON: `{"auth_required":false}`}
+	h := Helper{Executor: f}
+	result, err := h.Run(context.Background(), "cluster-inspector", q)
+	if err != nil || result.Runtime == nil {
+		t.Fatalf("explicit default kubeconfig rejected: %v", err)
+	}
+	args := strings.Join(f.Calls[len(f.Calls)-1], " ")
+	wantMount := "type=bind,src=" + defaultFile + ",dst=/selected-kubeconfig,readonly"
+	if !strings.Contains(args, wantMount) || f.Requests[0].Inputs["kubeconfig"] != "/selected-kubeconfig" {
+		t.Fatalf("explicit source was not mounted read-only and remapped: %s %+v", args, f.Requests[0].Inputs)
+	}
+}
+
+func TestMissingKubeconfigDoesNotSelectHostDefaultImplicitly(t *testing.T) {
+	home := t.TempDir()
+	defaultFile := filepath.Join(home, ".kube", "config")
+	if err := os.MkdirAll(filepath.Dir(defaultFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultFile, []byte("synthetic fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://changed.example.test"}})
+	f := &helperProcess{}
+	h := Helper{Executor: f}
+	_, err := h.Run(context.Background(), "cluster-inspector", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(f.Calls[len(f.Calls)-1], " ")
+	if strings.Contains(args, "/selected-kubeconfig") || f.Requests[0].Inputs["kubeconfig"] != nil {
+		t.Fatalf("host default was selected implicitly: %s %+v", args, f.Requests[0].Inputs)
 	}
 }
 
@@ -340,6 +388,29 @@ func TestHelperDiagnosticFragmentsAndReturnedErrorRedacted(t *testing.T) {
 	}
 }
 
+type noisyFailureDiagnostics struct{}
+
+func (noisyFailureDiagnostics) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, callback func([]byte)) ([]byte, error) {
+	callback([]byte(strings.Repeat("build progress ", 900)))
+	callback([]byte("FINAL_BUILD_FAILURE"))
+	return nil, errors.New("docker build failed")
+}
+
+func TestHelperDiagnosticRetainsBoundedTailOnFailure(t *testing.T) {
+	var streamed bytes.Buffer
+	h := Helper{Executor: noisyFailureDiagnostics{}, OnStderr: func(p []byte) { streamed.Write(p) }}
+	_, err := h.command(context.Background(), []string{"build"}, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "FINAL_BUILD_FAILURE") {
+		t.Fatalf("build failure tail was omitted: %v", err)
+	}
+	if !strings.Contains(streamed.String(), "FINAL_BUILD_FAILURE") {
+		t.Fatal("streamed progress callback lost the final diagnostic")
+	}
+	if len(err.Error()) > 9000 {
+		t.Fatalf("diagnostic was not bounded: %d bytes", len(err.Error()))
+	}
+}
+
 func TestRuntimeDigestChangesForEditedConfigAtStableMount(t *testing.T) {
 	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://old.example.test"}})
 	h := Helper{Executor: &helperProcess{AuthJSON: `{"auth_required":false}`}}
@@ -364,12 +435,26 @@ func TestRuntimeDigestChangesForEditedConfigAtStableMount(t *testing.T) {
 func TestRuntimeUsesExactBuiltImageID(t *testing.T) {
 	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://cluster.example.test"}})
 	id := "sha256:" + strings.Repeat("a", 64)
-	h := Helper{Executor: &helperProcess{AuthJSON: `{"auth_required":false}`, BuildOutput: id + "\n"}}
+	fixture := &helperProcess{AuthJSON: `{"auth_required":false}`, BuildIID: id}
+	h := Helper{Executor: fixture}
 	result, err := h.Run(context.Background(), "cluster-inspector", q)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Runtime.Image != id {
 		t.Fatalf("built image identity lost: %q", result.Runtime.Image)
+	}
+	buildArgs := strings.Join(fixture.BuildArgs, " ")
+	if !strings.Contains(buildArgs, "--progress=plain") || !strings.Contains(buildArgs, "--iidfile") || strings.Contains(buildArgs, "--quiet") {
+		t.Fatalf("build progress or immutable image identity flag missing: %s", buildArgs)
+	}
+}
+
+func TestInvalidBuildImageIDIsRejected(t *testing.T) {
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://cluster.example.test"}})
+	fixture := &helperProcess{BuildIID: "tag:mutable"}
+	_, err := (&Helper{Executor: fixture}).Run(context.Background(), "cluster-inspector", q)
+	if err == nil || !strings.Contains(err.Error(), "valid image identity") {
+		t.Fatalf("invalid image identity accepted: %v", err)
 	}
 }

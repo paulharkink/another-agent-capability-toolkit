@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -29,6 +31,21 @@ type uxActionExecutor struct {
 	failOn string
 	stderr string
 	cancel context.CancelFunc
+}
+
+type uxBlockingProgressExecutor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *uxBlockingProgressExecutor) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	if stderr != nil {
+		stderr([]byte("auth-"))
+		stderr([]byte("secret is being applied"))
+	}
+	close(e.started)
+	<-e.release
+	return nil, errors.New("child failed after progress: distinctive daemon rejection")
 }
 
 type uxFailExecutor struct {
@@ -179,6 +196,76 @@ func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEf
 	}
 	if _, err := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUXUIInstallProgressStreamsRedactedChildOutputBeforeFailure(t *testing.T) {
+	svc, _, _ := fixture(t)
+	isolateUXUserHome(t, t.TempDir())
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Inputs = []catalog.Input{{Name: "token", Type: "secret", Required: true}}
+	pkg.MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	executor := &uxBlockingProgressExecutor{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(executor.release) })
+	svc.Options.Runner = executor
+	progress := make(chan viewmodel.OperationProgress, 8)
+	ctx := viewmodel.WithOperationProgress(context.Background(), func(event viewmodel.OperationProgress) { progress <- event })
+	request := viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, Inputs: map[string]any{"token": "auth-secret"}, DestinationIDs: []string{"codex"}}
+	resultDone := make(chan struct {
+		result viewmodel.OperationResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := svc.UIInstall(ctx, request)
+		resultDone <- struct {
+			result viewmodel.OperationResult
+			err    error
+		}{result, err}
+	}()
+	select {
+	case <-executor.started:
+	case completed := <-resultDone:
+		t.Fatalf("install completed before child progress started: result=%+v err=%v", completed.result, completed.err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("install did not start the blocking child")
+	}
+	var streamed strings.Builder
+	stepSeen := false
+	deadline := time.After(3 * time.Second)
+	for !strings.Contains(streamed.String(), "is bei") {
+		var event viewmodel.OperationProgress
+		select {
+		case event = <-progress:
+		case <-deadline:
+			t.Fatalf("timed out waiting for streamed child output: %q", streamed.String())
+		}
+		if event.Step == "authenticate" {
+			stepSeen = true
+		}
+		streamed.WriteString(event.Output)
+	}
+	select {
+	case <-resultDone:
+		t.Fatal("service returned before the blocking child was released")
+	default:
+	}
+	if !stepSeen || !strings.Contains(streamed.String(), "is bei") || strings.Contains(streamed.String(), "auth-secret") {
+		t.Fatalf("in-flight progress was missing phase, child text, or redaction: step=%t output=%q", stepSeen, streamed.String())
+	}
+	releaseOnce.Do(func() { close(executor.release) })
+	var completed struct {
+		result viewmodel.OperationResult
+		err    error
+	}
+	select {
+	case completed = <-resultDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("install did not return after child release")
+	}
+	if completed.err == nil || !strings.Contains(completed.err.Error(), "distinctive daemon rejection") || strings.Contains(completed.err.Error(), "auth-secret") {
+		t.Fatalf("completion lost real child failure or leaked secret: result=%+v err=%v", completed.result, completed.err)
 	}
 }
 

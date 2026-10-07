@@ -4,10 +4,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -15,6 +18,23 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
+
+type streamingSetupBackend struct {
+	*setupBackendFixture
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *streamingSetupBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	observer := viewmodel.OperationProgressObserver(ctx)
+	if observer == nil {
+		return viewmodel.OperationResult{}, errors.New("missing progress observer")
+	}
+	observer(viewmodel.OperationProgress{Step: "start", Output: "builder: applying configured settings\n"})
+	close(b.started)
+	<-b.release
+	return viewmodel.OperationResult{Saved: true, Step: "start", Target: "plain / dev / default"}, errors.New("runtime start failed: fixture daemon refused the build")
+}
 
 func TestUXResultShowsExactLongChildErrorWrappedWithoutBlackRows(t *testing.T) {
 	m, _ := homeFixture()
@@ -80,7 +100,7 @@ func TestUXProgressVisibleResizesAndDoesNotClaimUnknownSteps(t *testing.T) {
 	m.pendingSetup = &viewmodel.SetupPreview{Key: state.Key{Package: "plain", Target: "dev"}}
 	m.Update(tea.WindowSizeMsg{Width: 46, Height: 12})
 	plain := ansi.Strip(m.View().Content)
-	if !strings.Contains(plain, "install") || !strings.Contains(plain, "dev") {
+	if !strings.Contains(plain, "install") || !strings.Contains(plain, "plain") {
 		t.Fatalf("foreground progress omitted operation identity or target:\n%s", plain)
 	}
 	if strings.Contains(plain, "Preparing") || strings.Contains(plain, "Starting") || strings.Contains(plain, "Registering") {
@@ -102,7 +122,7 @@ func TestUXReturnToConfigurationPreservesSubmittedDraftAndOrigin(t *testing.T) {
 	m.pendingSetupField = "__aact_destinations"
 	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true, Section: "Connection", InvokingView: "Environments"}
 	cmd := m.applySetup(map[string]any{"repo": "/repos/submitted", "__aact_destinations": []string{"codex"}})
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil {
 		t.Fatal("failed operation did not open foreground result")
 	}
@@ -134,9 +154,14 @@ func TestUXSetupWorkerReturnsFailureMetadataForEventLoop(t *testing.T) {
 		t.Fatal("setup operation was not submitted")
 	}
 	draft := m.setupRetry
-	msg, ok := cmd().(operationMsg)
+	message := cmd()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("setup command returned %T, want operation batch", message)
+	}
+	msg, ok := batch[0]().(operationMsg)
 	if !ok {
-		t.Fatalf("setup command returned %T, want operationMsg", cmd())
+		t.Fatalf("setup operation returned %T, want operationMsg", batch[0]())
 	}
 	if draft.step != "" || draft.failure != "" {
 		t.Fatalf("worker mutated model-owned retry draft before Update: step=%q failure=%q", draft.step, draft.failure)
@@ -162,7 +187,7 @@ func TestUXStaleSetupCompletionDoesNotRewriteNewRetryDraft(t *testing.T) {
 	newDraft := &setupRetryDraft{preview: viewmodel.SetupPreview{Key: state.Key{Package: "plain", Environment: "dev"}}, values: map[string]any{"repo": "/new"}}
 	m.setupOperationID++
 	m.setupRetry = newDraft
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.setupOperationID == staleID {
 		t.Fatal("test did not advance the active operation identity")
 	}
@@ -191,8 +216,16 @@ func TestUXSetupWorkerCanRunWhileModelIsViewed(t *testing.T) {
 	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
 	draft := m.setupRetry
 	completed := make(chan tea.Msg, 1)
-	go func() { completed <- cmd() }()
-	<-backend.started
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("setup worker returned no operation batch")
+	}
+	go func() { completed <- batch[0]() }()
+	select {
+	case <-backend.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked install did not start")
+	}
 	close(backend.release)
 	finished := make(chan struct{})
 	observerDone := make(chan struct{})
@@ -248,13 +281,13 @@ func TestUXRetryUsesSameInputsAndRunsOnce(t *testing.T) {
 	m.pendingSetupField = "__aact_destinations"
 	initial := map[string]any{"repo": "/repos/unchanged", "__aact_destinations": []string{"codex"}}
 	cmd := m.applySetup(initial)
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	_, retry := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if retry == nil {
 		t.Fatal("Retry did not start an operation")
 	}
-	m.Update(retry())
+	m.Update(runTeaCmd(t, m, retry))
 	if backend.calls != 2 || len(backend.requests) != 2 {
 		t.Fatalf("retry count=%d requests=%d; want exactly one retry", backend.calls, len(backend.requests))
 	}
@@ -470,5 +503,132 @@ func TestUXWorkspaceConnectionFailureActionsStayInForegroundOverActiveForm(t *te
 	m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
 	if m.result != nil || m.form != form {
 		t.Fatalf("Return to configuration did not restore the active workspace: result=%+v formSame=%t", m.result, m.form == form)
+	}
+}
+
+func TestUXRunningInstallShowsLiveOutputOverWorkspaceContext(t *testing.T) {
+	m, _ := homeFixture()
+	m.width, m.height = 100, 30
+	m.busy = true
+	m.action = "install"
+	m.progressStep = "generate"
+	m.progressOutput = "generator: writing configured skill files"
+	m.pendingSetup = &viewmodel.SetupPreview{PackageName: "Plain", Key: state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "default"}}
+	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true}
+
+	plain := ansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "generator: writing configured skill files") {
+		t.Fatalf("live child output is hidden while the install is running:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Inspector") || !strings.Contains(plain, "AACT") {
+		t.Fatalf("progress replaced the current workspace context:\n%s", plain)
+	}
+}
+
+func TestUXRunningInstallOutputHasTruthfulScrollCues(t *testing.T) {
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.width, m.height = 80, 16
+	m.busy = true
+	m.setupOperationPending = true
+	m.setupOperationID = 3
+	m.action = "install"
+	m.progressStarted = time.Now()
+	lines := make([]string, 24)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("child output line %02d", i)
+	}
+	m.progressOutput = strings.Join(lines, "\n")
+	newest := ansi.Strip(m.View().Content)
+	if !strings.Contains(newest, "↑ older output") || strings.Contains(newest, "↓ newer output") {
+		t.Fatalf("bottom-follow view shows incorrect scroll cues:\n%s", newest)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	older := ansi.Strip(m.View().Content)
+	if !strings.Contains(older, "↓ newer output") {
+		t.Fatalf("scrolling older did not show a truthful newer-output cue:\n%s", older)
+	}
+	m.Update(setupProgressMsg{setupID: 3, progress: viewmodel.OperationProgress{Output: "\nnew trailing child line"}})
+	if m.progressOffset == 0 {
+		t.Fatal("a new chunk forced the user's older scroll position to latest output")
+	}
+}
+
+func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T) {
+	backend := &streamingSetupBackend{setupBackendFixture: &setupBackendFixture{}, started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(backend.release) })
+	m := NewContext(context.Background(), backend)
+	m.width, m.height = 120, 36
+	m.pendingSetup = &viewmodel.SetupPreview{PackageName: "Plain", Key: state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "default"}}
+	m.pendingSetupField = "__aact_destinations"
+	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true, Section: "Connection"}
+	m.openSetupFormWithValues(*m.pendingSetup, map[string]any{})
+	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
+	message := cmd()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 3 {
+		t.Fatalf("SaveApply did not start operation, stream and heartbeat commands: %T %#v", message, batch)
+	}
+	operationDone := make(chan tea.Msg, 1)
+	go func() { operationDone <- batch[0]() }()
+	select {
+	case <-backend.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked SaveApply did not start")
+	}
+	progress := batch[1]()
+	m.Update(progress)
+	plain := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Authentication", "Databases", "Elapsed", "Quiet"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("blocked operation overlay omitted %q:\n%s", want, plain)
+		}
+	}
+	select {
+	case <-operationDone:
+		t.Fatal("operation completed before the fixture was released")
+	default:
+	}
+	writeUXCapture(t, "SaveApply install in progress", m.View().Content)
+	releaseOnce.Do(func() { close(backend.release) })
+	var completed tea.Msg
+	select {
+	case completed = <-operationDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SaveApply did not finish after release")
+	}
+	m.Update(completed)
+	if m.result == nil || !m.result.Failed {
+		t.Fatalf("child failure did not produce a recoverable result: %+v", m.result)
+	}
+	result := ansi.Strip(m.View().Content)
+	for _, want := range []string{"builder: applying configured settings", "fixture daemon refused the build", "Return to configuration", "Retry"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("foreground failure omitted %q:\n%s", want, result)
+		}
+	}
+
+	oldID := m.setupOperationID
+	m.setupOperationID++
+	m.setupOperationPending = true
+	m.busy = true
+	m.result = nil
+	m.progressStep = "next action"
+	m.progressOutput = "new operation output"
+	m.Update(setupProgressMsg{setupID: oldID, progress: viewmodel.OperationProgress{Step: "stale", Output: "stale output"}})
+	m.Update(operationMsg{setupID: oldID, origin: "Catalog", output: "stale completion", err: errors.New("stale failure")})
+	if !m.busy || m.progressStep != "next action" || m.progressOutput != "new operation output" || m.result != nil {
+		t.Fatalf("stale operation output changed the next operation: busy=%t step=%q output=%q result=%+v", m.busy, m.progressStep, m.progressOutput, m.result)
+	}
+	// A subsequent unrelated operation must not inherit setup progress or timing.
+	m.busy = false
+	m.progressStarted = time.Now().Add(-time.Minute)
+	m.progressLastOutput = m.progressStarted
+	m.progressStep = "authenticate"
+	m.progressOutput = "old setup child output"
+	m.run(operation{action: "stop"})
+	plain = ansi.Strip(m.View().Content)
+	if strings.Contains(plain, "authenticate") || strings.Contains(plain, "old setup child output") || strings.Contains(plain, "Elapsed:") || strings.Contains(plain, "Quiet:") {
+		t.Fatalf("unrelated operation inherited stale setup progress:\n%s", plain)
 	}
 }

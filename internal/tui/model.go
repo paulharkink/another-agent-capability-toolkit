@@ -15,6 +15,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Backend uses existing domain types so app.Service can implement it without importing tui.
@@ -59,6 +60,14 @@ type Model struct {
 	setupInfoOffset            int
 	setupOperationPending      bool
 	setupOperationID           uint64
+	progressStep               string
+	progressOutput             string
+	progressStarted            time.Time
+	progressFrame              int
+	progressOffset             int
+	progressLastOutput         time.Time
+	setupProgressEvents        <-chan viewmodel.OperationProgress
+	setupProgressDone          <-chan struct{}
 	logSession                 uint64
 	logCancel                  context.CancelFunc
 	logProfile                 state.Key
@@ -102,6 +111,12 @@ type operationMsg struct {
 	setupID        uint64
 	result         *viewmodel.OperationResult
 }
+type setupProgressMsg struct {
+	setupID  uint64
+	progress viewmodel.OperationProgress
+}
+type setupProgressClosedMsg struct{ setupID uint64 }
+type setupProgressTickMsg struct{ setupID uint64 }
 type settingsSavedMsg struct{ err error }
 
 func New(backend Backend) tea.Model { return NewContext(context.Background(), backend) }
@@ -179,6 +194,38 @@ func (m *Model) load() tea.Cmd {
 	}
 }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch progress := msg.(type) {
+	case setupProgressMsg:
+		if progress.setupID != m.setupOperationID || !m.setupOperationPending {
+			return m, nil
+		}
+		if progress.progress.Step != "" {
+			m.progressStep = progress.progress.Step
+		}
+		m.progressOutput += m.cleanOutput(progress.progress.Output)
+		if progress.progress.Output != "" {
+			m.progressLastOutput = time.Now()
+			if m.progressOffset > 0 {
+				m.progressOffset += strings.Count(progress.progress.Output, "\n")
+			}
+		}
+		if len(m.progressOutput) > 16*1024 {
+			m.progressOutput = m.progressOutput[len(m.progressOutput)-16*1024:]
+		}
+		return m, waitSetupProgress(progress.setupID, m.setupProgressEvents, m.setupProgressDone, m.ctx)
+	case setupProgressClosedMsg:
+		return m, nil
+	case setupProgressTickMsg:
+		if progress.setupID != m.setupOperationID || !m.setupOperationPending {
+			return m, nil
+		}
+		m.progressFrame++
+		return m, setupProgressTick(progress.setupID)
+	case operationMsg:
+		if progress.setupID != 0 && progress.setupID != m.setupOperationID {
+			return m, nil
+		}
+	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = size.Width
 		m.height = size.Height
@@ -228,6 +275,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyPressMsg:
 			if event.String() == "ctrl+c" {
 				return m, tea.Quit
+			}
+			if m.setupOperationPending {
+				maxOffset := int(^uint(0) >> 1)
+				switch event.String() {
+				case "up", "k":
+					if m.progressOffset < maxOffset {
+						m.progressOffset++
+					}
+				case "down", "j":
+					m.progressOffset = max(0, m.progressOffset-1)
+				case "pgup":
+					page := max(1, m.height/2)
+					m.progressOffset = min(maxOffset-page, m.progressOffset) + page
+				case "pgdown":
+					m.progressOffset = max(0, m.progressOffset-max(1, m.height/2))
+				case "home":
+					m.progressOffset = int(^uint(0) >> 1)
+				case "end":
+					m.progressOffset = 0
+				}
 			}
 			return m, nil
 		case tea.MouseMsg:
@@ -611,6 +678,16 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 }
 
 func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
+	if msg.setupID != 0 && msg.setupID != m.setupOperationID {
+		return nil
+	}
+	if msg.setupID != 0 && m.progressOutput != "" {
+		if msg.output != "" {
+			msg.output = m.progressOutput + "\n" + msg.output
+		} else {
+			msg.output = m.progressOutput
+		}
+	}
 	m.busy = false
 	if msg.setupID != 0 && msg.setupID == m.setupOperationID && m.setupRetry != nil {
 		step := msg.step
@@ -629,6 +706,9 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	cancelOnly := onlyCancellation(msg.err) && !msg.failed && (msg.result == nil || len(msg.result.Errors) == 0)
 	if cancelOnly {
 		m.setupOperationPending = false
+		m.setupProgressEvents = nil
+		m.setupProgressDone = nil
+		m.resetSetupProgress()
 		m.setupRetry = nil
 		m.output = strings.TrimSpace(msg.output)
 		m.result = nil
@@ -642,6 +722,9 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 		m.retryOperation = nil
 	}
 	m.setupOperationPending = false
+	m.setupProgressEvents = nil
+	m.setupProgressDone = nil
+	m.resetSetupProgress()
 	if msg.err != nil && m.workspace != nil && m.workspace.Active && m.pending.action == "start" {
 		message := strings.ToLower(msg.err.Error())
 		if strings.Contains(message, "missing") || strings.Contains(message, "required") || strings.Contains(message, "not configured") {
@@ -900,6 +983,7 @@ func (m *Model) run(op operation) tea.Cmd {
 	m.pending = op
 	m.busy = true
 	m.action = op.action
+	m.resetSetupProgress()
 	origin := m.view
 	backend, ctx := m.backend, m.ctx
 	m.retryOperation = func() tea.Cmd { return m.run(op) }
@@ -907,6 +991,17 @@ func (m *Model) run(op operation) tea.Cmd {
 		output, err := backend.UIRun(ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
 		return operationMsg{origin: origin, output: output, err: err, target: op.target}
 	}
+}
+
+func (m *Model) resetSetupProgress() {
+	m.progressStep = ""
+	m.progressOutput = ""
+	m.progressStarted = time.Time{}
+	m.progressLastOutput = time.Time{}
+	m.progressFrame = 0
+	m.progressOffset = 0
+	m.setupProgressEvents = nil
+	m.setupProgressDone = nil
 }
 func (m *Model) cleanOutput(output string) string {
 	for _, p := range m.catalog {
@@ -928,7 +1023,7 @@ func (m *Model) setupOverlayBounds() (x, y, width, height int, ok bool) {
 	if m.management.FormOverlay {
 		return managementFormOverlayBounds(m.width, m.height)
 	}
-	if m.pendingSetup == nil || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
+	if (m.pendingSetup == nil && !(m.busy && m.setupRetry != nil)) || (m.view != "Catalog" && !isManagementView(m.view)) || m.width < 80 || m.height < 16 {
 		return 0, 0, 0, 0, false
 	}
 	// At the supported minimum, reclaim the navigation margins so the form's
@@ -963,6 +1058,9 @@ func (m *Model) setupOverlayViewContent(content string) tea.View {
 
 func (m *Model) View() tea.View {
 	if m.form != nil && (m.width < 80 || m.height < 16) {
+		if m.busy {
+			return m.progressView()
+		}
 		// The resize recovery screen owns the terminal until the main-screen
 		// minimum is restored. Keep any pending result/lifecycle state intact.
 		return m.homeView()

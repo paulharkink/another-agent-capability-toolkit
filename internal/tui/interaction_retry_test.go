@@ -31,7 +31,7 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("setup Save did not submit")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.installRequest == nil || backend.installRequest.Inputs["repo"] != "/repos/edited" {
 		t.Fatalf("edited draft was not submitted: %+v", backend.installRequest)
 	}
@@ -54,7 +54,7 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	m.Update(m.Init()())
 	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil || !m.result.Failed || !strings.Contains(m.View().Content, "Edit answers") {
 		t.Fatal("partial installation failure was displayed as success")
 	}

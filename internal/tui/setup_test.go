@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -39,7 +40,7 @@ func TestSetupFailureBeforeLaterCancellationRemainsForeground(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("mixed registration operation was not submitted")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil || !m.result.Failed {
 		t.Fatalf("earlier failure was hidden by later cancellation: output=%q result=%+v", m.output, m.result)
 	}
@@ -48,6 +49,77 @@ func TestSetupFailureBeforeLaterCancellationRemainsForeground(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("foreground result omitted %q: %s", want, joined)
 		}
+	}
+}
+
+func TestSetupProgressEmitterDoesNotBlockOrPanicAfterFinish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan viewmodel.OperationProgress, 1)
+	done := make(chan struct{})
+	emitter := setupProgressEmitter{ctx: ctx, events: events, done: done}
+	emitted := make(chan struct{})
+	go func() {
+		for i := 0; i < 10000; i++ {
+			emitter.emit(viewmodel.OperationProgress{Output: "output"})
+		}
+		close(emitted)
+	}()
+	select {
+	case <-emitted:
+	case <-time.After(time.Second):
+		close(done)
+		cancel()
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				select {
+				case <-events:
+				case <-emitted:
+					return
+				}
+			}
+		}()
+		select {
+		case <-drained:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("progress emitter blocked without a receiver")
+	}
+	close(done)
+	lateDone := make(chan struct{})
+	go func() {
+		emitter.emit(viewmodel.OperationProgress{Output: "late output"})
+		close(lateDone)
+	}()
+	select {
+	case <-lateDone:
+	case <-time.After(time.Second):
+		t.Fatal("late progress callback did not return after completion")
+	}
+	select {
+	case event := <-events:
+		if event.Output != "output" {
+			t.Fatalf("late callback changed final queued output: %+v", event)
+		}
+	default:
+		t.Fatal("nonblocking emitter lost its most recent event")
+	}
+	cancel()
+	cancelledEvents := make(chan viewmodel.OperationProgress, 1)
+	cancelled := setupProgressEmitter{ctx: ctx, events: cancelledEvents, done: make(chan struct{})}
+	cancelledDone := make(chan struct{})
+	go func() {
+		cancelled.emit(viewmodel.OperationProgress{Output: "after cancellation"})
+		close(cancelledDone)
+	}()
+	select {
+	case <-cancelledDone:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled progress callback did not return")
+	}
+	if len(cancelledEvents) != 0 {
+		t.Fatal("cancelled operation retained output for a later operation")
 	}
 }
 
@@ -101,7 +173,7 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("setup form did not save")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || b.installRequest.Inputs["destination"] != "/output" || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) || b.installRequest.ExternalURL != "" {
 		t.Fatalf("package destination collided with installer destination field: %+v", b.installRequest)
 	}
@@ -128,7 +200,7 @@ func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Save did not submit")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if !strings.Contains(m.output, "Inputs saved") || !strings.Contains(m.output, "port 9000 is already allocated") || strings.Contains(m.output, "configured") {
 		t.Fatalf("result hid save/apply distinction: %q", m.output)
 	}
@@ -160,7 +232,7 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 			if save == nil {
 				t.Fatal("foreign workspace Save did not submit named agent registrations")
 			}
-			m.Update(save())
+			m.Update(runTeaCmd(t, m, save))
 			request := backend.installRequest
 			if request == nil || request.SetupRequest.Target != foreignKey.Target || request.ExternalURL != "http://127.0.0.1:8765/mcp" || !containsString(request.DestinationIDs, "codex") {
 				t.Fatalf("Save did not forward the selected foreign endpoint and destinations: %+v", request)
@@ -207,7 +279,7 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	if cmd == nil || !m.busy || m.form != nil {
 		t.Fatal("Save did not apply the typed setup once")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) || b.installRequest.Inputs["repo"] != "/repos/team" || b.installRequest.Inputs["mode"] != "safe" {
 		t.Fatalf("one-shot install received wrong form values: %+v", b.installRequest)
 	}
@@ -250,7 +322,7 @@ func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Save unavailable")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil {
 		t.Fatal("Save did not submit")
 	}
@@ -402,7 +474,7 @@ func TestSwitchingAuthenticationClearsPreviouslyPrefilledCredential(t *testing.T
 	if cmd == nil {
 		t.Fatalf("switching authentication blocked Save: %s", m.View().Content)
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || b.installRequest.Inputs["token"] != "" {
 		t.Fatalf("inactive prefilled token was submitted: %+v", b.installRequest)
 	}
@@ -423,7 +495,7 @@ func TestBothPrefilledCredentialsKeepOnlySelectedMethod(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("prefilled exclusive credentials blocked Save: %s", m.View().Content)
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || b.installRequest.Inputs["token"] != "" || b.installRequest.Inputs["kubeconfig"] != "/tmp/existing-kubeconfig" {
 		t.Fatalf("inactive prefilled credential was submitted: %+v", b.installRequest)
 	}
@@ -449,7 +521,7 @@ func TestFixedTargetCredentialDisablesOtherMethod(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("fixed credential blocked Save: %s", m.View().Content)
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || b.installRequest.Inputs["kubeconfig"] != "" {
 		t.Fatalf("fixed credential's sibling was submitted: %+v", b.installRequest)
 	}

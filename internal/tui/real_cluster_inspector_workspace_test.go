@@ -55,7 +55,10 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	_, testFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
 	stateRoot := t.TempDir()
-	previewRoot := filepath.Join(repoRoot, "dist", "preview", "packages")
+	previewRoot := os.Getenv("AACT_BUNDLED_ROOT")
+	if previewRoot == "" {
+		previewRoot = filepath.Join(repoRoot, "dist", "preview", "packages")
+	}
 	source, err := config.Discover(sourceRoot, manifest, previewRoot, stateRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +79,7 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	dockerLog := filepath.Join(stateRoot, "docker-args.log")
 	t.Setenv("AACT_FAKE_DOCKER_LOG", dockerLog)
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	dockerShim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AACT_FAKE_DOCKER_LOG\"\ncase \"$1\" in\nbuild) printf 'sha256:%064d\\n' 0 ;;\nrun) cat >/dev/null; printf '{\"auth_required\":false}' ;;\n*) exit 9 ;;\nesac\n"
+	dockerShim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AACT_FAKE_DOCKER_LOG\"\ncase \"$1\" in\nbuild) while [ $# -gt 0 ]; do if [ \"$1\" = --iidfile ]; then shift; printf 'sha256:%064d\\n' 0 > \"$1\"; break; fi; shift; done ;;\nrun) cat >/dev/null; printf '{\"auth_required\":false}' ;;\n*) exit 9 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(shimDir, "docker"), []byte(dockerShim), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -111,15 +114,16 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	if cmd == nil {
 		t.Fatal("visible build/start action did not submit the unified Save and Apply operation")
 	}
-	_, _ = m.Update(cmd())
-	if runtimeStub.starts != 1 || runtimeStub.last.Image == "" {
-		t.Fatalf("actual UI path did not prepare/build/start the package: starts=%d image-set=%t", runtimeStub.starts, runtimeStub.last.Image != "")
+	m.Update(runTeaCmd(t, m, cmd))
+	expectedImage := fmt.Sprintf("sha256:%064d", 0)
+	if runtimeStub.starts != 1 || runtimeStub.last.Image != expectedImage {
+		t.Fatalf("actual UI path did not start the immutable image reported by Docker's iidfile: starts=%d image=%q want=%q", runtimeStub.starts, runtimeStub.last.Image, expectedImage)
 	}
 	dockerArgs, err := os.ReadFile(dockerLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(dockerArgs), "build --quiet --tag") || !strings.Contains(string(dockerArgs), filepath.Join(previewRoot, "cluster-inspector", "mcp")) || !strings.Contains(string(dockerArgs), "run --rm --interactive") {
+	if !strings.Contains(string(dockerArgs), "build --progress=plain --iidfile ") || strings.Contains(string(dockerArgs), "build --quiet") || !strings.Contains(string(dockerArgs), filepath.Join(previewRoot, "cluster-inspector", "mcp")) || !strings.Contains(string(dockerArgs), "run --rm --interactive") {
 		t.Fatalf("real native helper did not build and prepare the selected package: %s", fmt.Sprintf("%q", dockerArgs))
 	}
 	rows, err := store.Installations()

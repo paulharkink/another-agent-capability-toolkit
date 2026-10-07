@@ -243,7 +243,7 @@ func TestUXOverviewApplyActionIsVisibleAndSubmitsCurrentConfiguration(t *testing
 	if cmd == nil {
 		t.Fatal("Overview action message did not invoke UIInstall")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if setup.installRequest == nil {
 		t.Fatal("Overview action bypassed the unified Save and Apply service")
 	}

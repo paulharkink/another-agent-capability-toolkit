@@ -46,7 +46,7 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	if save == nil {
 		t.Fatalf("Agents Save did not invoke the registration install path: %s", m.View().Content)
 	}
-	m.Update(save())
+	m.Update(runTeaCmd(t, m, save))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Target != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
 		t.Fatalf("Agents Save did not register named destinations on the selected foreign target: %+v", backend.installRequest)
 	}
@@ -177,7 +177,7 @@ func TestUXRemoveShowsLegacyRecordedMCPAndSendsExplicitIDs(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("selected legacy MCP row did not submit a narrow removal")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.request == nil || len(backend.request.RemoveAgentIDs) != 1 || backend.request.RemoveAgentIDs[0] != "generic:legacy" {
 		t.Fatalf("removal did not identify only the selected recorded row: %+v", backend.request)
 	}
@@ -209,7 +209,7 @@ func TestUXPartialRegistrationFailureShowsErrorAndUnchecksFailedAgent(t *testing
 	if cmd == nil {
 		t.Fatal("Ctrl-S did not submit selected registrations")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	view := m.View().Content
 	if !strings.Contains(view, "codex: mcp registration configured") || strings.Contains(view, "claude: mcp registration configured") || !strings.Contains(view, "refusing foreign MCP registration") {
 		t.Fatalf("result does not report actual per-agent effects:\n%s", view)
@@ -231,7 +231,7 @@ func TestUXRegistrationButtonsReachableAndOneSave(t *testing.T) {
 	press(m, tea.KeyRight, "")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd != nil {
-		m.Update(cmd())
+		m.Update(runTeaCmd(t, m, cmd))
 	}
 	if b.request == nil {
 		t.Fatal("focused Save action did not submit")
