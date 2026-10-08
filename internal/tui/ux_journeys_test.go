@@ -581,7 +581,12 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				}
 				for _, chunk := range chunks {
 					if !strings.Contains(visible, chunk) {
-						t.Fatalf("Information does not show credential provenance chunk %q", chunk)
+						start := strings.Index(visible, "Credential note:")
+						if start < 0 {
+							start = 0
+						}
+						end := min(len(visible), start+500)
+						t.Fatalf("Information does not show credential provenance chunk %q; visible excerpt: %q", chunk, visible[start:end])
 					}
 				}
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
