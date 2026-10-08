@@ -87,8 +87,16 @@ type SkillManager interface {
 	InstallSkill(context.Context, Scope, SkillRequest) (state.Installation, error)
 	RemoveSkill(context.Context, Scope, state.Installation) error
 }
+
+// MCPRegistrationResult reports the desired installation and any external
+// effects that completed before registration failed.
+type MCPRegistrationResult struct {
+	Installation state.Installation
+	Effects      []state.Installation
+	Removed      []state.Installation
+}
 type MCPManager interface {
-	Register(context.Context, Scope, MCPRequest) (state.Installation, error)
+	Register(context.Context, Scope, MCPRequest) (MCPRegistrationResult, error)
 	Unregister(context.Context, Scope, state.Installation) error
 }
 type PluginManager interface {

@@ -122,6 +122,15 @@ func (a cliAdapter) verify(e Environment, current *Registration, name string) er
 	}
 	return nil
 }
+
+type partialCLIRegistrationError struct {
+	registration Registration
+	err          error
+}
+
+func (e *partialCLIRegistrationError) Error() string { return e.err.Error() }
+func (e *partialCLIRegistrationError) Unwrap() error { return e.err }
+
 func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration) error {
 	if err := validate(r); err != nil {
 		return err
@@ -154,11 +163,13 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	}
 	// CLI replaces only a positively verified owned name. A failure after remove
 	// is reported as a partial effect; the adapter does not automatically restore it.
+	removedCurrent := false
 	if current != nil {
 		var diagnostic []byte
 		if _, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, collectDiagnostic(&diagnostic)); err != nil {
 			return fmt.Errorf("cannot remove existing %s registration %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
 		}
+		removedCurrent = true
 	}
 	args := []string{"codex", "mcp", "add", r.Name, "--url", r.URL}
 	if a.kind != "codex" {
@@ -167,7 +178,11 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	var diagnostic []byte
 	_, err = a.runner.Run(ctx, args, e.Home, nil, env, collectDiagnostic(&diagnostic))
 	if err != nil {
-		return fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
+		registrationErr := fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
+		if removedCurrent {
+			return &partialCLIRegistrationError{registration: *current, err: registrationErr}
+		}
+		return registrationErr
 	}
 	return nil
 }

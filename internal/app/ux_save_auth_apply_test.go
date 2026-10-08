@@ -75,7 +75,7 @@ type uxCancelDuringRegisterAdapter struct {
 	cancel  context.CancelFunc
 }
 
-func (a *uxCancelDuringRegisterAdapter) Register(_ context.Context, scope agents.Scope, request agents.MCPRequest) (state.Installation, error) {
+func (a *uxCancelDuringRegisterAdapter) Register(_ context.Context, scope agents.Scope, request agents.MCPRequest) (agents.MCPRegistrationResult, error) {
 	a.cancel()
 	return a.manager.Register(context.Background(), scope, request)
 }
