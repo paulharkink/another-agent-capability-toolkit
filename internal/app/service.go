@@ -53,6 +53,21 @@ func registrationTimeoutMS(m *catalog.MCP) int {
 	return 30000
 }
 
+// authenticationRequiredMessage keeps provider-specific diagnostics first so
+// retry guidance does not bury the cause. An empty diagnostic keeps the
+// established user-facing fallback unchanged.
+func authenticationRequiredMessage(packageID, diagnostic string) string {
+	retry := fmt.Sprintf("run aact mcp authenticate %s with credentials or --interactive", packageID)
+	if diagnostic = strings.TrimSpace(diagnostic); diagnostic != "" {
+		return diagnostic + "\nTo retry, " + retry
+	}
+	return fmt.Sprintf("%s authentication required; %s", packageID, retry)
+}
+
+type authenticationRequiredFailure struct{ message string }
+
+func (e authenticationRequiredFailure) Error() string { return e.message }
+
 func New(src config.Source, s *state.Store, o Options) *Service {
 	if o.Runner == nil {
 		o.Runner = process.OSExecutor{}
@@ -400,7 +415,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}
 		if result.AuthRequired {
-			return mcp.Instance{}, operationFailure{step: "prepare", err: fmt.Errorf("%s authentication required; run aact mcp authenticate %s with credentials or --interactive", p.ID, p.ID)}
+			return mcp.Instance{}, operationFailure{step: "prepare", err: authenticationRequiredFailure{message: authenticationRequiredMessage(p.ID, result.Diagnostic)}}
 		}
 		if e = forms.Validate(withChoices(p.Inputs, result.Choices), values); e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: invalid(e)}

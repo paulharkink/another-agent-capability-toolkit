@@ -744,6 +744,20 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			plugins[v] = true
 		}
 	}
+	authenticationRequired := map[string]bool{}
+	authenticationComplete := map[string]bool{}
+	for _, definition := range p.MCPDefinitions() {
+		if mcps[definition.Name] {
+			if _, hasAuth := definition.Actions["authenticate"]; hasAuth {
+				authenticationRequired[definition.Name] = true
+			}
+		}
+	}
+	if len(authenticationRequired) == 0 {
+		out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
+	} else {
+		out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+	}
 	if destIDs == nil {
 		settings, e := s.UISettings(ctx)
 		if e != nil {
@@ -893,9 +907,31 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if e != nil {
 					return out, e
 				}
-				if !result.AuthRequired {
+				if result.AuthRequired {
+					// Older providers may return the legacy auth-required marker
+					// without a diagnostic. Preserve that flow while retaining the
+					// pending method transition; always stop before registration can
+					// imply success.
+					if strings.TrimSpace(result.Diagnostic) != "" {
+						return out, errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
+					}
+					out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+					return out, nil
+				} else {
+					authenticationComplete[definition.Name] = true
 					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
 						return out, e
+					}
+					remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+					if pendingErr != nil {
+						return out, pendingErr
+					}
+					if len(authenticationComplete) == len(authenticationRequired) && len(remaining) == 0 {
+						out.AuthenticationStatus = viewmodel.AuthenticationComplete
+					} else if len(remaining) > 0 {
+						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+						return out, nil
 					}
 				}
 			}
@@ -907,6 +943,10 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			var failure operationFailure
 			if errors.As(e, &failure) {
 				out.Step = failure.step
+			}
+			var authRequired authenticationRequiredFailure
+			if errors.As(e, &authRequired) {
+				out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
 			}
 			return out, e
 		}
@@ -1235,7 +1275,11 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			}
 			out.Instances = []mcp.Instance{instance}
 		} else {
-			_, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+			var result mcp.ActionResult
+			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+			if err == nil && result.AuthRequired {
+				err = errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
+			}
 		}
 	default:
 		err = invalid(fmt.Errorf("unknown MCP action %q", action))

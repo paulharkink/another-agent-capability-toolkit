@@ -70,6 +70,9 @@ func resultStateFromOperationOutcome(action, output string, err error, operation
 			rows = append(rows, "Saved: no")
 		}
 	}
+	if outcomeKnown && operation.AuthenticationStatus != "" {
+		rows = append(rows, "Authentication: "+operation.AuthenticationStatus)
+	}
 	if outcomeKnown {
 		if len(operation.Changes) == 0 {
 			rows = append(rows, "Applied effects: none reported")

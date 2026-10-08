@@ -644,3 +644,46 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 		t.Fatalf("unrelated operation inherited stale setup progress:\n%s", plain)
 	}
 }
+
+func TestUXResultSeparatesSavedAuthenticationAndObservedRegistration(t *testing.T) {
+	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
+		Target: "demo/default", Saved: true, SavedApplicable: true,
+		AuthenticationStatus: viewmodel.AuthenticationNotConfirmed,
+		Errors:               []string{"demo authentication required; run aact mcp authenticate demo with credentials or --interactive"},
+	})
+	joined := strings.Join(result.Rows, "\n")
+	for _, want := range []string{"Saved: yes", "Authentication: not confirmed", "Applied effects: none reported"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("operation result missing distinct status %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "registered") {
+		t.Fatalf("saved configuration was presented as registered:\n%s", joined)
+	}
+	if !result.Failed {
+		t.Fatalf("nil-error auth-required outcome looked complete:\n%s", joined)
+	}
+}
+
+func TestUXResultReportsCompletedAuthenticationWithoutClaimingRegistration(t *testing.T) {
+	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
+		Target: "demo/default", Saved: true, SavedApplicable: true,
+		AuthenticationStatus: viewmodel.AuthenticationComplete,
+	})
+	joined := strings.Join(result.Rows, "\n")
+	if !strings.Contains(joined, "Authentication: complete") || !strings.Contains(joined, "Applied effects: none reported") || strings.Contains(joined, "registered") {
+		t.Fatalf("authentication success was conflated with runtime/registration:\n%s", joined)
+	}
+}
+
+func TestUXResultKeepsAuthenticationCauseAheadOfLongRuntimeOutput(t *testing.T) {
+	const cause = "Kubernetes API rejected credentials (HTTP 401)."
+	output := "Docker build output: " + strings.Repeat("downloading image layer; ", 400)
+	result := resultStateFromOperation("install", output, errors.New(cause+"\nTo retry, run aact mcp authenticate demo with credentials or --interactive"), viewmodel.OperationResult{
+		Saved: true, SavedApplicable: true, AuthenticationStatus: viewmodel.AuthenticationNotConfirmed,
+	})
+	joined := strings.Join(result.Rows, "\n")
+	if causeAt, outputAt := strings.Index(joined, cause), strings.Index(joined, "Docker build output:"); causeAt < 0 || outputAt < 0 || causeAt > outputAt {
+		t.Fatalf("primary authentication cause was buried in runtime output: cause=%d output=%d", causeAt, outputAt)
+	}
+}
