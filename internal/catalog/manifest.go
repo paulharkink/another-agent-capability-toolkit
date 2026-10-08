@@ -27,7 +27,7 @@ func Load(dir string) (Package, error) {
 			return Package{}, fmt.Errorf("%s: neither package.toml nor SKILL.md found", abs)
 		}
 		name := filepath.Base(abs)
-		p := Package{SchemaVersion: 1, ID: name, Name: name, Dir: abs, Skill: &Skill{Name: name}}
+		p := Package{SchemaVersion: 1, ID: name, ManifestID: name, Name: name, Dir: abs, Skill: &Skill{Name: name}}
 		return p, Validate(p)
 	}
 	if err != nil {
@@ -41,6 +41,7 @@ func Load(dir string) (Package, error) {
 		return Package{}, fmt.Errorf("%s: %w", path, err)
 	}
 	p.Dir = abs
+	p.ManifestID = p.ID
 	if err = validateDeclaredTimeouts(data); err != nil {
 		return Package{}, fmt.Errorf("%s: %w", path, err)
 	}
@@ -49,6 +50,21 @@ func Load(dir string) (Package, error) {
 	}
 	if p.Generator != nil {
 		defaultCommand(p.Generator)
+	}
+	for i := range p.Skills {
+		if p.Skills[i].Source == "" {
+			p.Skills[i].Source = abs
+		} else if !filepath.IsAbs(p.Skills[i].Source) {
+			p.Skills[i].Source = filepath.Join(abs, p.Skills[i].Source)
+		}
+		if p.Skills[i].Generator != nil {
+			defaultCommand(p.Skills[i].Generator)
+		}
+	}
+	for i := range p.Plugins {
+		if !filepath.IsAbs(p.Plugins[i].Source) {
+			p.Plugins[i].Source = filepath.Join(abs, p.Plugins[i].Source)
+		}
 	}
 	if p.MCP != nil {
 		for name, c := range p.MCP.Actions {
@@ -79,8 +95,39 @@ func Validate(p Package) error {
 	if !identifier.MatchString(p.ID) {
 		return fmt.Errorf("invalid package id %q", p.ID)
 	}
-	if p.Skill == nil && !p.HasMCP() {
-		return fmt.Errorf("package must declare skill or mcp")
+	if !p.HasSkill() && !p.HasMCP() && len(p.Plugins) == 0 {
+		return fmt.Errorf("package must declare skill, mcp or plugin")
+	}
+	if p.Skill != nil && len(p.Skills) > 0 {
+		return fmt.Errorf("cannot mix [skill] and [[skills]] declarations")
+	}
+	skillNames := map[string]bool{}
+	for _, s := range p.SkillDefinitions() {
+		if !identifier.MatchString(s.Name) {
+			return fmt.Errorf("invalid skill name %q", s.Name)
+		}
+		if skillNames[s.Name] {
+			return fmt.Errorf("duplicate skill name %q", s.Name)
+		}
+		skillNames[s.Name] = true
+		if s.Generator != nil {
+			if err := validateCommand(*s.Generator); err != nil {
+				return fmt.Errorf("skill %s generator: %w", s.Name, err)
+			}
+		}
+	}
+	pluginNames := map[string]bool{}
+	for _, plugin := range p.Plugins {
+		if !identifier.MatchString(plugin.Name) || !identifier.MatchString(plugin.Format) {
+			return fmt.Errorf("invalid plugin name or format %q", plugin.Name)
+		}
+		if pluginNames[plugin.Name] {
+			return fmt.Errorf("duplicate plugin name %q", plugin.Name)
+		}
+		pluginNames[plugin.Name] = true
+		if plugin.Source == "" {
+			return fmt.Errorf("plugin %s source is required", plugin.Name)
+		}
 	}
 	if p.MCP != nil && len(p.MCPs) > 0 {
 		return fmt.Errorf("cannot mix [mcp] and [[mcps]] declarations")
@@ -234,6 +281,14 @@ func Validate(p Package) error {
 			return fmt.Errorf("mcp %s: registration_name_input %q must be unconditionally visible", mcp.Name, mcp.RegistrationNameInput)
 		}
 	}
+	for _, plugin := range p.Plugins {
+		if plugin.EnabledInput != "" {
+			in, ok := inputsByName[plugin.EnabledInput]
+			if !ok || in.Type != "boolean" {
+				return fmt.Errorf("plugin %s enabled_input %q must reference a declared boolean input", plugin.Name, plugin.EnabledInput)
+			}
+		}
+	}
 	for _, in := range p.Inputs {
 		for controller, expected := range in.VisibleWhen {
 			if !seen[controller] {
@@ -316,6 +371,17 @@ func validateDeclaredTimeouts(data []byte) error {
 	if generator, ok := raw["generator"].(map[string]any); ok {
 		if err := declaredTimeout(generator); err != nil {
 			return fmt.Errorf("generator: %w", err)
+		}
+	}
+	if skills, ok := raw["skills"].([]any); ok {
+		for i, value := range skills {
+			if skill, ok := value.(map[string]any); ok {
+				if generator, ok := skill["generator"].(map[string]any); ok {
+					if err := declaredTimeout(generator); err != nil {
+						return fmt.Errorf("skill %d generator: %w", i+1, err)
+					}
+				}
+			}
 		}
 	}
 	if mcp, ok := raw["mcp"].(map[string]any); ok {
