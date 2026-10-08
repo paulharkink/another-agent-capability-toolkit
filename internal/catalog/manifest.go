@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/expressions"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -33,8 +35,17 @@ func Load(dir string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
-	var p Package
-	if err = toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&p); err != nil {
+	var document map[string]any
+	if err = toml.Unmarshal(data, &document); err != nil {
+		return Package{}, fmt.Errorf("%s: %w", path, err)
+	}
+	evaluated, err := expressions.EvaluateTreeDeferringRoot(document, expressions.DocumentEnvironment(document), path, "inputs")
+	if err != nil {
+		return Package{}, err
+	}
+	decodeTree := deferRuntimeForSchema(evaluated, reflect.TypeOf(Package{}))
+	p, err := decodePackage(decodeTree)
+	if err != nil {
 		if strict, ok := err.(*toml.StrictMissingError); ok {
 			return Package{}, fmt.Errorf("%s: %s", path, strict.String())
 		}
@@ -42,28 +53,286 @@ func Load(dir string) (Package, error) {
 	}
 	p.Dir = abs
 	p.ManifestID = p.ID
-	if err = validateDeclaredTimeouts(data); err != nil {
+	p.RawManifest = document
+	evaluatedBytes, err := toml.Marshal(evaluated)
+	if err != nil {
 		return Package{}, fmt.Errorf("%s: %w", path, err)
 	}
-	if err = Validate(p); err != nil {
-		return Package{}, fmt.Errorf("%s: %w", path, err)
+	if err = validateDeclaredTimeouts(evaluatedBytes); err != nil {
+		// Runtime expressions are checked after a selected input map is available.
+		if !hasDeferredInputTimeout(evaluated) {
+			return Package{}, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return finalizePackage(p)
+}
+
+// deferRuntimeForSchema substitutes only a discovery-time placeholder where a
+// runtime HCL string cannot be decoded into its eventual TOML type. The raw
+// tree is retained and fully reevaluated before use; this is not the value the
+// application receives.
+func deferRuntimeForSchema(value any, typ reflect.Type) any {
+	if typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+	if text, ok := value.(string); ok && expressions.ReferencesRoot(text, "inputs") {
+		switch typ.Kind() {
+		case reflect.Bool:
+			return false
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return int64(0)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return uint64(0)
+		case reflect.Float32, reflect.Float64:
+			return float64(0)
+		case reflect.Slice:
+			return []any{}
+		case reflect.Map:
+			return map[string]any{}
+		case reflect.Struct:
+			return map[string]any{}
+		}
+		return value
+	}
+	switch node := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(node))
+		if typ.Kind() == reflect.Struct {
+			fields := map[string]reflect.Type{}
+			for i := 0; i < typ.NumField(); i++ {
+				field := typ.Field(i)
+				name := strings.Split(field.Tag.Get("toml"), ",")[0]
+				if name == "" {
+					name = field.Name
+				}
+				if name != "-" {
+					fields[name] = field.Type
+				}
+			}
+			for key, child := range node {
+				fieldType := reflect.TypeOf((*any)(nil)).Elem()
+				if known, ok := fields[key]; ok {
+					fieldType = known
+				}
+				out[key] = deferRuntimeForSchema(child, fieldType)
+			}
+			return out
+		}
+		valueType := reflect.TypeOf((*any)(nil)).Elem()
+		if typ.Kind() == reflect.Map {
+			valueType = typ.Elem()
+		}
+		for key, child := range node {
+			out[key] = deferRuntimeForSchema(child, valueType)
+		}
+		return out
+	case []any:
+		out := make([]any, len(node))
+		elemType := reflect.TypeOf((*any)(nil)).Elem()
+		if typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
+			elemType = typ.Elem()
+		}
+		for i, child := range node {
+			out[i] = deferRuntimeForSchema(child, elemType)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// ResolveExpressions evaluates retained manifest expressions against selected
+// profile inputs and returns a resolved copy. Package discovery can therefore
+// finish before a profile exists without losing expressions in runtime fields.
+func ResolveExpressions(p Package, inputs map[string]any) (Package, error) {
+	if len(p.RawManifest) == 0 {
+		return p, nil
+	}
+	environment := expressions.DocumentEnvironment(p.RawManifest)
+	environment["inputs"] = inputs
+	evaluated, err := expressions.EvaluateTree(p.RawManifest, environment, filepath.Join(p.Dir, "package.toml"))
+	if err != nil {
+		return Package{}, err
+	}
+	resolved, err := decodePackage(evaluated)
+	if err != nil {
+		return Package{}, fmt.Errorf("%s: %w", filepath.Join(p.Dir, "package.toml"), err)
+	}
+	resolved.Dir, resolved.ManifestID, resolved.RawManifest = p.Dir, p.ManifestID, p.RawManifest
+	resolved.ID, resolved.Sets = p.ID, p.Sets
+	evaluatedBytes, err := toml.Marshal(evaluated)
+	if err != nil {
+		return Package{}, err
+	}
+	if err := validateDeclaredTimeouts(evaluatedBytes); err != nil {
+		return Package{}, fmt.Errorf("%s: %w", filepath.Join(p.Dir, "package.toml"), err)
+	}
+	return finalizePackage(resolved)
+}
+
+// ResolveInputDefinitions evaluates input declarations that depend on the
+// selected profile's already-resolved values, without evaluating runtime
+// capability fields prematurely.
+func ResolveInputDefinitions(p Package, inputs map[string]any) ([]Input, error) {
+	if len(p.RawManifest) == 0 {
+		return p.Inputs, nil
+	}
+	rawInputs, ok := p.RawManifest["inputs"]
+	if !ok {
+		return p.Inputs, nil
+	}
+	working, ok := rawInputs.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: inputs must be an array", filepath.Join(p.Dir, "package.toml"))
+	}
+	working = cloneManifestValue(working).([]any)
+	values := make(map[string]any, len(inputs))
+	for name, value := range inputs {
+		values[name] = value
+	}
+	pendingError := error(nil)
+	for attempts := 0; attempts <= len(working); attempts++ {
+		progress := false
+		for i, item := range working {
+			field, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := field["name"].(string)
+			text, isText := field["default"].(string)
+			if !isText || !expressions.ReferencesRoot(text, "inputs") {
+				continue
+			}
+			if _, supplied := values[name]; supplied {
+				field["default"] = nil
+				continue
+			}
+			environment := expressions.DocumentEnvironment(p.RawManifest)
+			environment["inputs"] = values
+			value, evalErr := expressions.Evaluate(text, environment, filepath.Join(p.Dir, "package.toml"), fmt.Sprintf("inputs[%d].default", i))
+			if evalErr != nil {
+				pendingError = evalErr
+				continue
+			}
+			field["default"], values[name], progress = value, value, true
+		}
+		if !progress {
+			break
+		}
+	}
+	for _, item := range working {
+		if field, ok := item.(map[string]any); ok {
+			if text, isText := field["default"].(string); isText && expressions.ReferencesRoot(text, "inputs") {
+				if pendingError != nil {
+					return nil, pendingError
+				}
+				return nil, fmt.Errorf("%s: unresolved input default expression %q", filepath.Join(p.Dir, "package.toml"), text)
+			}
+		}
+	}
+	environment := expressions.DocumentEnvironment(p.RawManifest)
+	environment["inputs"] = values
+	resolved, err := expressions.EvaluateTree(working, environment, filepath.Join(p.Dir, "package.toml"))
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := toml.Marshal(map[string]any{"inputs": resolved})
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Inputs []Input `toml:"inputs"`
+	}
+	if err := toml.Unmarshal(encoded, &decoded); err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(p.Dir, "package.toml"), err)
+	}
+	return decoded.Inputs, nil
+}
+
+func cloneManifestValue(value any) any {
+	switch node := value.(type) {
+	case map[string]any:
+		copy := make(map[string]any, len(node))
+		for key, child := range node {
+			copy[key] = cloneManifestValue(child)
+		}
+		return copy
+	case []any:
+		copy := make([]any, len(node))
+		for index, child := range node {
+			copy[index] = cloneManifestValue(child)
+		}
+		return copy
+	default:
+		return value
+	}
+}
+
+func hasDeferredInputTimeout(value any) bool {
+	// This is only the discovery-time exception for an expression whose runtime
+	// input is not selected yet. The resolved copy always gets strict validation.
+	data, err := toml.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var raw map[string]any
+	if toml.Unmarshal(data, &raw) != nil {
+		return false
+	}
+	var walk func(any) bool
+	walk = func(node any) bool {
+		switch n := node.(type) {
+		case map[string]any:
+			if text, ok := n["timeout_seconds"].(string); ok && expressions.ReferencesRoot(text, "inputs") {
+				return true
+			}
+			for _, child := range n {
+				if walk(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range n {
+				if walk(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(raw)
+}
+
+func decodePackage(value any) (Package, error) {
+	data, err := toml.Marshal(value)
+	if err != nil {
+		return Package{}, err
+	}
+	var p Package
+	err = toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&p)
+	return p, err
+}
+
+func finalizePackage(p Package) (Package, error) {
+	if err := Validate(p); err != nil {
+		return Package{}, fmt.Errorf("%s: %w", filepath.Join(p.Dir, "package.toml"), err)
 	}
 	if p.Generator != nil {
 		defaultCommand(p.Generator)
 	}
 	for i := range p.Skills {
 		if p.Skills[i].Source == "" {
-			p.Skills[i].Source = abs
-		} else if !filepath.IsAbs(p.Skills[i].Source) {
-			p.Skills[i].Source = filepath.Join(abs, p.Skills[i].Source)
+			p.Skills[i].Source = p.Dir
+		} else if !strings.Contains(p.Skills[i].Source, "${") && !filepath.IsAbs(p.Skills[i].Source) {
+			p.Skills[i].Source = filepath.Join(p.Dir, p.Skills[i].Source)
 		}
 		if p.Skills[i].Generator != nil {
 			defaultCommand(p.Skills[i].Generator)
 		}
 	}
 	for i := range p.Plugins {
-		if !filepath.IsAbs(p.Plugins[i].Source) {
-			p.Plugins[i].Source = filepath.Join(abs, p.Plugins[i].Source)
+		if !strings.Contains(p.Plugins[i].Source, "${") && !filepath.IsAbs(p.Plugins[i].Source) {
+			p.Plugins[i].Source = filepath.Join(p.Dir, p.Plugins[i].Source)
 		}
 	}
 	if p.MCP != nil {
@@ -233,7 +502,7 @@ func Validate(p Package) error {
 		if mcp.TokenHeader != "" && mcp.TokenInput == "" && mcp.TokenFileInput == "" && mcp.TokenEnvInput == "" {
 			return fmt.Errorf("mcp %s token_header requires a token source input", mcp.Name)
 		}
-		if mcp.TokenHeader != "" && (strings.TrimSpace(mcp.TokenHeader) != mcp.TokenHeader || strings.ContainsAny(mcp.TokenHeader, ":\r\n\x00")) {
+		if mcp.TokenHeader != "" && !strings.Contains(mcp.TokenHeader, "${") && (strings.TrimSpace(mcp.TokenHeader) != mcp.TokenHeader || strings.ContainsAny(mcp.TokenHeader, ":\r\n\x00")) {
 			return fmt.Errorf("mcp %s token_header must be a valid HTTP header name", mcp.Name)
 		}
 		if strings.ContainsAny(mcp.TokenPrefix, "\r\n\x00") {

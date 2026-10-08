@@ -7,6 +7,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/expressions"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
@@ -190,29 +191,29 @@ func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) erro
 	}
 	return s.Store.WithLock(ctx, func() error { return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: ref.Name, Local: true}) })
 }
-func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.Key, q ProfileRequest) (map[string]any, map[string]any, error) {
+func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.Key, q ProfileRequest) (catalog.Package, config.Profile, map[string]any, map[string]any, error) {
 	known := map[string]bool{}
 	for _, d := range p.Inputs {
 		known[d.Name] = true
 	}
 	for name := range q.Inputs {
 		if !known[name] {
-			return nil, nil, invalid(fmt.Errorf("unknown input %q", name))
+			return p, pr, nil, nil, invalid(fmt.Errorf("unknown input %q", name))
 		}
 	}
 	saved, err := s.Store.Answers(key)
 	if err != nil {
-		return nil, nil, err
+		return p, pr, nil, nil, err
 	}
 	for _, name := range q.ResetInputs {
 		if !known[name] {
-			return nil, nil, invalid(fmt.Errorf("unknown reset input %q", name))
+			return p, pr, nil, nil, invalid(fmt.Errorf("unknown reset input %q", name))
 		}
 		delete(saved, name)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, nil, err
+		return p, pr, nil, nil, err
 	}
 	defaults := map[string]any{}
 	for _, def := range p.Inputs {
@@ -227,20 +228,75 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 	layers := []map[string]any{defaults, s.Source.PackageDefaults[p.ID], pr.Raw, saved, q.Inputs}
 	files := []string{filepath.Join(p.Dir, "package.toml"), packFile, pr.Path, filepath.Join(s.Store.Root(), "answers", key.ID()+".json"), filepath.Join(cwd, ".aact-inputs")}
 	for n := range layers {
+		if n < 3 {
+			layers[n] = withoutInputExpressions(p.Inputs, layers[n])
+		}
 		layers[n], err = config.ResolveInputPaths(p.Inputs, layers[n], files[n])
 		if err != nil {
-			return nil, nil, invalid(err)
+			return p, pr, nil, nil, invalid(err)
 		}
 	}
 	saved = layers[3]
 	submitted := layers[4]
-	inherited, err := forms.ResolvePartial(p.Inputs, layers[0], layers[1], layers[2])
+	var inherited map[string]any
+	seedDefs := append([]catalog.Input(nil), p.Inputs...)
+	for i := range seedDefs {
+		if expressions.ReferencesRoot(fmt.Sprint(seedDefs[i].Default), "inputs") {
+			seedDefs[i].Default = nil
+		}
+	}
+	seedInherited, err := forms.ResolvePartial(seedDefs, layers[0], layers[1], layers[2])
 	if err != nil {
-		return nil, nil, invalid(err)
+		return p, pr, nil, nil, invalid(err)
+	}
+	fixedBefore := map[string]any{}
+	for name, policy := range pr.InputPolicy {
+		if policy == "fixed" {
+			fixedBefore[name] = nil
+		}
+	}
+	unlocked := map[string]any{}
+	for _, layer := range []map[string]any{layers[3], layers[4]} {
+		for key, value := range layer {
+			if _, locked := fixedBefore[key]; !locked {
+				unlocked[key] = value
+			}
+		}
+	}
+	seed, err := forms.ResolvePartial(seedDefs, seedInherited, unlocked)
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
+	}
+	inputDefs, err := catalog.ResolveInputDefinitions(p, seed)
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
+	}
+	p.Inputs = inputDefs
+	defaults = map[string]any{}
+	for _, def := range p.Inputs {
+		if def.Default != nil {
+			defaults[def.Name] = def.Default
+		}
+	}
+	layers[0], err = config.ResolveInputPaths(p.Inputs, defaults, files[0])
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
+	}
+	pr, err = config.ResolveExpressions(pr, seed, p.Inputs)
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
+	}
+	layers[2], err = config.ResolveInputPaths(p.Inputs, pr.Raw, files[2])
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
+	}
+	inherited, err = forms.ResolvePartial(p.Inputs, layers[0], layers[1], layers[2])
+	if err != nil {
+		return p, pr, nil, nil, invalid(err)
 	}
 	fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
 	if err != nil {
-		return nil, nil, invalid(err)
+		return p, pr, nil, nil, invalid(err)
 	}
 	input := map[string]any{}
 	for k, v := range saved {
@@ -254,7 +310,69 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 		}
 	}
 	values, err := forms.ResolvePartial(p.Inputs, inherited, input, fixed)
-	return values, inherited, invalidIf(err)
+	if err != nil {
+		return p, pr, values, inherited, invalid(err)
+	}
+	pr, err = config.ResolveExpressions(pr, values, p.Inputs)
+	if err != nil {
+		return p, pr, nil, inherited, invalid(err)
+	}
+	p, err = catalog.ResolveExpressions(p, values)
+	if err != nil {
+		return p, pr, nil, inherited, invalid(err)
+	}
+	return p, pr, values, inherited, nil
+}
+
+func withoutInputExpressions(defs []catalog.Input, values map[string]any) map[string]any {
+	out, _ := cloneExpressionTree(values).(map[string]any)
+	for _, def := range defs {
+		removeInputExpression(out, []string{def.Name})
+		removeInputExpression(out, []string{"inputs", def.Name})
+		if def.ConfigKey != "" {
+			removeInputExpression(out, []string{def.ConfigKey})
+			removeInputExpression(out, strings.Split(def.ConfigKey, "."))
+		}
+	}
+	return out
+}
+
+func cloneExpressionTree(value any) any {
+	switch node := value.(type) {
+	case map[string]any:
+		copy := make(map[string]any, len(node))
+		for key, child := range node {
+			copy[key] = cloneExpressionTree(child)
+		}
+		return copy
+	case []any:
+		copy := make([]any, len(node))
+		for index, child := range node {
+			copy[index] = cloneExpressionTree(child)
+		}
+		return copy
+	default:
+		return value
+	}
+}
+
+func removeInputExpression(values map[string]any, path []string) {
+	if len(path) == 0 {
+		return
+	}
+	current := values
+	for _, part := range path[:len(path)-1] {
+		nested, ok := current[part].(map[string]any)
+		if !ok {
+			return
+		}
+		current = nested
+	}
+	last := path[len(path)-1]
+	text, ok := current[last].(string)
+	if ok && expressions.ReferencesRoot(text, "inputs") {
+		delete(current, last)
+	}
 }
 
 // effectiveActiveInputGroups resolves UI method metadata from declared
@@ -382,7 +500,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	values, inherited, err := s.profileValues(p, pr, key, q)
+	p, pr, values, inherited, err := s.profileValues(p, pr, key, q)
 	credentialState, credentialNote := s.credentialObservation(p, key)
 	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
 	if err != nil {
@@ -663,7 +781,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		return out, err
 	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
-	values, _, err := s.profileValues(p, pr, key, q)
+	p, pr, values, _, err := s.profileValues(p, pr, key, q)
 	if err != nil {
 		return out, err
 	}
@@ -1270,10 +1388,15 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			err = e
 		}
 	case "start", "prepare", "authenticate":
-		values, _, e := s.profileValues(p, pr, key, q)
+		p, pr, values, _, e := s.profileValues(p, pr, key, q)
 		if e != nil {
 			return out, e
 		}
+		definition, e = selectMCPProfile(p, mcpName)
+		if e != nil {
+			return out, invalid(e)
+		}
+		child = mcpProfileKey(key, p, definition)
 		if e = forms.Validate(p.Inputs, values); e != nil {
 			return out, invalid(e)
 		}

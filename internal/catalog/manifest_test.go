@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,188 @@ func TestLoadPlainSkill(t *testing.T) {
 				t.Fatalf("bad package: %#v", p)
 			}
 		})
+	}
+}
+
+func TestLoadAndResolveHCLManifestExpressions(t *testing.T) {
+	dir := writeManifest(t, `schema_version = 1
+id = "hcl-capability"
+name = "${ upper(\"guide\") }"
+[skill]
+name = "guidance"
+[[inputs]]
+name = "enabled"
+type = "boolean"
+default = "${ true }"
+[[inputs]]
+name = "token"
+type = "secret"
+regex = "${ \"^[A-Z]+$\" }"
+[[inputs]]
+name = "timeout"
+type = "integer"
+default = 45
+[[inputs]]
+name = "arguments"
+type = "multichoice"
+default = ["--verbose", "--safe"]
+[[inputs]]
+name = "require_consent"
+type = "boolean"
+default = false
+[[inputs]]
+name = "consent"
+type = "boolean"
+required = "${ inputs.require_consent }"
+[mcp]
+name = "service"
+token_input = "token"
+token_header = "${ base64encode(inputs.token) }"
+registration_timeout_ms = "${ inputs.timeout }"
+args = "${ inputs.arguments }"
+[mcp.env]
+TOKEN = "${ inputs.token }"
+[mcp.actions.authenticate]
+command = ["./helper", "${inputs.token}"]
+`)
+	pkg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Name != "GUIDE" || pkg.Inputs[0].Default != true {
+		t.Fatalf("static HCL results were not typed before schema decode: %#v", pkg)
+	}
+	if pkg.MCP.TokenHeader != `${ base64encode(inputs.token) }` {
+		t.Fatalf("runtime expression was not retained for a selected profile: %q", pkg.MCP.TokenHeader)
+	}
+	resolved, err := ResolveExpressions(pkg, map[string]any{"token": "ada-token", "timeout": int64(45), "arguments": []string{"--verbose", "--safe"}, "require_consent": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.MCP.TokenHeader != "YWRhLXRva2Vu" || resolved.MCP.Actions["authenticate"].Argv[1] != "ada-token" {
+		t.Fatalf("runtime expressions did not use resolved inputs: %#v", resolved.MCP)
+	}
+	if resolved.MCP.RegistrationTimeoutMS != 45 || !resolved.Inputs[5].Required || !reflect.DeepEqual(resolved.MCP.Args, []string{"--verbose", "--safe"}) {
+		t.Fatalf("typed HCL values not restored at resolution: package=%#v mcp=%#v", resolved.Inputs, resolved.MCP)
+	}
+	if resolved.Inputs[1].Regex != "^[A-Z]+$" || resolved.MCP.Env["TOKEN"] != "ada-token" {
+		t.Fatalf("evaluated regex/env values: inputs=%#v env=%#v", resolved.Inputs, resolved.MCP.Env)
+	}
+	if pkg.MCP.TokenHeader != `${ base64encode(inputs.token) }` {
+		t.Fatal("resolving the copy mutated the catalog package")
+	}
+}
+
+func TestRuntimeMissingInputExpressionReturnsHCLDiagnostic(t *testing.T) {
+	dir := writeManifest(t, plainManifest+`[mcp]
+name = "service"
+[mcp.actions.authenticate]
+command = ["helper", "${ inputs.missing }"]
+`)
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveExpressions(p, map[string]any{})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported attribute") || !strings.Contains(err.Error(), "mcp.actions.authenticate.command[1]") {
+		t.Fatalf("missing runtime reference error = %v", err)
+	}
+}
+
+func TestDynamicPluginPathUsesManifestDirectoryAfterEvaluation(t *testing.T) {
+	dir := writeManifest(t, plainManifest+`[[inputs]]
+name = "plugin_root"
+type = "directory"
+[[plugins]]
+name = "config"
+format = "claude-code"
+source = "${ inputs.plugin_root }"
+`)
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveExpressions(p, map[string]any{"plugin_root": "configs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolved.Plugins[0].Source, filepath.Join(dir, "configs"); got != want {
+		t.Fatalf("resolved path = %q, want %q", got, want)
+	}
+}
+
+func TestChainedInputDefaultsResolveAndCyclesKeepHCLCause(t *testing.T) {
+	dir := writeManifest(t, plainManifest+`[[inputs]]
+name = "third"
+type = "string"
+default = "${ inputs.second }-3"
+[[inputs]]
+name = "second"
+type = "string"
+default = "${ inputs.first }-2"
+[[inputs]]
+name = "first"
+type = "string"
+`)
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs, err := ResolveInputDefinitions(p, map[string]any{"first": "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defs[0].Default != "one-2-3" {
+		t.Fatalf("chained input default = %#v", defs[0].Default)
+	}
+
+	cycle := writeManifest(t, plainManifest+`[[inputs]]
+name = "first"
+type = "string"
+default = "${ inputs.second }"
+[[inputs]]
+name = "second"
+type = "string"
+default = "${ inputs.first }"
+`)
+	p, err = Load(cycle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveInputDefinitions(p, map[string]any{})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported attribute") {
+		t.Fatalf("cycle did not retain HCL cause: %v", err)
+	}
+}
+
+func TestResolveInputDefinitionsDoesNotMutateManifestAcrossProfiles(t *testing.T) {
+	dir := writeManifest(t, plainManifest+`[[inputs]]
+name = "handle"
+type = "string"
+[[inputs]]
+name = "greeting"
+type = "string"
+default = "${ inputs.handle }"
+`)
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := map[string]any{"inputs": []any{
+		map[string]any{"name": "handle", "type": "string"},
+		map[string]any{"name": "greeting", "type": "string", "default": "${ inputs.handle }"},
+	}}
+	for _, tc := range []struct{ input, want string }{{"Ada", "Ada"}, {"Grace", "Grace"}} {
+		defs, err := ResolveInputDefinitions(p, map[string]any{"handle": tc.input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if defs[1].Default != tc.want {
+			t.Fatalf("profile %s default = %#v, want %q", tc.input, defs[1].Default, tc.want)
+		}
+	}
+	if !reflect.DeepEqual(p.RawManifest["inputs"], original["inputs"]) {
+		t.Fatalf("profile resolution mutated raw manifest: %#v", p.RawManifest["inputs"])
 	}
 }
 

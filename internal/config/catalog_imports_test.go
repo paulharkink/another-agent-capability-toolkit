@@ -75,6 +75,30 @@ source = "./capabilities/guidance"
 	}
 }
 
+func TestImportedCatalogExpressionsUseImportedManifestContext(t *testing.T) {
+	root := t.TempDir()
+	vendor := filepath.Join(root, "vendor")
+	packSkill(t, filepath.Join(vendor, "capability"), "source-id")
+	packFile(t, filepath.Join(vendor, "aact.toml"), `schema_version = 1
+source_id = "CORE"
+[[catalog]]
+id = "${ lower(source_id) }"
+source = "./capability"
+`)
+	packFile(t, filepath.Join(root, "aact.toml"), `schema_version = 1
+pack_id = "consumer"
+[[imports]]
+catalog = "./vendor/aact.toml"
+`)
+	pack, err := DiscoverPack(root, "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Catalog) != 1 || pack.Catalog[0].ID != "core" || pack.Catalog[0].Dir != filepath.Join(vendor, "capability") {
+		t.Fatalf("imported expression context/provenance = %#v", pack.Catalog)
+	}
+}
+
 func TestCatalogImportCyclesMissingPathsAndUnknownSelection(t *testing.T) {
 	for _, tc := range []struct{ name, fragment, want string }{
 		{"cycle", "[[imports]]\ncatalog = \"./aact.toml\"\n", "cycle"},

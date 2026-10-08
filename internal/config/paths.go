@@ -12,6 +12,16 @@ func ResolvePath(path, declaringFile string) (string, error) { return resolvePat
 // ResolveInputPaths makes declared path answers absolute against their own source file.
 // Call this for each layer before merging answers so a later layer keeps its origin.
 func ResolveInputPaths(defs []catalog.Input, values map[string]any, declaringFile string) (map[string]any, error) {
+	return resolveInputPaths(defs, values, declaringFile, false)
+}
+
+// ResolveInputPathsUnresolved is for TOML loader trees that still contain HCL
+// expressions. Runtime values should use ResolveInputPaths after evaluation.
+func ResolveInputPathsUnresolved(defs []catalog.Input, values map[string]any, declaringFile string) (map[string]any, error) {
+	return resolveInputPaths(defs, values, declaringFile, true)
+}
+
+func resolveInputPaths(defs []catalog.Input, values map[string]any, declaringFile string, preserveExpressions bool) (map[string]any, error) {
 	out := cloneMap(values)
 	for _, def := range defs {
 		if def.Type != "file" && def.Type != "directory" {
@@ -28,6 +38,9 @@ func ResolveInputPaths(defs []catalog.Input, values map[string]any, declaringFil
 			}
 			value := container[name]
 			if value == nil {
+				continue
+			}
+			if text, ok := value.(string); preserveExpressions && ok && strings.Contains(text, "${") {
 				continue
 			}
 			resolved, e := resolvePathValue(value, def.Multiple, declaringFile)

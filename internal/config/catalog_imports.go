@@ -1,10 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
-	"github.com/pelletier/go-toml/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,9 +50,9 @@ func resolveCatalog(manifest string, m sourceManifest, bundledRoot string, stack
 		if err != nil {
 			return nil, fmt.Errorf("%s: imported catalog %s: %w", manifest, path, err)
 		}
-		var imported sourceManifest
-		if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&imported); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+		imported, err := decodeSourceManifest(data, path)
+		if err != nil {
+			return nil, err
 		}
 		if imported.SchemaVersion != 1 {
 			return nil, fmt.Errorf("%s: unsupported schema_version %d", path, imported.SchemaVersion)

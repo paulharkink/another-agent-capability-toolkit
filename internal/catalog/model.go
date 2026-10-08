@@ -17,6 +17,7 @@ type Package struct {
 	Inputs        []Input        `toml:"inputs" json:"inputs"`
 	Templates     []Template     `toml:"templates" json:"templates"`
 	Generator     *Command       `toml:"generator" json:"generator"`
+	RawManifest   map[string]any `toml:"-" json:"-"`
 }
 
 func (p Package) MCPDefinitions() []MCP {

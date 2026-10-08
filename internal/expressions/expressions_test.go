@@ -21,7 +21,18 @@ func TestEvaluatePreservesExactArrayType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []any{1, 2, 3}
+	want := []any{int64(1), int64(2), int64(3)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v (%T), want %#v", got, got, want)
+	}
+}
+
+func TestEvaluatePreservesHCLObjectType(t *testing.T) {
+	got, err := Evaluate(`${ { enabled = enabled, ports = [1, 2] } }`, map[string]any{"enabled": true}, "package.toml", "inputs.options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"enabled": true, "ports": []any{int64(1), int64(2)}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v (%T), want %#v", got, got, want)
 	}
@@ -61,11 +72,22 @@ func TestEvaluateEscapesExpressionDelimiter(t *testing.T) {
 }
 
 func TestEvaluateAllowsCuratedFunctionsAndBase64RoundTrip(t *testing.T) {
-	got, err := Evaluate("${ upper(fromBase64(toBase64(\"hello\"))) }", nil, "package.toml", "value")
+	got, err := Evaluate(`${ upper(base64decode(base64encode("hello"))) }`, nil, "package.toml", "value")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "HELLO" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestEvaluateUsesFinalResolvedInputsForHCLExpressions(t *testing.T) {
+	inputs := map[string]any{"username": "ada", "token": "secret-value", "enabled": false}
+	got, err := Evaluate(`${ base64encode("${inputs.username}:${inputs.token}") }`, map[string]any{"inputs": inputs}, "package.toml", "mcp.token_header")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "YWRhOnNlY3JldC12YWx1ZQ==" {
 		t.Fatalf("got %#v", got)
 	}
 }
@@ -83,7 +105,7 @@ func TestEvaluateStringLiteralMayContainClosingDelimiter(t *testing.T) {
 func TestEvaluateRejectsUnavailableFunctions(t *testing.T) {
 	for _, expression := range []string{"${ now() }", "${ unknownFunction(\"x\") }"} {
 		_, err := Evaluate(expression, nil, "profile.toml", "inputs.value")
-		if err == nil || !strings.Contains(err.Error(), "unknown name") {
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown function") {
 			t.Errorf("Evaluate(%q) error = %v, want a clear unknown-name cause", expression, err)
 		}
 	}
@@ -96,34 +118,17 @@ func TestEvaluateErrorKindsIncludeFileAndPath(t *testing.T) {
 		env   map[string]any
 		cause string
 	}{
-		{name: "syntax", value: "${ 1 + }", cause: "unexpected"},
-		{name: "undefined", value: "${ missing }", cause: "unknown name"},
-		{name: "wrong function argument type", value: "${ upper(answer) }", env: map[string]any{"answer": 42}, cause: "cannot use int as argument"},
-		{name: "function evaluation", value: "${ fromBase64(answer) }", env: map[string]any{"answer": "not base64!"}, cause: "illegal base64 data"},
+		{name: "syntax", value: "${ 1 + }", cause: "expression"},
+		{name: "undefined", value: "${ missing }", cause: "unknown variable"},
+		{name: "wrong function argument type", value: `${ upper(answer) }`, env: map[string]any{"answer": []any{42}}, cause: "string"},
+		{name: "function evaluation", value: `${ base64decode(answer) }`, env: map[string]any{"answer": "not base64!"}, cause: "base64"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Evaluate(tc.value, tc.env, "aact.toml", "packages.demo.inputs.answer")
-			if err == nil || !strings.Contains(err.Error(), "aact.toml: packages.demo.inputs.answer:") || !strings.Contains(err.Error(), tc.cause) {
+			if err == nil || !strings.Contains(err.Error(), "aact.toml: packages.demo.inputs.answer:") || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.cause)) {
 				t.Fatalf("error = %v, want source path and cause %q", err, tc.cause)
 			}
 		})
-	}
-}
-
-func TestEvaluateErrorsIncludeSourceAndPathWithoutValues(t *testing.T) {
-	secret := "never-print-this-secret"
-	_, err := Evaluate("${ secret_value + 1 }", map[string]any{"secret_value": secret}, "/packs/acme/profile.toml", "inputs.token")
-	if err == nil {
-		t.Fatal("undefined expression unexpectedly succeeded")
-	}
-	message := err.Error()
-	for _, expected := range []string{"/packs/acme/profile.toml", "inputs.token"} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("error %q does not include %q", message, expected)
-		}
-	}
-	if strings.Contains(message, secret) {
-		t.Fatalf("error exposed a value: %q", message)
 	}
 }

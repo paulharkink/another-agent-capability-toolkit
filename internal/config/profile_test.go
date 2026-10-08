@@ -38,6 +38,45 @@ func TestProfileDiscoveryIncludesInvalidRowsWithoutMutatingFiles(t *testing.T) {
 	}
 }
 
+func TestProfileExpressionsResolveAgainstSelectedInputs(t *testing.T) {
+	root := t.TempDir()
+	p := Pack{ID: "company", ProfileRoot: root, Catalog: []catalog.Package{{ID: "guidance", Inputs: []catalog.Input{{Name: "name", Type: "string"}, {Name: "greeting", Type: "string"}}}}}
+	path := filepath.Join(root, "guidance", "default.toml")
+	text := "[inputs]\ngreeting = \"${ upper(inputs.name) }\"\n"
+	packFile(t, path, text)
+	profile, err := LoadProfile(p, "guidance", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveExpressions(profile, map[string]any{"name": "Ada"}, p.Catalog[0].Inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := resolved.Raw["inputs"].(map[string]any)
+	if inputs["greeting"] != "ADA" {
+		t.Fatalf("profile expression not resolved: %#v", inputs)
+	}
+}
+
+func TestProfileExpressionResolvesPathBeforeApplyingProfileBase(t *testing.T) {
+	root := t.TempDir()
+	p := Pack{ID: "company", ProfileRoot: root, Catalog: []catalog.Package{{ID: "guidance", Inputs: []catalog.Input{{Name: "root", Type: "directory"}, {Name: "config", Type: "file"}}}}}
+	path := filepath.Join(root, "guidance", "default.toml")
+	packFile(t, path, "[inputs]\nconfig = \"${ inputs.root }/settings.toml\"\n")
+	profile, err := LoadProfile(p, "guidance", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveExpressions(profile, map[string]any{"root": "workspace"}, p.Catalog[0].Inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := resolved.Raw["inputs"].(map[string]any)
+	if got, want := inputs["config"], filepath.Join(root, "guidance", "workspace", "settings.toml"); got != want {
+		t.Fatalf("profile path expression = %v, want path based on declaring profile %q", got, want)
+	}
+}
+
 func TestProfileDiscoveryEmptyUnknownAndEscapingPaths(t *testing.T) {
 	root := t.TempDir()
 	p := Pack{ID: "company", ProfileRoot: root, Catalog: []catalog.Package{{ID: "guidance"}}}

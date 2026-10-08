@@ -78,7 +78,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
-		values, _, e := s.profileValues(p, profile, key, ProfileRequest{})
+		_, _, values, _, e := s.profileValues(p, profile, key, ProfileRequest{})
 		if e != nil {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = e.Error()
