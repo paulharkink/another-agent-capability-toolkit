@@ -5,12 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 // This verifies remembered-source behavior while the process working directory
-// points at an unrelated checkout-like directory. The package, target TOML,
+// points at an unrelated checkout-like directory. The package, profile TOML,
 // installed content, and ledger identity must all come from the remembered root.
 func TestUXJourney13RememberedSourcePreviewAndInstallIgnoreProcessWorkingDirectory(t *testing.T) {
 	svc, _, store := fixture(t)
@@ -22,6 +20,7 @@ id = "demo"
 name = "Remembered Demo"
 [skill]
 name = "demo"
+source = "./"
 [[inputs]]
 name = "repository"
 label = "Repository"
@@ -30,14 +29,12 @@ type = "directory"
 	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	targetPath := filepath.Join(root, "env", "prod", "demo", "blue.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+	remembered, err := svc.forSource("remembered")
+	if err != nil {
 		t.Fatal(err)
 	}
-	targetTOML := "[inputs]\nrepository = '../source'\n"
-	if err := os.WriteFile(targetPath, []byte(targetTOML), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	profileTOML := "[inputs]\nrepository = '../source'\n"
+	ref := writeProfileForTest(t, remembered, "demo", "blue", profileTOML)
 	unrelated := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(unrelated, "demo"), 0o700); err != nil {
 		t.Fatal(err)
@@ -46,20 +43,17 @@ type = "directory"
 		t.Fatal(err)
 	}
 	t.Chdir(unrelated)
-	request := viewmodel.SetupRequest{SourceID: "remembered", PackageID: "demo", Environment: "prod", Target: "blue"}
-	preview, err := svc.UISetupPreview(context.Background(), request)
+	preview, err := remembered.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Key.Source != "remembered" || preview.SourceRoot != root || preview.TargetPath != targetPath || preview.TargetTOML != targetTOML {
-		t.Fatalf("preview mixed process cwd with remembered source: key=%+v root=%q path=%q TOML=%q", preview.Key, preview.SourceRoot, preview.TargetPath, preview.TargetTOML)
+	if preview.Key.Source != "remembered" || preview.PackRoot != root || preview.ProfilePath != filepath.Join(root, "environments", "demo", "blue.toml") || preview.ProfileTOML != profileTOML {
+		t.Fatalf("preview mixed process cwd with remembered source: key=%+v root=%q path=%q TOML=%q", preview.Key, preview.PackRoot, preview.ProfilePath, preview.ProfileTOML)
 	}
-	if len(preview.Inputs) != 1 || preview.Inputs[0].Value != filepath.Join(root, "env", "prod", "source") {
-		t.Fatalf("resolved value did not use remembered target TOML location: %+v", preview.Inputs)
+	if len(preview.Inputs) != 1 || preview.Inputs[0].Value != filepath.Join(root, "environments", "source") {
+		t.Fatalf("resolved value did not use remembered profile TOML location: %+v", preview.Inputs)
 	}
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
-		SetupRequest: request, DestinationIDs: []string{"all"}, Inputs: map[string]any{"repository": preview.Inputs[0].Value},
-	})
+	result, err := remembered.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"all"}, Inputs: map[string]any{"repository": preview.Inputs[0].Value}})
 	if err != nil || !result.Saved {
 		t.Fatalf("remembered source install failed: result=%+v err=%v", result, err)
 	}
@@ -71,8 +65,8 @@ type = "directory"
 		t.Fatal("remembered source install created no installation ledger row")
 	}
 	for _, row := range rows {
-		if row.Key.Source != "remembered" || row.Key.Environment != "prod" || row.Key.Target != "blue" {
-			t.Fatalf("installation ledger identity came from another checkout/target: %+v", row)
+		if row.Key.Source != "remembered" || row.Key.Environment != "" || row.Key.Target != "blue" {
+			t.Fatalf("installation ledger identity came from another checkout/profile: %+v", row)
 		}
 	}
 	installedSkill := filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")

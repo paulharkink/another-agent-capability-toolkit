@@ -11,52 +11,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
-func TestUXChooserSelectionReplacesChooserWithExactWorkspace(t *testing.T) {
-	m, _ := homeFixture()
-	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
-	m.backend = chooserSetupBackend{}
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{
-		{SourceID: "one", Environment: "dev", PackageID: "inspect", Name: "local", Path: "/tmp/dev/inspect/local.toml"},
-		{SourceID: "one", Environment: "prod", PackageID: "inspect", Name: "live", Path: "/tmp/prod/inspect/live.toml"},
-	}}
-	parent := ansi.Strip(m.homeView().Content)
-	parentL1, parentL2, parentFocus := m.home.Capabilities.ID, m.home.Context.Index, m.home.Focus
-	m.homeOperation("choose-preset")
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	_, preview := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if preview == nil {
-		t.Fatal("selecting a target did not request its actual setup preview")
-	}
-	msg := preview()
-	if _, ok := msg.(setupPreviewMsg); !ok {
-		t.Fatalf("target selection returned %T, want setupPreviewMsg", msg)
-	}
-	m.Update(msg)
-	if m.home.Modal != nil || m.form == nil || m.pendingSetup == nil {
-		t.Fatalf("chooser was not replaced by its workspace: modal=%+v form=%v preview=%+v", m.home.Modal, m.form != nil, m.pendingSetup)
-	}
-	want := state.Key{Source: "one", Package: "inspect", Environment: "prod", Target: "live"}
-	if m.pendingSetup.Key != want {
-		t.Fatalf("workspace opened the wrong target: got %+v want %+v", m.pendingSetup.Key, want)
-	}
-	if m.home.Capabilities.ID != parentL1 || m.home.Context.Index != parentL2 || m.home.Focus != parentFocus {
-		t.Fatalf("opening the workspace changed its L1/L2 parent selection: before=(%q,%d,%v) after=(%q,%d,%v)", parentL1, parentL2, parentFocus, m.home.Capabilities.ID, m.home.Context.Index, m.home.Focus)
-	}
-	x, y, width, height, ok := m.setupOverlayBounds()
-	if !ok || x <= 0 || y <= 0 || width >= m.width || height >= m.height || x+width > m.width || y+height > m.height {
-		t.Fatalf("paired workspace is not inset within the parent: bounds=(%d,%d %dx%d) parent=%dx%d ok=%t", x, y, width, height, m.width, m.height, ok)
-	}
-	rendered := ansi.Strip(m.View().Content)
-	for _, parentContent := range []string{"AACT · Another Agent Capability Toolkit", "Capabilities", "Selected capability · Inspector"} {
-		if !strings.Contains(parent, parentContent) || !strings.Contains(rendered, parentContent) {
-			t.Errorf("rendered workspace did not retain parent content %q:\n%s", parentContent, rendered)
-		}
-	}
-	if !strings.Contains(rendered, "Workspace sections") || strings.Contains(rendered, "L3") || strings.Contains(rendered, "L4") || strings.Contains(rendered, "FOCUSED") || !strings.Contains(rendered, "│ ── Connection") {
-		t.Fatalf("selected target did not render paired section and detail panes:\n%s", rendered)
-	}
-}
-
 func TestUXDeclaredCredentialHintAndSourcePathStaySeparate(t *testing.T) {
 	key := state.Key{Source: "fixture", Package: "cluster-inspector", Environment: "sample-env", Target: "local"}
 	for _, credentialState := range []string{"missing", "present"} {

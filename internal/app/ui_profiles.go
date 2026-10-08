@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -31,7 +32,7 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 		if instance.Ownership != "local" {
 			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
 		}
-		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP, Profile: key.Profile})
+		result, err := source.RunProfileMCP(ctx, "logs", profileRequestForStateKey(key), mcpNameForStateKey(key))
 		return result.Logs, err
 	}
 	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
@@ -44,9 +45,7 @@ func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key
 	if err != nil {
 		return "", err
 	}
-	result, err := source.MCP(ctx, MCPRequest{
-		Action: action, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP, Profile: key.Profile,
-	})
+	result, err := source.RunProfileMCP(ctx, action, profileRequestForStateKey(key), mcpNameForStateKey(key))
 	if err != nil {
 		return "", err
 	}
@@ -54,6 +53,17 @@ func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key
 		return result.Instances[0].URL, nil
 	}
 	return result.Message, nil
+}
+
+func profileRequestForStateKey(key state.Key) ProfileRequest {
+	return ProfileRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+}
+
+func mcpNameForStateKey(key state.Key) string {
+	if key.MCP != "" {
+		return key.MCP
+	}
+	return key.Profile
 }
 
 // UIProfileSnapshot merges configured profiles and registrations with a Docker

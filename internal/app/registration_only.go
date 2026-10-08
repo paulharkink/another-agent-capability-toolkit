@@ -7,12 +7,14 @@ import (
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
 // RegistrationRequest connects agents in this AACT installation to an MCP
 // endpoint. The endpoint's runtime may belong to another installation.
 type RegistrationRequest struct {
+	Ref          config.ProfileRef
 	Key          state.Key
 	URL          string
 	ExternalURLs map[string]string
@@ -44,30 +46,30 @@ func (s *Service) registrationTimeoutForKey(key state.Key) int {
 func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequest) (out Result, err error) {
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
-	if q.Key.Source == "" || q.Key.Package == "" || (q.URL == "" && len(q.ExternalURLs) == 0) {
-		return out, invalid(errors.New("Capability Pack ID, capability ID, and MCP endpoint URL are required"))
+	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return out, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+	}
+	if q.Ref.PackID != s.Source.ID {
+		source, sourceErr := s.forSource(q.Ref.PackID)
+		if sourceErr != nil {
+			return out, invalid(fmt.Errorf("Capability Pack %q is not selected: %w", q.Ref.PackID, sourceErr))
+		}
+		return source.ConfigureRegistrations(ctx, q)
+	}
+	if q.URL == "" && len(q.ExternalURLs) == 0 {
+		return out, invalid(errors.New("MCP endpoint URL is required"))
+	}
+	q.Key, err = s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		return out, err
 	}
 	if q.Key.Source == s.Source.ID {
 		p, lookupErr := s.packageByID(q.Key.Package)
 		if lookupErr != nil {
 			return out, invalid(fmt.Errorf("cannot attach this MCP without its Capability Pack catalog entry; locate the pack directory first: %w", lookupErr))
 		}
-		if p.HasMCP() && p.Skill != nil {
-			externalURLs := q.ExternalURLs
-			externalURL := q.URL
-			if len(p.MCPs) > 0 {
-				if q.URL != "" {
-					if len(p.MCPs) != 1 || len(q.ExternalURLs) > 0 {
-						return out, invalid(errors.New("multi-MCP capability requires a separately keyed endpoint for each definition"))
-					}
-					externalURLs = map[string]string{p.MCPs[0].Name: q.URL}
-				}
-				externalURL = ""
-			}
-			return s.Install(ctx, InstallRequest{
-				Package: q.Key.Package, Environment: q.Key.Environment, Target: q.Key.Target,
-				Agents: q.Agents, ExternalURL: externalURL, ExternalURLs: externalURLs,
-			})
+		if len(p.MCPDefinitions()) > 1 && q.URL != "" && len(q.ExternalURLs) == 0 {
+			return out, invalid(errors.New("multi-MCP capability requires a separately keyed endpoint for each definition"))
 		}
 	}
 	desired := make(map[string]agents.Environment, len(q.Agents))

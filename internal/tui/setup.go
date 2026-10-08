@@ -54,19 +54,27 @@ func (e setupProgressEmitter) emit(progress viewmodel.OperationProgress) {
 }
 
 func (m *Model) beginSetup(sourceID, packageID, environment, target string) tea.Cmd {
-	return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: sourceID, PackageID: packageID, Environment: environment, Target: target}, "Overview")
+	for _, capability := range m.capabilities() {
+		if capability.Source == sourceID && capability.Package == packageID {
+			m.openProfileCreation(capability)
+			return nil
+		}
+	}
+	m.output = "Select a Capability Pack capability before creating a profile."
+	return nil
 }
 
 func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSection string) tea.Cmd {
+	if request.Ref.PackID == "" || request.Ref.CapabilityID == "" || request.Ref.Name == "" {
+		m.output = "Choose a Capability Pack profile to open its workspace. Environment targets are not operational profiles."
+		return nil
+	}
 	backend, ok := m.backend.(setupBackend)
 	if !ok {
 		m.output = "Unified setup service unavailable"
 		return nil
 	}
-	key := state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
-	if request.Ref.CapabilityID != "" {
-		key = state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
-	}
+	key := state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
 	priorDraft := map[string]any(nil)
 	if m.workspace != nil && m.workspace.Key == key {
 		priorDraft = m.workspace.cachedDraft()
@@ -136,7 +144,27 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 		for _, p := range m.capabilityProfiles[key.Package].Profiles {
 			if p.Key == key {
 				if len(p.MCPs) == 1 {
-					return configurationRuntimeProfile(p, p.MCPs[0], nil)
+					profile := configurationRuntimeProfile(p, p.MCPs[0], nil)
+					if saved := exactProfileSnapshot(m.profileSnapshot, key); saved != nil {
+						profile.URL = saved.URL
+						profile.Transport = saved.Transport
+						profile.RuntimeStatus = saved.RuntimeStatus
+						profile.Ownership = saved.Ownership
+						profile.RegisteredAgents = append([]string(nil), saved.RegisteredAgents...)
+						profile.LastAction = saved.LastAction
+						profile.LastActionAt = saved.LastActionAt
+						profile.LocalLastAction = saved.LocalLastAction
+						profile.LocalLastActionAt = saved.LocalLastActionAt
+						profile.ObservedAt = saved.ObservedAt
+						profile.ObservationStale = saved.ObservationStale
+						profile.CanStart = saved.CanStart
+						profile.CanStop = saved.CanStop
+						profile.CanConfigureRegistrations = saved.CanConfigureRegistrations
+						profile.StartDisabledReason = saved.StartDisabledReason
+						profile.StopDisabledReason = saved.StopDisabledReason
+						profile.RegistrationDisabledReason = saved.RegistrationDisabledReason
+					}
+					return profile
 				}
 				return nil
 			}
@@ -144,12 +172,24 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 	}
 
 	if m.profileSnapshot != nil {
+		var projected *viewmodel.Profile
+		matches := 0
 		for index := range m.profileSnapshot.Profiles {
 			profile := m.profileSnapshot.Profiles[index]
 			if profile.Key == key {
 				profile.RegisteredAgents = append([]string(nil), profile.RegisteredAgents...)
 				return &profile
 			}
+			if key.Environment == "" && profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Target == key.Target {
+				copy := profile
+				copy.Key = key
+				projected = &copy
+				matches++
+			}
+		}
+		if matches == 1 {
+			projected.RegisteredAgents = append([]string(nil), projected.RegisteredAgents...)
+			return projected
 		}
 	}
 	profile := &viewmodel.Profile{Key: key, RuntimeStatus: "unknown", Ownership: "unknown"}
@@ -189,6 +229,20 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 				profile.StopDisabledReason = "Runtime owner is unknown"
 			}
 			return profile
+		}
+	}
+	return nil
+}
+
+func exactProfileSnapshot(snapshot *viewmodel.ProfileSnapshot, key state.Key) *viewmodel.Profile {
+	if snapshot == nil {
+		return nil
+	}
+	for index := range snapshot.Profiles {
+		if snapshot.Profiles[index].Key == key {
+			profile := snapshot.Profiles[index]
+			profile.RegisteredAgents = append([]string(nil), profile.RegisteredAgents...)
+			return &profile
 		}
 	}
 	return nil
@@ -626,11 +680,8 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 		}
 	}
 	request := viewmodel.SetupInstallRequest{
-		SetupRequest: viewmodel.SetupRequest{SourceID: preview.Key.Source, PackageID: preview.Key.Package, Environment: preview.Key.Environment, Target: preview.Key.Target},
+		SetupRequest: m.packProfileRequest(preview.Key),
 		Inputs:       inputs, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
-	}
-	if m.profileMode() {
-		request.SetupRequest = m.packProfileRequest(preview.Key)
 	}
 	if m.pendingSetupItemsField != "" {
 		items, _ := values[m.pendingSetupItemsField].([]string)

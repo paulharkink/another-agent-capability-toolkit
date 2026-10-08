@@ -2,6 +2,7 @@ package viewmodel
 
 import (
 	"context"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
@@ -18,6 +19,7 @@ func OperationProgressObserver(ctx context.Context) func(OperationProgress) {
 }
 
 type RegistrationRequest struct {
+	Ref            config.ProfileRef
 	Key            state.Key
 	URL            string
 	Transport      string

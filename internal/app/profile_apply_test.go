@@ -18,10 +18,12 @@ func (f fixtureAdapters) Adapter(string) (agents.Adapter, error) { return f.a, n
 func (f fixtureAdapters) Adapters() []agents.Adapter             { return []agents.Adapter{f.a} }
 
 type profileAdapter struct {
-	calls   []string
-	fail    string
-	inspect func()
-	home    string
+	calls          []string
+	fail           string
+	failPlugin     bool
+	pluginRequests []agents.PluginRequest
+	inspect        func()
+	home           string
 }
 
 func (a *profileAdapter) ID() string   { return "test-agent" }
@@ -51,8 +53,19 @@ func (a *profileAdapter) InstallSkill(_ context.Context, _ agents.Scope, q agent
 func (a *profileAdapter) Register(_ context.Context, _ agents.Scope, q agents.MCPRequest) (state.Installation, error) {
 	return a.effect(q.Key, "mcp", q.Registration.Name)
 }
-func (a *profileAdapter) InstallPlugin(_ context.Context, _ agents.Scope, q agents.PluginRequest) (state.Installation, error) {
-	return a.effect(q.Key, "plugin", q.Plugin.Name)
+func (a *profileAdapter) InstallPlugin(_ context.Context, _ agents.Scope, q agents.PluginRequest) (agents.PluginInstallResult, error) {
+	a.pluginRequests = append(a.pluginRequests, q)
+	market := state.Installation{Key: q.Key, AgentID: a.ID(), AgentKind: a.ID(), Component: "plugin-marketplace", ReleaseID: "aact-" + q.Key.ID()[:12] + "-" + q.Plugin.Name}
+	if a.failPlugin {
+		result := agents.PluginInstallResult{Effects: []state.Installation{market}}
+		if q.Existing != nil {
+			result.Removed = []state.Installation{*q.Existing}
+		}
+		return result, errors.New("specific plugin install failure")
+	}
+	row, err := a.effect(q.Key, "plugin", q.Plugin.Name)
+	row.ReleaseID = q.Plugin.Name + "@aact-" + q.Key.ID()[:12] + "-" + q.Plugin.Name
+	return agents.PluginInstallResult{Installation: row, Effects: []state.Installation{market}}, err
 }
 func (a *profileAdapter) RemoveSkill(context.Context, agents.Scope, state.Installation) error {
 	return nil
@@ -147,19 +160,63 @@ func TestApplyProfilePluginExplicitAndSavedSelection(t *testing.T) {
 	s.Source.Catalog[0].Dir = filepath.Dir(dir)
 	q.ItemIDs = []string{"plugin:guidance"}
 	out, err := s.ApplyProfile(context.Background(), q)
-	if err != nil || len(out.Changes) != 1 || a.calls[0] != "plugin:guidance" {
+	if err != nil || len(out.Changes) != 2 || a.calls[0] != "plugin:guidance" {
 		t.Fatalf("%+v %v %v", out, err, a.calls)
 	}
 	a.calls = nil
 	q.ItemIDs = nil
 	q.DestinationIDs = nil
 	out, err = s.ApplyProfile(context.Background(), q)
-	if err != nil || len(out.Changes) != 1 || len(a.calls) != 1 {
+	if err != nil || len(out.Changes) != 2 || len(a.calls) != 1 {
 		t.Fatalf("saved selection: %+v %v", out, err)
+	}
+}
+
+func TestApplyProfilePersistsPartialMarketplaceEffectAndRetries(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	dir := filepath.Join(t.TempDir(), "plugin")
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(`{"name":"guidance"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0].Plugins = []catalog.Plugin{{Name: "guidance", Format: "claude-code", Source: dir}}
+	s.Source.Catalog[0].Dir = filepath.Dir(dir)
+	q.ItemIDs = []string{"plugin:guidance"}
+	a.failPlugin = true
+	out, err := s.ApplyProfile(context.Background(), q)
+	if err == nil || len(out.Changes) != 1 || out.Changes[0].Component != "plugin-marketplace" {
+		t.Fatalf("partial result: %+v %v", out, err)
+	}
+	rows, _ := s.Store.Installations()
+	if len(rows) != 1 || rows[0].Component != "plugin-marketplace" {
+		t.Fatalf("partial effect ledger: %+v", rows)
+	}
+	a.failPlugin = false
+	a.calls = nil
+	out, err = s.ApplyProfile(context.Background(), q)
+	if err != nil || len(out.Changes) != 2 || len(a.pluginRequests) != 2 || !a.pluginRequests[1].MarketplaceConfigured {
+		t.Fatalf("retry did not reconcile recorded marketplace: %+v %v requests=%+v", out, err, a.pluginRequests)
+	}
+	for _, row := range out.Changes {
+		if row.Component == "plugin" && row.Destination == "" {
+			t.Fatalf("plugin installation result missing destination: %+v", row)
+		}
+	}
+	a.failPlugin = true
+	out, err = s.ApplyProfile(context.Background(), q)
+	if err == nil || len(out.Changes) != 2 || out.Changes[0].Component != "plugin" || out.Changes[1].Component != "plugin-marketplace" {
+		t.Fatalf("failed repeat update did not report removal and marketplace: %+v %v", out, err)
+	}
+	rows, _ = s.Store.Installations()
+	if len(rows) != 1 || rows[0].Component != "plugin-marketplace" {
+		t.Fatalf("failed repeat update left stale installed plugin state: %+v", rows)
 	}
 }
 func TestCreateProfileDoesNotChangePackFiles(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
+	q.Inputs = map[string]any{"label": "valid", "enabled": false}
 	q.Ref.Name = "extra"
 	if err := s.CreateProfile(context.Background(), q.Ref); err != nil {
 		t.Fatal(err)

@@ -23,9 +23,16 @@ type homeWorkspaceSetupBackend struct {
 
 func (b *homeWorkspaceSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.setup.previewRequest = request
+	key := setupProfileKey(request)
 	return viewmodel.SetupPreview{
-		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
-		PackageName: request.PackageID, Configured: true, MCP: request.PackageID == "inspect",
+		Key:         key,
+		PackageName: request.Ref.CapabilityID, Configured: true, MCP: request.Ref.CapabilityID == "inspect",
+		MCPDefinitions: func() []catalog.MCP {
+			if request.Ref.CapabilityID == "inspect" {
+				return []catalog.MCP{{Name: "inspect"}}
+			}
+			return nil
+		}(),
 	}, nil
 }
 
@@ -35,7 +42,8 @@ func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewm
 
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
-	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Environment: "dev", Target: "production"}, Name: "profile", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
+	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
+	msg.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(msg)
 	return m, msg
@@ -101,7 +109,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› dev / production · MCP · profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "profile"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -152,7 +160,7 @@ func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
 	v := m.View().Content
-	for _, s := range []string{"Capabilities", "Inspector", "profile", "running", "Main menu", "F2 Open / Focus"} {
+	for _, s := range []string{"Capabilities", "Inspector", "profile", "Main menu", "F2 Open / Focus"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q: %s", s, v)
 		}
@@ -164,6 +172,9 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	}
 	if got := m.profiles(); len(got) != 1 || got[0].Key.Target != "production" {
 		t.Fatalf("related profile filtering changed: %#v", got)
+	}
+	if got := m.profiles()[0].Status; got != "running" {
+		t.Fatalf("runtime observation was lost from the selected profile: %q", got)
 	}
 	press(m, tea.KeyDown, "")
 	if strings.Contains(m.View().Content, "Related MCP profiles") {
@@ -181,7 +192,9 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	m, msg := homeFixture()
 	for i := 0; i < 30; i++ {
-		msg.mcps = append(msg.mcps, mcp.Instance{Key: state.Key{Source: "one", Package: "inspect", Target: fmt.Sprintf("target-%02d", i)}, Status: "running"})
+		key := state.Key{Source: "one", Package: "inspect", Target: fmt.Sprintf("target-%02d", i)}
+		msg.mcps = append(msg.mcps, mcp.Instance{Key: key, Status: "running"})
+		msg.profileSnapshot.Profiles = append(msg.profileSnapshot.Profiles, viewmodel.Profile{Key: key, Name: key.Target, RuntimeStatus: "running", Ownership: "local"})
 	}
 	m.Update(msg)
 	press(m, tea.KeyEnter, "")
@@ -201,6 +214,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 		t.Fatal("resize/refresh lost selection")
 	}
 	msg.mcps = msg.mcps[:len(msg.mcps)-1]
+	msg.profileSnapshot.Profiles = msg.profileSnapshot.Profiles[:len(msg.profileSnapshot.Profiles)-1]
 	m.Update(msg)
 	if m.home.Context.Index != lastProfileRow-1 || !strings.Contains(m.output, "removed") {
 		t.Fatal("deleted selected profile not explained", m.View().Content)
@@ -215,7 +229,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	}
 }
 func TestHomeMenuDestinationsAndReturn(t *testing.T) {
-	for i, name := range []string{"Agents", "Environments", "Settings", "Help"} {
+	for i, name := range []string{"Agents", "Settings", "Help"} {
 		m, _ := homeFixture()
 		press(m, 'm', "m")
 		for j := 0; j < i; j++ {
@@ -245,7 +259,7 @@ func TestHomeMouseScrollAndResizeHitRegions(t *testing.T) {
 		t.Fatal("scroll/click did not select scrolled row", m.View().Content)
 	}
 	m.Update(tea.MouseClickMsg{X: 3, Y: 1, Button: tea.MouseLeft})
-	if !strings.Contains(m.View().Content, "Environments") {
+	if !strings.Contains(m.View().Content, "Main menu") {
 		t.Fatal("Main menu control not clickable")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
@@ -367,7 +381,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyF9, "")
-	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Environments", "Settings", "Help", "Back"}) {
+	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Settings", "Help", "Back"}) {
 		t.Fatalf("main menu: %v", got)
 	}
 	press(m, tea.KeyEscape, "")
@@ -396,6 +410,8 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
+	msg.profileSnapshot.Profiles[0].Ownership = "other-aact"
+	msg.profileSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
 	m.Update(msg)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)

@@ -355,26 +355,31 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 	}
 	var out Result
 	if action == "install" || action == "uninstall" {
-		envs := []agents.Environment{}
+		if profile == "" {
+			return "", invalid(errors.New("profile reference is required for capability install or uninstall"))
+		}
+		destinations := []string{}
 		for _, id := range strings.Split(agentID, ",") {
 			id = strings.TrimSpace(id)
 			if id == "" {
 				return "", invalid(errors.New("select an agent"))
 			}
-			a, e := svc.uiEnvironment(id, svc.key(packageID, environment, target))
-			if e != nil {
-				return "", e
-			}
-			envs = append(envs, a)
+			destinations = append(destinations, id)
 		}
-		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: false}
+		request := ProfileRequest{Ref: config.ProfileRef{PackID: sourceID, CapabilityID: packageID, Name: profile}, DestinationIDs: destinations}
 		if action == "install" {
-			out, e = svc.Install(ctx, q)
+			result, applyErr := svc.ApplyProfile(ctx, request)
+			out = Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}
+			e = applyErr
 		} else {
-			out, e = svc.Uninstall(ctx, q)
+			request.ItemIDs = []string{}
+			request.DestinationIDs = []string{}
+			result, applyErr := svc.ApplyProfile(ctx, request)
+			out = Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}
+			e = applyErr
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Profile: profile, Interactive: false})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Ref: config.ProfileRef{PackID: sourceID, CapabilityID: packageID, Name: profile}, MCP: "", Interactive: false})
 	}
 	if out.Logs != "" {
 		return out.Logs, e

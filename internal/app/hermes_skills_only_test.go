@@ -38,10 +38,6 @@ func TestSkillsOnlyInstallsBundledClusterInspectorWithoutMCPEffects(t *testing.T
 		t.Fatal(err)
 	}
 	hermesHome := filepath.Join(root, "hermes-home")
-	hermes, err := agents.ResolveEnvironment("hermes", "hermes", hermesHome)
-	if err != nil {
-		t.Fatal(err)
-	}
 	service := New(config.Source{
 		ID:              "bundled",
 		Root:            repoRoot,
@@ -53,13 +49,26 @@ func TestSkillsOnlyInstallsBundledClusterInspectorWithoutMCPEffects(t *testing.T
 	executor := &hermesTestExecutor{}
 	service.Options.Runtime = runtime
 	service.Options.Runner = executor
-
-	request := InstallRequest{
-		Package:    "cluster-inspector",
-		Agents:     []agents.Environment{hermes},
-		SkillsOnly: true,
+	service.Options.DiscoveryProbe = &agents.DiscoveryProbe{
+		GOOS: "linux", Home: root, Getenv: func(string) string { return "" },
+		LookPath: func(name string) (string, error) {
+			if name == "hermes" {
+				return filepath.Join(root, "bin", "hermes"), nil
+			}
+			return "", os.ErrNotExist
+		},
 	}
-	result, err := service.Install(context.Background(), request)
+
+	ref := config.ProfileRef{PackID: "bundled", CapabilityID: "cluster-inspector", Name: "default"}
+	ensureProfileForTest(service, ref)
+	service.Options.AgentScopes = map[string]agents.Scope{"hermes": {ID: "hermes", Home: hermesHome, ExplicitHome: true}}
+	result, err := service.ApplyProfile(context.Background(), ProfileRequest{
+		Ref: ref, Inputs: map[string]any{
+			"registration_name": "cluster-inspector",
+			"api_server":        "https://fixture.invalid",
+		},
+		DestinationIDs: []string{"hermes"}, SkillsOnly: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +93,8 @@ func TestSkillsOnlyInstallsBundledClusterInspectorWithoutMCPEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 0 {
-		t.Fatalf("skills-only install recorded MCP profile state: %#v", profiles)
+	if len(profiles) != 1 || profiles[0].Key.Profile != "" || profiles[0].Key.MCP != "" || profiles[0].Selection == nil {
+		t.Fatalf("skills-only intent should be saved once at capability profile scope, without MCP child rows: %#v", profiles)
 	}
 	if result.Saved != true || len(result.Changes) != 1 {
 		t.Fatalf("unexpected skill-only result: %+v", result)
@@ -96,8 +105,12 @@ func TestSkillsOnlyRejectsPackageWithoutSkill(t *testing.T) {
 	service, env, store := fixture(t)
 	service.Source.Catalog[0].Skill = nil
 	service.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	request := InstallRequest{Package: "demo", Agents: []agents.Environment{env}, SkillsOnly: true}
-	_, err := service.Install(context.Background(), request)
+	ref := config.ProfileRef{PackID: service.Source.ID, CapabilityID: "demo", Name: "default"}
+	ensureProfileForTest(service, ref)
+	service.Options.AgentScopes = map[string]agents.Scope{"codex": {ID: "codex", Home: env.Home, ExplicitHome: true}}
+	_, err := service.ApplyProfile(context.Background(), ProfileRequest{
+		Ref: ref, DestinationIDs: []string{"codex"}, SkillsOnly: true,
+	})
 	if err == nil || !strings.Contains(err.Error(), "no skill") {
 		t.Fatalf("skills-only install should reject an MCP-only package, got %v", err)
 	}

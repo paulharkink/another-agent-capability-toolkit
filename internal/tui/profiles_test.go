@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -73,7 +74,7 @@ func (b *capabilityProfileBackend) CheckConnection(ctx context.Context, url, tra
 }
 func (b *capabilityProfileBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	preview := b.preview
-	preview.Key = state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
+	preview.Key = state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
 	return preview, nil
 }
 func (b *capabilityProfileBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -110,7 +111,8 @@ func openCapabilityProfileWorkspace(t *testing.T, m *Model, profile *profileBack
 		break
 	}
 	m.backend = backend
-	request := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: target}
+	m.Update(m.load()())
+	request := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: target}}
 	cmd := m.openTargetWorkspace(request, section)
 	if cmd == nil {
 		t.Fatalf("could not open complete capability workspace for target %q", target)
@@ -149,8 +151,8 @@ func TestCheckConnectionActionObservesSelectedEndpoint(t *testing.T) {
 }
 func typedProfileFixture() (*Model, *profileBackend) {
 	b := &profileBackend{snapshot: viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
-		{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}, Name: "saved", RuntimeStatus: "never-started", Ownership: "local", CanStart: true},
-		{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}, Name: "foreign", RuntimeStatus: "running", Ownership: "other-aact", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", RegisteredAgents: []string{"claude"}, CanConfigureRegistrations: true, StartDisabledReason: "Owned by another installation", StopDisabledReason: "Owned by another installation"},
+		{Key: state.Key{Source: "team-source", Package: "plain", Target: "saved"}, Name: "saved", RuntimeStatus: "never-started", Ownership: "local", CanStart: true},
+		{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, Name: "foreign", RuntimeStatus: "running", Ownership: "other-aact", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", RegisteredAgents: []string{"claude"}, CanConfigureRegistrations: true, StartDisabledReason: "Owned by another installation", StopDisabledReason: "Owned by another installation"},
 		{Key: state.Key{Source: "another-source", Package: "plain", Target: "unrelated"}, RuntimeStatus: "running"},
 	}}}
 	m := NewContext(context.Background(), b)
@@ -176,7 +178,7 @@ func openProfileAction(t *testing.T, m *Model, label string, mouse bool) tea.Cmd
 	}
 	m.backend = &registrationWorkspaceBackend{Backend: b, profileBackend: b, setupBackendFixture: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, index)
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: profile.Key.Source, PackageID: profile.Key.Package, Environment: profile.Key.Environment, Target: profile.Key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(profile.Key), "Overview")
 	if cmd == nil {
 		t.Fatalf("target workspace did not open for exact key %+v", profile.Key)
 	}
@@ -288,7 +290,7 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 				t.Fatal("typed capability install backend not called")
 			}
 			want := b.snapshot.Profiles[1]
-			if request.SetupRequest.Target != want.Key.Target || !reflect.DeepEqual(request.DestinationIDs, []string{"claude", "codex"}) {
+			if request.SetupRequest.Ref.PackID != want.Key.Source || request.SetupRequest.Ref.CapabilityID != want.Key.Package || request.SetupRequest.Ref.Name != want.Key.Target || !reflect.DeepEqual(request.DestinationIDs, []string{"claude", "codex"}) {
 				t.Fatalf("wrong complete binding request: got %#v want target=%q destinations=%v", request, want.Key.Target, []string{"claude", "codex"})
 			}
 			if !strings.Contains(m.output, "codex: mcp configured") || !strings.Contains(m.output, "claude: endpoint rejected") {
@@ -520,37 +522,6 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 	}
 }
 
-func TestSkillOnlyInstallDefaultsToGlobalAll(t *testing.T) {
-	m := fixtureModel(t)
-	m.agents = []string{"codex", "all", "claude"}
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	if m.form == nil || !strings.Contains(m.View().Content, "All — ~/.agents/skills") {
-		t.Fatal("global skills destination lacks explicit label")
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || m.pending.agent != "all" {
-		t.Fatalf("skill-only install did not default to All: %#v", m.pending)
-	}
-}
-func TestMCPInstallNeverOffersGlobalAll(t *testing.T) {
-	m := fixtureModel(t)
-	m.catalog[0].MCP = &catalog.MCP{}
-	m.agents = []string{"all", "codex", "claude"}
-	m.settings["default_agents"] = "all"
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	for i := 0; i < 4; i++ {
-		if strings.Contains(m.View().Content, "All —") || strings.Contains(m.View().Content, "[all]") {
-			t.Fatal("MCP installation offers global All")
-		}
-		press(m, tea.KeyRight, "")
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || m.pending.agent != "codex" {
-		t.Fatalf("MCP install lacks named default: %#v", m.pending)
-	}
-}
 func TestLegacyMCPViewDoesNotAdvertiseUninstall(t *testing.T) {
 	m := fixtureModel(t)
 	m.view = "MCPs"

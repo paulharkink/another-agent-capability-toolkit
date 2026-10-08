@@ -192,7 +192,7 @@ func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testi
 	base := m.backend.(*profileBackend)
 	m.backend = &registrationWorkspaceBackend{Backend: base, profileBackend: base, setupBackendFixture: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, 1)
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: profile.Key.Source, PackageID: profile.Key.Package, Environment: profile.Key.Environment, Target: profile.Key.Target}, "Information")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(profile.Key), "Information")
 	m.Update(cmd())
 	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	view := m.View().Content

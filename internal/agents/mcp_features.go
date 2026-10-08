@@ -15,6 +15,14 @@ type mcpAdapter struct{ *skillAdapter }
 
 func (a *mcpAdapter) Features() FeatureSet { return FeatureSet{Skills: true, MCPs: true} }
 
+func (a *mcpAdapter) PlannedConfigPath(_ context.Context, scope Scope) (string, error) {
+	e, err := a.environment(scope)
+	if err != nil {
+		return "", err
+	}
+	return ResolveConfigWritePath(e)
+}
+
 func (a *mcpAdapter) registrationScope(scope Scope, key state.Key) (Environment, error) {
 	e, err := a.environment(scope)
 	if err != nil {

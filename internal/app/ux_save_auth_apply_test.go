@@ -14,6 +14,7 @@ import (
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -24,6 +25,62 @@ type uxActionCall struct {
 	Action      string         `json:"action"`
 	Inputs      map[string]any `json:"inputs"`
 	Interactive bool           `json:"interactive"`
+}
+
+func profileTestAgent(t *testing.T, svc *Service, id string) (config.ProfileRef, string) {
+	t.Helper()
+	home := t.TempDir()
+	configPath := filepath.Join(home, "agent.jsonc")
+	if svc.Options.AgentScopes == nil {
+		svc.Options.AgentScopes = map[string]agents.Scope{}
+	}
+	svc.Options.AgentScopes[id] = agents.Scope{ID: id, Home: home, ConfigPathOverride: configPath, ExplicitHome: true}
+	return writeProfileForTest(t, svc, "demo", "default", ""), id
+}
+
+type uxReplacementRegistry struct {
+	fallback     AdapterProvider
+	replacements map[string]agents.Adapter
+}
+
+func (r uxReplacementRegistry) Adapter(id string) (agents.Adapter, error) {
+	base, _, _ := strings.Cut(id, ":")
+	if adapter := r.replacements[base]; adapter != nil {
+		return adapter, nil
+	}
+	return r.fallback.Adapter(id)
+}
+func (r uxReplacementRegistry) Adapters() []agents.Adapter {
+	rows := []agents.Adapter{}
+	added := map[string]bool{}
+	for _, adapter := range r.fallback.Adapters() {
+		if replacement := r.replacements[adapter.ID()]; replacement != nil {
+			rows = append(rows, replacement)
+			added[adapter.ID()] = true
+		} else {
+			rows = append(rows, adapter)
+		}
+	}
+	for id, adapter := range r.replacements {
+		if !added[id] {
+			rows = append(rows, adapter)
+		}
+	}
+	return rows
+}
+
+type uxCancelDuringRegisterAdapter struct {
+	agents.Adapter
+	manager agents.MCPManager
+	cancel  context.CancelFunc
+}
+
+func (a *uxCancelDuringRegisterAdapter) Register(_ context.Context, scope agents.Scope, request agents.MCPRequest) (state.Installation, error) {
+	a.cancel()
+	return a.manager.Register(context.Background(), scope, request)
+}
+func (a *uxCancelDuringRegisterAdapter) Unregister(ctx context.Context, scope agents.Scope, row state.Installation) error {
+	return a.manager.Unregister(ctx, scope, row)
 }
 
 type uxActionExecutor struct {
@@ -163,7 +220,8 @@ func (uxOrderedRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) 
 }
 
 func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEffects(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	order := []string{}
 	exec := &uxActionExecutor{}
 	svc.Options.Runner = exec
@@ -175,10 +233,7 @@ func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEf
 		"authenticate": {Argv: []string{"fixture-auth"}},
 		"prepare":      {Argv: []string{"fixture-prepare"}},
 	}}
-	env.Kind = "generic"
-	env.ID = "fixture-agent"
-	env.ConfigPath = t.TempDir() + "/agent.json"
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"token": "submitted"}})
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"token": "submitted"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +256,7 @@ func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEf
 
 func TestUXUIInstallProgressStreamsRedactedChildOutputBeforeFailure(t *testing.T) {
 	svc, _, _ := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	isolateUXUserHome(t, t.TempDir())
 	pkg := &svc.Source.Catalog[0]
 	pkg.Skill = nil
@@ -212,7 +268,7 @@ func TestUXUIInstallProgressStreamsRedactedChildOutputBeforeFailure(t *testing.T
 	svc.Options.Runner = executor
 	progress := make(chan viewmodel.OperationProgress, 8)
 	ctx := viewmodel.WithOperationProgress(context.Background(), func(event viewmodel.OperationProgress) { progress <- event })
-	request := viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, Inputs: map[string]any{"token": "auth-secret"}, DestinationIDs: []string{"codex"}}
+	request := viewmodel.SetupInstallRequest{Ref: ref, Inputs: map[string]any{"token": "auth-secret"}, DestinationIDs: []string{agentID}}
 	resultDone := make(chan struct {
 		result viewmodel.OperationResult
 		err    error
@@ -270,7 +326,8 @@ func TestUXUIInstallProgressStreamsRedactedChildOutputBeforeFailure(t *testing.T
 }
 
 func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
@@ -283,9 +340,7 @@ func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
 	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}}
 	pkg.MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}, "prepare": {Argv: []string{"fixture-prepare"}}}}
-	env.Kind = "generic"
-	env.ConfigPath = t.TempDir() + "/agent.json"
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
 	if err == nil || !strings.Contains(err.Error(), "login refused: fixture account") {
 		t.Fatalf("exact auth error missing: %v", err)
 	}
@@ -302,7 +357,8 @@ func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
 }
 
 func TestUXCancelledAuthIsNotFailed(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
@@ -317,9 +373,7 @@ func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}}
 	pkg.MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}, "prepare": {Argv: []string{"fixture-prepare"}}}}
-	env.Kind = "generic"
-	env.ConfigPath = t.TempDir() + "/agent.json"
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
 	if !errors.Is(err, picker.ErrCancelled) {
 		t.Fatalf("auth cancellation became an operation failure: %v", err)
 	}
@@ -333,7 +387,8 @@ func TestUXCancelledAuthIsNotFailed(t *testing.T) {
 }
 
 func TestUXCancellationPhraseInUnrelatedAuthErrorRemainsVisible(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	kubeconfig := filepath.Join(t.TempDir(), "source.kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
@@ -345,23 +400,24 @@ func TestUXCancellationPhraseInUnrelatedAuthErrorRemainsVisible(t *testing.T) {
 	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}}
 	pkg.MCP = &catalog.MCP{Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"kubeconfig": kubeconfig}})
 	if err == nil || errors.Is(err, picker.ErrCancelled) || !strings.Contains(err.Error(), "remote endpoint rejected request") {
 		t.Fatalf("unrelated error was hidden by cancellation: %v", err)
 	}
 	answers, readErr := store.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
-	if readErr != nil || answers["kubeconfig"] != kubeconfig || !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 0 {
+	if readErr != nil || answers["kubeconfig"] != kubeconfig || !result.Saved || len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "remote endpoint rejected request") || len(result.Changes) != 0 {
 		t.Fatalf("auth error lost saved state or claimed effects: result=%#v answers=%#v err=%v", result, answers, readErr)
 	}
 }
 
 func TestUXCancelledGenerationIsNotFailed(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "codex")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	svc.Options.Runner = uxCancelExecutor{cancel: cancel}
 	svc.Source.Catalog[0].Generator = &catalog.Command{Argv: []string{"fixture-generator"}}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}})
 	if !errors.Is(err, picker.ErrCancelled) {
 		t.Fatalf("generation cancellation became an operation failure: %v", err)
 	}
@@ -375,7 +431,8 @@ func TestUXCancelledGenerationIsNotFailed(t *testing.T) {
 }
 
 func TestUXCancelledPrepareIsNotFailed(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	exec := &uxActionExecutor{failOn: "prepare", cancel: cancel}
@@ -384,7 +441,7 @@ func TestUXCancelledPrepareIsNotFailed(t *testing.T) {
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"port": int64(9000)}})
 	if !errors.Is(err, picker.ErrCancelled) {
 		t.Fatalf("prepare cancellation became an operation failure: %v", err)
 	}
@@ -395,7 +452,8 @@ func TestUXCancelledPrepareIsNotFailed(t *testing.T) {
 }
 
 func TestUXCancelledStartIsNotFailed(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runtime := &uxCancelRuntime{cancel: cancel}
@@ -403,7 +461,7 @@ func TestUXCancelledStartIsNotFailed(t *testing.T) {
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, Inputs: map[string]any{"port": int64(9000)}})
 	if !errors.Is(err, picker.ErrCancelled) {
 		t.Fatalf("start cancellation became an operation failure: %v", err)
 	}
@@ -414,19 +472,28 @@ func TestUXCancelledStartIsNotFailed(t *testing.T) {
 }
 
 func TestUXCancelledRegistrationAfterSuccessRetainsChanges(t *testing.T) {
-	svc, first, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, firstID := profileTestAgent(t, svc, "claude")
+	_, secondID := profileTestAgent(t, svc, "opencode")
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	svc.Options.Runtime = &fakeRuntime{}
-	first.Kind, first.ID, first.ConfigPath = "generic", "first-agent", t.TempDir()+"/first.json"
-	second := first
-	second.ID, second.ConfigPath = "second-agent", t.TempDir()+"/second.json"
-	ctx := &uxCancelAtErrContext{Context: context.Background(), cancelAt: 4, done: make(chan struct{})}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{first, second}, ExternalURL: "http://fixture.example/mcp"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registerSteps := 0
+	ctx = viewmodel.WithOperationProgress(ctx, func(event viewmodel.OperationProgress) {
+		if event.Step == "register" {
+			registerSteps++
+			if registerSteps == 2 {
+				cancel()
+			}
+		}
+	})
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, ItemIDs: []string{"mcp:demo"}, DestinationIDs: []string{firstID, secondID}, ExternalURLs: map[string]string{"demo": "http://fixture.example/mcp"}})
 	if !errors.Is(err, picker.ErrCancelled) {
 		t.Fatalf("registration cancellation became an operation failure: %v", err)
 	}
-	if !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 1 || result.Changes[0].AgentID != first.ID {
+	if !result.Saved || len(result.Errors) != 0 || len(result.Changes) != 1 || result.Changes[0].AgentID != firstID {
 		t.Fatalf("cancelled second registration lost actual first effect: %#v", result)
 	}
 	rows, readErr := store.Installations()
@@ -439,29 +506,39 @@ func TestUXCancelledRegistrationAfterSuccessRetainsChanges(t *testing.T) {
 			registered[row.AgentID] = true
 		}
 	}
-	if !registered[first.ID] || registered[second.ID] {
+	if !registered[firstID] || registered[secondID] {
 		t.Fatalf("registration ledger disagrees with cancellation effects: %#v", rows)
 	}
 }
 
-func TestUXCancellationDoesNotHideEarlierRegistrationFailure(t *testing.T) {
-	svc, first, _ := fixture(t)
+func TestUXCancellationDoesNotHideRealRegistrationFailure(t *testing.T) {
+	svc, _, _ := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
-	svc.Options.Runtime = &fakeRuntime{}
-	first.Kind, first.ID, first.ConfigPath = "generic", "bad-agent", t.TempDir()+"/bad.json"
-	if err := os.WriteFile(first.ConfigPath, []byte(`{"servers":{},"servers":{}}`), 0600); err != nil {
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	configPath := svc.Options.AgentScopes[agentID].ConfigPathOverride
+	if err := os.WriteFile(configPath, []byte(`{"mcp":{},"mcp":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	second := first
-	second.ID, second.ConfigPath = "cancelled-agent", t.TempDir()+"/cancelled.json"
-	ctx := &uxCancelAtErrContext{Context: context.Background(), cancelAt: 4, done: make(chan struct{})}
-	result, err := svc.Install(ctx, InstallRequest{Package: "demo", Agents: []agents.Environment{first, second}, ExternalURL: "http://fixture.example/mcp"})
-	if err == nil || !errors.Is(err, picker.ErrCancelled) || !strings.Contains(err.Error(), "duplicate agent config key") {
-		t.Fatalf("cancellation hid prior registration failure: %v", err)
+	fallback := svc.adapterRegistry()
+	baseAdapter, err := fallback.Adapter(agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, ok := baseAdapter.(agents.MCPManager)
+	if !ok {
+		t.Fatal("OpenCode adapter lacks MCP manager")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wrapped := &uxCancelDuringRegisterAdapter{Adapter: baseAdapter, manager: manager, cancel: cancel}
+	svc.Options.Adapters = uxReplacementRegistry{fallback: fallback, replacements: map[string]agents.Adapter{agentID: wrapped}}
+	result, err := svc.ApplyProfile(ctx, ProfileRequest{Ref: ref, ItemIDs: []string{"mcp:demo"}, DestinationIDs: []string{agentID}, ExternalURLs: map[string]string{"demo": "http://fixture.example/mcp"}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate agent config key") || errors.Is(err, picker.ErrCancelled) {
+		t.Fatalf("cancellation hid real registration failure: %v", err)
 	}
 	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "duplicate agent config key") || len(result.Changes) != 0 {
-		t.Fatalf("prior failure or actual effects were misreported: %#v", result)
+		t.Fatalf("registration failure or actual effects were misreported: %#v", result)
 	}
 }
 
@@ -470,7 +547,7 @@ func TestUXGenerateFailureReportsChildErrorAndDoesNotMarkInstallation(t *testing
 	svc.Options.Runner = uxFailExecutor{message: "generator: fixture compilation failed"}
 	pkg := &svc.Source.Catalog[0]
 	pkg.Generator = &catalog.Command{Argv: []string{"fixture-generator"}}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if err == nil || !strings.Contains(err.Error(), "generator: fixture compilation failed") {
 		t.Fatalf("generator child error missing: %v", err)
 	}
@@ -484,20 +561,17 @@ func TestUXGenerateFailureReportsChildErrorAndDoesNotMarkInstallation(t *testing
 }
 
 func TestUXOneAgentFailureDoesNotMarkThatRegistration(t *testing.T) {
-	svc, first, store := fixture(t)
+	svc, _, store := fixture(t)
+	ref, firstID := profileTestAgent(t, svc, "claude")
+	_, secondID := profileTestAgent(t, svc, "opencode")
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	svc.Options.Runtime = &fakeRuntime{}
-	first.Kind = "generic"
-	first.ID = "first-agent"
-	first.ConfigPath = t.TempDir() + "/first.json"
-	second := first
-	second.ID = "second-agent"
-	second.ConfigPath = t.TempDir() + "/second.json"
-	if err := os.WriteFile(second.ConfigPath, []byte(`{"servers":{},"servers":{}}`), 0600); err != nil {
+	secondPath := svc.Options.AgentScopes[secondID].ConfigPathOverride
+	if err := os.WriteFile(secondPath, []byte(`{"mcp":{},"mcp":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{first, second}})
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, ItemIDs: []string{"mcp:demo"}, DestinationIDs: []string{firstID, secondID}, ExternalURLs: map[string]string{"demo": "http://fixture.example/mcp"}})
 	if err == nil || !strings.Contains(err.Error(), "duplicate agent config key") {
 		t.Fatalf("second agent failure missing: %v", err)
 	}
@@ -511,7 +585,7 @@ func TestUXOneAgentFailureDoesNotMarkThatRegistration(t *testing.T) {
 			registered[row.AgentID] = true
 		}
 	}
-	if !registered[first.ID] || registered[second.ID] || len(result.Changes) != 1 || result.Changes[0].AgentID != first.ID {
+	if !registered[firstID] || registered[secondID] || len(result.Changes) != 1 || result.Changes[0].AgentID != firstID {
 		t.Fatalf("registration outcomes misreported: result=%#v rows=%#v", result, rows)
 	}
 	if result.Step != "register" || result.Target == "" {
@@ -573,11 +647,12 @@ func TestUXSetupPreviewReportsManagedCredentialObservation(t *testing.T) {
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file"}}
 	svc.Source.Catalog[0] = *pkg
 	key := state.Key{Source: "fixture", Package: pkg.ID, Target: "default"}
+	ref := writeProfileForTest(t, svc, pkg.ID, "default", "")
 	sourcePath := t.TempDir() + "/source-kubeconfig"
 	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": sourcePath}); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: pkg.ID})
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +665,7 @@ func TestUXSetupPreviewReportsManagedCredentialObservation(t *testing.T) {
 	if err := os.WriteFile(store.AuthDir(key)+"/session.bin", []byte("managed fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	preview, err = svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: pkg.ID})
+	preview, err = svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil || preview.CredentialState != "present" {
 		t.Fatalf("managed imported credentials not shown: state=%q note=%q err=%v", preview.CredentialState, preview.CredentialNote, err)
 	}
@@ -598,11 +673,7 @@ func TestUXSetupPreviewReportsManagedCredentialObservation(t *testing.T) {
 
 func TestUXUIInstallExplicitEndpointRegistersWithoutStartingOrAuthenticating(t *testing.T) {
 	svc, _, store := fixture(t)
-	home := t.TempDir()
-	configHome := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	editorCalls := 0
 	svc.Options.Editor = func(context.Context, []catalog.Input, map[string]any) (map[string]any, error) {
 		editorCalls++
@@ -612,12 +683,9 @@ func TestUXUIInstallExplicitEndpointRegistersWithoutStartingOrAuthenticating(t *
 	svc.Options.Runtime = runtime
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret"}}
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"auth"}}, "prepare": {Argv: []string{"prepare"}}}}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"auth"}}, "prepare": {Argv: []string{"prepare"}}}}
 	endpoint := "http://foreign.example:8765/mcp"
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
-		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
-		Inputs:       map[string]any{"token": "submitted"}, DestinationIDs: []string{"opencode"}, ExternalURL: endpoint,
-	})
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{Ref: ref, Inputs: map[string]any{"token": "submitted"}, DestinationIDs: []string{agentID}, ExternalURLs: map[string]string{"demo": endpoint}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +702,7 @@ func TestUXUIInstallExplicitEndpointRegistersWithoutStartingOrAuthenticating(t *
 			registered = true
 		}
 	}
-	if !registered || !result.Saved || len(result.Changes) != 1 || result.Step != "register" || result.Target == "" {
+	if !registered || !result.Saved || len(result.Changes) != 1 || result.Step != "complete" || result.Target == "" || result.Changes[0].URL != endpoint {
 		t.Fatalf("explicit endpoint result is inaccurate: result=%#v rows=%#v", result, rows)
 	}
 }
@@ -649,7 +717,7 @@ func TestUXNoTUIInstallInvokesLegacyInteractiveEditor(t *testing.T) {
 		editorCalls++
 		return nil, errors.New("legacy interactive editor was invoked")
 	}
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	result, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest:   viewmodel.SetupRequest{PackageID: "demo"},
 		DestinationIDs: []string{"all"},
 	})
@@ -660,27 +728,20 @@ func TestUXNoTUIInstallInvokesLegacyInteractiveEditor(t *testing.T) {
 
 func TestUXOwnedRunningParameterChangeAppliesImmediately(t *testing.T) {
 	svc, _, _ := fixture(t)
-	home := t.TempDir()
-	configHome := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
-		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
-		Inputs:       map[string]any{"port": int64(9000)}, DestinationIDs: []string{"opencode"},
-	})
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{Ref: ref, Inputs: map[string]any{"port": int64(9000)}, DestinationIDs: []string{agentID}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if runtime.starts != 2 || runtime.stops != 1 {
 		t.Fatalf("changed settings were not applied immediately: starts=%d stops=%d", runtime.starts, runtime.stops)
 	}
-	if !result.Saved || result.Step != "register" || result.Target == "" || len(result.Changes) != 1 {
+	if !result.Saved || result.Step != "complete" || result.Target == "" || len(result.Changes) != 1 || result.Changes[0].Component != "mcp" {
 		t.Fatalf("save result omitted actual applied effects: %#v", result)
 	}
 }
@@ -697,7 +758,7 @@ func TestUXForeignRuntimeSaveCannotRestartIt(t *testing.T) {
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
 	runtime := &uxForeignRuntime{}
 	svc.Options.Runtime = runtime
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	result, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
 		Inputs:       map[string]any{"port": int64(9000)}, DestinationIDs: []string{"opencode"},
 	})
@@ -713,7 +774,7 @@ func TestUXForeignRuntimeSaveCannotRestartIt(t *testing.T) {
 }
 
 func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExist(t *testing.T) {
-	svc, env, store := fixture(t)
+	svc, _, store := fixture(t)
 	pkg := &svc.Source.Catalog[0]
 	pkg.ID = "neutral-capability"
 	if pkg.MCP == nil {
@@ -722,11 +783,15 @@ func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExis
 	pkg.MCP.CredentialFiles = []string{"session.bin"}
 	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}, {Name: "port", Type: "integer"}}
-	pkg.MCP = &catalog.MCP{CredentialFiles: []string{"session.bin"}, Image: "fixture/image", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
+	pkg.MCP = &catalog.MCP{Name: "demo", CredentialFiles: []string{"session.bin"}, Image: "fixture/image", HostPortInput: "port", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
 		"authenticate": {Argv: []string{"fixture-auth"}},
 		"prepare":      {Argv: []string{"fixture-prepare"}},
 	}}
-	key := state.Key{Source: "fixture", Package: pkg.ID, Target: "default"}
+	ref := writeProfileForTest(t, svc, pkg.ID, "default", "")
+	key, keyErr := store.ResolveProfileKey("fixture", pkg.ID, "default")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
 	sourcePath := t.TempDir() + "/removed-source.kubeconfig"
 	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": sourcePath, "port": 9000}); err != nil {
 		t.Fatal(err)
@@ -740,16 +805,15 @@ func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExis
 	exec := &uxActionExecutor{}
 	svc.Options.Runner = exec
 	svc.Options.Runtime = &fakeRuntime{}
-	env.Kind = "generic"
-	env.ConfigPath = t.TempDir() + "/agent.json"
-	result, err := svc.Install(context.Background(), InstallRequest{Package: pkg.ID, Agents: []agents.Environment{env}, Inputs: map[string]any{"kubeconfig": sourcePath, "port": 8765}})
+	profileTestAgent(t, svc, "opencode")
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, ItemIDs: []string{"mcp:demo"}, DestinationIDs: []string{"opencode"}, Inputs: map[string]any{"kubeconfig": sourcePath, "port": 8765}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(exec.calls) != 1 || exec.calls[0].Action != "prepare" {
 		t.Fatalf("existing managed credentials were reimported: %#v", exec.calls)
 	}
-	if !result.Saved || result.Step != "register" || len(result.Changes) != 1 {
+	if !result.Saved || result.Step != "complete" || len(result.Changes) != 1 {
 		t.Fatalf("parameter update result = %#v", result)
 	}
 	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
@@ -775,7 +839,11 @@ func TestUXRunStartAndAuthenticateNeverInvokeLegacyEditor(t *testing.T) {
 					"prepare":      {Argv: []string{"prepare"}},
 				},
 			}
-			key := svc.key("demo", "", "default")
+			ref := writeProfileForTest(t, svc, "demo", "default", "")
+			key, keyErr := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+			if keyErr != nil {
+				t.Fatal(keyErr)
+			}
 			if err := store.SaveAnswers(key, map[string]any{"token": "saved-token"}); err != nil {
 				t.Fatal(err)
 			}
@@ -789,7 +857,7 @@ func TestUXRunStartAndAuthenticateNeverInvokeLegacyEditor(t *testing.T) {
 			if action == "start" {
 				svc.Options.Runtime = &fakeRuntime{}
 			}
-			if _, err := svc.UIRun(context.Background(), action, "fixture", "demo", "", "", "", "default"); err != nil {
+			if _, err := svc.UIRun(context.Background(), action, ref.PackID, ref.CapabilityID, ref.Name, "", "", ""); err != nil {
 				t.Fatal(err)
 			}
 			if editorCalls != 0 {

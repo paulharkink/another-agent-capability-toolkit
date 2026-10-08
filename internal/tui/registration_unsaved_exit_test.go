@@ -91,7 +91,7 @@ func TestRegistrationExitApplyFailureShowsErrorAndKeepsDirtyOverlayEditable(t *t
 func TestRegistrationSuccessfulApplyClearsOnlyRegistrationOverlay(t *testing.T) {
 	m, backend, r := registrationExitFixture(t)
 	dirtyRegistration(r)
-	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	key := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	if r.Profile.Key != key {
 		t.Fatalf("fixture target changed: %+v", r.Profile.Key)
 	}

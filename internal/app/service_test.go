@@ -22,6 +22,10 @@ import (
 func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	t.Helper()
 	root := t.TempDir()
+	// Agent adapters must only inspect isolated fixture homes. These tests
+	// must never read or write the developer's live agent configuration.
+	isolateUXUserHome(t, filepath.Join(root, "user-home"))
+	t.Setenv("CODEX_HOME", "")
 	pkg := filepath.Join(root, "pkg")
 	os.MkdirAll(pkg, 0755)
 	os.WriteFile(filepath.Join(pkg, "SKILL.md"), []byte("---\nname: demo\ndescription: demo\n---\nHello"), 0644)
@@ -84,12 +88,13 @@ func (*fakeRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
 }
 func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	svc, env, s := fixture(t)
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationTimeoutMS: 60000}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	out, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
+	out, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -106,7 +111,7 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	if !rows[1].ExternalRegistration {
 		t.Fatalf("explicit ExternalURL registration lost its provenance: %+v", rows[1])
 	}
-	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	_, e = svc.removeProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -118,9 +123,10 @@ func TestInstallBindsEveryNamedMCPToItsOwnExternalEndpoint(t *testing.T) {
 		{Name: "primary", Transport: "streamable-http"},
 		{Name: "secondary", Transport: "streamable-http"},
 	}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
-	result, err := svc.Install(context.Background(), InstallRequest{
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{
 		Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{
 			"primary": "http://primary.invalid/mcp", "secondary": "http://secondary.invalid/mcp",
 		},
@@ -143,10 +149,11 @@ func TestInstallBindsEveryNamedMCPToItsOwnExternalEndpoint(t *testing.T) {
 	}
 }
 
-func TestMultiMCPPartialFailureReportsOnlySuccessfulChildRows(t *testing.T) {
+func TestMultiMCPRecordFailureReportsAchievedChildRegistration(t *testing.T) {
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http"}, {Name: "beta", Transport: "streamable-http"}}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
 	staleBeta := state.Installation{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "beta"}, AgentID: agent.ID, AgentHome: agent.Home, AgentKind: agent.Kind, Component: "mcp", Destination: agent.ConfigPath, RegistrationName: "demo-beta", URL: "http://stale.invalid/mcp"}
 	if err := store.Record(staleBeta); err != nil {
@@ -158,11 +165,11 @@ func TestMultiMCPPartialFailureReportsOnlySuccessfulChildRows(t *testing.T) {
 		}
 		return store.Record(row)
 	}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://alpha.invalid/mcp", "beta": "http://beta.invalid/mcp"}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://alpha.invalid/mcp", "beta": "http://beta.invalid/mcp"}})
 	if err == nil {
 		t.Fatal("expected second child registration to fail")
 	}
-	if !strings.Contains(err.Error(), "MCP beta") || !strings.Contains(result.Target, "MCP beta") || result.Step != "register" {
+	if !strings.Contains(err.Error(), "beta ledger failure") || !strings.Contains(result.Target, "fixture/demo") || result.Step != "record" {
 		t.Fatalf("child failure lost target/step detail: target=%q step=%q err=%v", result.Target, result.Step, err)
 	}
 	var changed []string
@@ -171,26 +178,40 @@ func TestMultiMCPPartialFailureReportsOnlySuccessfulChildRows(t *testing.T) {
 			changed = append(changed, row.Key.MCP)
 		}
 	}
-	if len(changed) != 1 || changed[0] != "alpha" {
-		t.Fatalf("partial result included unsuccessful/stale sibling: changed=%v result=%+v", changed, result)
+	if !slices.Contains(changed, "alpha") || !slices.Contains(changed, "beta") || len(changed) != 2 {
+		t.Fatalf("partial result omitted achieved registration after record failure: changed=%v result=%+v", changed, result)
+	}
+	rows, readErr := store.Installations()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, row := range rows {
+		if row.Key.MCP == "beta" && row.URL != "http://stale.invalid/mcp" {
+			t.Fatalf("failed ledger write replaced ownership row: %+v", row)
+		}
 	}
 }
 
 func TestMultiMCPChangesExcludeStaleRowsFromOtherConfigPath(t *testing.T) {
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http"}}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "current.json")
 	stale := state.Installation{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "alpha"}, AgentID: agent.ID, AgentHome: agent.Home, AgentKind: agent.Kind, Component: "mcp", Destination: filepath.Join(agent.Home, "old.json"), RegistrationName: "demo-alpha", URL: "http://old.invalid/mcp"}
 	if err := store.Record(stale); err != nil {
 		t.Fatal(err)
 	}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://new.invalid/mcp"}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://new.invalid/mcp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPath, err := agents.ResolveConfigWritePath(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range result.Changes {
-		if row.Component == "mcp" && row.Destination != agent.ConfigPath {
+		if row.Component == "mcp" && row.Destination != expectedPath {
 			t.Fatalf("untouched old config path reported as applied: %+v", result.Changes)
 		}
 	}
@@ -220,11 +241,12 @@ func TestInstallCanAttachOneMCPExternallyAndStartItsLocalSibling(t *testing.T) {
 		{Name: "external", Transport: "streamable-http"},
 		{Name: "local", Transport: "streamable-http"},
 	}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
 	runtime := &keyedMCPRuntime{}
 	svc.Options.Runtime = runtime
-	_, err := svc.Install(context.Background(), InstallRequest{
+	_, err := svc.applyProfileFixture(context.Background(), InstallRequest{
 		Package: "demo", Agents: []agents.Environment{agent},
 		ExternalURLs: map[string]string{"external": "http://foreign.example/mcp"},
 	})
@@ -249,18 +271,19 @@ func TestInstallCanAttachOneMCPExternallyAndStartItsLocalSibling(t *testing.T) {
 	}
 }
 
-func TestSingleListMCPStartAndStopUseNamedChildIdentity(t *testing.T) {
+func TestRunProfileMCPStartAndStopUseNamedChildIdentity(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "primary", Transport: "streamable-http"}}
 	runtime := &keyedMCPRuntime{}
 	svc.Options.Runtime = runtime
-	if _, err := svc.MCP(context.Background(), MCPRequest{Action: "start", Package: "demo"}); err != nil {
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	if _, err := svc.RunProfileMCP(context.Background(), "start", ProfileRequest{Ref: ref}, "primary"); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.starts) != 1 || runtime.starts[0].MCP != "primary" {
 		t.Fatalf("single list MCP start used wrong key: %+v", runtime.starts)
 	}
-	if _, err := svc.MCP(context.Background(), MCPRequest{Action: "stop", Package: "demo"}); err != nil {
+	if _, err := svc.RunProfileMCP(context.Background(), "stop", ProfileRequest{Ref: ref}, "primary"); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.stops) != 1 || runtime.stops[0].MCP != "primary" {
@@ -274,7 +297,7 @@ func TestInstallDoesNotRequireHiddenConditionalInput(t *testing.T) {
 		{Name: "mode", Type: "string", Default: "basic"},
 		{Name: "secret", Type: "string", Required: true, VisibleWhen: map[string]any{"mode": "advanced"}},
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}}); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}}); err != nil {
 		t.Fatalf("hidden required input blocked install: %v", err)
 	}
 }
@@ -283,13 +306,14 @@ func TestExternalCapabilityAttachDoesNotRunLocalMCPAuthOrRuntime(t *testing.T) {
 	svc, agent, _ := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret", Required: false, ConfigKey: "service.token"}}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
 	executor := &countingPrepareExecutor{}
 	svc.Options.Runner = executor
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err != nil {
 		t.Fatalf("external attach failed: %v", err)
 	}
 	if executor.calls != 0 || runtime.starts != 0 || runtime.stops != 0 {
@@ -301,9 +325,10 @@ func TestExternalCapabilityAttachStillRequiresDeclaredSkillInputs(t *testing.T) 
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "skill_output", Type: "string", Required: true, ConfigKey: "skill.output"}}
-	agent.Kind = "generic"
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
 	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err == nil || !strings.Contains(err.Error(), "skill_output") {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err == nil || !strings.Contains(err.Error(), "skill_output") {
 		t.Fatalf("required manifest input was skipped for external attach: %v", err)
 	}
 	rows, err := store.Installations()
@@ -320,11 +345,11 @@ func TestInstallUpdatesOwnedOpenCodeRegistrationTimeout(t *testing.T) {
 	}
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	request := InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "http://127.0.0.1:8765/mcp"}
-	if _, err := svc.Install(context.Background(), request); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	svc.Source.Catalog[0].MCP.RegistrationTimeoutMS = 60000
-	if _, err := svc.Install(context.Background(), request); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
@@ -374,7 +399,7 @@ func TestFailedSkillInstallKeepsEditedAnswersWithoutClaimingInstallation(t *test
 	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("user-owned"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "new"}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "new"}})
 	if err == nil || !strings.Contains(err.Error(), "refusing foreign skill") {
 		t.Fatalf("concrete install failure missing: %v", err)
 	}
@@ -392,7 +417,7 @@ func TestFailedSkillGenerationKeepsEditedAnswers(t *testing.T) {
 	svc, env, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
 	svc.Source.Catalog[0].Templates = []catalog.Template{{Source: "missing.mustache", Destination: "SKILL.md"}}
-	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "retry-me"}})
+	_, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "retry-me"}})
 	if err == nil || !strings.Contains(err.Error(), "missing.mustache") {
 		t.Fatalf("generation failure missing: %v", err)
 	}
@@ -411,11 +436,12 @@ func TestFailedMCPStartKeepsEditedAnswersWithoutClaimingRuntimeOrRegistration(t 
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
 	runtime := &failingRuntime{}
 	svc.Options.Runtime = runtime
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
 	if err == nil || !strings.Contains(err.Error(), "port 9000 is already allocated") {
 		t.Fatalf("MCP startup cause hidden: %v", err)
 	}
@@ -441,11 +467,12 @@ func TestChangedRunningMCPParametersStopAndAttemptNewSettingsWithoutReverting(t 
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
 	runtime := &changedRuntime{failRestart: true}
 	svc.Options.Runtime = runtime
-	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
+	_, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"port": int64(9000)}})
 	if err == nil || !strings.Contains(err.Error(), "port 9000 is already allocated") {
 		t.Fatalf("restart failure hidden: %v", err)
 	}
@@ -462,24 +489,25 @@ func TestChangedRunningMCPParametersStopAndAttemptNewSettingsWithoutReverting(t 
 	}
 }
 
-func TestFailedRegistrationUpdateDoesNotReportOldRegistrationAsApplied(t *testing.T) {
+func TestFailedRegistrationLedgerUpdateReportsAchievedNewRegistration(t *testing.T) {
 	svc, env, store := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
 	oldURL := "http://127.0.0.1:8765/mcp"
 	newURL := "http://127.0.0.1:9000/mcp"
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: oldURL}); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: oldURL}); err != nil {
 		t.Fatal(err)
 	}
 	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("ledger disk full") }
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: newURL})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: newURL})
 	if err == nil || !strings.Contains(err.Error(), "ledger disk full") {
 		t.Fatalf("registration failure hidden: %v", err)
 	}
-	if len(result.Changes) != 0 {
-		t.Fatalf("old registration incorrectly reported as newly applied: %#v", result.Changes)
+	if len(result.Changes) != 1 || result.Changes[0].URL != newURL {
+		t.Fatalf("achieved registration update missing from result: %#v", result.Changes)
 	}
 	rows, err := store.Installations()
 	if err != nil || len(rows) != 1 || rows[0].URL != oldURL {
@@ -487,37 +515,34 @@ func TestFailedRegistrationUpdateDoesNotReportOldRegistrationAsApplied(t *testin
 	}
 }
 
-func TestSourceRegistryFailureStillReportsAppliedRegistration(t *testing.T) {
-	svc, env, store := fixture(t)
+func TestRegistrationLedgerFailureStillReportsAppliedRegistration(t *testing.T) {
+	svc, env, _ := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
-	svc.Options.RecordInstallation = func(row state.Installation) error {
-		if err := store.Record(row); err != nil {
-			return err
-		}
-		return os.Mkdir(filepath.Join(store.Root(), "manager", "sources.json"), 0700)
-	}
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "http://127.0.0.1:8765/mcp"})
+	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("registration ledger disk full") }
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "http://127.0.0.1:8765/mcp"})
 	if err == nil {
-		t.Fatal("source registry write unexpectedly succeeded")
+		t.Fatal("registration ledger failure unexpectedly succeeded")
 	}
 	if len(result.Changes) != 1 || result.Changes[0].AgentID != env.ID || result.Changes[0].Component != "mcp" {
 		t.Fatalf("successful agent registration hidden by later state error: %#v, %v", result, err)
 	}
 }
 
-func TestInstallRejectsUnsupportedHermesMCPAdapterBeforeRuntimeStart(t *testing.T) {
+func TestApplyProfileRejectsSkillsOnlyAdapterForMCPBeforeRuntimeStart(t *testing.T) {
 	svc, env, store := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	env.Kind = "hermes"
-	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
-	if err == nil || !strings.Contains(err.Error(), `unsupported MCP agent kind "hermes"`) {
-		t.Fatalf("unsupported Hermes MCP adapter accepted or misreported: %v", err)
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	svc.Options.AgentScopes = map[string]agents.Scope{"generic": {ID: "generic", Home: env.Home, ExplicitHome: true}}
+	_, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"generic"}})
+	if err == nil || !strings.Contains(err.Error(), "cannot install every selected capability component") {
+		t.Fatalf("skills-only adapter accepted selected MCP or misreported: %v", err)
 	}
 	if runtime.starts != 0 {
 		t.Fatalf("unsupported destination started Docker %d time(s)", runtime.starts)
@@ -530,10 +555,11 @@ func TestInstallRejectsUnsupportedHermesMCPAdapterBeforeRuntimeStart(t *testing.
 
 func TestDefaultInventoryKeyCanStart(t *testing.T) {
 	svc, _, _ := fixture(t)
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", ContainerPort: 8765, HostPortInput: "port"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Image: "fixture", ContainerPort: 8765, HostPortInput: "port"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Default: int64(18765)}}
 	svc.Options.Runtime = &fakeRuntime{}
-	_, e := svc.MCP(context.Background(), MCPRequest{Action: "start", Package: "demo", Target: "default"})
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	_, e := svc.RunProfileMCP(context.Background(), "start", ProfileRequest{Ref: ref}, "demo")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -542,24 +568,38 @@ func TestUninstallMCPPreservesOtherHome(t *testing.T) {
 	svc, a, s := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	a.Kind = "generic"
-	a.ConfigPath = filepath.Join(a.Home, "manual.json")
-	b := a
-	b.Home = t.TempDir()
-	b.ConfigPath = filepath.Join(b.Home, "manual.json")
-	for _, env := range []agents.Environment{a, b} {
-		_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
-		if e != nil {
-			t.Fatal(e)
-		}
+	a.Kind = "opencode"
+	a.ID = "opencode"
+	a.ConfigPath = filepath.Join(a.Home, "manual.jsonc")
+	b, err := agents.ResolveEnvironment("claude", "claude", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, e := svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{a}})
-	if e != nil {
-		t.Fatal(e)
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{
+		GOOS: "linux", Home: t.TempDir(), Getenv: func(string) string { return "" },
+		LookPath: func(name string) (string, error) {
+			if name == "opencode" || name == "claude" {
+				return filepath.Join(t.TempDir(), "bin", name), nil
+			}
+			return "", os.ErrNotExist
+		},
 	}
-	rows, _ := s.Installations()
-	if len(rows) != 1 || rows[0].Destination != b.ConfigPath {
-		t.Fatal(rows)
+	svc.Options.AgentScopes = map[string]agents.Scope{
+		"opencode": {ID: "opencode", Home: a.Home, ConfigPathOverride: a.ConfigPath, ExplicitHome: true},
+		"claude":   {ID: "claude", Home: b.Home, ConfigPathOverride: b.ConfigPath, ExplicitHome: true},
+	}
+	request := ProfileRequest{Ref: ref, DestinationIDs: []string{"opencode", "claude"}, ExternalURLs: map[string]string{"demo": "https://fixture.invalid/mcp"}}
+	if _, err := svc.ApplyProfile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.DestinationIDs = []string{"claude"}
+	if _, err := svc.ApplyProfile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 1 || rows[0].Destination != b.ConfigPath {
+		t.Fatalf("removed one destination's MCP state: rows=%+v err=%v", rows, err)
 	}
 }
 func TestLegacyRegistrationNameIsReadable(t *testing.T) {
@@ -580,7 +620,7 @@ func TestDeclaredRegistrationNameUsesInputVerbatim(t *testing.T) {
 	}
 }
 
-func TestRegistrationRenameFailureRemovesOldOwnedNameAndReportsPartialState(t *testing.T) {
+func TestRegistrationRenameLedgerFailureReportsAchievedNewMCP(t *testing.T) {
 	svc, _, store := fixture(t)
 	home := filepath.Join(t.TempDir(), "opencode-home")
 	env, err := agents.ResolveEnvironment("opencode", "opencode", home)
@@ -594,21 +634,28 @@ func TestRegistrationRenameFailureRemovesOldOwnedNameAndReportsPartialState(t *t
 		t.Fatal(err)
 	}
 	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "registration", Type: "string", Default: "new-name"}}
 	pkg.MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationNameInput: "registration"}
-	key := state.Key{Source: svc.Source.ID, Package: pkg.ID, Target: "default"}
-	old := state.Installation{Key: key, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, RegistrationName: "old-name", URL: "https://old.invalid/mcp", Transport: "streamable-http", TimeoutMS: 30000}
+	ref := profileRefForFixture(svc, svc.Source.ID, pkg.ID, "default")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, *pkg, pkg.MCPDefinitions()[0])
+	old := state.Installation{Key: child, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, RegistrationName: "old-name", URL: "https://old.invalid/mcp", Transport: "streamable-http", TimeoutMS: 30000}
 	if err := store.Record(old); err != nil {
 		t.Fatal(err)
 	}
 	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("ledger write failed") }
-	result, err := svc.Install(context.Background(), InstallRequest{Package: pkg.ID, Agents: []agents.Environment{env}, ExternalURL: "https://new.invalid/mcp"})
+	svc.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}}
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"registration": "new-name"}, DestinationIDs: []string{"opencode"}, ExternalURLs: map[string]string{"demo": "https://new.invalid/mcp"}})
 	if err == nil || !strings.Contains(err.Error(), "ledger write failed") {
 		t.Fatalf("expected truthful new-name failure, got result=%+v err=%v", result, err)
 	}
 	content, readErr := os.ReadFile(env.ConfigPath)
-	if readErr != nil || strings.Contains(string(content), "old-name") || strings.Contains(string(content), "new-name") {
-		t.Fatalf("old name should be removed and failed new write restored: %s, %v", content, readErr)
+	if readErr != nil || strings.Contains(string(content), "old-name") || !strings.Contains(string(content), "new-name") {
+		t.Fatalf("achieved rename must remain after ledger failure: path=%s content=%s read=%v result=%+v", env.ConfigPath, content, readErr, result)
 	}
 	rows, readErr := store.Installations()
 	if readErr != nil {
@@ -619,29 +666,27 @@ func TestRegistrationRenameFailureRemovesOldOwnedNameAndReportsPartialState(t *t
 			t.Fatalf("old ledger row survived confirmed removal: %+v", row)
 		}
 		if row.Component == "mcp" && row.RegistrationName == "new-name" {
-			t.Fatalf("failed new registration was recorded: %+v", row)
+			t.Fatalf("failed new registration ledger write was persisted: %+v", row)
 		}
 	}
-	foundRemoval := false
-	for _, change := range result.Changes {
-		foundRemoval = foundRemoval || change.Component == "mcp" && change.RegistrationName == "old-name"
-	}
-	if !foundRemoval {
-		t.Fatalf("result should report the confirmed old-name removal: %+v", result.Changes)
+	if len(result.Changes) != 1 || result.Changes[0].Component != "mcp" || result.Changes[0].RegistrationName != "new-name" {
+		t.Fatalf("result should report the achieved new registration: %+v", result.Changes)
 	}
 }
 
 func TestUIUninstallUsesPersistedCustomAgentHome(t *testing.T) {
 	svc, env, s := fixture(t)
 	env.ID = "generic:work"
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(env.Home, "manual.json")
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "generic:work", "", "default")
+	ensureProfileForTest(svc, profileRefFromTestKey("fixture", "demo", "default"))
+	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "default", "generic:work", "", "")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -743,13 +788,14 @@ func TestChangedRunningMCPPreparesOnlyOnce(t *testing.T) {
 	svc, env, _ := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "manual.json")
 	prepare := &countingPrepareExecutor{}
 	svc.Options.Runner = prepare
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	_, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,23 +804,30 @@ func TestChangedRunningMCPPreparesOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestExplicitCredentialSwitchOverridesEnvironmentPrefill(t *testing.T) {
-	svc, _, _ := fixture(t)
+func TestProfileInputsOverrideSavedCredentials(t *testing.T) {
+	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
 		{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"},
 		{Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"},
 	}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+	ref := writeProfileForTest(t, svc, "demo", "production", "[inputs]\nkubeconfig = './source.yaml'\n")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(targetPath, []byte("kubeconfig = './source.yaml'\n"), 0600); err != nil {
+	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": "/saved/old.yaml", "token": "old-token"}); err != nil {
 		t.Fatal(err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"token": "new-token", "kubeconfig": ""}, false, false, false)
-	if err != nil || values["token"] != "new-token" || values["kubeconfig"] != "" {
-		t.Fatalf("explicit switch did not clear target kubeconfig: %#v, %v", values, err)
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"token": "new-token", "kubeconfig": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]any{}
+	for _, input := range preview.Inputs {
+		got[input.Definition.Name] = input.Value
+	}
+	if got["token"] != "new-token" || got["kubeconfig"] != "" {
+		t.Fatalf("explicit profile inputs did not override saved answers: %#v", got)
 	}
 }
 func TestPrepareChoicesReachEditableForm(t *testing.T) {
@@ -794,9 +847,12 @@ func TestPrepareChoicesReachEditableForm(t *testing.T) {
 		}
 		return values, nil
 	}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(env.Home, "manual.json")
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Interactive: true})
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "prepare-choices")
+	svc.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}}
+	_, e := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Interactive: true, DestinationIDs: []string{"opencode"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -822,79 +878,96 @@ func TestRequiredDynamicChoiceDoesNotNeedInitialGuess(t *testing.T) {
 		}
 		return values, nil
 	}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(env.Home, "manual.json")
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Interactive: true})
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "required-dynamic-choice")
+	svc.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}}
+	_, e := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Interactive: true, DestinationIDs: []string{"opencode"}})
 	if e != nil {
 		t.Fatal(e)
 	}
 }
-func TestCopiedSourceRequiresExplicitRegistryUpdate(t *testing.T) {
-	svc, env, s := fixture(t)
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
-	if e != nil {
-		t.Fatal(e)
-	}
+func TestProfileApplyDoesNotRelocatePackUntilExplicitLocate(t *testing.T) {
+	svc, _, store := fixture(t)
 	originalRoot := svc.Source.Root
-	next := svc.Source
-	next.Root = t.TempDir()
-	next.ManifestPath = filepath.Join(next.Root, "aact.toml")
-	dir := filepath.Join(next.Root, "pkg")
-	os.MkdirAll(dir, 0755)
-	b, _ := os.ReadFile(filepath.Join(next.Catalog[0].Dir, "SKILL.md"))
-	os.WriteFile(filepath.Join(dir, "SKILL.md"), b, 0644)
-	next.Catalog = append([]catalog.Package{}, next.Catalog...)
-	next.Catalog[0].Dir = dir
-	copySvc := New(next, s, Options{})
-	_, e = copySvc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
-	if e == nil || !strings.Contains(e.Error(), "--update-source") {
-		t.Fatal(e)
+	if err := os.WriteFile(svc.Source.ManifestPath, []byte("schema_version = 1\nsource_id = 'fixture'\ncatalog = [{ id = 'demo', source = './pkg' }]\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	refs, _ := copySvc.sourceRefs()
-	if len(refs) != 1 || refs[0].Root != originalRoot {
-		t.Fatal(refs)
+	if err := svc.rememberSource(); err != nil {
+		t.Fatal(err)
 	}
-	_, e = copySvc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, UpdateSource: true})
-	if e != nil {
-		t.Fatal(e)
+	nextRoot := t.TempDir()
+	dir := filepath.Join(nextRoot, "pkg")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	refs, _ = copySvc.sourceRefs()
-	if refs[0].Root != next.Root {
-		t.Fatal(refs)
+	b, err := os.ReadFile(filepath.Join(svc.Source.Catalog[0].Dir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), b, 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(nextRoot, "aact.toml")
+	if err := os.WriteFile(manifest, []byte("schema_version = 1\nsource_id = 'fixture'\ncatalog = [{ id = 'demo', source = './pkg' }]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := config.Discover(nextRoot, manifest, "", store.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	copySvc := New(next, store, Options{})
+	ref := profileRefForFixture(copySvc, next.ID, "demo", "copied")
+	if _, err := copySvc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := copySvc.sourceRefs()
+	if err != nil || len(refs) != 1 || refs[0].Root != originalRoot {
+		t.Fatalf("profile apply relocated registered pack: %#v %v", refs, err)
+	}
+	if err := copySvc.UILocateSource(context.Background(), next.ID, nextRoot); err != nil {
+		t.Fatal(err)
+	}
+	refs, err = copySvc.sourceRefs()
+	if err != nil || len(refs) != 1 || refs[0].Root != nextRoot {
+		t.Fatalf("explicit locate did not update pack path: %#v %v", refs, err)
 	}
 }
-func TestRegistrationLedgerFailureRestoresAgentFile(t *testing.T) {
+func TestRegistrationLedgerFailureRetainsAchievedAgentFileEffect(t *testing.T) {
 	svc, env, _ := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
-	env.Kind = "generic"
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(env.Home, "manual.json")
 	os.MkdirAll(env.Home, 0755)
 	original := []byte("{\n // Preserve this comment\n \"servers\": {}, \"unrelated\":true\n}\n")
 	os.WriteFile(env.ConfigPath, original, 0600)
 	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("synthetic ledger failure") }
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
 	if e == nil {
 		t.Fatal("ledger failure ignored")
 	}
 	got, _ := os.ReadFile(env.ConfigPath)
-	if !bytes.Equal(got, original) {
-		t.Fatalf("prior file changed: %s", got)
+	if bytes.Equal(got, original) || !bytes.Contains(got, []byte("fixture.invalid/mcp")) || !bytes.Contains(got, []byte("Preserve this comment")) || !bytes.Contains(got, []byte(`"unrelated":true`)) {
+		t.Fatalf("achieved registration or unrelated config was lost after ledger failure: %s", got)
 	}
 }
 func TestUnregisterLedgerFailureRestoresAgentFile(t *testing.T) {
 	svc, env, _ := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
-	env.Kind = "generic"
+	env.Kind = "opencode"
+	env.ID = "opencode"
 	env.ConfigPath = filepath.Join(env.Home, "manual.json")
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"})
 	if e != nil {
 		t.Fatal(e)
 	}
 	original, _ := os.ReadFile(env.ConfigPath)
 	svc.Options.RemoveInstallation = func(state.Installation) error { return errors.New("synthetic ledger failure") }
-	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	_, e = svc.removeProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e == nil {
 		t.Fatal("ledger failure ignored")
 	}
@@ -910,7 +983,7 @@ func TestConfiguredInstallHasNoPrompt(t *testing.T) {
 		called = true
 		return nil, nil
 	}
-	out, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	out, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -924,7 +997,7 @@ func TestConfiguredInstallHasNoPrompt(t *testing.T) {
 func TestMissingInputSuggestsInteractive(t *testing.T) {
 	svc, env, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "root", Type: "directory", Required: true}}
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e == nil || !strings.Contains(e.Error(), "--interactive") {
 		t.Fatal(e)
 	}
@@ -934,46 +1007,79 @@ func TestMissingInputSuggestsInteractive(t *testing.T) {
 }
 func TestNoImplicitAllAgents(t *testing.T) {
 	svc, _, _ := fixture(t)
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo"})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo"})
 	if e == nil {
 		t.Fatal("no agents accepted")
 	}
 }
 func TestPartialAgentFailureRecorded(t *testing.T) {
 	svc, env, s := fixture(t)
-	bad := env
-	bad.ID = "blocked"
-	bad.SkillsDir = filepath.Join(t.TempDir(), "blocked")
-	os.WriteFile(bad.SkillsDir, []byte("file"), 0600)
-	r, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env, bad}})
+	blockedHome := t.TempDir()
+	blockedSkills := filepath.Join(blockedHome, ".config", "opencode", "skills")
+	if err := os.MkdirAll(filepath.Dir(blockedSkills), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blockedSkills, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	probeHome := t.TempDir()
+	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{GOOS: "linux", Home: probeHome, Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
+		if name == "codex" || name == "opencode" {
+			return filepath.Join(probeHome, "bin", name), nil
+		}
+		return "", os.ErrNotExist
+	}}
+	svc.Options.AgentScopes = map[string]agents.Scope{
+		"codex":    {ID: "codex", Home: env.Home, ExplicitHome: true},
+		"opencode": {ID: "opencode", Home: blockedHome, ExplicitHome: true},
+	}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "partial-agent")
+	r, e := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"codex", "opencode"}})
 	if e == nil || len(r.Errors) != 1 {
 		t.Fatal(r, e)
 	}
 	rows, e := s.Installations()
 	if e != nil || len(rows) != 1 || rows[0].AgentID != "codex" {
-		t.Fatal(rows, e)
+		t.Fatalf("successful earlier agent effect not preserved: rows=%+v err=%v result=%+v operationErr=%v", rows, e, r, e)
 	}
 }
 func TestAnswersKeepLastValidEditAfterFailedApplyWithoutPersistingSecrets(t *testing.T) {
 	svc, env, s := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string"}, {Name: "token", Type: "secret"}}
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "yes", "token": "never-persist"}})
+	probeHome := t.TempDir()
+	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{GOOS: "linux", Home: probeHome, Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
+		if name == "codex" || name == "opencode" {
+			return filepath.Join(probeHome, "bin", name), nil
+		}
+		return "", os.ErrNotExist
+	}}
+	blockedHome := t.TempDir()
+	blockedSkills := filepath.Join(blockedHome, ".config", "opencode", "skills")
+	if err := os.MkdirAll(filepath.Dir(blockedSkills), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blockedSkills, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.AgentScopes = map[string]agents.Scope{
+		"codex":    {ID: "codex", Home: env.Home, ExplicitHome: true},
+		"opencode": {ID: "opencode", Home: blockedHome, ExplicitHome: true},
+	}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "answer-retention")
+	_, e := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"codex"}, Inputs: map[string]any{"label": "yes", "token": "never-persist"}})
 	if e != nil {
 		t.Fatal(e)
 	}
-	a, e := s.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	key, e := s.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	a, e := s.Answers(key)
 	if e != nil || a["label"] != "yes" || a["token"] != nil {
 		t.Fatal(a, e)
 	}
-	bad := env
-	bad.ID = "bad"
-	bad.SkillsDir = filepath.Join(t.TempDir(), "blocked")
-	os.WriteFile(bad.SkillsDir, []byte("file"), 0600)
-	_, e = svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{bad}, Inputs: map[string]any{"label": "failed"}})
+	_, e = svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"opencode"}, Inputs: map[string]any{"label": "failed"}})
 	if e == nil {
 		t.Fatal("expected failure")
 	}
-	a, _ = s.Answers(state.Key{Source: "fixture", Package: "demo", Target: "default"})
+	a, _ = s.Answers(key)
 	if a["label"] != "failed" || a["token"] != nil {
 		t.Fatal(a)
 	}
@@ -984,7 +1090,7 @@ func TestRenderedInputWithoutGeneratorAndRemove(t *testing.T) {
 	p.Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
 	p.Templates = []catalog.Template{{Source: "SKILL.md.mustache", Destination: "SKILL.md"}}
 	os.WriteFile(filepath.Join(p.Dir, "SKILL.md.mustache"), []byte("Hello {{{inputs.label}}}"), 0644)
-	_, e := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "world"}})
+	_, e := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, Inputs: map[string]any{"label": "world"}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -992,7 +1098,7 @@ func TestRenderedInputWithoutGeneratorAndRemove(t *testing.T) {
 	if e != nil || string(b) != "Hello world" {
 		t.Fatal(string(b), e)
 	}
-	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	_, e = svc.removeProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -1001,51 +1107,54 @@ func TestRenderedInputWithoutGeneratorAndRemove(t *testing.T) {
 	}
 }
 
-func TestDomainReviewFailedSourceUpdateRetainsRegistry(t *testing.T) {
-	svc, env, store := fixture(t)
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}}); err != nil {
+func TestFailedPackLocateRetainsRegisteredPath(t *testing.T) {
+	svc, _, _ := fixture(t)
+	if err := os.WriteFile(svc.Source.ManifestPath, []byte("schema_version = 1\nsource_id = 'fixture'\ncatalog = [{ id = 'demo', source = './pkg' }]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.rememberSource(); err != nil {
 		t.Fatal(err)
 	}
 	oldRoot := svc.Source.Root
-	next := svc.Source
-	next.Root = t.TempDir()
-	next.ManifestPath = filepath.Join(next.Root, "aact.toml")
-	next.Catalog = append([]catalog.Package{}, next.Catalog...)
-	next.Catalog[0].Dir = filepath.Join(next.Root, "pkg")
-	os.MkdirAll(next.Catalog[0].Dir, 0755)
-	data, _ := os.ReadFile(filepath.Join(svc.Source.Catalog[0].Dir, "SKILL.md"))
-	os.WriteFile(filepath.Join(next.Catalog[0].Dir, "SKILL.md"), data, 0644)
-	blocked := env
-	blocked.SkillsDir = filepath.Join(t.TempDir(), "blocked")
-	os.WriteFile(blocked.SkillsDir, []byte("file"), 0600)
-	copySvc := New(next, store, Options{})
-	if _, err := copySvc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{blocked}, UpdateSource: true}); err == nil {
-		t.Fatal("expected failed update")
+	invalidRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(invalidRoot, "aact.toml"), []byte("schema_version = 1\nsource_id = 'fixture'\ncatalog = [{ id = 'demo', source = './missing' }]\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	refs, err := copySvc.sourceRefs()
-	if err != nil || refs[0].Root != oldRoot {
-		t.Fatalf("failed update replaced selected source: %#v %v", refs, err)
+	if err := svc.UILocateSource(context.Background(), "fixture", invalidRoot); err == nil {
+		t.Fatal("invalid pack location was accepted")
+	}
+	refs, err := svc.sourceRefs()
+	if err != nil || len(refs) != 1 || refs[0].Root != oldRoot {
+		t.Fatalf("failed locate replaced registered pack path: %#v %v", refs, err)
 	}
 }
 func TestDomainReviewGenericHomesPreservedWithDefaultArtifact(t *testing.T) {
-	svc, a, store := fixture(t)
+	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
-	a.Kind = "generic"
-	a.ID = "generic"
-	a.ConfigPath = ""
-	b := a
-	b.Home = t.TempDir()
-	for _, env := range []agents.Environment{a, b} {
-		if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}, ExternalURL: "https://fixture.invalid/mcp"}); err != nil {
-			t.Fatal(err)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	probeHome := t.TempDir()
+	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{GOOS: "linux", Home: probeHome, Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
+		if name == "opencode" {
+			return filepath.Join(probeHome, "bin", name), nil
 		}
+		return "", os.ErrNotExist
+	}}
+	homeA, homeB := t.TempDir(), t.TempDir()
+	idA, idB := "opencode:home-a", "opencode:home-b"
+	svc.Options.AgentScopes = map[string]agents.Scope{
+		idA: {ID: idA, Home: homeA, ConfigPathOverride: filepath.Join(homeA, "mcp.json"), ExplicitHome: true},
+		idB: {ID: idB, Home: homeB, ConfigPathOverride: filepath.Join(homeB, "mcp.json"), ExplicitHome: true},
 	}
-	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{a}}); err != nil {
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "multi-home")
+	endpoint := map[string]string{"demo": "https://fixture.invalid/mcp"}
+	if _, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{idA, idB}, ExternalURLs: endpoint}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{idB}, ExternalURLs: endpoint}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
-	if err != nil || len(rows) != 1 || rows[0].AgentHome != b.Home {
-		t.Fatalf("uninstall A lost B default manual artifact: %#v %v", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].AgentHome != homeB || rows[0].AgentID != idB {
+		t.Fatalf("deselecting one profile home lost the other registration: %#v %v", rows, err)
 	}
 }

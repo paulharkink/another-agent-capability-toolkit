@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -31,7 +32,7 @@ func TestManifestSectionsPreserveDeclaredOrderAndDoNotInferFieldGroups(t *testin
 type zeroInputSkillSetupBackend struct{ fixtureBackend }
 
 func (zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}}, nil
+	return viewmodel.SetupPreview{Key: setupProfileKey(request)}, nil
 }
 func (zeroInputSkillSetupBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return viewmodel.OperationResult{}, nil
@@ -82,7 +83,7 @@ func TestDestinationPresentationUsesSkillPathsAndRetainsMCPConfigPaths(t *testin
 func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
 	m, _ := homeFixture()
 	m.backend = zeroInputSkillSetupBackend{}
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", Environment: "dev", PackageID: "plain", Name: "staging", Path: "/tmp/staging.toml"}}}
+	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", PackageID: "plain", Name: "staging", Path: "/tmp/staging.toml"}}}
 	rows := m.capabilities()
 	for _, row := range rows {
 		if row.Package == "plain" {
@@ -92,15 +93,11 @@ func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
 	}
 	m.reconcileHome()
 	cmd := m.homeOperation("parameters")
-	if cmd == nil {
-		t.Fatal("skill configuration preview did not start")
+	if cmd != nil || m.creatingProfile == nil || m.creatingProfile.PackID != "one" || m.creatingProfile.CapabilityID != "plain" {
+		t.Fatalf("skill-only capability did not enter source-only profile creation: ref=%+v cmd=%v", m.creatingProfile, cmd != nil)
 	}
-	if m.home.TargetChooser != nil {
-		t.Fatal("skill-only package opened a mandatory target chooser")
-	}
-	m.Update(cmd())
-	if m.form == nil || m.form.SectionTitle() != "Agents" {
-		t.Fatalf("zero-input skill did not open directly on Agents: form=%v", m.form)
+	if m.home.Modal != nil {
+		t.Fatalf("profile creation opened an environment target chooser: %+v", m.home.Modal)
 	}
 }
 
@@ -124,34 +121,6 @@ func TestFixedManifestControllerExposesRequiredEditableInputWithoutSubmittingCon
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if _, err := m.form.Result(); err == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "is required") {
 		t.Fatalf("empty visible required input did not block save: err=%v view=%s", err, ansi.Strip(m.form.View().Content))
-	}
-}
-
-func TestSkillOnlyHomeOffersPresetOnlyWhenNamedPresetExists(t *testing.T) {
-	m, _ := homeFixture()
-	for i, row := range m.capabilities() {
-		if row.Package == "plain" {
-			m.home.Capabilities.Index = i
-			break
-		}
-	}
-	m.home.Modal = &modalState{Kind: "actions"}
-	items := m.homeMenuItems()
-	for _, item := range items {
-		if item.Action == "choose-preset" {
-			t.Fatal("preset chooser offered without a named preset")
-		}
-	}
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", PackageID: "plain", Environment: "dev", Name: "staging", Path: "/tmp/staging.toml"}}}
-	items = m.homeMenuItems()
-	found := false
-	for _, item := range items {
-		if item.Action == "choose-preset" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("preset chooser missing when a named preset exists")
 	}
 }
 
@@ -210,7 +179,7 @@ func (b *multiMCPInstallBackend) UIInstall(_ context.Context, request viewmodel.
 
 func (b *multiMCPRuntimeBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	return viewmodel.SetupPreview{
-		Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		Key: setupProfileKey(request),
 		MCP: true, MCPDefinitions: []catalog.MCP{{Name: "alpha"}, {Name: "beta"}},
 	}, nil
 }
@@ -230,10 +199,10 @@ func TestRuntimeControlsAddressTheSelectedManifestMCPChild(t *testing.T) {
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
-		{Key: state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "local", CanStart: true, CanStop: true},
-		{Key: state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "local", CanStop: true},
+		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "local", CanStart: true, CanStop: true},
+		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "local", CanStop: true},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: "one", PackageID: "bundle", Environment: "dev", Target: "staging"}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
@@ -267,9 +236,9 @@ func TestMissingNamedChildInheritsParentOwnershipForLifecycleGuards(t *testing.T
 			backend := &multiMCPInstallBackend{}
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-			parentKey := state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging"}
+			parentKey := state.Key{Source: "one", Package: "bundle", Target: "staging"}
 			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: parentKey, Name: "Bundle", RuntimeStatus: "running", Ownership: test.owner, URL: "https://parent.example/mcp"}}}
-			open := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: "one", PackageID: "bundle", Environment: "dev", Target: "staging"}, "Overview")
+			open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}
@@ -303,10 +272,10 @@ func TestRuntimeConnectionCheckUsesExactManifestMCPChild(t *testing.T) {
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
-		{Key: state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "foreign", URL: "https://alpha.example/mcp", Transport: "streamable-http"},
-		{Key: state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "foreign", URL: "https://beta.example/mcp", Transport: "sse"},
+		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "foreign", URL: "https://alpha.example/mcp", Transport: "streamable-http"},
+		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "foreign", URL: "https://beta.example/mcp", Transport: "sse"},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: "one", PackageID: "bundle", Environment: "dev", Target: "staging"}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
@@ -340,13 +309,13 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 			backend := &multiMCPInstallBackend{}
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-			key := state.Key{Source: "one", Package: "bundle", Environment: "dev", Target: "staging"}
+			key := state.Key{Source: "one", Package: "bundle", Target: "staging"}
 			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
 				{Key: key, Name: "Bundle", Ownership: "local", URL: "http://127.0.0.1:7777/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "alpha"}, Name: "Alpha", Ownership: "other-aact", URL: "https://alpha.example/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "beta"}, Name: "Beta", Ownership: test.betaOwner},
 			}}
-			open := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+			open := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}

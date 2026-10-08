@@ -42,33 +42,11 @@ func (b *setupEnvironmentBackend) UIEnvironmentTarget(context.Context, string) (
 
 func (b *setupEnvironmentBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID}, nil
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: request.Ref.CapabilityID}, nil
 }
 
 func (b *setupEnvironmentBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return viewmodel.OperationResult{}, nil
-}
-
-func TestEnvironmentTargetCanStartSetupForItsPackage(t *testing.T) {
-	b := &setupEnvironmentBackend{snapshot: viewmodel.EnvironmentSnapshot{SourceID: "team-source", Targets: []viewmodel.EnvironmentTarget{{SourceID: "team-source", Environment: "dev", PackageID: "plain", Name: "production", Path: "/environments/dev/plain/production.toml"}}}}
-	m := New(b).(*Model)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m.Update(m.Init()())
-	m.navigate("Environments")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyRight, "")
-	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Configure / install selected target…") || strings.Contains(m.View().Content, "Configure / install selected target… — disabled") {
-		t.Fatalf("actual target cannot start setup: %s", m.View().Content)
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil || !m.busy {
-		t.Fatal("selected TOML target did not request setup preview")
-	}
-	m.Update(cmd())
-	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: "production"}) || m.form == nil {
-		t.Fatalf("setup used wrong target: %+v, form=%v", b.previewRequest, m.form)
-	}
 }
 
 func TestEnvironmentActionNamesItsImmediateSetupEffect(t *testing.T) {
@@ -165,23 +143,6 @@ func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
 	m.editEnvironmentRoot()
 	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "/actual/environments") {
 		t.Fatalf("root editor lost canonical prefill: %s", view)
-	}
-}
-
-func TestNoEnvironmentFileStartsSetupForSelectedCapability(t *testing.T) {
-	b := &setupEnvironmentBackend{}
-	m := New(b).(*Model)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m.Update(m.Init()())
-	m.navigate("Environments")
-	press(m, tea.KeyEnter, "")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("No environment file did not start selected capability setup")
-	}
-	m.Update(cmd())
-	if b.previewRequest != (viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain"}) || m.form == nil {
-		t.Fatalf("no-file setup lost selected capability: %+v, form=%v", b.previewRequest, m.form)
 	}
 }
 

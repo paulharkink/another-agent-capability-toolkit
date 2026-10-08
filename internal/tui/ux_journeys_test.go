@@ -31,9 +31,9 @@ var uxJourneyCases = []struct {
 	ref string
 	run func(*testing.T)
 }{
-	{"01", "target chooser and exact target selection", TestUXMultipleTargetsOpenLocalChooserAndSelectionOpensCorrectKey},
+	{"01", "source-only profile creation", TestMCPConfigureUsesSourceOnlyProfileCreation},
 	{"02", "paired workspace and package/target facts", TestUXCapabilityAndTargetDetailsContainRealInformation},
-	{"03", "shared workspace return to Environments", TestUXEnvironmentTargetUsesSharedInsetEditorAndBackRestoresParent},
+	{"03", "profile configuration opens the shared workspace", TestUXProfileConfigurationOpensSharedGenericWorkspace},
 	{"04", "keyboard in-place edit, Unicode paste and save", editPasteJourney},
 	{"05", "authentication alternatives and task grouping", TestUXGrafanaSessionCookieInputsAllInAuthenticationAndIrrelevantCredentialsConditional},
 	{"06", "foreground failure and draft recovery", TestUXReturnToConfigurationPreservesSubmittedDraftAndOrigin},
@@ -43,7 +43,7 @@ var uxJourneyCases = []struct {
 	{"10", "directory collection editing", directoryCollectionJourney},
 	{"11", "foreign runtime connection diagnosis and source lookup", TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding},
 	{"12", "runtime empty state and log lifecycle", TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs},
-	{"13", "preset versus saved target navigation", TestUXEnvironmentPresetDoesNotImplyInstalledAndNoSavedDuplicateRows},
+	{"13", "legacy environment target is not an operational profile", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutProfileReference},
 	{"14", "agent detection and write destination", TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution},
 	{"15", "management, settings and help hierarchy", TestUXSettingsCategoriesHaveRelatedControlsOnly},
 	{"16", "pane-local keyboard navigation and scroll cues", TestHomeLayerTwoScrollShowsContinuationCues},
@@ -800,13 +800,13 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	t.Setenv("PATH", t.TempDir()) // No discovery or native-picker command can run.
-	environmentRoot := t.TempDir()
-	key := state.Key{Source: "fixture-source", Package: pkg.ID, Environment: "qa", Target: "local"}
-	targetPath := filepath.Join(environmentRoot, key.Environment, key.Package, key.Target+".toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+	profileRoot := t.TempDir()
+	key := state.Key{Source: "fixture-source", Package: pkg.ID, Target: "local"}
+	profilePath := filepath.Join(profileRoot, key.Package, key.Target+".toml")
+	if err := os.MkdirAll(filepath.Dir(profilePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(targetPath, []byte("[cluster]\napi_server = 'https://cluster.fixture.invalid'\n"), 0o600); err != nil {
+	if err := os.WriteFile(profilePath, []byte(""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := state.Open(t.TempDir())
@@ -822,12 +822,12 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	if err := os.WriteFile(filepath.Join(store.Root(), "manager", "settings.json"), []byte(`{"agents":["opencode"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := config.Source{ID: key.Source, Root: repoRoot, ManifestPath: filepath.Join(repoRoot, "aact.toml"), EnvironmentRoot: environmentRoot, Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{pkg.ID: {"local_port": 9911}}}
+	source := config.Source{ID: key.Source, Root: repoRoot, ManifestPath: filepath.Join(repoRoot, "aact.toml"), ProfileRoot: profileRoot, Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{pkg.ID: {"local_port": 9911}}}
 	svc := app.New(source, store, app.Options{Runtime: journeyEmptyRuntime{}})
 	m := NewContext(t.Context(), svc)
 	m.Update(size)
 	m.Update(m.Init()())
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}, "Overview")
 	if cmd == nil {
 		t.Fatal("real app service did not expose the fixture Cluster Inspector workspace")
 	}
@@ -848,7 +848,7 @@ func TestUXAllScreensKeyboardOnlyNoBatch(t *testing.T) {
 		t.Fatal("keyboard Ctrl-S did not submit the setup form")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
-	if backend.installRequest == nil || backend.installRequest.PackageID == "" {
+	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.CapabilityID == "" || backend.installRequest.SetupRequest.Ref.Name == "" {
 		t.Fatalf("keyboard setup did not reach the real UI service boundary: %+v", backend.installRequest)
 	}
 	if strings.Contains(strings.ToLower(m.View().Content), "batch") {
@@ -1005,17 +1005,9 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# Demo\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "journey-source", Package: "demo", Environment: "dev", Target: "foreign"}
+	key := state.Key{Source: "journey-source", Package: "demo", Target: "foreign"}
 	endpoint := "http://127.0.0.1:1/mcp"
 	if err := store.Record(state.Installation{Key: key, AgentID: "runtime", Component: "runtime", URL: endpoint, Transport: "streamable-http"}); err != nil {
-		t.Fatal(err)
-	}
-	environmentRoot := t.TempDir()
-	targetPath := filepath.Join(environmentRoot, key.Environment, key.Package, key.Target+".toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte(""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pkg := catalog.Package{ID: "demo", Name: "Demo", Dir: root, Skill: &catalog.Skill{Name: "demo"}, MCPs: []catalog.MCP{{Name: "demo", Transport: "streamable-http"}}, UI: &catalog.Presentation{Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}}}, Inputs: []catalog.Input{{Name: "endpoint", Label: "Endpoint URI", Type: "string", Default: endpoint}}}
@@ -1031,15 +1023,22 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 			return "", os.ErrNotExist
 		}
 	}
-	svc := app.New(config.Source{ID: key.Source, Root: root, EnvironmentRoot: environmentRoot, Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{}}, store, app.Options{Runtime: journeySetupRuntime{}, Runner: journeyAgentRunner{}, DiscoveryProbe: &probe})
+	ref := config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}
+	svc := app.New(config.Source{ID: key.Source, Root: root, ProfileRoot: filepath.Join(root, "profiles"), Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{}}, store, app.Options{Runtime: journeySetupRuntime{}, Runner: journeyAgentRunner{}, DiscoveryProbe: &probe})
+	if err := svc.CreateProfile(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
 	m := NewContext(t.Context(), svc)
 	m.Update(m.Init()())
-	preview := viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}
+	preview := m.packProfileRequest(key)
 	cmd := m.openTargetWorkspace(preview, "Overview")
 	if cmd == nil {
 		t.Fatal("could not open target workspace from the real service")
 	}
 	m.Update(cmd())
+	if m.form == nil {
+		t.Fatalf("profile-backed workspace preview did not open: output=%q workspace=%+v", m.output, m.workspace)
+	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
 	if m.form == nil || !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "codex") {

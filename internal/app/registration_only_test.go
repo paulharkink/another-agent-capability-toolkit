@@ -17,11 +17,11 @@ func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) 
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	localAgent.Kind = "generic"
-	localAgent.ConfigPath = filepath.Join(localAgent.Home, "mcp.json")
-	key := state.Key{Source: "windows-source", Package: "demo", Environment: "prod", Target: "cluster"}
+	localAgent.Kind = "opencode"
+	localAgent.ConfigPath = filepath.Join(localAgent.Home, "mcp.jsonc")
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 
-	out, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	out, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http",
 		Agents: []agents.Environment{localAgent},
 	})
@@ -31,7 +31,7 @@ func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) 
 	if runtime.starts != 0 {
 		t.Fatal("registration started Docker")
 	}
-	if len(out.Changes) != 1 || out.Changes[0].Component != "mcp" || out.Changes[0].Key != key {
+	if len(out.Changes) != 1 || out.Changes[0].Component != "mcp" || out.Changes[0].Key.Package != key.Package {
 		t.Fatalf("expected one foreign MCP registration: %+v", out)
 	}
 	rows, err := store.Installations()
@@ -50,13 +50,13 @@ func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) 
 	}
 }
 
-func TestConfigureRegistrationsForLocalCapabilityInstallsCompanionSkill(t *testing.T) {
+func TestConfigureRegistrationsForLocalCapabilityOnlyAttachesMCP(t *testing.T) {
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	agent.Kind = "generic"
-	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	agent.Kind = "opencode"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.jsonc")
 	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
-	result, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	result, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent},
 	})
 	if err != nil {
@@ -70,25 +70,25 @@ func TestConfigureRegistrationsForLocalCapabilityInstallsCompanionSkill(t *testi
 	for _, row := range rows {
 		components[row.Component] = true
 	}
-	if !components["skill"] || !components["mcp"] || len(result.Changes) != 2 {
-		t.Fatalf("complete capability was not attached: result=%+v rows=%+v", result, rows)
+	if components["skill"] || !components["mcp"] || len(result.Changes) != 1 {
+		t.Fatalf("registration operation changed profile skill state: result=%+v rows=%+v", result, rows)
 	}
 }
 
 func TestConfigureRegistrationsUsesLocalPackageTimeout(t *testing.T) {
 	svc, agent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationTimeoutMS: 60000}
-	agent.Kind = "generic"
-	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	agent.Kind = "opencode"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.jsonc")
 	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
-	if _, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	if _, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http",
 		Agents: []agents.Environment{agent},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 1 {
 		t.Fatalf("MCP registration timeout: %+v, %v", rows, err)
 	}
 	for _, row := range rows {
@@ -100,19 +100,19 @@ func TestConfigureRegistrationsUsesLocalPackageTimeout(t *testing.T) {
 
 func TestConfigureRegistrationsRemovesDeselectedOwnedAgent(t *testing.T) {
 	svc, first, store := fixture(t)
-	first.Kind = "generic"
-	first.ConfigPath = filepath.Join(first.Home, "mcp.json")
+	first.Kind = "opencode"
+	first.ConfigPath = filepath.Join(first.Home, "mcp.jsonc")
 	second := first
 	second.ID = "generic:second"
 	second.Home = t.TempDir()
-	second.ConfigPath = filepath.Join(second.Home, "mcp.json")
-	key := state.Key{Source: "windows-source", Package: "demo", Target: "cluster"}
+	second.ConfigPath = filepath.Join(second.Home, "mcp.jsonc")
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	request := RegistrationRequest{Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{first, second}}
-	if _, err := svc.ConfigureRegistrations(context.Background(), request); err != nil {
+	if _, err := configureRegistrationsTest(context.Background(), svc, request); err != nil {
 		t.Fatal(err)
 	}
 	request.Agents = []agents.Environment{second}
-	out, err := svc.ConfigureRegistrations(context.Background(), request)
+	out, err := configureRegistrationsTest(context.Background(), svc, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,15 +131,15 @@ func TestConfigureRegistrationsRemovesDeselectedOwnedAgent(t *testing.T) {
 
 func TestConfigureRegistrationsCanRemoveEveryOwnedAgent(t *testing.T) {
 	svc, agent, store := fixture(t)
-	agent.Kind = "generic"
-	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
-	key := state.Key{Source: "windows-source", Package: "demo", Target: "cluster"}
+	agent.Kind = "opencode"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.jsonc")
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	request := RegistrationRequest{Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent}}
-	if _, err := svc.ConfigureRegistrations(context.Background(), request); err != nil {
+	if _, err := configureRegistrationsTest(context.Background(), svc, request); err != nil {
 		t.Fatal(err)
 	}
 	request.Agents = nil
-	if _, err := svc.ConfigureRegistrations(context.Background(), request); err != nil {
+	if _, err := configureRegistrationsTest(context.Background(), svc, request); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
@@ -150,13 +150,13 @@ func TestConfigureRegistrationsCanRemoveEveryOwnedAgent(t *testing.T) {
 
 func TestConfigureRegistrationsPreservesLocalRuntimeIntent(t *testing.T) {
 	svc, agent, store := fixture(t)
-	agent.Kind = "generic"
-	agent.ConfigPath = filepath.Join(t.TempDir(), "mcp.json")
+	agent.Kind = "opencode"
+	agent.ConfigPath = filepath.Join(t.TempDir(), "mcp.jsonc")
 	key := state.Key{Source: "fixture", Package: "demo", Environment: "sample-env", Target: "target-a"}
 	if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-target-a", SourcePath: "missing-container"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	if _, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent},
 	}); err != nil {
 		t.Fatal(err)
@@ -179,9 +179,9 @@ func TestConfigureRegistrationsPreservesLocalRuntimeIntent(t *testing.T) {
 func TestInstallRecordsMCPProfileIndependentlyOfRuntime(t *testing.T) {
 	svc, localAgent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	localAgent.Kind = "generic"
-	localAgent.ConfigPath = filepath.Join(localAgent.Home, "mcp.json")
-	_, err := svc.Install(context.Background(), InstallRequest{
+	localAgent.Kind = "opencode"
+	localAgent.ConfigPath = filepath.Join(localAgent.Home, "mcp.jsonc")
+	_, err := svc.applyProfileFixture(context.Background(), InstallRequest{
 		Package: "demo", Agents: []agents.Environment{localAgent}, ExternalURL: "http://127.0.0.1:8765/mcp",
 	})
 	if err != nil {

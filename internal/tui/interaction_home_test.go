@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 func pressAndRun(m *Model, key rune) {
@@ -18,10 +20,11 @@ func pressAndRun(m *Model, key rune) {
 }
 
 func startHomeSetup(m *Model) {
-	cmd := m.homeOperation("parameters")
-	if m.home.Modal != nil && m.home.Modal.Kind == "target-chooser" {
-		cmd = m.modalKey("enter")
+	capability, ok := m.selectedCapability()
+	if !ok {
+		return
 	}
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: capability.Source, CapabilityID: capability.Package, Name: "test-profile"}}, "Overview")
 	if cmd != nil {
 		m.Update(cmd())
 	}
@@ -88,7 +91,7 @@ func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 		press(m, tea.KeyDown, "")
 		press(m, tea.KeyDown, "") // Related MCP profile.
 		pressAndRun(m, tea.KeyEnter)
-		if m.form == nil || setup.previewRequest.Target != "production" || setup.previewRequest.Environment != "dev" {
+		if m.form == nil || setup.previewRequest.Ref.PackID != "one" || setup.previewRequest.Ref.CapabilityID != "inspect" || setup.previewRequest.Ref.Name != "production" || setup.previewRequest.Environment != "" {
 			t.Fatalf("Enter on a server profile should open its exact shared workspace: form=%v request=%+v", m.form != nil, setup.previewRequest)
 		}
 	})

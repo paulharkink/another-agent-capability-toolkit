@@ -51,7 +51,7 @@ func openLogAction(t *testing.T, m *Model) tea.Cmd {
 	}
 	m.backend = &logWorkspaceBackend{logProfileBackend: base, setup: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, profileIndex)
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(p.Key), "Overview")
 	if cmd == nil {
 		t.Fatalf("target workspace did not open for logs target %+v", p.Key)
 	}
@@ -66,7 +66,7 @@ type logWorkspaceBackend struct {
 }
 
 func (b *logWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true}, nil
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: request.Ref.CapabilityID, MCP: true}, nil
 }
 
 func (b *logWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -295,7 +295,7 @@ type replacementLogsBackend struct {
 }
 
 func (b *replacementLogsBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "test-runtime"}}}, nil
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: request.Ref.CapabilityID, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "test-runtime"}}}, nil
 }
 
 func (b *replacementLogsBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -334,7 +334,7 @@ func TestPauseResumeReplacementIgnoresIntentionalCancellation(t *testing.T) {
 	m.backend = backend
 	key := base.snapshot.Profiles[0].Key
 	m.selectPane(ProfilesPane, 0)
-	setup := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	setup := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 	m.Update(setup())
 	_, firstFetch := m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
 	if firstFetch == nil {

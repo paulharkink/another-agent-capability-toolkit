@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -17,18 +16,33 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return viewmodel.OperationResult{}, picker.ErrCancelled
 	}
-	hasRemoval := len(q.RemoveAgentIDs) > 0 || len(q.RemoveRegistrations) > 0
-	if len(q.AgentIDs) > 0 && hasRemoval {
-		return viewmodel.OperationResult{}, errors.New("choose Save desired agent registrations or Remove selected registrations, not both")
-	}
-	if len(q.RemoveAgentIDs) > 0 && len(q.RemoveRegistrations) > 0 {
-		return viewmodel.OperationResult{}, errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both")
+	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return viewmodel.OperationResult{}, errors.New("profile reference (Capability Pack, capability, and profile) is required")
 	}
 	for _, id := range q.AgentIDs {
 		kind, _, _ := strings.Cut(id, ":")
 		if strings.EqualFold(id, "all") || strings.EqualFold(kind, "generic") || strings.EqualFold(kind, "generic-mcp") {
 			return viewmodel.OperationResult{}, fmt.Errorf("MCP registrations require a named agent destination; %q is not supported", id)
 		}
+	}
+	profileService, err := s.forSource(q.Ref.PackID)
+	if err != nil {
+		result := viewmodel.OperationResult{}
+		if q.URL != "" {
+			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
+		}
+		return result, fmt.Errorf("cannot configure this capability without its Capability Pack catalog; locate the pack directory first: %w", err)
+	}
+	q.Key, err = profileService.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	hasRemoval := len(q.RemoveAgentIDs) > 0 || len(q.RemoveRegistrations) > 0
+	if len(q.AgentIDs) > 0 && hasRemoval {
+		return viewmodel.OperationResult{}, errors.New("choose Save desired agent registrations or Remove selected registrations, not both")
+	}
+	if len(q.RemoveAgentIDs) > 0 && len(q.RemoveRegistrations) > 0 {
+		return viewmodel.OperationResult{}, errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both")
 	}
 	source, sourceErr := s.forSource(q.Key.Source)
 	if sourceErr != nil {
@@ -38,77 +52,12 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 		}
 		return result, fmt.Errorf("cannot configure this capability without its Capability Pack catalog; locate the pack directory first: %w", sourceErr)
 	}
-	p, packageErr := source.packageByID(q.Key.Package)
-	if packageErr != nil {
-		result := viewmodel.OperationResult{}
-		if q.URL != "" {
-			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
-		}
-		return result, fmt.Errorf("cannot configure this capability without its Capability Pack catalog; locate the pack directory first: %w", packageErr)
-	}
-	if p.HasMCP() {
-		if p.Skill == nil {
-			return viewmodel.OperationResult{}, errors.New("this MCP has no companion skill in its Capability Pack catalog; locate the pack directory")
-		}
-		if len(p.MCPDefinitions()) != 1 {
-			return viewmodel.OperationResult{}, errors.New("multi-MCP capabilities must be configured through the capability setup form so every endpoint is supplied")
-		}
-		if hasRemoval {
-			rows, err := source.Store.Installations()
-			if err != nil {
-				return viewmodel.OperationResult{}, err
-			}
-			removed := map[string]bool{}
-			for _, id := range q.RemoveAgentIDs {
-				removed[id] = true
-			}
-			for _, identity := range q.RemoveRegistrations {
-				removed[identity.AgentID] = true
-			}
-			envs := map[string]agents.Environment{}
-			for _, row := range rows {
-				if !sameCapabilityKey(row.Key, q.Key) || (row.Component != "skill" && row.Component != "mcp") || row.AgentID == "" || !removed[row.AgentID] {
-					continue
-				}
-				kind := row.AgentKind
-				if kind == "" {
-					kind, _, _ = strings.Cut(row.AgentID, ":")
-				}
-				env := envs[row.AgentID]
-				env.ID, env.Kind, env.Home = row.AgentID, kind, row.AgentHome
-				if row.Component == "skill" {
-					env.SkillsDir = filepath.Dir(row.Destination)
-				}
-				if row.Component == "mcp" {
-					env.ConfigPath = row.Destination
-				}
-				envs[row.AgentID] = env
-			}
-			result, err := source.removeCapabilityBindings(ctx, p, q.Key, envs)
-			return result, normalizeRegistrationCancellation(ctx, err)
-		}
-		if q.URL == "" && len(q.AgentIDs) > 0 {
-			return viewmodel.OperationResult{}, errors.New("an external MCP endpoint URL is required to configure this capability")
-		}
-		externalURLs := map[string]string(nil)
-		externalURL := q.URL
-		if len(p.MCPs) > 0 && q.URL != "" {
-			externalURLs = map[string]string{p.MCPs[0].Name: q.URL}
-			externalURL = ""
-		}
-		request := viewmodel.SetupInstallRequest{
-			SetupRequest:   viewmodel.SetupRequest{PackageID: p.ID, Environment: q.Key.Environment, Target: q.Key.Target},
-			DestinationIDs: q.AgentIDs, ExternalURL: externalURL, ExternalURLs: externalURLs,
-		}
-		result, err := source.UIInstall(ctx, request)
-		return result, normalizeRegistrationCancellation(ctx, err)
-	}
 	if hasRemoval {
 		identities := make([]registrationIdentity, 0, len(q.RemoveRegistrations))
 		for _, identity := range q.RemoveRegistrations {
 			identities = append(identities, registrationIdentity{AgentID: identity.AgentID, Destination: identity.Destination})
 		}
-		result, err := s.removeUIRegistrations(ctx, q.Key, identities, q.RemoveAgentIDs)
+		result, err := source.removeUIRegistrations(ctx, q.Key, identities, q.RemoveAgentIDs)
 		step, target := result.Step, result.Target
 		if step == "" {
 			step = "remove agent registration"
@@ -140,8 +89,8 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 		}
 		targets = append(targets, env)
 	}
-	result, err := s.ConfigureRegistrations(ctx, RegistrationRequest{
-		Key: q.Key, URL: q.URL, Transport: q.Transport, Agents: targets, preserve: preserved,
+	result, err := source.ConfigureRegistrations(ctx, RegistrationRequest{
+		Ref: q.Ref, Key: q.Key, URL: q.URL, Transport: q.Transport, Agents: targets, preserve: preserved,
 	})
 	step, target := result.Step, result.Target
 	if step == "" && len(result.Errors) > 0 {
