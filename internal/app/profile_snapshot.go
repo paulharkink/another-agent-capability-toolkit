@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -61,15 +63,18 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 		}
 		key, e := s.Store.ResolveProfileKey(s.Source.ID, p.ID, profile.Ref.Name)
 		row.Key = key
+		row.CompletionScopeRelevant = completionScopeRelevant(key, records, rows)
 		if e != nil {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = e.Error()
+			row.CompletionScopeError = e.Error()
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
 		if profile.Error != "" {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = profile.Error
+			row.CompletionScopeError = profile.Error
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
@@ -81,10 +86,15 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			row.ConfigStatus = "needs-input"
 			row.ConfigError = e.Error()
 		}
+		if e != nil {
+			row.CompletionScopeError = e.Error()
+		}
 		managed := []state.Installation{}
 		destinations := []string{}
+		hasDestinationSelection := false
 		for _, r := range records {
 			if r.Key == key && r.Selection != nil {
+				hasDestinationSelection = true
 				destinations = append(destinations, r.Selection.DestinationIDs...)
 			}
 		}
@@ -96,7 +106,10 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 				}
 			}
 		}
-		if len(destinations) == 0 {
+		if e == nil {
+			s.populateCompletionScope(ctx, p, profile.Ref, key, values, records, managed, &row)
+		}
+		if len(destinations) == 0 && !hasDestinationSelection {
 			for _, a := range registry.Adapters() {
 				d, e := a.Detect(ctx, s.agentScope(a.ID()))
 				if e == nil && d.Installed && (!p.HasMCP() || a.Features().MCPs) {
@@ -211,4 +224,138 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 		snapshot.Profiles = append(snapshot.Profiles, row)
 	}
 	return snapshot, nil
+}
+
+// populateCompletionScope resolves intended work independently from the
+// observed component facts. PreviewProfile is read-only; its Selected flag can
+// reflect already-achieved state for persisted selections, so saved intent is
+// read from the profile ledger whenever it exists.
+func (s *Service) populateCompletionScope(ctx context.Context, p catalog.Package, ref config.ProfileRef, key state.Key, values map[string]any, records []state.ProfileRecord, managed []state.Installation, row *viewmodel.CapabilityProfile) {
+	preview, err := s.PreviewProfile(ctx, ProfileRequest{Ref: ref})
+	if err != nil {
+		row.CompletionScopeError = err.Error()
+		return
+	}
+	items, _, err := componentSelection(p, values, preview.SelectedItemIDs, false)
+	if err != nil {
+		row.CompletionScopeError = err.Error()
+		return
+	}
+	for _, item := range items {
+		for _, name := range item.Skills {
+			row.SelectedComponents = append(row.SelectedComponents, viewmodel.SelectedComponent{Kind: "skill", Name: name})
+		}
+		for _, name := range item.MCPs {
+			row.SelectedComponents = append(row.SelectedComponents, viewmodel.SelectedComponent{Kind: "mcp", Name: name})
+		}
+		for _, name := range item.Plugins {
+			row.SelectedComponents = append(row.SelectedComponents, viewmodel.SelectedComponent{Kind: "plugin", Name: name})
+		}
+	}
+
+	var selectedDestinationIDs []string
+	selectionRecorded := false
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			selectionRecorded = true
+			selectedDestinationIDs = append(selectedDestinationIDs, record.Selection.DestinationIDs...)
+			break
+		}
+	}
+	if selectionRecorded {
+		row.CompletionScopeRelevant = true
+	} else if len(managed) > 0 {
+		// Older state recorded successful component rows before it persisted
+		// selection intent. Keep those historical scopes useful and anchored to
+		// the destinations where effects were actually recorded.
+		for _, installation := range managed {
+			selectedDestinationIDs = append(selectedDestinationIDs, installation.AgentID)
+		}
+		row.CompletionScopeRelevant = true
+	} else {
+		for _, destination := range preview.Destinations {
+			if destination.Selected {
+				selectedDestinationIDs = append(selectedDestinationIDs, destination.ID)
+			}
+		}
+	}
+	row.SelectedDestinations = uniqueStrings(selectedDestinationIDs)
+	row.CompletionScopeKnown = true
+	if len(row.SelectedComponents) == 0 {
+		return
+	}
+
+	componentsByKind := map[string][]string{}
+	for _, component := range row.SelectedComponents {
+		componentsByKind[component.Kind] = append(componentsByKind[component.Kind], component.Name)
+	}
+	byID := map[string]viewmodel.SetupDestination{}
+	for _, destination := range preview.Destinations {
+		byID[destination.ID] = destination
+	}
+	registry := s.adapterRegistry()
+	for _, selectedID := range row.SelectedDestinations {
+		lookupID := selectedID
+		if adapter, adapterErr := registry.Adapter(selectedID); adapterErr == nil {
+			lookupID = adapter.ID()
+		}
+		destination, found := byID[lookupID]
+		if !found || !destination.Detected {
+			continue
+		}
+		eligible := true
+		if len(componentsByKind["skill"]) > 0 && !destination.Features.Skills {
+			eligible = false
+		}
+		if len(componentsByKind["mcp"]) > 0 {
+			if !destination.MCPRegistrationAvailable {
+				eligible = false
+			}
+		}
+		if len(componentsByKind["plugin"]) > 0 {
+			for _, name := range componentsByKind["plugin"] {
+				format := ""
+				for _, plugin := range p.Plugins {
+					if plugin.Name == name {
+						format = plugin.Format
+						break
+					}
+				}
+				if format == "" || !slices.Contains(destination.Features.PluginFormats, format) {
+					eligible = false
+				}
+			}
+		}
+		if eligible {
+			row.EligibleDestinations = append(row.EligibleDestinations, selectedID)
+		}
+	}
+	row.EligibleDestinations = uniqueStrings(row.EligibleDestinations)
+}
+
+func completionScopeRelevant(key state.Key, records []state.ProfileRecord, installations []state.Installation) bool {
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			return true
+		}
+	}
+	for _, installation := range installations {
+		if sameCapabilityKey(installation.Key, key) && installation.Component != "runtime" {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }

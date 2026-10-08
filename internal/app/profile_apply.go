@@ -480,9 +480,16 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 			ids = r.Selection.ItemIDs
 		}
 	}
-	_, preview.SelectedItemIDs, err = componentSelection(p, values, ids, q.SkillsOnly)
+	selectedItems, selectedItemIDs, err := componentSelection(p, values, ids, q.SkillsOnly)
 	if err != nil {
 		return preview, invalid(err)
+	}
+	preview.SelectedItemIDs = selectedItemIDs
+	selectedNeedsMCP := false
+	selectedNeedsPlugin := false
+	for _, item := range selectedItems {
+		selectedNeedsMCP = selectedNeedsMCP || len(item.MCPs) > 0
+		selectedNeedsPlugin = selectedNeedsPlugin || len(item.Plugins) > 0
 	}
 	preview.Items, err = catalog.InstallationItems(p, p.Sets)
 	if err != nil {
@@ -508,14 +515,14 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 				destinationIDs = append(destinationIDs, id)
 			}
 		}
-		if len(destinationIDs) == 0 && !p.HasMCP() && len(p.Plugins) == 0 {
+		if len(destinationIDs) == 0 && !selectedNeedsMCP && !selectedNeedsPlugin {
 			destinationIDs = []string{"generic"}
 		}
 	}
 	achievedRows := installations
 	for _, a := range s.adapterRegistry().Adapters() {
 		features := a.Features()
-		if p.HasMCP() && a.ID() == "generic" {
+		if a.ID() == "generic" && (selectedNeedsMCP || selectedNeedsPlugin) {
 			continue
 		}
 		nativeScope := s.agentScope(a.ID())
@@ -537,19 +544,24 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 				break
 			}
 		}
-		row := viewmodel.SetupDestination{Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath, Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID())}
+		row := viewmodel.SetupDestination{
+			Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath,
+			Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID()),
+			Detected:                 e == nil && d.Installed,
+			MCPRegistrationAvailable: e == nil && d.Installed && features.MCPs && d.MCPDisabledReason == "" && (d.CanCreateConfig || hasDetectedConfig),
+		}
 		if e != nil {
 			row.DisabledReason = e.Error()
-		} else if p.HasMCP() && d.MCPDisabledReason != "" {
+		} else if selectedNeedsMCP && d.MCPDisabledReason != "" {
 			row.DisabledReason = d.MCPDisabledReason
-		} else if p.HasMCP() && !features.MCPs {
+		} else if selectedNeedsMCP && !features.MCPs {
 			row.DisabledReason = "This agent does not support MCP registration"
 		} else if !d.Installed {
 			row.DisabledReason = "Agent is not detected"
 			if d.Reason != "" {
 				row.DisabledReason += ": " + d.Reason
 			}
-		} else if p.HasMCP() && !d.CanCreateConfig && !hasDetectedConfig {
+		} else if selectedNeedsMCP && !d.CanCreateConfig && !hasDetectedConfig {
 			row.DisabledReason = "Adapter cannot create the missing MCP config file"
 		}
 		row.ConfigPath = d.ConfigPath

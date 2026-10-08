@@ -146,6 +146,11 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 	if m.inventoryError != nil {
 		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
 	}
+	if snapshot, ok := m.capabilityProfiles[c.Package]; ok {
+		if status, details, handled := selectedWorkInstallationDetails(snapshot); handled {
+			return status, details
+		}
+	}
 	type component struct{ name, kind, mcp string }
 	components := []component{}
 	if c.Skill {
@@ -225,6 +230,82 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 		return "Partial", details
 	}
 	return "Installed", details
+}
+
+func selectedWorkInstallationDetails(snapshot viewmodel.CapabilityProfileSnapshot) (string, []string, bool) {
+	profiles := snapshot.Profiles
+	if len(profiles) == 0 {
+		return "", nil, false
+	}
+	handled := false
+	work := 0
+	complete := 0
+	hasUnknown := false
+	details := []string{}
+	for _, profile := range profiles {
+		if !profile.CompletionScopeRelevant {
+			continue
+		}
+		handled = true
+		if !profile.CompletionScopeKnown {
+			hasUnknown = true
+			if profile.CompletionScopeError != "" {
+				details = append(details, profile.Ref.Name+": selected-work status unavailable: "+profile.CompletionScopeError)
+			} else {
+				details = append(details, profile.Ref.Name+": selected-work status unavailable")
+			}
+			continue
+		}
+		if len(profile.SelectedComponents) == 0 {
+			details = append(details, profile.Ref.Name+": no components selected")
+			continue
+		}
+		if len(profile.EligibleDestinations) == 0 {
+			details = append(details, profile.Ref.Name+": no selected destinations can install the selected components")
+			continue
+		}
+		for _, destination := range profile.EligibleDestinations {
+			for _, selected := range profile.SelectedComponents {
+				work++
+				status := "unknown"
+				for _, observed := range profile.Components {
+					if observed.AgentID == destination && observed.Kind == selected.Kind && observed.Name == selected.Name {
+						status = observed.Status
+						break
+					}
+				}
+				label := destination + " · " + selected.Kind + " · " + selected.Name
+				if status == "installed" {
+					complete++
+					details = append(details, label+": installed")
+				} else {
+					if status == "unknown" || status == "unavailable" || status == "unobserved" || status == "stale" {
+						hasUnknown = true
+					}
+					details = append(details, label+": "+status)
+				}
+			}
+		}
+	}
+	if !handled {
+		return "Not installed", []string{"No saved selected work"}, true
+	}
+	if work == 0 {
+		if hasUnknown {
+			return "Unknown", details, true
+		}
+		return "Not installed", details, true
+	}
+	if complete == work && !hasUnknown {
+		return "Installed", details, true
+	}
+	if complete > 0 {
+		return "Partial", details, true
+	}
+	if hasUnknown {
+		return "Unknown", details, true
+	}
+	return "Not installed", details, true
 }
 
 func (m *Model) selectedContextRow() (contextRow, bool) {
