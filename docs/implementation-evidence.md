@@ -286,3 +286,28 @@ agent registrations and validation against CR/LF/NUL injection. The focused
 adapter test and full suite passed. GitHub and GitLab use agent MCP config
 headers; Bitbucket receives its token through the container environment because
 that server requires startup credentials.
+
+## Jenkins MCP capability, 2026-10-08
+
+Added a failing public-package test for the Jenkins skill/MCP manifest and a
+Docker integration test that asks the actual Streamable HTTP server for its
+tool list in default, read-only, and write-enabled modes. The tests first failed
+because `packages/jenkins` and its Docker build context did not exist. Added a
+Jenkins capability package that builds a local image around the unmodified
+`jenkins-mcp@0.2.1` npm package. The TOML declares Jenkins URL, username, secret
+API token, and a `read_only` boolean defaulting to true. The container entrypoint
+maps that input to the server's `--read-only` switch. In write-enabled mode the
+upstream server also exposes configuration, stop, node, and queue write tools;
+the bundled skill calls this out.
+
+The focused manifest test, Docker `tools/list` test (including default mode),
+full `go test ./... -count=1`, `go test -race ./... -count=1`, and `go vet ./...`
+passed using the plan-pinned Go 1.27.1 toolchain downloaded under `/tmp`. The
+Docker-tagged checks for `internal/mcp`, `internal/packagehelpers`,
+`internal/sessionsearch`, and `tests/packages` passed, as did
+`sh tools/test-containers.sh` and a separate local Jenkins image build. The
+container test used synthetic credentials and a deliberately unreachable
+Jenkins URL; it verified MCP initialization and the exposed tool names, not
+authenticated operations against a Jenkins installation. The existing
+container-script pytest runs emitted read-only-cache warnings; they still
+passed.

@@ -1,0 +1,65 @@
+schema_version = 1
+id = "jenkins"
+name = "Jenkins"
+
+[skill]
+name = "jenkins"
+
+[[inputs]]
+name = "jenkins_url"
+type = "string"
+label = "Jenkins URL"
+config_key = "jenkins.url"
+required = true
+
+[[inputs]]
+name = "jenkins_username"
+type = "string"
+label = "Jenkins username"
+config_key = "jenkins.username"
+required = true
+
+[[inputs]]
+name = "jenkins_token"
+type = "secret"
+label = "Jenkins API token"
+required = true
+
+[[inputs]]
+name = "read_only"
+type = "boolean"
+label = "Read-only mode"
+hint = "When enabled, the Jenkins server does not expose write tools."
+config_key = "jenkins.read_only"
+default = true
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "Listen port"
+config_key = "mcp.local_port"
+default = 9887
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+hint = "Name shown by MCP clients for this server."
+config_key = "mcp.registration_name"
+default = "jenkins"
+required = true
+
+[mcp]
+name = "jenkins"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 9887
+endpoint_path = "/mcp"
+host_port_input = "local_port"
+registration_name_input = "registration_name"
+build_context = "./mcp"
+registration_timeout_ms = 30000
+env_inputs = { jenkins_url = "jenkins_url", jenkins_username = "jenkins_username", JENKINS_READ_ONLY = "read_only" }
+secret_env_inputs = { jenkins_password = "jenkins_token" }

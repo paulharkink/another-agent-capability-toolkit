@@ -221,6 +221,44 @@ func TestGitProviderInspectorDeclaresOptionalProviderServers(t *testing.T) {
 	}
 }
 
+func TestJenkinsCapabilityDeclaresReadOnlyLocalDockerMCP(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "jenkins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ID != "jenkins" || p.Name != "Jenkins" || p.Skill == nil || p.Skill.Name != "jenkins" {
+		t.Fatalf("unexpected Jenkins capability identity: %+v", p)
+	}
+	if p.MCP == nil {
+		t.Fatal("Jenkins capability must include an MCP")
+	}
+	if p.MCP.Runtime != "docker" || p.MCP.Transport != "streamable-http" || p.MCP.ContainerPort != 9887 || p.MCP.EndpointPath != "/mcp" || p.MCP.BuildContext != "./mcp" {
+		t.Fatalf("unexpected Jenkins MCP runtime contract: %+v", p.MCP)
+	}
+	inputs := map[string]catalog.Input{}
+	for _, input := range p.Inputs {
+		inputs[input.Name] = input
+	}
+	readOnly, ok := inputs["read_only"]
+	if !ok || readOnly.Type != "boolean" || readOnly.Default != true {
+		t.Fatalf("Jenkins must expose read_only as a boolean input defaulting to true: %+v", readOnly)
+	}
+	for _, name := range []string{"jenkins_url", "jenkins_username", "jenkins_token", "read_only"} {
+		if _, ok := inputs[name]; !ok {
+			t.Fatalf("missing Jenkins input %q", name)
+		}
+	}
+	if token := inputs["jenkins_token"]; token.Type != "secret" || token.Default != nil && token.Default != "" {
+		t.Fatalf("Jenkins token must be a secret with no default: %+v", token)
+	}
+	if p.MCP.EnvInputs["jenkins_url"] != "jenkins_url" || p.MCP.EnvInputs["jenkins_username"] != "jenkins_username" || p.MCP.EnvInputs["JENKINS_READ_ONLY"] != "read_only" || p.MCP.SecretEnvInputs["jenkins_password"] != "jenkins_token" {
+		t.Fatalf("Jenkins inputs are not wired to the container environment: %+v", p.MCP)
+	}
+	if _, err := os.Stat(filepath.Join(p.Dir, "SKILL.md")); err != nil {
+		t.Fatalf("Jenkins capability skill is missing: %v", err)
+	}
+}
+
 func findInput(inputs []catalog.Input, name string) (catalog.Input, bool) {
 	for _, input := range inputs {
 		if input.Name == name {
@@ -231,7 +269,7 @@ func findInput(inputs []catalog.Input, name string) (catalog.Input, bool) {
 }
 
 func TestAuthenticationInputsAreSecret(t *testing.T) {
-	for _, name := range []string{"cluster-inspector", "grafana-inspector", "git-provider"} {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "git-provider", "jenkins"} {
 		p, _ := loadPublic(t, name)
 		found := false
 		for _, in := range p.Inputs {
@@ -249,7 +287,7 @@ func TestAuthenticationInputsAreSecret(t *testing.T) {
 }
 
 func TestStrictShippedPublicCatalog(t *testing.T) {
-	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "git-provider", "find-session", "non-interactive-ready-planning"} {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "git-provider", "jenkins", "find-session", "non-interactive-ready-planning"} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := catalog.Load(filepath.Join("..", "..", "packages", name)); err != nil {
 				t.Fatal(err)
