@@ -17,17 +17,17 @@ type Source struct {
 	Root            string                    `json:"root"`
 	ManifestPath    string                    `json:"manifest_path"`
 	EnvironmentRoot string                    `json:"environment_root"`
+	ProfileRoot     string                    `json:"profile_root"`
 	Catalog         []catalog.Package         `json:"catalog"`
 	PackageDefaults map[string]map[string]any `json:"package_defaults"`
 }
 type sourceManifest struct {
-	SchemaVersion int    `toml:"schema_version"`
-	SourceID      string `toml:"source_id"`
-	Catalog       []struct {
-		ID     string `toml:"id"`
-		Source string `toml:"source"`
-	} `toml:"catalog"`
-	Environments struct {
+	SchemaVersion int             `toml:"schema_version"`
+	SourceID      string          `toml:"source_id"`
+	PackID        string          `toml:"pack_id"`
+	Catalog       []catalogEntry  `toml:"catalog"`
+	Imports       []catalogImport `toml:"imports"`
+	Environments  struct {
 		Root string `toml:"root"`
 	} `toml:"environments"`
 	Packages map[string]struct {
@@ -90,6 +90,12 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	if m.SchemaVersion != 1 {
 		return Source{}, fmt.Errorf("%s: unsupported schema_version %d", manifest, m.SchemaVersion)
 	}
+	if m.PackID != "" {
+		if m.SourceID != "" && m.SourceID != m.PackID {
+			return Source{}, fmt.Errorf("%s: pack_id and source_id conflict", manifest)
+		}
+		m.SourceID = m.PackID
+	}
 	if m.SourceID != "" && !safeID.MatchString(m.SourceID) {
 		return Source{}, fmt.Errorf("invalid source_id %q", m.SourceID)
 	}
@@ -98,7 +104,7 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	if err != nil {
 		return Source{}, err
 	}
-	s := Source{ID: id, Root: root, ManifestPath: manifest, PackageDefaults: map[string]map[string]any{}}
+	s := Source{ID: id, Root: root, ManifestPath: manifest, ProfileRoot: filepath.Join(root, "environments"), PackageDefaults: map[string]map[string]any{}}
 	for name, values := range m.Packages {
 		s.PackageDefaults[name] = values.Inputs
 	}
@@ -107,45 +113,19 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 		if err != nil {
 			return Source{}, err
 		}
+		s.ProfileRoot = s.EnvironmentRoot
 	} else {
 		s.EnvironmentRoot = legacyRoot(stateRoot)
 		if s.EnvironmentRoot == "" {
 			s.EnvironmentRoot = filepath.Join(root, "environments")
 		}
 	}
-	seen := map[string]bool{}
-	for _, entry := range m.Catalog {
-		if !safeID.MatchString(entry.ID) || seen[entry.ID] {
-			return Source{}, fmt.Errorf("invalid or duplicate catalog id %q", entry.ID)
-		}
-		seen[entry.ID] = true
-		dir := ""
-		if strings.HasPrefix(entry.Source, "bundled:") {
-			name := strings.TrimPrefix(entry.Source, "bundled:")
-			if !safeID.MatchString(name) {
-				return Source{}, fmt.Errorf("invalid bundled source %q", entry.Source)
-			}
-			if bundledRoot == "" {
-				return Source{}, fmt.Errorf("bundled catalog unavailable for %s", entry.ID)
-			}
-			dir = filepath.Join(bundledRoot, name)
-			if err := contained(bundledRoot, dir); err != nil {
-				return Source{}, err
-			}
-		} else {
-			dir, err = resolvePath(entry.Source, manifest)
-			if err != nil {
-				return Source{}, err
-			}
-		}
-		p, err := catalog.Load(dir)
-		if err != nil {
-			return Source{}, err
-		}
-		if p.ID != entry.ID {
-			return Source{}, fmt.Errorf("catalog id %q conflicts with package id %q", entry.ID, p.ID)
-		}
-		s.Catalog = append(s.Catalog, p)
+	entries, err := resolveCatalog(manifest, m, bundledRoot, map[string]bool{})
+	if err != nil {
+		return Source{}, err
+	}
+	for _, entry := range entries {
+		s.Catalog = append(s.Catalog, entry.Package)
 	}
 	return s, nil
 }
@@ -159,6 +139,7 @@ func bundledSource(root, stateRoot string) (Source, error) {
 		return Source{}, e
 	}
 	s.Root = abs
+	s.ProfileRoot = filepath.Join(abs, "environments")
 	entries, e := os.ReadDir(abs)
 	if e != nil {
 		return Source{}, e
@@ -207,6 +188,7 @@ func WithEnvironmentRoot(s Source, root string) (Source, error) {
 	}
 	var err error
 	s.EnvironmentRoot, err = resolvePath(root, filepath.Join(s.Root, "aact.toml"))
+	s.ProfileRoot = s.EnvironmentRoot
 	return s, err
 }
 func resolvePath(path, declaringFile string) (string, error) {
