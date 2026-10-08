@@ -29,7 +29,7 @@ func NewRegistry(deps Dependencies) *Registry {
 	}
 	r := &Registry{}
 	for _, kind := range []string{"codex", "claude", "opencode", "copilot-cli", "intellij", "copilot-intellij", "hermes", "generic"} {
-		r.adapters = append(r.adapters, &registeredAdapter{kind: kind, deps: deps})
+		r.adapters = append(r.adapters, &skillAdapter{registeredAdapter: &registeredAdapter{kind: kind, deps: deps}})
 	}
 	return r
 }
