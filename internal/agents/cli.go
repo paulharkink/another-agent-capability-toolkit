@@ -75,7 +75,7 @@ func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*R
 		if knownMissingRegistration(name, string(diagnostic)+"\n"+string(output)+"\n"+err.Error()) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("cannot verify existing %s registration %q: %w", a.program(), name, err)
+		return nil, fmt.Errorf("cannot verify existing %s registration %q: %w%s", a.program(), name, err, diagnosticSuffix(diagnostic, output))
 	}
 	var value map[string]any
 	if err = json.Unmarshal(output, &value); err != nil {
@@ -126,6 +126,15 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	if err := validate(r); err != nil {
 		return err
 	}
+	if a.kind == "codex" {
+		env, err := a.env(e)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(env["CODEX_HOME"], 0700); err != nil {
+			return fmt.Errorf("cannot prepare Codex configuration directory %q: %w", env["CODEX_HOME"], err)
+		}
+	}
 	current, err := a.current(ctx, e, r.Name)
 	if err != nil {
 		return err
@@ -146,15 +155,17 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	// CLI replaces only a positively verified owned name; the coordinator retains
 	// its previous ledger entry until registration and record both succeed.
 	if current != nil {
-		if _, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, nil); err != nil {
-			return err
+		var diagnostic []byte
+		if _, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, collectDiagnostic(&diagnostic)); err != nil {
+			return fmt.Errorf("cannot remove existing %s registration %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
 		}
 	}
 	args := []string{"codex", "mcp", "add", r.Name, "--url", r.URL}
 	if a.kind != "codex" {
 		args = []string{"copilot", "mcp", "add", "--transport", "http", "--timeout", strconv.Itoa(r.TimeoutMS), r.Name, r.URL}
 	}
-	_, err = a.runner.Run(ctx, args, e.Home, nil, env, nil)
+	var diagnostic []byte
+	_, err = a.runner.Run(ctx, args, e.Home, nil, env, collectDiagnostic(&diagnostic))
 	if err != nil && current != nil {
 		restore := e.Owned[r.Name]
 		rollback := []string{"codex", "mcp", "add", restore.Name, "--url", restore.URL}
@@ -162,9 +173,12 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 			rollback = []string{"copilot", "mcp", "add", "--transport", "http", "--timeout", strconv.Itoa(restore.TimeoutMS), restore.Name, restore.URL}
 		}
 		_, restoreErr := a.runner.Run(ctx, rollback, e.Home, nil, env, nil)
-		return errors.Join(err, restoreErr)
+		return errors.Join(fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic)), restoreErr)
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
+	}
+	return nil
 }
 func (a cliAdapter) Unregister(ctx context.Context, e Environment, name string) error {
 	current, err := a.current(ctx, e, name)
@@ -181,8 +195,37 @@ func (a cliAdapter) Unregister(ctx context.Context, e Environment, name string) 
 	if err != nil {
 		return err
 	}
-	_, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", name}, e.Home, nil, env, nil)
-	return err
+	var diagnostic []byte
+	_, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", name}, e.Home, nil, env, collectDiagnostic(&diagnostic))
+	if err != nil {
+		return fmt.Errorf("cannot unregister %s MCP server %q: %w%s", a.program(), name, err, diagnosticSuffix(diagnostic))
+	}
+	return nil
+}
+
+func collectDiagnostic(dst *[]byte) func([]byte) {
+	return func(chunk []byte) {
+		const limit = 64 << 10
+		remaining := limit - len(*dst)
+		if remaining > 0 {
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			*dst = append(*dst, chunk...)
+		}
+	}
+}
+
+func diagnosticSuffix(chunks ...[]byte) string {
+	var text string
+	for _, chunk := range chunks {
+		text += string(chunk)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return "; command diagnostic: " + text
 }
 
 func copilotConfigRegistration(e Environment, name string) (*Registration, error) {

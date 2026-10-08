@@ -19,10 +19,14 @@ type captureRunner struct {
 	calls  []call
 	get    []byte
 	getErr error
+	stderr []byte
 }
 
-func (r *captureRunner) Run(_ context.Context, args []string, _ string, _ []byte, env map[string]string, _ func([]byte)) ([]byte, error) {
+func (r *captureRunner) Run(_ context.Context, args []string, _ string, _ []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
 	r.calls = append(r.calls, call{args, env})
+	if onStderr != nil && len(r.stderr) > 0 {
+		onStderr(r.stderr)
+	}
 	for _, a := range args {
 		if a == "get" {
 			return r.get, r.getErr
@@ -30,6 +34,54 @@ func (r *captureRunner) Run(_ context.Context, args []string, _ string, _ []byte
 	}
 	return nil, nil
 }
+func TestCodexRegisterCreatesMissingConfigDirectoryBeforeProbeAndPreservesContents(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".codex")
+	e, err := ResolveEnvironment("codex", "codex", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &captureRunner{getErr: errors.New("No MCP server named local found")}
+	a, err := For("codex", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := Registration{Name: "local", URL: "http://localhost:1/mcp"}
+	if err := a.Register(context.Background(), e, reg); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+		t.Fatalf("CODEX_HOME not created before first registration: stat=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(e.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("adapter created config file outside Codex CLI: %v", err)
+	}
+	config := []byte("model = 'untouched'\n")
+	if err := os.WriteFile(e.ConfigPath, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Register(context.Background(), e, reg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(e.ConfigPath)
+	if err != nil || string(got) != string(config) {
+		t.Fatalf("existing config changed: %q err=%v", got, err)
+	}
+}
+
+func TestCodexCurrentPreservesUnexpectedCLIStderr(t *testing.T) {
+	runner := &captureRunner{getErr: errors.New("exit status 1"), stderr: []byte("failed to resolve CODEX_HOME: no such file or directory")}
+	a, _ := For("codex", runner)
+	e, _ := ResolveEnvironment("codex", "codex", t.TempDir())
+	_, err := a.(cliAdapter).current(context.Background(), e, "local")
+	if _, statErr := os.Stat(filepath.Join(e.Home, ".codex")); !os.IsNotExist(statErr) {
+		t.Fatalf("read-only current probe created CODEX_HOME: %v", statErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), string(runner.stderr)) {
+		t.Fatalf("CLI diagnostic missing from error: %v", err)
+	}
+}
+
 func TestCodexArgsAndExplicitHome(t *testing.T) {
 	r := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
 	a, err := For("codex", r)
