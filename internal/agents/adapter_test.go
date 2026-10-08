@@ -350,7 +350,7 @@ func TestResolveJetBrainsAIAssistantDefaultMCPPath(t *testing.T) {
 	}
 }
 func TestCopilotIntellijUsesServers(t *testing.T) {
-	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming"))
+	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-existing"))
 	a, e := configFixture(t, "copilot-intellij", `{}`)
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
 		t.Fatal(err)
@@ -358,6 +358,7 @@ func TestCopilotIntellijUsesServers(t *testing.T) {
 	if readJSON(t, e.ConfigPath)["servers"] == nil {
 		t.Fatal("wrong config shape")
 	}
+	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-missing"))
 	a, e = configFixture(t, "copilot-intellij", "")
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
 		t.Fatalf("registration should initialize a missing MCP config: %v", err)

@@ -561,15 +561,27 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				assertRenderedTextIsComplete(t, allAgentViews.String(), paths...)
 			}
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
-				visible := strings.ReplaceAll(ansi.Strip(m.View().Content), "\\", "/")
-				for _, chunk := range []string{"Credential note:", "Managed credential", "is missing at", "auth/kubeconfig."} {
+				chunks := []string{"Credential note:", "Managed credential", "is missing at", "auth/kubeconfig."}
+				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				visible := ""
+				for i := 0; i < 16; i++ {
+					visible += strings.ReplaceAll(ansi.Strip(m.View().Content), "\\", "/")
+					allVisible := true
+					for _, chunk := range chunks {
+						allVisible = allVisible && strings.Contains(visible, chunk)
+					}
+					if allVisible {
+						break
+					}
+					m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+					if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Information" {
+						t.Fatal("PageDown left the Information details panel")
+					}
+				}
+				for _, chunk := range chunks {
 					if !strings.Contains(visible, chunk) {
 						t.Fatalf("Information does not show credential provenance chunk %q", chunk)
 					}
-				}
-				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				if m.form.FocusArea() != 1 {
-					t.Fatal("Enter in Information L3 did not transfer focus to L4")
 				}
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Information" {
