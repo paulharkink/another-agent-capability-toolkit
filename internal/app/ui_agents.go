@@ -19,10 +19,6 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	probe, err := agents.DefaultDiscoveryProbe()
-	if err != nil {
-		return nil, err
-	}
 	ids, err := s.UIAgents(ctx)
 	if err != nil {
 		return nil, err
@@ -46,30 +42,35 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 				break
 			}
 		}
-		discovery := agents.DiscoverAgent(ctx, kind, probe)
-		native, nativeErr := agents.ResolveEnvironment(id, kind, probe.Home)
-		if nativeErr != nil {
+		adapter, adapterErr := s.adapterFor(id, kind)
+		if adapterErr != nil {
 			continue
 		}
-		native, nativeErr = agents.ApplyNativeConfigOverrides(native)
-		if nativeErr != nil {
-			return nil, nativeErr
+		scope := s.agentScope(id)
+		scope.ID = id
+		detection, detectErr := adapter.Detect(ctx, scope)
+		if detectErr != nil {
+			return nil, detectErr
 		}
-		writePath, pathErr := agents.ResolveConfigWritePath(native)
-		if pathErr != nil {
-			return nil, pathErr
+		if adapter.ID() == "generic" && id != "all" && id != "generic" {
+			detection.State = "unverified"
+			detection.Installed = false
+			detection.Evidence = ""
+			detection.ConfigPath = ""
 		}
-		effectivePath := writePath
-		row := viewmodel.AgentManagementRow{
-			ID: id, Name: discovery.Name, Detection: discovery.Detection,
-			Evidence: discovery.Evidence, Note: discovery.Note, Home: native.Home,
-			EffectiveConfigPath: effectivePath, WriteConfigPath: writePath,
-		}
-		if override := agents.NativeConfigOverride(kind, native); override != "" {
-			if row.Note != "" {
-				row.Note += "; "
+		writePath := detection.ConfigPath
+		if writePath == "" {
+			for _, file := range detection.ConfigFiles {
+				if file.Precedence == "effective" {
+					writePath = file.Path
+					break
+				}
 			}
-			row.Note += override
+		}
+		row := viewmodel.AgentManagementRow{
+			ID: id, Name: adapter.Name(), Detection: detection.State,
+			Evidence: detection.Evidence, Note: detection.Reason, Home: detection.Home,
+			EffectiveConfigPath: writePath, WriteConfigPath: writePath,
 		}
 		if kind != id {
 			row.Name = id
@@ -78,8 +79,8 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 		recordedHomes := map[string]bool{}
 		recordedPaths := map[string]bool{}
 		recordedProfilePaths := map[string]bool{}
-		for _, file := range discovery.ConfigFiles {
-			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Home: native.Home, Exists: file.Exists})
+		for _, file := range detection.ConfigFiles {
+			row.ConfigFiles = append(row.ConfigFiles, viewmodel.AgentConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Home: detection.Home, Exists: file.Exists})
 		}
 		for _, record := range installed {
 			if record.AgentID != id || (record.Component != "mcp" && record.Component != "skill") {
@@ -89,11 +90,11 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 				recordedHomes[filepath.Clean(record.AgentHome)] = true
 			}
 			if record.Component != "mcp" {
-				if filepath.Clean(record.Destination) == filepath.Clean(native.SkillsDir) {
+				if filepath.Clean(record.Destination) == filepath.Clean(detection.SkillsPath) {
 					if row.Note != "" {
 						row.Note += "; "
 					}
-					row.Note += "Recorded skill destination shares native skill directory " + native.SkillsDir
+					row.Note += "Recorded skill destination shares adapter skill directory " + detection.SkillsPath
 				}
 				continue
 			}
@@ -120,7 +121,7 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 		}
 		if len(recordedHomes) == 1 {
 			for home := range recordedHomes {
-				if home != filepath.Clean(native.Home) {
+				if home != filepath.Clean(detection.Home) {
 					row.Home = home
 					if row.Note != "" {
 						row.Note += "; "
@@ -141,7 +142,7 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 					if row.Note != "" {
 						row.Note += "; "
 					}
-					row.Note += "Recorded AACT registration path differs from the process-native planned write file"
+					row.Note += "Recorded AACT registration path differs from the adapter-reported planned write file"
 				}
 			}
 		} else if len(recordedPaths) > 1 {

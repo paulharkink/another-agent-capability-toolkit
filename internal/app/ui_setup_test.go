@@ -15,6 +15,70 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
+type uiBoundaryAdapter struct {
+	features  agents.FeatureSet
+	detection agents.Detection
+	scopes    []agents.Scope
+}
+
+func (a *uiBoundaryAdapter) ID() string                  { return "codex" }
+func (a *uiBoundaryAdapter) Name() string                { return "Adapter supplied name" }
+func (a *uiBoundaryAdapter) Features() agents.FeatureSet { return a.features }
+func (a *uiBoundaryAdapter) Detect(_ context.Context, scope agents.Scope) (agents.Detection, error) {
+	a.scopes = append(a.scopes, scope)
+	return a.detection, nil
+}
+func (a *uiBoundaryAdapter) Observe(context.Context, agents.Scope, agents.ObservationRequest) (agents.Observation, error) {
+	return agents.Observation{Detection: a.detection, ConfigFiles: a.detection.ConfigFiles}, nil
+}
+
+type uiBoundaryRegistry struct {
+	fallback AdapterProvider
+	adapter  agents.Adapter
+}
+
+func (r uiBoundaryRegistry) Adapter(id string) (agents.Adapter, error) {
+	if id == "codex" {
+		return r.adapter, nil
+	}
+	return r.fallback.Adapter(id)
+}
+func (r uiBoundaryRegistry) Adapters() []agents.Adapter { return r.fallback.Adapters() }
+
+func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	adapter := &uiBoundaryAdapter{features: agents.FeatureSet{Skills: true, MCPs: true}, detection: agents.Detection{
+		Home: filepath.Join(home, "adapter-home"), SkillsPath: filepath.Join(home, "adapter-skills"),
+		State: "adapter-observed", Evidence: "adapter evidence", MCPDisabledReason: "adapter denies MCP",
+		ConfigFiles: []agents.ConfigFile{{Path: filepath.Join(home, "adapter-config.json"), Precedence: "effective"}},
+	}}
+	fallback := svc.adapterRegistry()
+	svc.Options.Adapters = uiBoundaryRegistry{fallback: fallback, adapter: adapter}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range preview.Destinations {
+		if row.ID != "codex" {
+			continue
+		}
+		if row.Home != adapter.detection.Home || row.SkillsPath != adapter.detection.SkillsPath || row.Detection != adapter.detection.State || row.DisabledReason != adapter.detection.MCPDisabledReason {
+			t.Fatalf("preview bypassed injected adapter detection: %+v", row)
+		}
+		if row.Path != adapter.detection.ConfigFiles[0].Path {
+			t.Fatalf("adapter effective config path was ignored: %+v", row)
+		}
+		if len(adapter.scopes) == 0 {
+			t.Fatal("adapter Detect was not called")
+		}
+		return
+	}
+	t.Fatal("codex destination missing")
+}
+
 func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
