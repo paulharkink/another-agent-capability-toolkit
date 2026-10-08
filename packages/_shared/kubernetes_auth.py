@@ -35,6 +35,7 @@ class ServiceAccountIdentity:
 class AuthCheck:
     status: Literal["valid", "invalid", "unknown"]
     username: str | None
+    diagnostic: str | None = None
 
 
 def decode_service_account_token(token: str, now: float | None = None) -> ServiceAccountIdentity:
@@ -91,19 +92,44 @@ def check_token(api_server: str, ca_data: str | None, token: str, timeout: float
     body = json.dumps({"apiVersion": "authentication.k8s.io/v1", "kind": "SelfSubjectReview"}).encode()
     request = urllib.request.Request(api + "/apis/authentication.k8s.io/v1/selfsubjectreviews", data=body, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=_ssl_context(ca_data, verify_x509_strict)) as response:
+        context = _ssl_context(ca_data, verify_x509_strict)
+    except (ValueError, UnicodeError, ssl.SSLError) as error:
+        return AuthCheck("unknown", None, f"Kubernetes CA certificate configuration is invalid: {_safe_exception(error)}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             data = json.loads(response.read())
         username = data.get("status", {}).get("userInfo", {}).get("username")
         return AuthCheck("valid", username if isinstance(username, str) else None)
     except urllib.error.HTTPError as error:
         if error.code == 401:
-            return AuthCheck("invalid", None)
+            return AuthCheck("invalid", None, "Kubernetes API rejected credentials (HTTP 401).")
         if error.code == 403:
-            # Kubernetes has authenticated the identity but denied SelfSubjectReview.
-            return AuthCheck("valid", None)
-        return AuthCheck("unknown", None)
-    except (OSError, TimeoutError, ssl.SSLError, ValueError, json.JSONDecodeError):
-        return AuthCheck("unknown", None)
+            # Keep historical readiness behavior, but do not claim the credential authenticated.
+            return AuthCheck("valid", None, "Secondary: SelfSubjectReview was denied (HTTP 403); authentication could not be confirmed by this probe.")
+        return AuthCheck("unknown", None, f"Kubernetes API authentication probe failed (HTTP {error.code}).")
+    except InterruptedError:
+        return AuthCheck("unknown", None, "Kubernetes API authentication probe was interrupted.")
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        if isinstance(error, ssl.SSLError):
+            return AuthCheck("unknown", None, f"Kubernetes API TLS validation failed: {_safe_exception(error, token)}")
+        if isinstance(error, TimeoutError):
+            return AuthCheck("unknown", None, "Kubernetes API authentication probe timed out.")
+        if isinstance(error, urllib.error.URLError):
+            reason = error.reason
+            if isinstance(reason, ssl.SSLError):
+                return AuthCheck("unknown", None, f"Kubernetes API TLS validation failed: {_safe_exception(reason, token)}")
+            return AuthCheck("unknown", None, f"Kubernetes API is unreachable: {_safe_exception(reason, token)}")
+        return AuthCheck("unknown", None, f"Kubernetes API request failed: {_safe_exception(error, token)}")
+    except (ValueError, json.JSONDecodeError, TypeError, AttributeError):
+        return AuthCheck("unknown", None, "Kubernetes API returned a malformed authentication response.")
+
+
+def _safe_exception(error: object, *secrets: str) -> str:
+    detail = str(error).strip() or type(error).__name__
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "[redacted]")
+    return detail[:500]
 
 
 def _private_write(destination: Path, content: bytes, *, private_parent: bool = True) -> Path:
@@ -145,7 +171,9 @@ def _load_kubeconfig(path: Path) -> dict:
             raise ValueError
         return value
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError("Could not parse explicit kubeconfig") from error
+        if isinstance(error, subprocess.CalledProcessError):
+            raise ValueError(f"Could not parse explicit kubeconfig: kubectl config view failed (exit {error.returncode}).") from error
+        raise ValueError("Could not parse explicit kubeconfig: invalid or unreadable kubeconfig data.") from error
 
 
 def write_token_kubeconfig(api_server: str, ca_data: str | None, destination: Path, token: str) -> Path:
@@ -249,7 +277,10 @@ def copy_kubeconfig(source: Path, destination: Path, expected_api_server: str) -
         candidate = Path(name)
         try:
             _private_write(candidate, json.dumps(config, sort_keys=True).encode())
-            who = subprocess.run(["kubectl", "auth", "whoami", "--kubeconfig", str(candidate), "-o", "json"], check=True, capture_output=True, text=True, timeout=15)
+            try:
+                who = subprocess.run(["kubectl", "auth", "whoami", "--kubeconfig", str(candidate), "-o", "json"], check=True, capture_output=True, text=True, timeout=15)
+            except subprocess.CalledProcessError as error:
+                raise ValueError(f"kubectl auth whoami failed (exit {error.returncode}).") from error
             data = json.loads(who.stdout)
             username = data.get("status", {}).get("userInfo", {}).get("username")
             if not isinstance(username, str) or not username:
@@ -262,7 +293,11 @@ def copy_kubeconfig(source: Path, destination: Path, expected_api_server: str) -
         finally:
             candidate.unlink(missing_ok=True)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
-        raise ValueError("Could not validate selected kubeconfig") from error
+        if isinstance(error, subprocess.CalledProcessError):
+            raise ValueError(f"kubectl config view failed while validating selected kubeconfig (exit {error.returncode}).") from error
+        if isinstance(error, json.JSONDecodeError):
+            raise ValueError("kubectl returned malformed kubeconfig JSON.") from error
+        raise ValueError(f"Could not validate selected kubeconfig: {_safe_exception(error)}") from error
 
 
 def prepare_token_auth(state_directory: Path, credential_path: Path, api_server: str, ca_data: str | None, token: str, verify_x509_strict: bool = True) -> AuthCheck:
@@ -307,9 +342,18 @@ def _validate_existing(credential: Path, api_server: str, ca_data: str | None, v
         username = info.get("username")
         if username:
             return AuthCheck("valid", username)
-    except (OSError, ValueError, KeyError, StopIteration, TypeError, subprocess.SubprocessError, json.JSONDecodeError):
-        pass
-    return AuthCheck("unknown", None)
+    except subprocess.CalledProcessError as error:
+        return AuthCheck("unknown", None, f"kubectl auth whoami failed while checking cached credentials (exit {error.returncode}).")
+    except (OSError, ValueError, KeyError, StopIteration, TypeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        if isinstance(error, json.JSONDecodeError):
+            detail = "kubectl returned malformed identity JSON while checking cached credentials."
+        elif isinstance(error, OSError):
+            detail = f"Could not run kubectl to check cached credentials: {_safe_exception(error)}"
+        elif isinstance(error, ValueError) and str(error):
+            detail = str(error)
+        else:
+            detail = "Cached kubeconfig is malformed or does not contain a usable identity."
+        return AuthCheck("unknown", None, detail)
 
 
 def load_cached_auth(state_directory: Path, credential_path: Path, api_server: str, ca_data: str | None, verify_x509_strict: bool = True) -> AuthCheck:

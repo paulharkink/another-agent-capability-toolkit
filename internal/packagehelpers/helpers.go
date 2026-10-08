@@ -130,6 +130,10 @@ func nativeUser() string {
 }
 
 func (h *Helper) command(ctx context.Context, args []string, stdin []byte, env map[string]string, secrets []string) ([]byte, error) {
+	return h.commandWithStderr(ctx, args, stdin, env, secrets, h.OnStderr)
+}
+
+func (h *Helper) commandWithStderr(ctx context.Context, args []string, stdin []byte, env map[string]string, secrets []string, onStderr func([]byte)) ([]byte, error) {
 	executor := h.Executor
 	if executor == nil {
 		executor = process.OSExecutor{}
@@ -146,8 +150,8 @@ func (h *Helper) command(ctx context.Context, args []string, stdin []byte, env m
 			}
 			diagnostic.Write(p)
 		}
-		if h.OnStderr != nil {
-			h.OnStderr(p)
+		if onStderr != nil {
+			onStderr(p)
 		}
 	})
 	out, err := executor.Run(ctx, append([]string{"docker"}, args...), "", stdin, env, redactor.Write)
@@ -519,9 +523,18 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 	if err := call("config", "set", "core.login_experience_v2=off"); err != nil {
 		return mcp.ActionResult{}, err
 	}
-	if err := call("account", "show", "--subscription", subscription, "--output", "none"); err != nil {
+	var probeOutput bytes.Buffer
+	_, probeErr := h.commandWithStderr(ctx, append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "none"), nil, nil, secrets, func(p []byte) { probeOutput.Write(p) })
+	if probeErr != nil {
+		output := strings.TrimSpace(probeOutput.String())
+		if !azureLoginRequired(output) {
+			if h.OnStderr != nil && probeOutput.Len() > 0 {
+				h.OnStderr(probeOutput.Bytes())
+			}
+			return mcp.ActionResult{}, probeErr
+		}
 		if q.Action != "authenticate" || !q.Interactive {
-			return mcp.ActionResult{AuthRequired: true}, nil
+			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Azure CLI account probe requires authentication: " + output}, nil
 		}
 		argv := append(append([]string{"docker"}, base...), "login", "--use-device-code", "--tenant", tenant, "--output", "none")
 		if h.Executor == nil {
@@ -529,7 +542,7 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 			command.Stdin = os.Stdin
 			command.Stdout = callbackProgress{h.OnStderr}
 			command.Stderr = callbackProgress{h.OnStderr}
-			if err = command.Run(); err != nil {
+			if err := command.Run(); err != nil {
 				return mcp.ActionResult{}, errors.New("Azure device-code authentication failed")
 			}
 		} else {
@@ -546,6 +559,11 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 		return mcp.ActionResult{}, err
 	}
 	return mcp.ActionResult{Runtime: spec}, nil
+}
+
+func azureLoginRequired(output string) bool {
+	message := strings.ToLower(output)
+	return strings.Contains(message, "az login") || strings.Contains(message, "not logged in")
 }
 
 type callbackProgress struct{ callback func([]byte) }

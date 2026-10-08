@@ -14,17 +14,18 @@ import (
 )
 
 type helperProcess struct {
-	Calls       [][]string
-	Requests    []mcp.ActionRequest
-	FailAccount bool
-	AuthJSON    string
-	FailAuth    bool
-	BuildOutput string
-	BuildIID    string
-	BuildArgs   []string
+	Calls         [][]string
+	Requests      []mcp.ActionRequest
+	FailAccount   bool
+	AccountOutput string
+	AuthJSON      string
+	FailAuth      bool
+	BuildOutput   string
+	BuildIID      string
+	BuildArgs     []string
 }
 
-func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []byte, _ map[string]string, onStderr func([]byte)) ([]byte, error) {
 	f.Calls = append(f.Calls, append([]string{}, argv...))
 	if len(argv) > 1 && argv[1] == "build" {
 		f.BuildArgs = append([]string(nil), argv[2:]...)
@@ -56,6 +57,9 @@ func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []
 		return []byte(`{"auth_required":true}`), nil
 	}
 	if f.FailAccount && strings.Contains(strings.Join(argv, " "), "account show") {
+		if onStderr != nil && f.AccountOutput != "" {
+			onStderr([]byte(f.AccountOutput))
+		}
 		return nil, errors.New("cached account missing")
 	}
 	return nil, nil
@@ -134,7 +138,7 @@ func TestGrafanaMissingAuthReturnsWithoutRuntimeAndUsesPrivateUser(t *testing.T)
 
 func TestAzureMissingCachedLoginNeverStartsDeviceFlowDuringPrepare(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
-	f := &helperProcess{FailAccount: true}
+	f := &helperProcess{FailAccount: true, AccountOutput: "Please run 'az login' to set up account."}
 	h := Helper{Executor: f}
 	result, err := h.Run(context.Background(), "azure-inspector", q)
 	if err != nil {
@@ -164,7 +168,7 @@ func TestAzureExplicitDeviceFlowStreamsOnlyInteractiveAction(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
 	q.Action = "authenticate"
 	q.Interactive = true
-	f := &helperProcess{FailAccount: true}
+	f := &helperProcess{FailAccount: true, AccountOutput: "Please run 'az login' to set up account."}
 	h := Helper{Executor: f}
 	result, err := h.Run(context.Background(), "azure-inspector", q)
 	if err != nil {
@@ -368,5 +372,49 @@ func TestInvalidBuildImageIDIsRejected(t *testing.T) {
 	_, err := (&Helper{Executor: fixture}).Run(context.Background(), "cluster-inspector", q)
 	if err == nil || !strings.Contains(err.Error(), "valid image identity") {
 		t.Fatalf("invalid image identity accepted: %v", err)
+	}
+}
+
+func TestClusterHelperPreservesProviderDiagnostic(t *testing.T) {
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://cluster.example.test"}})
+	f := &helperProcess{AuthJSON: `{"auth_required":true,"diagnostic":"Kubernetes API rejected credentials (HTTP 401)."}`}
+	result, err := (&Helper{Executor: f}).Run(context.Background(), "cluster-inspector", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AuthRequired || result.Diagnostic != "Kubernetes API rejected credentials (HTTP 401)." {
+		t.Fatalf("provider auth result lost its primary diagnostic: %+v", result)
+	}
+}
+
+func TestAzureExpectedLoginProbeIsDiagnosticAndNotPrimaryStderr(t *testing.T) {
+	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
+	f := &helperProcess{FailAccount: true, AccountOutput: "Please run 'az login' to set up account."}
+	var streamed bytes.Buffer
+	result, err := (&Helper{Executor: f, OnStderr: func(p []byte) { streamed.Write(p) }}).Run(context.Background(), "azure-inspector", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AuthRequired || !strings.Contains(result.Diagnostic, "az login") {
+		t.Fatalf("expected actionable login diagnostic, got %+v", result)
+	}
+	if streamed.Len() != 0 {
+		t.Fatalf("expected auth probe output not to appear as primary stderr: %q", streamed.String())
+	}
+}
+
+func TestAzureUnexpectedAccountProbeFailureRemainsPrimaryError(t *testing.T) {
+	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
+	f := &helperProcess{FailAccount: true, AccountOutput: "Azure endpoint is temporarily unreachable."}
+	var streamed bytes.Buffer
+	result, err := (&Helper{Executor: f, OnStderr: func(p []byte) { streamed.Write(p) }}).Run(context.Background(), "azure-inspector", q)
+	if err == nil || result.AuthRequired {
+		t.Fatalf("unexpected probe failure was collapsed into auth required: result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(err.Error(), "cached account missing") || !strings.Contains(err.Error(), "temporarily unreachable") {
+		t.Fatalf("primary probe cause was not retained: %v", err)
+	}
+	if !strings.Contains(streamed.String(), "temporarily unreachable") {
+		t.Fatalf("unexpected failure should remain visible: %q", streamed.String())
 	}
 }
