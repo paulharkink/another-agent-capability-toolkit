@@ -105,7 +105,6 @@ func TestInspectorPublicRuntimeContracts(t *testing.T) {
 		{"cluster-inspector", "streamable-http", "/mcp", 8765},
 		{"grafana-inspector", "streamable-http", "/mcp", 8765},
 		{"azure-inspector", "sse", "/sse", 8084},
-		{"forgejo", "streamable-http", "/mcp", 8080},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, dir := loadPublic(t, tc.name)
@@ -232,11 +231,11 @@ func findInput(inputs []catalog.Input, name string) (catalog.Input, bool) {
 }
 
 func TestAuthenticationInputsAreSecret(t *testing.T) {
-	for _, name := range []string{"cluster-inspector", "grafana-inspector", "forgejo"} {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "git-provider"} {
 		p, _ := loadPublic(t, name)
 		found := false
 		for _, in := range p.Inputs {
-			if in.Name == "token" || in.Name == "grafana_session" || in.Name == "oauth_refresh" {
+			if in.Name == "token" || strings.HasSuffix(in.Name, "_token") || in.Name == "grafana_session" || in.Name == "oauth_refresh" {
 				found = true
 				if in.Type != "secret" {
 					t.Errorf("%s %s exposes credentials as %s", name, in.Name, in.Type)
@@ -250,7 +249,7 @@ func TestAuthenticationInputsAreSecret(t *testing.T) {
 }
 
 func TestStrictShippedPublicCatalog(t *testing.T) {
-	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "forgejo", "find-session", "non-interactive-ready-planning"} {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "git-provider", "find-session", "non-interactive-ready-planning"} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := catalog.Load(filepath.Join("..", "..", "packages", name)); err != nil {
 				t.Fatal(err)

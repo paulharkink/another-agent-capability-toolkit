@@ -173,7 +173,7 @@ func isInspectorHelperCommand(argv []string, p catalog.Package, q ActionRequest)
 		return false
 	}
 	switch p.ID {
-	case "cluster-inspector", "grafana-inspector", "azure-inspector", "forgejo":
+	case "cluster-inspector", "grafana-inspector", "azure-inspector":
 	default:
 		return false
 	}

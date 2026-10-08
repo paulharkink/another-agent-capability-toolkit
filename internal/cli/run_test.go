@@ -55,6 +55,37 @@ func TestParseNamedExternalURLs(t *testing.T) {
 	}
 }
 
+func TestParseEnvironmentDirectoryFlagAndLegacyAlias(t *testing.T) {
+	for _, flag := range []string{"--environment-directory", "--environment-root"} {
+		f, err := parse([]string{"install", "demo", flag, "/tmp/pack-envs"})
+		if err != nil || f.envroot != "/tmp/pack-envs" {
+			t.Fatalf("%s was not parsed as the environment directory: flags=%+v err=%v", flag, f, err)
+		}
+	}
+}
+
+func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
+	cfg, _, _ := cliFixture(t)
+	for _, command := range []string{"set-environment-directory", "set-environment-root"} {
+		t.Run(command, func(t *testing.T) {
+			stateDir := filepath.Join(t.TempDir(), "state")
+			environments := t.TempDir()
+			var out, errout bytes.Buffer
+			args := []string{"config", command, environments, "--config", cfg, "--state-dir", stateDir}
+			if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+				t.Fatalf("config command failed (%d): %s", code, errout.String())
+			}
+			if !strings.Contains(out.String(), "Environment directory: "+environments) {
+				t.Fatalf("output did not use pack terminology: %s", out.String())
+			}
+			data, err := os.ReadFile(filepath.Join(stateDir, "config-root"))
+			if err != nil || string(data) != environments+"\n" {
+				t.Fatalf("environment directory was not saved: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer

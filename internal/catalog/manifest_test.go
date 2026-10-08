@@ -419,7 +419,7 @@ func TestVisibleInputsPreservesOrderAndDoesNotMutateValues(t *testing.T) {
 }
 
 func TestPublicManifestsDeclareSetupPresentation(t *testing.T) {
-	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "forgejo", "git-repo-map"} {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "git-provider", "git-repo-map"} {
 		t.Run(name, func(t *testing.T) {
 			p, err := Load(filepath.Join("..", "..", "packages", name))
 			if err != nil {
@@ -454,6 +454,20 @@ func TestPublicManifestsDeclareSetupPresentation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStandaloneForgejoPackageWasReplaced(t *testing.T) {
+	legacy := filepath.Join("..", "..", "packages", "forgejo")
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("standalone Forgejo capability still exists at %s (stat error: %v)", legacy, err)
+	}
+	provider, err := Load(filepath.Join("..", "..", "packages", "git-provider"))
+	if err != nil {
+		t.Fatalf("replacement Git Provider capability is missing: %v", err)
+	}
+	if provider.Skill == nil || len(provider.MCPs) == 0 {
+		t.Fatalf("Git Provider replacement must retain its skill and provider MCPs: %+v", provider)
 	}
 }
 func TestRejectUnsupportedVersion(t *testing.T) {

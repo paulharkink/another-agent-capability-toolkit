@@ -10,17 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
@@ -57,14 +53,6 @@ func PrepareAzure(ctx context.Context, q mcp.ActionRequest) (mcp.ActionResult, e
 func AuthenticateAzure(ctx context.Context, q mcp.ActionRequest) (mcp.ActionResult, error) {
 	q.Action = "authenticate"
 	return (&Helper{}).Run(ctx, "azure-inspector", q)
-}
-func PrepareForgejo(ctx context.Context, q mcp.ActionRequest) (mcp.ActionResult, error) {
-	q.Action = "prepare"
-	return (&Helper{}).Run(ctx, "forgejo", q)
-}
-func AuthenticateForgejo(ctx context.Context, q mcp.ActionRequest) (mcp.ActionResult, error) {
-	q.Action = "authenticate"
-	return (&Helper{}).Run(ctx, "forgejo", q)
 }
 
 func privateWrite(path string, data []byte) error {
@@ -475,9 +463,6 @@ func (h *Helper) Run(ctx context.Context, id string, q mcp.ActionRequest) (mcp.A
 	case "azure-inspector":
 		result, err := h.azure(ctx, q, raw, spec, secrets)
 		return finish(result, err)
-	case "forgejo":
-		result, err := h.forgejo(ctx, q, raw, spec)
-		return finish(result, err)
 	default:
 		return mcp.ActionResult{}, errors.New("unsupported inspector package")
 	}
@@ -570,47 +555,6 @@ func (w callbackProgress) Write(p []byte) (int, error) {
 		w.callback(p)
 	}
 	return len(p), nil
-}
-
-func (h *Helper) forgejo(ctx context.Context, q mcp.ActionRequest, raw map[string]any, spec *mcp.RunSpec) (mcp.ActionResult, error) {
-	endpoint := strings.TrimRight(text(table(raw, "forgejo"), "base_url"), "/")
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
-		return mcp.ActionResult{}, errors.New("Forgejo base_url must be an HTTP(S) URL without credentials")
-	}
-	tokenfile := filepath.Join(q.StateDir, "access-token")
-	existing, _ := os.ReadFile(tokenfile)
-	token := strings.TrimSpace(string(existing))
-	if candidate := text(q.Inputs, "token"); candidate != "" && q.Action == "authenticate" {
-		request, err := http.NewRequestWithContext(ctx, "GET", endpoint+"/api/v1/user", nil)
-		if err != nil {
-			return mcp.ActionResult{}, err
-		}
-		request.Header.Set("Authorization", "token "+candidate)
-		client := h.HTTPClient
-		if client == nil {
-			client = &http.Client{Timeout: 10 * time.Second}
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return mcp.ActionResult{}, errors.New("Forgejo token validation failed; previous token preserved")
-		}
-		io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
-		response.Body.Close()
-		if response.StatusCode != 200 {
-			return mcp.ActionResult{AuthRequired: true}, nil
-		}
-		if err = privateWrite(tokenfile, []byte(candidate)); err != nil {
-			return mcp.ActionResult{}, err
-		}
-		token = candidate
-	}
-	if token == "" {
-		return mcp.ActionResult{AuthRequired: true}, nil
-	}
-	spec.Args = []string{"--transport", "http", "--http-port", strconv.Itoa(spec.ContainerPort), "--url", endpoint}
-	spec.SecretEnv = map[string]string{"FORGEJO_ACCESS_TOKEN": token}
-	return mcp.ActionResult{Runtime: spec}, nil
 }
 
 func removeConfigKey(raw map[string]any, path string) {

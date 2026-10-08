@@ -1,6 +1,0 @@
-{
-  "source_image": "git.b4mad.industries/agentic-forges/forgejo-mcp:v2.33.0",
-  "digest": "sha256:90256ca6219677cac950df0a5e9181638cb1899e0f845697543ed14d69598fcf",
-  "resolved_at": "2026-09-30",
-  "license": "See upstream image and source notices"
-}

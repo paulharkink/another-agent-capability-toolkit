@@ -2,7 +2,7 @@
 
 AACT includes public skill and inspector content ported from Paul Harkink's agent-skills project. Company-specific configuration and credentials are excluded.
 
-The following license and notice texts are retained from the pinned Go toolchain and modules in go.mod/go.sum. Docker runtime images and their contained software retain their upstream licenses and notices; those images are fetched separately and are not embedded in these native archives. Azure MCP image provenance is recorded in packages/azure-inspector/mcp/upstream-image.json; Forgejo MCP provenance is recorded in packages/forgejo/mcp/upstream-image.json.
+The following license and notice texts are retained from the pinned Go toolchain and modules in go.mod/go.sum. Docker runtime images and their contained software retain their upstream licenses and notices; those images are fetched separately and are not embedded in these native archives. Azure MCP image provenance is recorded in packages/azure-inspector/mcp/upstream-image.json. Git provider MCP images are declared in `packages/git-provider/package.toml`.
 
 ## Go toolchain
 

@@ -117,7 +117,7 @@ func (fixtureBackend) UISettings(context.Context) (map[string]string, error) {
 	return map[string]string{"environment_root": "/environments"}, nil
 }
 func (fixtureBackend) UISourceLabels(context.Context) (map[string]string, error) {
-	return map[string]string{"/catalog/plain": "team-source", "team-source": "Team checkout"}, nil
+	return map[string]string{"/catalog/plain": "team-source", "team-source": "Team Capability Pack"}, nil
 }
 func (fixtureBackend) UIRun(context.Context, string, string, string, string, string, string, string) (string, error) {
 	return "partial generator progress", errors.New("generator failed")
@@ -150,8 +150,9 @@ func TestGeneratorFailureRetainsViewAndOutput(t *testing.T) {
 }
 func TestGlobalInventoryShowsSourceLabels(t *testing.T) {
 	m := fixtureModel(t)
+	m.settings["source"] = "Team"
 	text := m.View().Content
-	if !strings.Contains(text, "Team checkout") || !strings.Contains(text, "Plain") {
+	if !strings.Contains(text, "Capability Pack: Team") || !strings.Contains(text, "Plain") {
 		t.Fatalf("%s", text)
 	}
 }
@@ -208,7 +209,7 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
-	if m.form == nil || !strings.Contains(m.View().Content, "Environment root") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Environment directory") {
 		t.Fatalf("%s", m.View().Content)
 	}
 }

@@ -111,7 +111,7 @@ func TestUXLocateSourceRejectsDifferentIdentity(t *testing.T) {
 		UILocateSource(context.Context, string, string) error
 	})
 	if !ok {
-		t.Fatal("source recovery has no explicit validated Locate source action")
+		t.Fatal("Capability Pack recovery has no explicit validated Locate Capability Pack action")
 	}
 	err := locator.UILocateSource(context.Background(), "remembered", other)
 	if err == nil || !strings.Contains(err.Error(), "identity") {

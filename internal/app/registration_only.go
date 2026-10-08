@@ -45,12 +45,12 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
 	if q.Key.Source == "" || q.Key.Package == "" || (q.URL == "" && len(q.ExternalURLs) == 0) {
-		return out, invalid(errors.New("MCP source, package, and endpoint URL are required"))
+		return out, invalid(errors.New("Capability Pack ID, capability ID, and MCP endpoint URL are required"))
 	}
 	if q.Key.Source == s.Source.ID {
 		p, lookupErr := s.packageByID(q.Key.Package)
 		if lookupErr != nil {
-			return out, invalid(fmt.Errorf("cannot attach this MCP without its catalog capability; locate the package source first: %w", lookupErr))
+			return out, invalid(fmt.Errorf("cannot attach this MCP without its Capability Pack catalog entry; locate the pack directory first: %w", lookupErr))
 		}
 		if p.HasMCP() && p.Skill != nil {
 			externalURLs := q.ExternalURLs
@@ -214,7 +214,7 @@ func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, iden
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
 	if key.Source == "" || key.Package == "" {
-		return out, invalid(errors.New("MCP source and package are required"))
+		return out, invalid(errors.New("Capability Pack ID and capability ID are required"))
 	}
 	if len(identities) > 0 && len(legacyAgentIDs) > 0 {
 		return out, invalid(errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both"))

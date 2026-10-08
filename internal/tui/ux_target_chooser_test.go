@@ -153,7 +153,7 @@ func TestUXUnavailableSourceHasRecoveryInsteadOfDeadConfigure(t *testing.T) {
 	m.home.Capabilities.ID = rows[len(rows)-1].ID
 	m.reconcileHome()
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Package unavailable", "Locate source", "View saved information"} {
+	for _, want := range []string{"Capability Pack unavailable", "Locate Capability Pack", "View saved information"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("unavailable source lacks %q recovery:\n%s", want, view)
 		}
@@ -176,7 +176,7 @@ func TestUXEnvironmentPresetDoesNotImplyInstalledAndNoSavedDuplicateRows(t *test
 	}}
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "one", Package: "inspect", Environment: "prod", Target: "live"}, Name: "Inspector"}}}
 	entries := m.environmentEntries()
-	if len(entries) < 2 || !strings.Contains(entries[1].Name, "TOML files") || strings.Contains(entries[1].Name, "Saved profile") {
+	if len(entries) < 2 || !strings.Contains(entries[1].Name, "TOML") || strings.Contains(entries[1].Name, "Saved ·") {
 		t.Fatalf("preset and saved installation were conflated: %#v", entries)
 	}
 	if len(entries[1].Targets) != 1 || !strings.Contains(entries[1].Targets[0], "inspect / live") {

@@ -7,12 +7,8 @@ import (
 	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -164,90 +160,6 @@ func TestAzureUnsupportedHintsRejectedBeforeDocker(t *testing.T) {
 	}
 }
 
-func TestForgejoReusesScopedTokenAndNormalizesURL(t *testing.T) {
-	q := helperRequest(t, "forgejo", map[string]any{"forgejo": map[string]any{"base_url": "https://forgejo.example.test///"}})
-	os.MkdirAll(q.StateDir, 0700)
-	os.WriteFile(filepath.Join(q.StateDir, "access-token"), []byte("synthetic-token"), 0600)
-	h := Helper{Executor: &helperProcess{}}
-	result, err := h.Run(context.Background(), "forgejo", q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.AuthRequired || result.Runtime == nil {
-		t.Fatal(result)
-	}
-	if result.Runtime.SecretEnv["FORGEJO_ACCESS_TOKEN"] != "synthetic-token" {
-		t.Fatal("cached token not reused")
-	}
-	args := strings.Join(result.Runtime.Args, " ")
-	if !strings.Contains(args, "--url https://forgejo.example.test") || strings.Contains(args, "test///") {
-		t.Fatal(args)
-	}
-	if result.Runtime.ContainerPort != 8080 || result.Runtime.EndpointPath != "/mcp" {
-		t.Fatal(result)
-	}
-}
-
-func TestForgejoInvalidReplacementKeepsOldToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/user" || r.Header.Get("Authorization") != "token invalid-fixture" {
-			t.Error(r.URL.Path)
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-	q := helperRequest(t, "forgejo", map[string]any{"forgejo": map[string]any{"base_url": server.URL}})
-	q.Action = "authenticate"
-	q.Inputs = map[string]any{"token": "invalid-fixture"}
-	os.MkdirAll(q.StateDir, 0700)
-	path := filepath.Join(q.StateDir, "access-token")
-	os.WriteFile(path, []byte("previous-fixture"), 0600)
-	h := Helper{Executor: &helperProcess{}}
-	result, err := h.Run(context.Background(), "forgejo", q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.AuthRequired {
-		t.Fatal(result)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "previous-fixture" {
-		t.Fatal("invalid token replaced previous credentials")
-	}
-}
-func TestForgejoValidExplicitTokenStoredPrivately(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "token valid-fixture" {
-			t.Error("wrong token header")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"id":1,"login":"fixture"}`)
-	}))
-	defer server.Close()
-	q := helperRequest(t, "forgejo", map[string]any{"forgejo": map[string]any{"base_url": server.URL}})
-	q.Action = "authenticate"
-	q.Inputs = map[string]any{"token": "valid-fixture"}
-	h := Helper{Executor: &helperProcess{}}
-	result, err := h.Run(context.Background(), "forgejo", q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Runtime == nil || result.AuthRequired {
-		t.Fatal(result)
-	}
-	info, err := os.Stat(filepath.Join(q.StateDir, "access-token"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Windows reports writability, not Unix owner/group permission bits.
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
-		t.Fatal(info.Mode())
-	}
-	data, err := os.ReadFile(filepath.Join(q.StateDir, "access-token"))
-	if err != nil || string(data) != "valid-fixture" {
-		t.Fatalf("credential content: %q, %v", data, err)
-	}
-}
 func TestAzureExplicitDeviceFlowStreamsOnlyInteractiveAction(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
 	q.Action = "authenticate"

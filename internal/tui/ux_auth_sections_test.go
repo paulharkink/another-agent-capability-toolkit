@@ -71,7 +71,7 @@ func TestUXGrafanaSessionCookieInputsAllInAuthenticationAndIrrelevantCredentials
 	}
 }
 
-func TestUXAzureAndForgejoTaskSections(t *testing.T) {
+func TestUXAzureAndGitProviderTaskSections(t *testing.T) {
 	cases := []struct {
 		name, packageID string
 		inputs          []viewmodel.SetupInput
@@ -91,14 +91,14 @@ func TestUXAzureAndForgejoTaskSections(t *testing.T) {
 			sectionFields: map[string][]string{"Connection": {"Azure URL"}, "Azure": {"Tenant ID", "Subscription ID"}, "Authentication": {"Access token"}},
 		},
 		{
-			name:      "Forgejo",
-			packageID: "forgejo-inspector",
+			name:      "Git Provider",
+			packageID: "git-provider",
 			inputs: []viewmodel.SetupInput{
-				{Definition: catalog.Input{Name: "url", Label: "Forgejo URL", Type: "string"}, Editable: true},
+				{Definition: catalog.Input{Name: "url", Label: "Git provider URL", Type: "string"}, Editable: true},
 				{Definition: catalog.Input{Name: "token", Label: "Access token", Type: "secret"}, Editable: true},
 			},
 			sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"url"}}, {ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
-			sectionFields: map[string][]string{"Connection": {"Forgejo URL"}, "Authentication": {"Access token"}},
+			sectionFields: map[string][]string{"Connection": {"Git provider URL"}, "Authentication": {"Access token"}},
 		},
 	}
 	for _, tc := range cases {

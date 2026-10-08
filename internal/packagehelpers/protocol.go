@@ -18,7 +18,7 @@ func ExecuteAction(ctx context.Context, args []string, in io.Reader, out io.Writ
 		return errors.New("usage: inspector-helper <package-id> prepare|authenticate")
 	}
 	switch args[0] {
-	case "cluster-inspector", "grafana-inspector", "azure-inspector", "forgejo":
+	case "cluster-inspector", "grafana-inspector", "azure-inspector":
 	default:
 		return errors.New("unsupported inspector package")
 	}

@@ -6,8 +6,8 @@ remain global to the chosen agent. The native manager runs on macOS, Linux, and
 Windows, on amd64 and arm64. WSL uses the Linux build and its own state.
 
 The shipped catalog contains cluster-inspector, grafana-inspector,
-azure-inspector, forgejo, find-session, non-interactive-ready-planning, and
-git-repo-map. Docker is required for containerized MCPs and find-session.
+azure-inspector, git-provider, find-session, non-interactive-ready-planning,
+and git-repo-map. Docker is required for containerized MCPs and find-session.
 The release includes native helpers: system Go, Python, Node.js, npm, jq and
 Make are not needed to install, render, or manage these packages. Agent CLI
 registration requires that agent's installed CLI for Codex and Copilot CLI.
@@ -60,10 +60,6 @@ aact install git-repo-map --agent codex \
   --set scan_roots="$HOME/projects" --set scan_roots="$HOME/worktrees"
 aact uninstall git-repo-map --agent codex
 aact install non-interactive-ready-planning --agent all
-
-# Register an existing MCP URL without starting a container:
-aact install forgejo --agent opencode --external-url http://localhost:8765/mcp \
-  --set base_url=https://git.example.com
 
 # Use isolated agent locations and manager state:
 aact install non-interactive-ready-planning --agent codex \
@@ -123,11 +119,15 @@ source = "./skills/my-skill"
 scan_roots = ["./repositories"]
 ```
 
-A local catalog entry needs a `package.toml` or a plain `SKILL.md`; the entry ID
-must match its package ID. Relative paths resolve against the file that declares
-them. Target files are `ENVIRONMENT_ROOT/ENVIRONMENT/PACKAGE/TARGET.toml`.
-Set a default environment root with `aact config set-environment-root PATH`, or
-supply `--environment-root PATH`. CLI input values override saved local edits,
+A Capability Pack contains an `aact.toml` catalog and, by default, an
+`environments/` directory alongside it. Put per-environment configuration such
+as `ota/` and `prod/` inside that directory. Target files are
+`ENVIRONMENTS_DIRECTORY/ENVIRONMENT/PACKAGE/TARGET.toml`. A pack may point to an
+environment directory outside the pack in `aact.toml`, or you can set a local
+override with `aact config set-environment-directory PATH` or
+`--environment-directory PATH`. The previous `set-environment-root` command and
+`--environment-root` flag remain supported as aliases. The Settings screen labels these as the Capability Pack and Environment
+directory. CLI input values override saved local edits,
 which override editable target, project, and package defaults. A target TOML can
 set `[aact.input_policy]` entries to `fixed` or `default`. A `fixed` input must
 have a value in that target file, is omitted from setup and Parameters forms,
@@ -139,7 +139,7 @@ and `options_from = "dbms.*.tenants.*"`. Each `*` reads table names from the
 selected target TOML; the selected names are joined with `/` (for example,
 `shared_postgres/plane`). An optional `label` in the leaf table supplies a
 display name. These choices are selected in the form, not entered as free text.
-Without a checkout manifest, AACT exposes the bundled catalog.
+Without a Capability Pack manifest, AACT exposes the bundled catalog.
 
 Existing configuration can be previewed with `aact migrate --dry-run --json` and
 adopted with `aact migrate --apply`. Dry-run does not create manager state.

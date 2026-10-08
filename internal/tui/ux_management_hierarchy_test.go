@@ -171,9 +171,10 @@ func TestUXSettingsFactEnterDoesNotActivateOffscreenAction(t *testing.T) {
 	m := fixtureModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m.navigate("Settings")
-	press(m, tea.KeyEnter, "") // Focus the details pane at its first fact.
+	m.management.Focus = ProfilesPane
+	m.management.SettingsDetailIndex = 0 // Capability Pack heading, not an action.
 	if cmd := m.managementKey("enter"); cmd != nil || m.form != nil {
-		t.Fatal("Enter on the Environment source fact activated the offscreen edit action")
+		t.Fatal("Enter on a Capability Pack fact activated the offscreen edit action")
 	}
 	if m.management.Focus != ProfilesPane || m.view != "Settings" {
 		t.Fatalf("non-action activation changed navigation: view=%q focus=%v", m.view, m.management.Focus)
@@ -184,17 +185,17 @@ func TestUXSettingsActionRequiresHighlightedControl(t *testing.T) {
 	m := fixtureModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m.navigate("Settings")
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyHome, "")
+	m.management.Focus = ProfilesPane
+	m.management.SettingsDetailIndex = 0
 	if cmd := m.managementKey("enter"); cmd != nil {
 		_, _ = m.Update(cmd())
 	}
 	if m.form != nil {
-		t.Fatal("a non-action Environment source fact opened a Settings editor")
+		t.Fatal("a non-action Capability Pack fact opened a Settings editor")
 	}
 	press(m, tea.KeyEnd, "")
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Edit environment root") || !strings.Contains(view, "More above") {
+	if !strings.Contains(view, "Change environment directory") || !strings.Contains(view, "More above") {
 		t.Fatalf("focused Settings action is not visible with its scroll cue:\n%s", view)
 	}
 	if cmd := m.managementKey("enter"); cmd != nil {
@@ -229,7 +230,7 @@ func TestUXSettingsCategoriesHaveRelatedControlsOnly(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Settings")
 	view := ansi.Strip(m.View().Content)
-	for _, category := range []string{"Environment source", "Agent defaults", "Runtime backend", "Diagnostics"} {
+	for _, category := range []string{"Capability Pack", "Agent defaults", "Runtime backend", "Diagnostics"} {
 		if !strings.Contains(view, category) {
 			t.Errorf("Settings omitted category %q:\n%s", category, view)
 		}

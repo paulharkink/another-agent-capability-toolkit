@@ -44,7 +44,7 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--config", "--environment-root", "--state-dir", "--environment", "--target", "--profile", "--external-url", "--mcp", "--agent", "--agent-home", "--set":
+		case "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--profile", "--external-url", "--mcp", "--agent", "--agent-home", "--set":
 			if !has {
 				n++
 				if n == len(args) {
@@ -58,7 +58,7 @@ func parse(args []string) (flags, error) {
 			switch name {
 			case "--config":
 				f.config = value
-			case "--environment-root":
+			case "--environment-directory", "--environment-root":
 				f.envroot = value
 			case "--state-dir":
 				f.state = value
@@ -102,7 +102,7 @@ func parse(args []string) (flags, error) {
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--config" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--profile" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" {
+		if has && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--profile" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}
