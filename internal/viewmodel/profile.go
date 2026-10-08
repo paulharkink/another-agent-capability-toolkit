@@ -56,6 +56,18 @@ type CapabilityProfile struct {
 	Origin, ConfigStatus, ConfigError string
 	Components                        []ComponentStatus
 	MCPs                              []RuntimeStatus
+	// Completion scope records saved/default selection intent separately from
+	// ComponentStatus observations. Only selected component/destination pairs
+	// that the adapter can handle belong in Installed/Partial aggregation.
+	CompletionScopeKnown    bool
+	CompletionScopeRelevant bool
+	CompletionScopeError    string
+	SelectedComponents      []SelectedComponent
+	SelectedDestinations    []string
+	EligibleDestinations    []string
+}
+type SelectedComponent struct {
+	Kind, Name string
 }
 type ComponentStatus struct {
 	AgentID, Kind, Name, Status, Error string

@@ -34,6 +34,8 @@ type SetupDestination struct {
 	DisabledReason                                                string
 	Path                                                          string
 	Selected                                                      bool
+	Detected                                                      bool
+	MCPRegistrationAvailable                                      bool
 }
 
 type SetupPreview struct {
