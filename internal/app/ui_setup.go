@@ -305,37 +305,58 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		if id == "all" && (p.Skill == nil || p.HasMCP()) {
 			continue
 		}
-		if p.HasMCP() && isManualAgentID(id) {
-			continue
+		if p.HasMCP() {
+			kind, _, _ := strings.Cut(id, ":")
+			if adapter, adapterErr := s.adapterFor(id, kind); adapterErr == nil && !adapter.Features().MCPs {
+				continue
+			}
 		}
 		env, envErr := s.uiEnvironment(id, key)
 		if envErr != nil {
 			return viewmodel.SetupPreview{}, envErr
 		}
-		var adapterErr error
-		if p.HasMCP() {
-			_, adapterErr = agents.For(env.Kind, s.Options.Runner)
+		adapter, adapterErr := s.adapterFor(id, env.Kind)
+		if adapterErr != nil {
+			return viewmodel.SetupPreview{}, adapterErr
 		}
-		writePath := env.ConfigPath
-		if p.HasMCP() && adapterErr == nil {
-			var pathErr error
-			writePath, pathErr = agents.ResolveConfigWritePath(env)
-			if pathErr != nil {
-				return viewmodel.SetupPreview{}, pathErr
+		features := adapter.Features()
+		scope := s.agentScope(id)
+		scope.ID, scope.Home = id, env.Home
+		scope.ExplicitHome = filepath.Clean(env.Home) != filepath.Clean(currentUserHome())
+		if p.HasMCP() && features.MCPs {
+			scope.ConfigPathOverride = env.ConfigPath
+		}
+		detected, detectErr := adapter.Detect(ctx, scope)
+		if detectErr != nil {
+			return viewmodel.SetupPreview{}, detectErr
+		}
+		writePath := detected.ConfigPath
+		if writePath == "" {
+			for _, file := range detected.ConfigFiles {
+				if file.Precedence == "effective" {
+					writePath = file.Path
+					break
+				}
 			}
 		}
-		detection := "shared"
-		disabledReason := ""
-		probe := s.discoveryProbe()
-		if id != "all" {
-			discovery := agents.DiscoverAgent(ctx, env.Kind, probe)
-			detection = discovery.Detection
-			if p.HasMCP() {
-				disabledReason = agents.MCPDestinationDisabledReason(ctx, env.Kind, env.ConfigPath, discovery, adapterErr, probe)
+		if p.HasMCP() && features.MCPs && writePath == "" {
+			return viewmodel.SetupPreview{}, fmt.Errorf("agent adapter %s did not report an effective config path", adapter.ID())
+		}
+		detection := detected.State
+		if id == "all" && detection == "" {
+			detection = "shared"
+		}
+		disabledReason := detected.MCPDisabledReason
+		if p.HasMCP() && !features.MCPs {
+			disabledReason = "This agent adapter does not support MCP registrations"
+		} else if p.HasMCP() && !detected.Installed && disabledReason == "" {
+			disabledReason = detected.Reason
+			if disabledReason == "" {
+				disabledReason = "Agent was not detected"
 			}
 		}
-		path := env.SkillsDir
-		if p.HasMCP() && adapterErr == nil {
+		path := detected.SkillsPath
+		if p.HasMCP() && features.MCPs {
 			path = writePath
 		}
 		selected := id == "all" || defaultAgents[id]
@@ -345,34 +366,36 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 				selected = selected && hasAllMCPRegistrations(p, installations, key, id)
 			}
 		}
-		note := ""
+		note := detected.Reason
 		if filepath.Clean(env.Home) != filepath.Clean(currentUserHome()) {
-			note = "Uses recorded custom home override " + env.Home
-		} else if override := agents.NativeConfigOverride(env.Kind, env); override != "" {
-			note = override
+			note = strings.TrimSpace(note + "; Uses recorded custom home override " + env.Home)
 		}
-		if p.HasMCP() && adapterErr == nil {
-			nativePath, nativeErr := agents.NativePlannedConfigPath(id, env.Kind, currentUserHome())
+		if p.HasMCP() && features.MCPs && detected.CanCreateConfig && disabledReason == "" {
+			exists := false
+			for _, file := range detected.ConfigFiles {
+				if file.Path == writePath && file.Exists {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				note = strings.TrimSpace(note + "; Configuration file will be created on Save")
+			}
+		}
+		if p.HasMCP() && features.MCPs {
+			nativeScope := s.agentScope(id)
+			nativeScope.ID, nativeScope.Home = id, ""
+			nativeScope.ExplicitHome, nativeScope.ConfigPathOverride = false, ""
+			native, nativeErr := adapter.Detect(ctx, nativeScope)
 			if nativeErr != nil {
 				return viewmodel.SetupPreview{}, nativeErr
 			}
-			if filepath.Clean(writePath) != filepath.Clean(nativePath) {
-				if note != "" {
-					note += "; "
-				}
-				note += fmt.Sprintf("Recorded AACT config path %s plans write to %s; process-native planned config path is %s", env.ConfigPath, writePath, nativePath)
-			}
-		}
-		if p.HasMCP() && adapterErr == nil {
-			if _, statErr := os.Stat(writePath); os.IsNotExist(statErr) && disabledReason == "" {
-				if note != "" {
-					note += "; "
-				}
-				note += "Configuration file will be created on Save"
+			if native.ConfigPath != "" && filepath.Clean(writePath) != filepath.Clean(native.ConfigPath) {
+				note = strings.TrimSpace(note + "; Recorded AACT config path " + env.ConfigPath + " plans write to " + writePath + "; adapter process-native planned config path is " + native.ConfigPath)
 			}
 		}
 		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{
-			ID: id, Kind: env.Kind, Home: env.Home, SkillsPath: env.SkillsDir,
+			Features: features, Name: adapter.Name(), ID: id, Kind: env.Kind, Home: detected.Home, SkillsPath: detected.SkillsPath,
 			ConfigPath: writePath, Detection: detection, Note: note, DisabledReason: disabledReason,
 			Path: path, Selected: selected,
 		})
@@ -420,11 +443,6 @@ func hasAllMCPRegistrations(p catalog.Package, rows []state.Installation, key st
 		}
 	}
 	return len(p.MCPDefinitions()) > 0
-}
-
-func isManualAgentID(id string) bool {
-	kind, _, _ := strings.Cut(id, ":")
-	return agents.IsManual(kind)
 }
 
 func currentUserHome() string {
@@ -555,8 +573,14 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 		if p.HasMCP() && id == "all" {
 			return viewmodel.OperationResult{}, invalid(errors.New("global All is a skill-only destination and is not a named MCP agent"))
 		}
-		if p.HasMCP() && agents.IsManual(kind) {
-			return viewmodel.OperationResult{}, invalid(fmt.Errorf("destination %q is not a named MCP agent", id))
+		if p.HasMCP() {
+			adapter, adapterErr := s.adapterFor(id, kind)
+			if adapterErr != nil {
+				return viewmodel.OperationResult{}, adapterErr
+			}
+			if !adapter.Features().MCPs {
+				return viewmodel.OperationResult{}, invalid(fmt.Errorf("destination %q is not a named MCP agent", id))
+			}
 		}
 		env, envErr := s.uiEnvironment(id, key)
 		if envErr != nil {
@@ -738,13 +762,26 @@ func (s *Service) removeCapabilityBindings(ctx context.Context, p catalog.Packag
 				if row.Key.Source != key.Source || row.Key.Package != key.Package || row.Key.Environment != key.Environment || row.Key.Target != key.Target || row.AgentID != id || row.Component != "mcp" {
 					continue
 				}
-				adapter, adapterErr := agents.For(env.Kind, s.Options.Runner)
+				registered, adapterErr := s.adapterFor(id, env.Kind)
+				adapter, supportsMCP := registered.(agents.MCPManager)
+				var legacy agents.LegacyMCPAdapter
+				if adapterErr == nil && !supportsMCP {
+					// Previously recorded generic MCP rows predate feature-gated adapters.
+					// Retain cleanup compatibility for those exact owned records only.
+					legacy, adapterErr = agents.For(env.Kind, s.Options.Runner)
+				}
 				files, snapshotErr := snapshotRegistration(env)
 				if adapterErr == nil {
 					adapterErr = snapshotErr
 				}
 				if adapterErr == nil {
-					adapterErr = adapter.Unregister(ctx, env, row.RegistrationName)
+					scope := s.agentScope(id)
+					scope.ID, scope.Home, scope.ConfigPathOverride = id, env.Home, env.ConfigPath
+					if supportsMCP {
+						adapterErr = adapter.Unregister(ctx, scope, row)
+					} else {
+						adapterErr = legacy.Unregister(ctx, env, row.RegistrationName)
+					}
 				}
 				if adapterErr == nil {
 					adapterErr = s.removeRegistration(row)

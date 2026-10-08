@@ -193,8 +193,8 @@ func (s *Service) preservedUIRegistrations(key state.Key, requestedIDs []string)
 		if kind == "" {
 			kind, _, _ = strings.Cut(row.AgentID, ":")
 		}
-		_, adapterErr := agents.For(kind, s.Options.Runner)
-		if row.AgentID == "all" || agents.IsManual(kind) || adapterErr != nil {
+		adapter, adapterErr := s.adapterFor(row.AgentID, kind)
+		if adapterErr != nil || !adapter.Features().MCPs {
 			preserved = append(preserved, agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination})
 		}
 	}

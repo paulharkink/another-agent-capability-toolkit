@@ -20,11 +20,13 @@ type ConfigFile struct {
 	Exists                            bool
 }
 type Detection struct {
-	Home, SkillsPath           string
-	State, Evidence, Reason    string
-	MCPDisabledReason          string
-	Installed, CanCreateConfig bool
-	ConfigFiles                []ConfigFile
+	// ConfigPath is the effective file the adapter would write, after native
+	// format precedence and any explicit scope override are applied.
+	Home, SkillsPath, ConfigPath string
+	State, Evidence, Reason      string
+	MCPDisabledReason            string
+	Installed, CanCreateConfig   bool
+	ConfigFiles                  []ConfigFile
 }
 type ObservationRequest struct {
 	Key              state.Key

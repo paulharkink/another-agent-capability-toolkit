@@ -333,10 +333,12 @@ Native verification on macOS arm64:
   Linux and Windows binaries were cross-built, not natively executed. Native
   Linux and Windows CI remains pending because this task did not push a branch.
 - AACT dependency checks found no `internal/packagehelpers` dependency in the
-  executable path and no agent-ID-specific literal in core app/UI/CLI behavior
-  covered by the Task 17 check. The audit still finds production compatibility
-  paths resolving detection/config policy through `internal/agents` helper
-  functions from app code; this boundary concern is listed as open below.
+  executable path. Task 17 fix round 1 moved setup preview, agent management,
+  defaults and retained UI environment conversion to adapter IDs,
+  `Features()`, and `Detect()` results. Spy-backed app regressions prove
+  injected detection, skill layout, readiness, and effective config files
+  change the actual UI rows. The architectural test also rejects direct
+  compatibility-policy calls from those app UI paths.
 
 The real branch TUI was exercised only in the pre-existing designated tmux
 pane 2 with the fixture pack, state directory, agent home, and Docker MCP. The
@@ -360,8 +362,15 @@ Independent audit of committed Tasks 1–16 identified open cross-task concerns
 for the final review: Claude plugin apply does not reconcile an already listed
 plugin with changed staged content, and first-install marketplace registration
 can survive a later plugin install failure without an achieved-effect record;
-legacy app setup/agent-management compatibility paths still call detection and
-config-path policy helpers outside the adapter interface. Task 17 fixed the
-profile component snapshot's loss of inventory ownership provenance and added
-same-name cross-profile coverage. These audit concerns are not declared resolved
-by the Task 17 suite; the reviewer should decide their scope and disposition.
+native Claude plugin fixture behavior remains unverified. Task 17 fixed the
+app-to-adapter boundary finding in fix round 1, pending independent scoped
+review. Task 17 also fixed the profile component snapshot's loss of inventory
+ownership provenance and added same-name cross-profile coverage. Claude plugin
+reconciliation/marketplace achieved-effect accounting remains an open
+cross-task finding for the consolidated whole-branch review.
+
+Fix round 1 verification (macOS arm64): `go test ./... -count=1`,
+`go vet ./...`, and `go test -race ./internal/app ./internal/agents
+./tests/integration -count=1` passed. Logs are in the Task 17 plan workspace
+under `scratch/task-17-fix1-*.log`. Native Linux/Windows CI is still pending;
+their GoReleaser archives are cross-build evidence only.

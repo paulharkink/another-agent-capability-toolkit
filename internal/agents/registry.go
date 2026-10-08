@@ -34,7 +34,7 @@ func NewRegistry(deps Dependencies) *Registry {
 		deps.Probe.Home, _ = os.UserHomeDir()
 	}
 	r := &Registry{}
-	for _, kind := range []string{"codex", "claude", "opencode", "copilot-cli", "intellij", "copilot-intellij", "hermes", "generic"} {
+	for _, kind := range []string{"codex", "opencode", "claude", "copilot-cli", "intellij", "copilot-intellij", "hermes", "generic"} {
 		skill := &skillAdapter{registeredAdapter: &registeredAdapter{kind: kind, deps: deps}}
 		if kind != "generic" && kind != "hermes" {
 			mcp := &mcpAdapter{skillAdapter: skill}
@@ -98,20 +98,28 @@ func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection,
 		return Detection{State: "unverified", Reason: layoutErr.Error()}, layoutErr
 	}
 	if a.kind == "generic" {
-		return Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, State: "installed", Installed: true, Evidence: "Shared .agents/skills destination"}, nil
+		return Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, ConfigPath: environment.ConfigPath, State: "installed", Installed: true, Evidence: "Shared .agents/skills destination"}, nil
 	}
 	d := DiscoverAgent(ctx, a.kind, a.scopedProbe(scope))
-	result := Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, State: d.Detection, Installed: d.Detection == "installed", Evidence: d.Evidence, Reason: d.Note}
+	writePath, pathErr := ResolveConfigWritePath(environment)
+	if pathErr != nil {
+		return Detection{State: "unverified", Reason: pathErr.Error()}, pathErr
+	}
+	result := Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, ConfigPath: writePath, State: d.Detection, Installed: d.Detection == "installed", Evidence: d.Evidence, Reason: d.Note}
 	for _, file := range d.ConfigFiles {
 		result.ConfigFiles = append(result.ConfigFiles, ConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Exists: file.Exists})
 	}
 	if scope.ConfigPathOverride != "" {
-		_, err := os.Stat(scope.ConfigPathOverride)
-		result.ConfigFiles = []ConfigFile{{Path: scope.ConfigPathOverride, Scope: "explicit", Precedence: "effective", Evidence: "Explicit agent config override", Exists: err == nil}}
+		_, err := os.Stat(result.ConfigPath)
+		result.ConfigFiles = []ConfigFile{{Path: result.ConfigPath, Scope: "explicit", Precedence: "effective", Evidence: "Explicit agent config override", Exists: err == nil}}
 	}
-	if _, err := For(a.kind, a.deps.Runner); err == nil && result.Installed {
-		result.MCPDisabledReason = MCPDestinationDisabledReason(ctx, a.kind, environment.ConfigPath, d, nil, a.scopedProbe(scope))
-		result.CanCreateConfig = result.MCPDisabledReason == ""
+	if _, err := For(a.kind, a.deps.Runner); err == nil {
+		if result.Installed {
+			result.MCPDisabledReason = MCPDestinationDisabledReason(ctx, a.kind, result.ConfigPath, d, nil, a.scopedProbe(scope))
+			result.CanCreateConfig = result.MCPDisabledReason == ""
+		} else {
+			result.Reason = MCPDestinationDisabledReason(ctx, a.kind, result.ConfigPath, d, nil, a.scopedProbe(scope))
+		}
 	}
 	return result, nil
 }

@@ -8,8 +8,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
+
+func TestUIAgentManagementUsesInjectedAdapterObservation(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	svc, _, _ := fixture(t)
+	customConfig := filepath.Join(home, "adapter-owned", "codex.toml")
+	adapter := &uiBoundaryAdapter{features: agents.FeatureSet{Skills: true, MCPs: true}, detection: agents.Detection{
+		Home: filepath.Join(home, "adapter-home"), SkillsPath: filepath.Join(home, "adapter-skills"),
+		ConfigPath: customConfig, State: "adapter-state", Evidence: "adapter evidence",
+		ConfigFiles: []agents.ConfigFile{{Path: customConfig, Scope: "adapter", Precedence: "effective", Evidence: "adapter config", Exists: true}},
+	}}
+	svc.Options.Adapters = uiBoundaryRegistry{fallback: svc.adapterRegistry(), adapter: adapter}
+	rows, err := svc.UIAgentManagement(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID != "codex" {
+			continue
+		}
+		if row.Detection != "adapter-state" || row.Home != adapter.detection.Home || row.EffectiveConfigPath != customConfig || len(row.ConfigFiles) != 1 || row.ConfigFiles[0].Evidence != "adapter config" {
+			t.Fatalf("management row bypassed adapter detection: %+v", row)
+		}
+		return
+	}
+	t.Fatal("codex row missing")
+}
 
 func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing.T) {
 	if runtime.GOOS != "darwin" {

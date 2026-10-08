@@ -43,4 +43,31 @@ func TestAgentPolicyLivesInAdapters(t *testing.T) {
 			})
 		}
 	}
+	compatibilityPolicy := map[string]bool{
+		"ResolveConfigWritePath": true, "DiscoverAgent": true, "MCPDestinationDisabledReason": true,
+		"NativePlannedConfigPath": true, "ResolveEnvironment": true, "ApplyNativeConfigOverrides": true,
+		"NativeConfigOverride": true, "EffectiveCompatibilityConfig": true,
+	}
+	for _, name := range []string{"ui_setup.go", "ui_agents.go", "ui_registration.go"} {
+		path := filepath.Join("..", "..", "internal", "app", name)
+		fs := token.NewFileSet()
+		f, err := parser.ParseFile(fs, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if compatibilityPolicy[selector.Sel.Name] {
+				t.Errorf("%s: UI app path calls compatibility policy helper %s instead of consuming adapter results", fs.Position(selector.Pos()), selector.Sel.Name)
+			}
+			return true
+		})
+	}
 }

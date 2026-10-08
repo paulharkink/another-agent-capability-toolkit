@@ -69,6 +69,30 @@ func TestRegistryInstalledMissingConfigOverridesAndUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestRegistryDetectionReportsEffectiveOpenCodeFormatForExplicitOverride(t *testing.T) {
+	root := t.TempDir()
+	override := filepath.Join(root, "profile", "opencode.json")
+	effective := filepath.Join(root, "profile", "opencode.jsonc")
+	if err := os.MkdirAll(filepath.Dir(effective), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(effective, []byte("{\"mcp\":{}}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry(Dependencies{Probe: DiscoveryProbe{GOOS: "linux", Home: root, Getenv: func(string) string { return "" }, LookPath: func(string) (string, error) { return "fixture-opencode", nil }}})
+	a, err := r.Adapter("opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := a.Detect(context.Background(), Scope{Home: root, ConfigPathOverride: override, ExplicitHome: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ConfigPath != effective || len(d.ConfigFiles) != 1 || d.ConfigFiles[0].Path != effective || !d.ConfigFiles[0].Exists {
+		t.Fatalf("detection reported non-effective OpenCode config candidate: %#v", d)
+	}
+}
+
 func TestRegistryNativeOverridesWSLAndHermesDetection(t *testing.T) {
 	root := t.TempDir()
 	override := filepath.Join(root, "codex-context")

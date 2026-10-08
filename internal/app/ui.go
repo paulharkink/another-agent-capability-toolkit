@@ -177,9 +177,17 @@ func (s *Service) UIMCPs(ctx context.Context) ([]mcp.Instance, error) {
 	return s.Options.Runtime.List(ctx)
 }
 func (s *Service) UIAgents(context.Context) ([]string, error) {
-	out := agents.CompatibilityIDs()
+	out := []string{"all"}
 	seen := map[string]bool{}
 	for _, id := range out {
+		seen[id] = true
+	}
+	for _, adapter := range s.adapterRegistry().Adapters() {
+		id := adapter.ID()
+		if id == "" || seen[id] {
+			continue
+		}
+		out = append(out, id)
 		seen[id] = true
 	}
 	rows, e := s.Store.Installations()
@@ -234,11 +242,15 @@ func (s *Service) UISetDefaultAgents(ctx context.Context, ids []string) error {
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		kind, _, _ := strings.Cut(id, ":")
-		if id == "" || id == "all" || !known[id] || seen[id] || agents.IsManual(kind) {
+		if id == "" || !known[id] || seen[id] {
 			return invalid(fmt.Errorf("invalid default MCP agent %q", id))
 		}
-		if _, err := agents.For(kind, s.Options.Runner); err != nil {
+		adapter, err := s.adapterFor(id, kind)
+		if err != nil {
 			return invalid(fmt.Errorf("default MCP agent %q: %w", id, err))
+		}
+		if !adapter.Features().MCPs {
+			return invalid(fmt.Errorf("default MCP agent %q does not support MCP registrations", id))
 		}
 		seen[id] = true
 	}
@@ -273,14 +285,9 @@ func (s *Service) UIAgentDefaultOptions(ctx context.Context) ([]string, error) {
 	}
 	options := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if id == "all" {
-			continue
-		}
 		kind, _, _ := strings.Cut(id, ":")
-		if !agents.IsManual(kind) {
-			if _, err := agents.For(kind, s.Options.Runner); err == nil {
-				options = append(options, id)
-			}
+		if adapter, err := s.adapterFor(id, kind); err == nil && adapter.Features().MCPs {
+			options = append(options, id)
 		}
 	}
 	return options, nil
@@ -332,21 +339,18 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 		return "Environment directory: " + root, e
 	}
 	if action == "agent-info" {
-		home, e := os.UserHomeDir()
-		if e != nil {
-			return "", e
-		}
 		kind, _, _ := strings.Cut(agentID, ":")
-		var a agents.Environment
-		if agentID == "all" {
-			a, e = agents.GlobalSkillsEnvironment(home)
-		} else {
-			a, e = agents.ResolveEnvironment(agentID, kind, home)
-		}
+		adapter, e := svc.adapterFor(agentID, kind)
 		if e != nil {
 			return "", e
 		}
-		b, _ := json.MarshalIndent(a, "", "  ")
+		scope := svc.agentScope(agentID)
+		scope.ID = agentID
+		observed, e := adapter.Detect(ctx, scope)
+		if e != nil {
+			return "", e
+		}
+		b, _ := json.MarshalIndent(observed, "", "  ")
 		return string(b), nil
 	}
 	var out Result
@@ -384,7 +388,6 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	if e != nil {
 		return agents.Environment{}, e
 	}
-	defaultHome := home
 	kind, _, _ := strings.Cut(id, ":")
 	rows, e := s.Store.Installations()
 	if e != nil {
@@ -418,32 +421,63 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	for h := range homes {
 		home = h
 	}
-	var env agents.Environment
-	if id == "all" {
-		env, e = agents.GlobalSkillsEnvironment(home)
-	} else {
-		env, e = agents.ResolveEnvironment(id, kind, home)
-	}
-	if e != nil {
-		return env, e
-	}
-	// Only the process-native default agent follows these environment overrides.
-	// A recorded or explicit custom agent home retains its own config location.
-	if filepath.Clean(home) == filepath.Clean(defaultHome) {
-		env, e = agents.ApplyNativeConfigOverrides(env)
-		if e != nil {
-			return env, e
+	scope := s.agentScope(id)
+	scope.ID = id
+	scope.Home = home
+	scope.ExplicitHome = filepath.Clean(home) != filepath.Clean(mustUserHome())
+	for _, r := range matching {
+		if r.Component == "mcp" && r.Destination != "" {
+			scope.ConfigPathOverride = r.Destination
 		}
 	}
+	adapter, e := s.adapterFor(id, kind)
+	if e != nil {
+		return agents.Environment{}, e
+	}
+	detection, e := adapter.Detect(context.Background(), scope)
+	if e != nil {
+		return agents.Environment{}, e
+	}
+	configPath := detection.ConfigPath
+	if configPath == "" {
+		for _, file := range detection.ConfigFiles {
+			if file.Precedence == "effective" {
+				configPath = file.Path
+				break
+			}
+		}
+	}
+	if configPath == "" && adapter.Features().MCPs {
+		return agents.Environment{}, fmt.Errorf("agent adapter %s did not report an effective config path", adapter.ID())
+	}
+	kind = adapter.ID()
+	if id == "all" {
+		kind = "all"
+	}
+	env := agents.Environment{ID: id, Kind: kind, Home: detection.Home, SkillsDir: detection.SkillsPath, ConfigPath: configPath}
 	for _, r := range matching {
-		switch r.Component {
-		case "skill":
+		if r.Component == "skill" && r.Destination != "" {
 			env.SkillsDir = filepath.Dir(r.Destination)
-		case "mcp":
+		}
+		if r.Component == "mcp" && r.Destination != "" {
 			env.ConfigPath = r.Destination
 		}
 	}
-	return agents.EffectiveCompatibilityConfig(env)
+	return env, nil
+}
+
+func mustUserHome() string { home, _ := os.UserHomeDir(); return home }
+
+func (s *Service) adapterFor(id, kind string) (agents.Adapter, error) {
+	registry := s.adapterRegistry()
+	adapter, err := registry.Adapter(id)
+	if err == nil {
+		return adapter, nil
+	}
+	if kind != "" && kind != id {
+		return registry.Adapter(kind)
+	}
+	return nil, err
 }
 func (s *Service) Sources() ([]string, error) {
 	refs, e := s.sourceRefs()
