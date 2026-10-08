@@ -757,12 +757,12 @@ func TestUIAgentDefaultOptionsExcludesAllAndManualOrUnsupportedAdapters(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"codex", "claude", "opencode", "intellij"} {
+	for _, want := range []string{"codex", "claude", "opencode"} {
 		if !slices.Contains(ids, want) {
 			t.Fatalf("missing %s: %#v", want, ids)
 		}
 	}
-	for _, excluded := range []string{"all", "generic", "hermes"} {
+	for _, excluded := range []string{"all", "generic", "hermes", "intellij"} {
 		if slices.Contains(ids, excluded) {
 			t.Fatalf("manual or unsupported default option %q exposed: %#v", excluded, ids)
 		}

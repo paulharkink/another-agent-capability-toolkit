@@ -43,10 +43,8 @@ func resolveEnvironment(id, kind, home, goos string, getenv func(string) string)
 		e.ConfigPath = filepath.Join(home, ".config", "opencode", "opencode.json")
 	case "intellij", "intellij-ai-assistant":
 		e.SkillsDir = filepath.Join(home, ".ai", "skills")
-		// The installed AI Assistant plugin resolves this default below the user
-		// home, and exposes its JSON path through its Registry key. AACT supports
-		// the default plus an explicit Environment.ConfigPath for an override.
-		e.ConfigPath = filepath.Join(home, ".ai", "mcp", "mcp.json")
+		// JetBrains documents entering MCP JSON in IDE Settings but does not
+		// document an external config file path or import mechanism.
 	case "copilot-intellij":
 		e.SkillsDir = filepath.Join(home, ".copilot", "skills")
 		base := filepath.Join(home, ".config")

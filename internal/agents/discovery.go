@@ -138,11 +138,10 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 			r.Evidence = "IDE " + r.Evidence
 		}
 		r.Detection = "unverified"
-		addConfig(filepath.Join(probe.Home, ".ai", "mcp", "mcp.json"), "user", "effective", "JetBrains AI Assistant JSON")
 		for _, path := range jetBrainsAISettingsFiles(probe.Home, probe.GOOS, probe.Getenv) {
 			addConfig(path, "IDE user", "metadata", "JetBrains AI Assistant settings XML")
 		}
-		r.Note = "AI Assistant server definitions use the documented mcpServers JSON format. The installed plugin resolves its global JSON path through a Registry setting; AACT targets the default ~/.ai/mcp/mcp.json, so use an explicit config path if the IDE overrides it. Plugin/license state cannot be confirmed from config files."
+		r.Note = "JetBrains AI Assistant MCP definitions can be entered as JSON in IDE Settings, but no supported external config file path or import mechanism is documented or verified; MCP registration is unavailable. The discovered llm.mcpServers.xml file is native IDE state whose external write schema and reload behavior are unverified."
 	case "copilot-cli", "copilot":
 		cli("copilot")
 		root := probe.Getenv("COPILOT_HOME")

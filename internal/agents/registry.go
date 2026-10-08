@@ -36,7 +36,9 @@ func NewRegistry(deps Dependencies) *Registry {
 	r := &Registry{}
 	for _, kind := range []string{"codex", "opencode", "claude", "copilot-cli", "intellij", "copilot-intellij", "hermes", "generic"} {
 		skill := &skillAdapter{registeredAdapter: &registeredAdapter{kind: kind, deps: deps}}
-		if kind != "generic" && kind != "hermes" {
+		if kind == "intellij" {
+			r.adapters = append(r.adapters, &intellijAdapter{skillAdapter: skill})
+		} else if kind != "generic" && kind != "hermes" {
 			mcp := &mcpAdapter{skillAdapter: skill}
 			if kind == "claude" {
 				r.adapters = append(r.adapters, &claudePluginAdapter{mcpAdapter: mcp})

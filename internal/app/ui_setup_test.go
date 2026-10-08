@@ -781,28 +781,33 @@ func TestUIInstallResetDoesNotResaveInheritedValueAfterInstallingSkill(t *testin
 	}
 }
 
-func TestUISetupPreviewDisablesUndetectedJetBrainsMCPAdapterWithReason(t *testing.T) {
+func TestUISetupPreviewDisablesUndetectedSupportedMCPAdapterWithReason(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	const reason = "fixture MCP adapter is not detected"
+	adapter := &uiBoundaryAdapter{
+		features: agents.FeatureSet{Skills: true, MCPs: true},
+		detection: agents.Detection{
+			Home: filepath.Join(home, "codex"), State: "not-detected", Reason: "fixture adapter was not detected",
+			MCPDisabledReason: reason,
+		},
+	}
+	svc.Options.Adapters = uiBoundaryRegistry{fallback: svc.adapterRegistry(), adapter: adapter}
 	got, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, destination := range got.Destinations {
-		if destination.ID == "intellij" {
-			if _, adapterErr := agents.For("intellij", nil); adapterErr != nil {
-				t.Fatalf("JetBrains adapter should be supported: %v", adapterErr)
-			}
-			if !strings.Contains(destination.DisabledReason, "JetBrains AI Assistant was not detected") {
-				t.Fatalf("undetected JetBrains destination should be disabled with a detection reason: %+v", destination)
-			}
-			if strings.Contains(destination.DisabledReason, "not implemented") {
-				t.Fatalf("JetBrains adapter incorrectly reported unsupported: %+v", destination)
+		if destination.ID == "codex" {
+			if destination.DisabledReason != reason {
+				t.Fatalf("undetected supported adapter should remain visible and disabled with its reason: %+v", destination)
 			}
 			return
 		}
 	}
-	t.Fatal("JetBrains destination should remain visible while its application is undetected")
+	t.Fatal("undetected MCP-capable destination should remain visible")
 }
 
 func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testing.T) {
