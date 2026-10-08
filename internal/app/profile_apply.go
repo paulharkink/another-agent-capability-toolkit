@@ -515,7 +515,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	achievedRows := installations
 	for _, a := range s.adapterRegistry().Adapters() {
 		features := a.Features()
-		if p.HasMCP() && !features.MCPs {
+		if p.HasMCP() && a.ID() == "generic" {
 			continue
 		}
 		nativeScope := s.agentScope(a.ID())
@@ -530,13 +530,27 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 			}
 		}
 		d, e := a.Detect(ctx, scope)
+		hasDetectedConfig := false
+		for _, file := range d.ConfigFiles {
+			if file.Exists {
+				hasDetectedConfig = true
+				break
+			}
+		}
 		row := viewmodel.SetupDestination{Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath, Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID())}
 		if e != nil {
 			row.DisabledReason = e.Error()
 		} else if p.HasMCP() && d.MCPDisabledReason != "" {
 			row.DisabledReason = d.MCPDisabledReason
+		} else if p.HasMCP() && !features.MCPs {
+			row.DisabledReason = "This agent does not support MCP registration"
 		} else if !d.Installed {
-			row.DisabledReason = "Agent is not detected: " + d.Reason
+			row.DisabledReason = "Agent is not detected"
+			if d.Reason != "" {
+				row.DisabledReason += ": " + d.Reason
+			}
+		} else if p.HasMCP() && !d.CanCreateConfig && !hasDetectedConfig {
+			row.DisabledReason = "Adapter cannot create the missing MCP config file"
 		}
 		row.ConfigPath = d.ConfigPath
 		if row.ConfigPath == "" {
@@ -573,6 +587,23 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 			}
 		}
 		preview.Destinations = append(preview.Destinations, row)
+	}
+	knownDestinationIDs := map[string]bool{}
+	for _, adapter := range s.adapterRegistry().Adapters() {
+		knownDestinationIDs[adapter.ID()] = true
+	}
+	for _, id := range destinationIDs {
+		if knownDestinationIDs[id] {
+			continue
+		}
+		if _, adapterErr := s.adapterRegistry().Adapter(id); adapterErr == nil {
+			continue
+		}
+		preview.Destinations = append(preview.Destinations, viewmodel.SetupDestination{
+			Name: id, ID: id, Kind: id, Detection: "unverified",
+			Note:           "Historical saved destination; no adapter is available for agent ID " + id,
+			DisabledReason: "No adapter can handle saved agent ID " + id + "; this historical destination is excluded",
+		})
 	}
 	for index := range preview.Destinations {
 		current := &preview.Destinations[index]
