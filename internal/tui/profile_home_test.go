@@ -3,7 +3,9 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 	"context"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"strings"
@@ -133,5 +135,63 @@ func TestProfileHomeLabelsUnmanagedComponentInventory(t *testing.T) {
 func TestProfileHomeSkipsMissingConfigurationDetails(t *testing.T) {
 	if got := profileConfigurationDetails(ProfileRow{}); len(got) != 0 {
 		t.Fatalf("missing configuration details = %+v", got)
+	}
+}
+
+type savedOnlyTransitionBackend struct {
+	*packProfileBackend
+	snapshot viewmodel.ProfileSnapshot
+}
+
+func (b *savedOnlyTransitionBackend) UICatalog(context.Context) ([]catalog.Package, error) {
+	return nil, nil
+}
+
+func (b *savedOnlyTransitionBackend) UIProfileSnapshot(context.Context) (viewmodel.ProfileSnapshot, error) {
+	return b.snapshot, nil
+}
+
+func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.T) {
+	m, backend := profileHomeFixture(t)
+	key := state.Key{Source: "home", Package: "cluster-inspector", Target: "pms15"}
+	backendAfterDiscard := &savedOnlyTransitionBackend{
+		packProfileBackend: backend,
+		snapshot:           viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: key, Name: "pms15", RuntimeStatus: "stopped"}}},
+	}
+	m.backend = backendAfterDiscard
+	m.home.Capabilities.Index = 0
+	m.home.Capabilities.ID = "one\x00inspect"
+	m.form = forms.NewForm(t.Context(), []catalog.Input{{Name: "project", Label: "Project", Type: "string"}}, map[string]any{"project": "before"})
+	if err := m.form.ApplyValues(map[string]any{"project": "after"}); err != nil {
+		t.Fatal(err)
+	}
+	m.workspace = &workspaceState{
+		Reference:    config.ProfileRef{PackID: "one", CapabilityID: "inspect", Name: "ota"},
+		Key:          state.Key{Source: "one", Package: "inspect", Target: "ota"},
+		InvokingView: "Workspace",
+		Active:       true,
+	}
+
+	_, _ = m.Update(forms.ExitRequestMsg{Reason: "back"})
+	if m.unsavedExit == nil {
+		t.Fatal("dirty workspace did not ask before discarding")
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp}) // Discard changes.
+	_, reload := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if reload == nil {
+		t.Fatal("discard did not reload the saved capability rows")
+	}
+	m.Update(reload())
+
+	selected, ok := m.selectedCapability()
+	if !ok || selected.CatalogIndex >= 0 || selected.Package != key.Package {
+		t.Fatalf("post-discard selection = %+v, want saved-only capability %q", selected, key.Package)
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "Capability Pack unavailable") || !strings.Contains(view, "pms15") {
+		t.Fatalf("saved-only capability was not rendered through legacy rows:\n%s", view)
+	}
+	if strings.Contains(view, "Configuration profiles") {
+		t.Fatalf("saved-only capability entered configuration-profile rendering:\n%s", view)
 	}
 }
