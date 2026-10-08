@@ -1,6 +1,7 @@
 package viewmodel
 
 import (
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -42,4 +43,23 @@ type ProfileSnapshot struct {
 	DockerError      string
 	ObservedAt       time.Time
 	ObservationStale bool
+}
+
+type CapabilityProfileSnapshot struct {
+	Profiles   []CapabilityProfile
+	Errors     []string
+	ObservedAt time.Time
+}
+type CapabilityProfile struct {
+	Ref                               config.ProfileRef
+	Key                               state.Key
+	Origin, ConfigStatus, ConfigError string
+	Components                        []ComponentStatus
+	MCPs                              []RuntimeStatus
+}
+type ComponentStatus struct{ AgentID, Kind, Name, Status, Error string }
+type RuntimeStatus struct {
+	MCPID, Status, Ownership, URL, Error string
+	ObservedAt                           time.Time
+	Stale                                bool
 }
