@@ -86,11 +86,15 @@ func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection,
 	if err := ctx.Err(); err != nil {
 		return Detection{State: "unverified", Reason: err.Error()}, err
 	}
+	environment, layoutErr := a.environment(scope)
+	if layoutErr != nil {
+		return Detection{State: "unverified", Reason: layoutErr.Error()}, layoutErr
+	}
 	if a.kind == "generic" {
-		return Detection{State: "installed", Installed: true, Evidence: "Shared .agents/skills destination"}, nil
+		return Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, State: "installed", Installed: true, Evidence: "Shared .agents/skills destination"}, nil
 	}
 	d := DiscoverAgent(ctx, a.kind, a.scopedProbe(scope))
-	result := Detection{State: d.Detection, Installed: d.Detection == "installed", Evidence: d.Evidence, Reason: d.Note}
+	result := Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, State: d.Detection, Installed: d.Detection == "installed", Evidence: d.Evidence, Reason: d.Note}
 	for _, file := range d.ConfigFiles {
 		result.ConfigFiles = append(result.ConfigFiles, ConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Exists: file.Exists})
 	}

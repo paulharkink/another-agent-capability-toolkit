@@ -96,3 +96,13 @@ func TestRegistryNativeOverridesWSLAndHermesDetection(t *testing.T) {
 		t.Fatalf("Hermes CLI was not detected: %#v %v", d, err)
 	}
 }
+
+func TestAdapterDetectionReportsResolvedSkillDestination(t *testing.T) {
+	home := t.TempDir()
+	r := NewRegistry(Dependencies{Probe: DiscoveryProbe{GOOS: "linux", Home: home, Getenv: func(string) string { return "" }}})
+	a, _ := r.Adapter("generic")
+	d, err := a.Detect(context.Background(), Scope{ID: "generic", Home: home, ExplicitHome: true})
+	if err != nil || d.Home != home || d.SkillsPath != filepath.Join(home, ".agents", "skills") {
+		t.Fatalf("adapter layout missing: %+v %v", d, err)
+	}
+}

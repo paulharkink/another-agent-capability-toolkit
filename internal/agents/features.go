@@ -20,6 +20,7 @@ type ConfigFile struct {
 	Exists                            bool
 }
 type Detection struct {
+	Home, SkillsPath           string
 	State, Evidence, Reason    string
 	Installed, CanCreateConfig bool
 	ConfigFiles                []ConfigFile
