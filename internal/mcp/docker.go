@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Mount struct {
@@ -27,15 +28,16 @@ type Mount struct {
 	ReadOnly    bool   `json:"read_only"`
 }
 type RunSpec struct {
-	User           string            `json:"user,omitempty"`
-	Image          string            `json:"image"`
-	BuildContext   string            `json:"build_context,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	SecretEnv      map[string]string `json:"secret_env,omitempty"`
-	Mounts         []Mount           `json:"mounts,omitempty"`
-	BindIP         string            `json:"bind_ip,omitempty"`
-	AdvertisedHost string            `json:"advertised_host,omitempty"`
+	User             string            `json:"user,omitempty"`
+	Image            string            `json:"image"`
+	BuildContext     string            `json:"build_context,omitempty"`
+	Args             []string          `json:"args,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	SecretEnv        map[string]string `json:"secret_env,omitempty"`
+	Mounts           []Mount           `json:"mounts,omitempty"`
+	BindIP           string            `json:"bind_ip,omitempty"`
+	AdvertisedHost   string            `json:"advertised_host,omitempty"`
+	RegistrationName string            `json:"registration_name,omitempty"`
 	// Host is retained for actions and saved specs written before bind and
 	// advertised endpoint addressing were separated.
 	Host          string `json:"host"`
@@ -67,6 +69,50 @@ func NewDockerRuntime(s *state.Store) *Runtime {
 	return &Runtime{Store: s, Executor: process.OSExecutor{}}
 }
 func containerName(k state.Key) string { return "aact-" + k.ID()[:24] }
+
+// containerNameForRegistration produces a readable, deterministic Docker name.
+// Non-ASCII letters and digits are encoded as u plus their lowercase codepoint
+// so distinct names do not collapse merely because their characters were lost.
+func containerNameForRegistration(registrationName string) (string, error) {
+	registrationName = strings.TrimSpace(registrationName)
+	if registrationName == "" {
+		return "", errors.New("MCP registration name is required for Docker container naming")
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range registrationName {
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
+			b.WriteRune(r)
+			lastDash = r == '-'
+			continue
+		}
+		if r > 127 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			fmt.Fprintf(&b, "u%x", r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	value := strings.Trim(b.String(), "-._")
+	if value == "" {
+		return "", errors.New("MCP registration name contains no Docker-name characters")
+	}
+	const maxName = 128
+	const prefix = "aact-"
+	if len(value) > maxName-len(prefix) {
+		value = strings.TrimRight(value[:maxName-len(prefix)], "-._")
+	}
+	if value == "" {
+		return "", errors.New("MCP registration name is too long to normalize safely")
+	}
+	return prefix + value, nil
+}
 func specURL(s RunSpec) string {
 	h := s.AdvertisedHost
 	if h == "" {
@@ -135,6 +181,9 @@ func labels(k state.Key, s RunSpec) map[string]string {
 	b, _ := json.Marshal(s)
 	h := sha256.Sum256(b)
 	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	if s.RegistrationName != "" {
+		result["aact.registration_name"] = s.RegistrationName
+	}
 	if k.Profile != "" {
 		result["aact.profile"] = k.Profile
 	}
@@ -250,7 +299,15 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	if s.Image == "" && s.BuildContext == "" {
 		return Instance{}, errors.New("MCP image or build context required")
 	}
-	name := containerName(k)
+	registrationName := s.RegistrationName
+	if strings.TrimSpace(registrationName) == "" {
+		registrationName = strings.Join([]string{k.Package, k.Environment, k.Target, k.Profile, k.MCP}, " ")
+	}
+	s.RegistrationName = registrationName
+	name, err := containerNameForRegistration(registrationName)
+	if err != nil {
+		return Instance{}, err
+	}
 	expected := labels(k, s)
 	var attempt [16]byte
 	if _, e := rand.Read(attempt[:]); e != nil {
@@ -267,9 +324,17 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		return Instance{}, e
 	}
 	var previous *dockerInfo
-	if old, e := r.inspect(ctx, name); e == nil {
+	old, inspectErr := r.inspect(ctx, name)
+	if inspectErr != nil && isDockerNotFound(inspectErr) && containerName(k) != name {
+		// Saved installations may still own a key-derived container name.
+		old, inspectErr = r.inspect(ctx, containerName(k))
+	}
+	if inspectErr == nil {
 		if ownership(old, k, installationID, rows) != "local" {
-			return Instance{}, errors.New("container name belongs to another installation or an unknown owner")
+			return Instance{}, errors.New("container name collision: the readable name belongs to another installation, key, or an unknown owner")
+		}
+		if existingName := old.Config.Labels["aact.registration_name"]; existingName != "" && existingName != s.RegistrationName {
+			return Instance{}, errors.New("container name collision: different MCP registration names normalize to the same Docker name")
 		}
 		if old.State.Running {
 			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
@@ -286,8 +351,8 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			return out, nil
 		}
 		previous = &old
-	} else if !isDockerNotFound(e) {
-		return Instance{}, e
+	} else if !isDockerNotFound(inspectErr) {
+		return Instance{}, inspectErr
 	}
 	image := s.Image
 	if s.BuildContext != "" {
@@ -375,16 +440,12 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		if createdID != "" {
 			_, cleanupErr = r.run(cleanupCtx, []string{"rm", "--force", createdID})
 		}
-		if renamed {
-			_, restoreErr := r.run(cleanupCtx, []string{"rename", previous.ID, name})
-			cleanupErr = errors.Join(cleanupErr, restoreErr)
-		}
 		if cleanupErr != nil {
 			startErr = errors.Join(startErr, fmt.Errorf("MCP startup cleanup failed: %w", cleanupErr))
 		}
 	}()
 	if previous != nil {
-		backupName := name + "-previous-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		backupName := "aact-previous-" + previous.ID[:min(12, len(previous.ID))] + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 		if _, e := r.run(ctx, []string{"rename", previous.ID, backupName}); e != nil {
 			return Instance{}, e
 		}

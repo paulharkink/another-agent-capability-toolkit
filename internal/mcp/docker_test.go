@@ -167,6 +167,164 @@ func TestDockerBuildRunAndMountArguments(t *testing.T) {
 	}
 }
 
+func TestContainerNameUsesReadableRegistrationName(t *testing.T) {
+	tests := []struct {
+		registrationName string
+		want             string
+	}{
+		{"Cluster Inspector: Dev", "aact-cluster-inspector-dev"},
+		{"MCP 雪", "aact-mcp-u96ea"},
+		{"a/b", "aact-a-b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.registrationName, func(t *testing.T) {
+			got, err := containerNameForRegistration(tc.registrationName)
+			if err != nil || got != tc.want {
+				t.Fatalf("containerNameForRegistration(%q) = %q, %v; want %q", tc.registrationName, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestContainerNameNormalizationIsDeterministicAndBounded(t *testing.T) {
+	registrationName := strings.Repeat("Long Name ", 40)
+	first, err := containerNameForRegistration(registrationName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := containerNameForRegistration(registrationName)
+	if err != nil || first != second {
+		t.Fatalf("name derivation is not deterministic: %q %q %v", first, second, err)
+	}
+	if len(first) > 128 {
+		t.Fatalf("container name exceeds safe Docker-name bound: length=%d name=%q", len(first), first)
+	}
+	if strings.ContainsAny(first, " /:\t\n") {
+		t.Fatalf("container name contains unsupported characters: %q", first)
+	}
+}
+
+func TestContainerNameRejectsEmptyResolvedRegistrationName(t *testing.T) {
+	if _, err := containerNameForRegistration(""); err == nil {
+		t.Fatal("empty registration name produced a Docker container name")
+	}
+}
+
+func TestSanitizedRegistrationNameCollisionIsExplicitAndSafe(t *testing.T) {
+	nameA, err := containerNameForRegistration("alpha beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameB, err := containerNameForRegistration("alpha@beta")
+	if err != nil || nameA != nameB {
+		t.Fatalf("expected sanitization collision, got %q and %q (%v)", nameA, nameB, err)
+	}
+	r, f, key := testRuntime(t)
+	otherKey := key
+	otherKey.Package = "different-package"
+	foreign := dockerInfo{ID: "foreign-owned", Name: "/" + nameA, Config: dockerConfig{Labels: locallyOwnedLabels(t, r, otherKey, RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80})}, State: dockerState{Running: true, Status: "running"}}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "inspect" {
+			return json.Marshal([]dockerInfo{foreign})
+		}
+		return nil, errors.New("unexpected Docker mutation")
+	}
+	_, err = r.Start(context.Background(), key, RunSpec{Image: "fixture", RegistrationName: "alpha beta", HostPort: 8765, ContainerPort: 80})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "container name collision") {
+		t.Fatalf("name collision was not reported clearly: %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0][1] != "inspect" {
+		t.Fatalf("collision caused a container mutation: %v", f.calls)
+	}
+}
+
+func TestSanitizedRegistrationNameCollisionForSameKeyIsExplicit(t *testing.T) {
+	r, f, key := testRuntime(t)
+	name, err := containerNameForRegistration("alpha beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingSpec := RunSpec{Image: "fixture", RegistrationName: "alpha@beta", HostPort: 8765, ContainerPort: 80}
+	existing := dockerInfo{ID: "same-key-existing", Name: "/" + name, Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, existingSpec)}, State: dockerState{Running: true, Status: "running"}}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "inspect" {
+			return json.Marshal([]dockerInfo{existing})
+		}
+		return nil, errors.New("unexpected Docker mutation")
+	}
+	_, err = r.Start(context.Background(), key, RunSpec{Image: "fixture", RegistrationName: "alpha beta", HostPort: 8765, ContainerPort: 80})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "container name collision") {
+		t.Fatalf("same-key normalization collision was not reported clearly: %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0][1] != "inspect" {
+		t.Fatalf("collision caused a container mutation: %v", f.calls)
+	}
+}
+
+func TestDockerRunUsesRegistrationDerivedContainerName(t *testing.T) {
+	r, f, key := testRuntime(t)
+	f.f = absent
+	_, err := r.Start(context.Background(), key, RunSpec{Image: "fixture", RegistrationName: "Cluster Inspector: Dev", HostPort: 8765, ContainerPort: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range f.calls {
+		for i, arg := range args {
+			if arg == "--name" && i+1 < len(args) {
+				if args[i+1] != "aact-cluster-inspector-dev" {
+					t.Fatalf("Docker container name = %q", args[i+1])
+				}
+				return
+			}
+		}
+	}
+	t.Fatalf("Docker run did not supply the resolved registration name: %v", f.calls)
+}
+
+func TestLegacyOwnedContainerIsNotRestoredAfterFailedReplacement(t *testing.T) {
+	r, f, key := testRuntime(t)
+	registrationName := "new readable identity"
+	newName, err := containerNameForRegistration(registrationName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyName := containerName(key)
+	legacySpec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80}
+	legacy := dockerInfo{ID: "legacy-id", Name: "/" + legacyName, Config: dockerConfig{Labels: labels(key, legacySpec)}, State: dockerState{Running: false, Status: "exited"}}
+	if err := r.Store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Destination: legacyName, SourcePath: legacy.ID, Mode: "docker"}); err != nil {
+		t.Fatal(err)
+	}
+	var legacyRenamedTo string
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			if args[2] == newName {
+				return nil, errors.New("No such object: requested container")
+			}
+			if args[2] == legacyName {
+				return json.Marshal([]dockerInfo{legacy})
+			}
+			return nil, errors.New("No such object: requested container")
+		case "rename":
+			if args[2] == legacy.ID {
+				legacyRenamedTo = args[3]
+			}
+			return nil, nil
+		case "run":
+			return nil, errors.New("fixture startup failed")
+		default:
+			return nil, nil
+		}
+	}
+	_, err = r.Start(context.Background(), key, RunSpec{Image: "fixture", RegistrationName: registrationName, HostPort: 8765, ContainerPort: 80})
+	if err == nil {
+		t.Fatal("failed readable-name replacement accepted")
+	}
+	if legacyRenamedTo == "" || legacyRenamedTo == legacyName {
+		t.Fatalf("legacy container should retain its backup identity after a failed replacement: name=%q calls=%v", legacyRenamedTo, f.calls)
+	}
+}
+
 func TestDockerBindIPAndAdvertisedHostAreIndependent(t *testing.T) {
 	r, f, k := testRuntime(t)
 	f.f = absent
@@ -516,8 +674,8 @@ func TestStoppedOwnedRuntimeSurvivesFailedReplacement(t *testing.T) {
 			if _, err := r.Start(ctx, k, spec); err == nil {
 				t.Fatal("failed replacement accepted")
 			}
-			if oldRemoved || currentName != containerName(k) {
-				t.Fatalf("stopped prior runtime lost: removed=%v name=%s calls=%v", oldRemoved, currentName, f.calls)
+			if oldRemoved || currentName == containerName(k) || !strings.HasPrefix(currentName, "aact-previous-") {
+				t.Fatalf("stopped prior runtime was automatically restored or lost: removed=%v name=%s calls=%v", oldRemoved, currentName, f.calls)
 			}
 		})
 	}
