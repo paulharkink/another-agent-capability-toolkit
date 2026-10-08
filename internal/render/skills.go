@@ -22,6 +22,6 @@ func (r Renderer) StageSkill(ctx context.Context, pkg catalog.Package, skill cat
 	}
 	pkg.Templates = skill.Templates
 	pkg.Generator = skill.Generator
-	// Legacy target-shaped context is temporary; Task 10 upgrades command context.
-	return r.Stage(ctx, pkg, inputs, config.Target{Name: profile.Ref.Name, Path: profile.Path, Raw: profile.Raw, InputPolicy: profile.InputPolicy}, parent)
+	r.Profile = &profile
+	return r.Stage(ctx, pkg, inputs, config.Target{}, parent)
 }

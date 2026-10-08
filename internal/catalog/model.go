@@ -91,6 +91,7 @@ type Command struct {
 	TimeoutSeconds int      `toml:"timeout_seconds" json:"timeout_seconds"`
 }
 type MCP struct {
+	CredentialFiles       []string           `toml:"credential_files" json:"credential_files,omitempty"`
 	Name                  string             `toml:"name" json:"name"`
 	EnabledInput          string             `toml:"enabled_input" json:"enabled_input,omitempty"`
 	RegistrationNameInput string             `toml:"registration_name_input" json:"registration_name_input,omitempty"`

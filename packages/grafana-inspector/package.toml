@@ -123,6 +123,7 @@ config_key = "grafana.vault_key"
 visible_when = { auth_mode = "api_token" }
 
 [mcp]
+credential_files = ["auth.json"]
 name = "grafana-inspector"
 runtime = "docker"
 transport = "streamable-http"

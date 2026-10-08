@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 )
 
@@ -38,6 +39,9 @@ func ExecuteAction(ctx context.Context, args []string, in io.Reader, out io.Writ
 	}
 	if request.Action != "" && request.Action != args[1] {
 		return errors.New("action command/request mismatch")
+	}
+	if request.Profile.Ref.Name != "" {
+		request.Target = config.Target{Name: request.Profile.Ref.Name, Path: request.Profile.Path, Raw: request.Profile.Raw, InputPolicy: request.Profile.InputPolicy}
 	}
 	request.Action = args[1]
 	result, err := handler(ctx, args[0], request)

@@ -10,7 +10,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,7 +19,8 @@ import (
 type ActionRequest struct {
 	ProtocolVersion int            `json:"protocol_version"`
 	Action          string         `json:"action"`
-	Target          config.Target  `json:"target"`
+	Target          config.Target  `json:"target,omitzero"`
+	Profile         config.Profile `json:"profile"`
 	Inputs          map[string]any `json:"inputs"`
 	PackageDir      string         `json:"package_dir"`
 	StateDir        string         `json:"state_dir"`
@@ -56,18 +56,6 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	if !ok {
 		return ActionResult{}, fmt.Errorf("package %s has no %s action", p.ID, q.Action)
 	}
-	explicit := false
-	for _, d := range p.Inputs {
-		if d.Type == "secret" && q.Inputs[d.Name] != nil && q.Inputs[d.Name] != "" {
-			explicit = true
-		}
-	}
-	if q.Inputs["kubeconfig"] != nil && q.Inputs["kubeconfig"] != "" {
-		explicit = true
-	}
-	if q.Action == "authenticate" && !q.Interactive && !explicit {
-		return ActionResult{}, errors.New("authentication requires explicit credentials or --interactive")
-	}
 	goos := r.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
@@ -82,19 +70,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	workingDir := p.Dir
 	if strings.ContainsAny(argv[0], "/\\") && !filepath.IsAbs(argv[0]) {
 		executable := filepath.Join(p.Dir, argv[0])
-		if isInspectorHelperCommand(argv, p, q) {
-			if _, err := os.Stat(executable); errors.Is(err, os.ErrNotExist) {
-				if self, err := os.Executable(); err == nil {
-					argv = []string{self, "__aact_internal_inspector_helper", p.ID, q.Action}
-				} else {
-					argv[0] = executable
-				}
-			} else {
-				argv[0] = executable
-			}
-		} else {
-			argv[0] = executable
-		}
+		argv[0] = executable
 	}
 	q.ProtocolVersion = 1
 	q.PackageDir = p.Dir
@@ -166,23 +142,6 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 	}
 	return result, nil
-}
-
-func isInspectorHelperCommand(argv []string, p catalog.Package, q ActionRequest) bool {
-	if len(argv) != 3 || argv[1] != p.ID || argv[2] != q.Action {
-		return false
-	}
-	switch p.ID {
-	case "cluster-inspector", "grafana-inspector", "azure-inspector":
-	default:
-		return false
-	}
-	return isInspectorHelper(argv[0])
-}
-
-func isInspectorHelper(path string) bool {
-	name := strings.ToLower(filepath.Base(path))
-	return name == "inspector-helper" || name == "inspector-helper.exe"
 }
 
 func appendDiagnosticTail(previous, chunk []byte, limit int) []byte {
