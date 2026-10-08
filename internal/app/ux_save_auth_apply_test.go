@@ -522,7 +522,11 @@ func TestUXOneAgentFailureDoesNotMarkThatRegistration(t *testing.T) {
 func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing.T) {
 	svc, _, store := fixture(t)
 	pkg := svc.Source.Catalog[0]
-	pkg.ID = "cluster-inspector"
+	pkg.ID = "neutral-capability"
+	if pkg.MCP == nil {
+		pkg.MCP = &catalog.MCP{}
+	}
+	pkg.MCP.CredentialFiles = []string{"session.bin"}
 	svc.Source.Catalog[0] = pkg
 	key := state.Key{Source: "fixture", Package: pkg.ID, Target: "default"}
 	sourcePath := filepath.Join(t.TempDir(), "source.kubeconfig")
@@ -533,7 +537,7 @@ func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing
 	if state != "missing" || note == "" {
 		t.Fatalf("missing managed credential observation = %q, %q", state, note)
 	}
-	managedPath := filepath.Join(svc.Store.AuthDir(key), "kubeconfig")
+	managedPath := filepath.Join(svc.Store.AuthDir(key), "session.bin")
 	if err := os.MkdirAll(svc.Store.AuthDir(key), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -548,6 +552,7 @@ func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing
 		t.Fatalf("fixture source path should remain absent: %v", err)
 	}
 	pkg.ID = "unrecognized-auth-package"
+	pkg.MCP.CredentialFiles = nil
 	if err := os.WriteFile(svc.Store.AuthDir(key)+"/custom-state", []byte("opaque"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +565,11 @@ func TestUXCredentialObservationUsesManagedMaterialNotSavedSourcePath(t *testing
 func TestUXSetupPreviewReportsManagedCredentialObservation(t *testing.T) {
 	svc, _, store := fixture(t)
 	pkg := &svc.Source.Catalog[0]
-	pkg.ID = "cluster-inspector"
+	pkg.ID = "neutral-capability"
+	if pkg.MCP == nil {
+		pkg.MCP = &catalog.MCP{}
+	}
+	pkg.MCP.CredentialFiles = []string{"session.bin"}
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file"}}
 	svc.Source.Catalog[0] = *pkg
 	key := state.Key{Source: "fixture", Package: pkg.ID, Target: "default"}
@@ -578,7 +587,7 @@ func TestUXSetupPreviewReportsManagedCredentialObservation(t *testing.T) {
 	if err := os.MkdirAll(store.AuthDir(key), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(store.AuthDir(key)+"/kubeconfig", []byte("managed fixture"), 0600); err != nil {
+	if err := os.WriteFile(store.AuthDir(key)+"/session.bin", []byte("managed fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	preview, err = svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: pkg.ID})
@@ -706,10 +715,14 @@ func TestUXForeignRuntimeSaveCannotRestartIt(t *testing.T) {
 func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExist(t *testing.T) {
 	svc, env, store := fixture(t)
 	pkg := &svc.Source.Catalog[0]
-	pkg.ID = "cluster-inspector"
+	pkg.ID = "neutral-capability"
+	if pkg.MCP == nil {
+		pkg.MCP = &catalog.MCP{}
+	}
+	pkg.MCP.CredentialFiles = []string{"session.bin"}
 	pkg.Skill = nil
 	pkg.Inputs = []catalog.Input{{Name: "kubeconfig", Type: "file", Required: true}, {Name: "port", Type: "integer"}}
-	pkg.MCP = &catalog.MCP{Image: "fixture/image", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
+	pkg.MCP = &catalog.MCP{CredentialFiles: []string{"session.bin"}, Image: "fixture/image", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
 		"authenticate": {Argv: []string{"fixture-auth"}},
 		"prepare":      {Argv: []string{"fixture-prepare"}},
 	}}
@@ -721,7 +734,7 @@ func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExis
 	if err := os.MkdirAll(store.AuthDir(key), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(store.AuthDir(key)+"/kubeconfig", []byte("imported fixture material"), 0600); err != nil {
+	if err := os.WriteFile(store.AuthDir(key)+"/session.bin", []byte("imported fixture material"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	exec := &uxActionExecutor{}

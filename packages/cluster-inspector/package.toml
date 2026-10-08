@@ -109,6 +109,7 @@ label = "Tekton repository context hook"
 config_key = "tekton.repository_context_hook"
 
 [mcp]
+credential_files = ["kubeconfig"]
 name = "cluster-inspector"
 runtime = "docker"
 transport = "streamable-http"

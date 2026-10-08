@@ -14,7 +14,10 @@ import (
 	"strings"
 )
 
-type Renderer struct{ Generator *Generator }
+type Renderer struct {
+	Generator *Generator
+	Profile   *config.Profile
+}
 
 func Stage(ctx context.Context, p catalog.Package, inputs map[string]any, target config.Target, parent string) (string, error) {
 	return (Renderer{}).Stage(ctx, p, inputs, target, parent)
@@ -69,7 +72,13 @@ func (r Renderer) Stage(ctx context.Context, p catalog.Package, inputs map[strin
 	if g == nil {
 		g = &Generator{}
 	}
-	generated, e := g.Generate(ctx, p, inputs, target, staging)
+	var generated map[string]any
+	var e error
+	if r.Profile != nil {
+		generated, e = g.GenerateProfile(ctx, p, inputs, *r.Profile, staging)
+	} else {
+		generated, e = g.Generate(ctx, p, inputs, target, staging)
+	}
 	if e != nil {
 		return "", e
 	}

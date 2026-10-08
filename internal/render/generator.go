@@ -26,6 +26,12 @@ func Generate(ctx context.Context, p catalog.Package, inputs map[string]any, tar
 	return (Generator{}).Generate(ctx, p, inputs, target, staging)
 }
 func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[string]any, target config.Target, staging string) (map[string]any, error) {
+	return g.generate(ctx, p, inputs, map[string]any{"target": target, "environment": target.Environment}, staging)
+}
+func (g Generator) GenerateProfile(ctx context.Context, p catalog.Package, inputs map[string]any, profile config.Profile, staging string) (map[string]any, error) {
+	return g.generate(ctx, p, inputs, map[string]any{"profile": profile}, staging)
+}
+func (g Generator) generate(ctx context.Context, p catalog.Package, inputs map[string]any, commandContext map[string]any, staging string) (map[string]any, error) {
 	if p.Generator == nil {
 		return map[string]any{}, nil
 	}
@@ -60,7 +66,9 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
 	defer cancel()
-	request := map[string]any{"protocol_version": 1, "inputs": inputs, "context": map[string]any{"target": target, "environment": target.Environment, "package_dir": p.Dir, "staging_dir": staging}}
+	commandContext["package_dir"] = p.Dir
+	commandContext["staging_dir"] = staging
+	request := map[string]any{"protocol_version": 1, "inputs": inputs, "context": commandContext}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode generator inputs: %w", err)

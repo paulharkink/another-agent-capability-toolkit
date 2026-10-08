@@ -53,13 +53,6 @@ builds:
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
-  - id: forgejo-helper
-    main: ./cmd/inspector-helper
-    binary: packages/forgejo/bin/inspector-helper
-    goos: [darwin, linux, windows]
-    goarch: [amd64, arm64]
-    env: [CGO_ENABLED=0]
-
   - id: find-session-helper
     main: ./cmd/find-session
     binary: packages/find-session/bin/find-session
@@ -83,7 +76,6 @@ archives:
       - cluster-inspector-helper
       - grafana-inspector-helper
       - azure-inspector-helper
-      - forgejo-helper
       - find-session-helper
       - repo-map-helper
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
