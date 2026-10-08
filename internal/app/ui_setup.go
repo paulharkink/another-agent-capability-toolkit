@@ -840,7 +840,7 @@ func (s *Service) removeCapabilityBindings(ctx context.Context, p catalog.Packag
 				}
 			}
 			if hasSkill {
-				if e := skills.Uninstall(ctx, key, env); e != nil {
+				if e := skills.Uninstall(ctx, key, install.SkillDestination{ID: env.ID, Home: env.Home, Kind: env.Kind, SkillsDir: env.SkillsDir}); e != nil {
 					out.Errors = append(out.Errors, id+": "+e.Error())
 				} else {
 					out.Changes = append(out.Changes, skillRows...)
