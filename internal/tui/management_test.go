@@ -108,7 +108,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Checkout:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Environment directory:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -124,7 +124,7 @@ func TestEnvironmentInlineControlsUseExistingActions(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Environments")
 	view := ansi.Strip(m.View().Content)
-	for _, label := range []string{"Configure / install", "View target", "Environment root", "Close"} {
+	for _, label := range []string{"Configure / install", "View target", "Environment directory", "Close"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("environment action %q is not visible: %s", label, view)
 		}
@@ -155,11 +155,11 @@ func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
 	delete(m.settings, "environment_root")
 	m.settings["environment-root"] = "/actual/environments"
 	m.navigate("Environments")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment directory: /actual/environments") {
 		t.Fatalf("Environments omitted canonical root: %s", view)
 	}
 	m.navigate("Settings")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment root: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment directory: /actual/environments") {
 		t.Fatalf("Settings omitted canonical root: %s", view)
 	}
 	m.editEnvironmentRoot()
@@ -222,7 +222,7 @@ func TestEnvironmentBrowserShowsActualTOMLAndExactViewer(t *testing.T) {
 	m.Update(m.Init()())
 	m.navigate("Environments")
 	view := m.View().Content
-	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "team / dev") {
+	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "Pack: team · Environment: dev") {
 		t.Fatalf("actual environment targets missing: %s", view)
 	}
 	press(m, tea.KeyDown, "")
@@ -259,7 +259,7 @@ func TestEnvironmentBrowserShowsEmptyDirectoryWithoutInventingTarget(t *testing.
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	view := m.View().Content
-	if !strings.Contains(view, "team / empty") || !strings.Contains(view, "No targets") {
+	if !strings.Contains(view, "Pack: team · Environment: empty") || !strings.Contains(view, "No targets") {
 		t.Fatalf("empty environment missing: %s", view)
 	}
 	press(m, tea.KeyEnter, "")
@@ -377,7 +377,7 @@ func TestEnvironmentsShowsNoFileAndSeparatesSavedTargets(t *testing.T) {
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "company", Target: "production"}, Name: "production"}}}
 	m.navigate("Environments")
 	view := m.View().Content
-	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "company") || !strings.Contains(view, "Saved profile") {
+	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "Pack: team · Environment: company") || !strings.Contains(view, "Saved · Pack: team") {
 		t.Fatalf("environment browser lost file/profile distinction: %s", view)
 	}
 	press(m, tea.KeyDown, "")
@@ -468,8 +468,8 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 	t.Fatal("exact config action has no mouse hit region")
 }
 
-// This catches private and public sources being collapsed into one environment.
-func TestEnvironmentBrowserKeepsSourceIdentity(t *testing.T) {
+// This catches private and public Capability Packs being collapsed into one environment.
+func TestEnvironmentBrowserKeepsCapabilityPackIdentity(t *testing.T) {
 	m := fixtureModel(t)
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
 		{Key: state.Key{Source: "public", Package: "inspect", Environment: "dev", Target: "one"}},
@@ -477,7 +477,7 @@ func TestEnvironmentBrowserKeepsSourceIdentity(t *testing.T) {
 	}}
 	m.navigate("Environments")
 	view := m.View().Content
-	if !strings.Contains(view, "public / dev") || !strings.Contains(view, "company / dev") {
+	if !strings.Contains(view, "Pack: public · Environment: dev") || !strings.Contains(view, "Pack: company · Environment: dev") {
 		t.Fatalf("source identity lost: %s", view)
 	}
 	press(m, tea.KeyDown, "")
@@ -546,10 +546,10 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
 	if m.form == nil || !m.management.FormOverlay {
-		t.Fatal("Environment root editor did not open as a management overlay")
+		t.Fatal("Environment directory editor did not open as a management overlay")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Environment source · Edit environment root") {
+	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose environment directory") {
 		t.Fatalf("editor replaced its management origin or lost its task title:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc cancel") || strings.Contains(view, "Esc back") {
@@ -559,7 +559,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatalf("overlay changed terminal height: %d", got)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
-	if !strings.Contains(ansi.Strip(m.View().Content), "Environment source · Edit environment root") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose environment directory") {
 		t.Fatal("resize discarded the management editor overlay")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -591,7 +591,7 @@ func TestSettingsNoLongerHasHiddenCheckboxSavePath(t *testing.T) {
 	m.Update(m.Init()())
 	m.navigate("Settings")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Environment source", "Agent defaults", "Runtime backend", "Diagnostics"} {
+	for _, want := range []string{"Capability Pack", "Agent defaults", "Runtime backend", "Diagnostics"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Settings missing category %q: %s", want, view)
 		}
@@ -609,7 +609,7 @@ func TestSettingsUnavailableBackendAndCheckoutControlsStayInert(t *testing.T) {
 	m.selected = 2
 	press(m, tea.KeyEnter, "")
 	view := strings.ReplaceAll(ansi.Strip(m.View().Content), "\n", " ")
-	if !strings.Contains(view, "unavailable") || !strings.Contains(view, "service") || strings.Contains(view, "Select backend") || strings.Contains(view, "Check backend") || strings.Contains(view, "View known checkouts") {
+	if !strings.Contains(view, "unavailable") || !strings.Contains(view, "service") || strings.Contains(view, "Select backend") || strings.Contains(view, "Check backend") || strings.Contains(view, "Known checkout") {
 		t.Fatalf("unavailable services are shown as fake controls: %s", view)
 	}
 }

@@ -32,17 +32,18 @@ var Version = "0.1.0-dev"
 const usage = `Another Agent Capability Toolkit (aact)
 
 aact                                     Open Catalog / MCPs / Agents / Settings
-aact catalog [--json]                     List this checkout's capabilities
+aact catalog [--json]                     List this Capability Pack's capabilities
 aact install PACKAGE --agent AGENT       Install skill and register its MCP
 aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
-aact mcp list|status [--json]             Show MCPs from every source
+aact mcp list|status [--json]             Show MCPs from every Capability Pack
 aact mcp start|stop|logs|prepare|authenticate PACKAGE [--profile NAME]
 aact agents | settings                   Show supported agents / configuration
-aact config set-environment-root PATH    Save the environment checkout
+aact config set-environment-directory PATH  Save a default environment directory
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
-Flags: --config PATH --state-dir PATH --environment-root PATH
+Flags: --config PATH --state-dir PATH --environment-directory PATH
+       (legacy alias: --environment-root PATH)
        --environment NAME --target NAME --profile NAME --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
        --external-url URL|NAME=URL --mcp NAME --skills-only --update-source --json --help --version
@@ -239,8 +240,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	case "config":
-		if len(f.args) != 3 || f.args[1] != "set-environment-root" {
-			fmt.Fprintln(errOut, "usage: aact config set-environment-root PATH")
+		if len(f.args) != 3 || (f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root") {
+			fmt.Fprintln(errOut, "usage: aact config set-environment-directory PATH")
 			return 2
 		}
 		message, e := svc.UIRun(ctx, "set-environment-root", "", "", "", "", "", f.args[2])

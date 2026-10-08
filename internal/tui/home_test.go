@@ -84,13 +84,13 @@ func TestHomeAndOverlayHaveNoDefaultBackgroundGlyphs(t *testing.T) {
 	}
 }
 
-func TestHomeShowsWhichCheckoutAndEnvironmentRootAreInUse(t *testing.T) {
+func TestHomeShowsCapabilityPackAndEnvironmentDirectory(t *testing.T) {
 	m, msg := homeFixture()
 	msg.settings["checkout"] = "/Users/test/sources/agent-skills"
 	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Source: one", "Checkout: agent-skills", "Env: environments"} {
+	for _, want := range []string{"Capability Pack: one", "Environment directory: environments"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home does not reveal %q:\n%s", want, view)
 		}

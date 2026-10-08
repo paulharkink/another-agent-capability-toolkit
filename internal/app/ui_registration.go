@@ -36,7 +36,7 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 		if q.URL != "" {
 			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
 		}
-		return result, fmt.Errorf("cannot configure this capability without its catalog package; locate the package source first: %w", sourceErr)
+		return result, fmt.Errorf("cannot configure this capability without its Capability Pack catalog; locate the pack directory first: %w", sourceErr)
 	}
 	p, packageErr := source.packageByID(q.Key.Package)
 	if packageErr != nil {
@@ -44,11 +44,11 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 		if q.URL != "" {
 			result.Connection = s.CheckConnection(ctx, q.URL, q.Transport)
 		}
-		return result, fmt.Errorf("cannot configure this capability without its catalog package; locate the package source first: %w", packageErr)
+		return result, fmt.Errorf("cannot configure this capability without its Capability Pack catalog; locate the pack directory first: %w", packageErr)
 	}
 	if p.HasMCP() {
 		if p.Skill == nil {
-			return viewmodel.OperationResult{}, errors.New("this MCP has no companion skill in its catalog capability; locate the package source")
+			return viewmodel.OperationResult{}, errors.New("this MCP has no companion skill in its Capability Pack catalog; locate the pack directory")
 		}
 		if len(p.MCPDefinitions()) != 1 {
 			return viewmodel.OperationResult{}, errors.New("multi-MCP capabilities must be configured through the capability setup form so every endpoint is supplied")

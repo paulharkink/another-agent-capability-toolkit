@@ -109,6 +109,9 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 		}
 	} else {
 		s.EnvironmentRoot = legacyRoot(stateRoot)
+		if s.EnvironmentRoot == "" {
+			s.EnvironmentRoot = filepath.Join(root, "environments")
+		}
 	}
 	seen := map[string]bool{}
 	for _, entry := range m.Catalog {

@@ -92,10 +92,10 @@ func (s *Service) forSource(id string) (*Service, error) {
 		if ref.ManifestPath != "" {
 			src, e = config.Discover(ref.Root, ref.ManifestPath, ref.BundledRoot, s.Store.Root())
 			if e != nil {
-				return nil, fmt.Errorf("source %s unavailable: %w", id, e)
+				return nil, fmt.Errorf("Capability Pack %s unavailable: %w", id, e)
 			}
 			if src.ID != id {
-				return nil, errors.New("source identity changed; reopen its checkout")
+				return nil, errors.New("Capability Pack identity changed; locate its directory again")
 			}
 			src.EnvironmentRoot = ref.EnvironmentRoot
 		} else {
@@ -103,7 +103,7 @@ func (s *Service) forSource(id string) (*Service, error) {
 			for _, dir := range ref.PackageDirs {
 				p, e := catalog.Load(dir)
 				if e != nil {
-					return nil, fmt.Errorf("source %s package unavailable: %w", id, e)
+					return nil, fmt.Errorf("Capability Pack %s package unavailable: %w", id, e)
 				}
 				src.Catalog = append(src.Catalog, p)
 			}
@@ -112,17 +112,17 @@ func (s *Service) forSource(id string) (*Service, error) {
 		o.BundledRoot = ref.BundledRoot
 		return New(src, s.Store, o), nil
 	}
-	return nil, fmt.Errorf("source %s is not registered; launch aact in its checkout", id)
+	return nil, fmt.Errorf("Capability Pack %s is not registered; launch AACT with its directory", id)
 }
 
 // UILocateSource explicitly updates the saved location for an existing source
-// only when the candidate checkout resolves to the same source identity.
+// only when the candidate directory resolves to the same Capability Pack identity.
 func (s *Service) UILocateSource(ctx context.Context, id, root string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if id == "" || root == "" {
-		return errors.New("source ID and checkout directory are required")
+		return errors.New("Capability Pack ID and directory are required")
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -133,7 +133,7 @@ func (s *Service) UILocateSource(ctx context.Context, id, root string) error {
 		return err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("source location is not a directory: %s", root)
+		return fmt.Errorf("Capability Pack location is not a directory: %s", root)
 	}
 	refs, err := s.sourceRefs()
 	if err != nil {
@@ -147,16 +147,16 @@ func (s *Service) UILocateSource(ctx context.Context, id, root string) error {
 		}
 	}
 	if index < 0 {
-		return fmt.Errorf("source %s is not a remembered source", id)
+		return fmt.Errorf("Capability Pack %s is not registered with AACT", id)
 	}
 	old := refs[index]
 	manifest := filepath.Join(root, "aact.toml")
 	source, err := config.Discover(root, manifest, old.BundledRoot, s.Store.Root())
 	if err != nil {
-		return fmt.Errorf("locate source %s: %w", id, err)
+		return fmt.Errorf("locate Capability Pack %s: %w", id, err)
 	}
 	if source.ID != id {
-		return fmt.Errorf("source identity mismatch: expected %s, found %s", id, source.ID)
+		return fmt.Errorf("Capability Pack identity mismatch: expected %s, found %s", id, source.ID)
 	}
 	updated := sourceRef{ID: source.ID, Root: source.Root, ManifestPath: source.ManifestPath, EnvironmentRoot: source.EnvironmentRoot, BundledRoot: old.BundledRoot}
 	for _, pkg := range source.Catalog {
@@ -195,7 +195,11 @@ func (s *Service) UIAgents(context.Context) ([]string, error) {
 	return out, nil
 }
 func (s *Service) UISettings(context.Context) (map[string]string, error) {
-	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "environment-root": s.Source.EnvironmentRoot, "environment_root": s.Source.EnvironmentRoot, "state-dir": s.Store.Root()}
+	catalogFile := "Built-in catalog"
+	if s.Source.ManifestPath != "" {
+		catalogFile = filepath.Base(s.Source.ManifestPath)
+	}
+	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "catalog-file": catalogFile, "environment-root": s.Source.EnvironmentRoot, "environment_root": s.Source.EnvironmentRoot, "state-dir": s.Store.Root()}
 	b, e := os.ReadFile(filepath.Join(s.Store.Root(), "manager", "settings.json"))
 	if os.IsNotExist(e) {
 		return out, nil
@@ -303,7 +307,7 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 		if err := s.UILocateSource(ctx, sourceID, target); err != nil {
 			return "", err
 		}
-		return "Located source " + sourceID + " at " + target, nil
+		return "Located Capability Pack " + sourceID + " at " + target, nil
 	}
 	svc, e := s.forSource(sourceID)
 	if e != nil {
@@ -316,7 +320,7 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 		}
 		info, e := os.Stat(root)
 		if e != nil || !info.IsDir() {
-			return "", fmt.Errorf("environment root must be an existing directory: %s", root)
+			return "", fmt.Errorf("environment directory must be an existing directory: %s", root)
 		}
 		e = s.Store.WithLock(ctx, func() error {
 			if e := state.WriteAtomic(filepath.Join(s.Store.Root(), "config-root"), []byte(root+"\n"), 0600); e != nil {
@@ -325,7 +329,7 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 			svc.Source.EnvironmentRoot = root
 			return svc.rememberSource()
 		})
-		return "Environment root: " + root, e
+		return "Environment directory: " + root, e
 	}
 	if action == "agent-info" {
 		home, e := os.UserHomeDir()

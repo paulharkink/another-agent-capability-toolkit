@@ -203,7 +203,7 @@ func TestUXEnvironmentTargetUsesSharedInsetEditorAndBackRestoresParent(t *testin
 }
 
 func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T) {
-	preview := viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "forgejo-inspector", Target: "prod"}, Configured: true, MCP: true}
+	preview := viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "git-provider", Target: "prod"}, Configured: true, MCP: true}
 	profile := &viewmodel.Profile{
 		Key: preview.Key, RuntimeStatus: "running", Ownership: "unknown", URL: "https://mcp.example.test/mcp",
 		ObservedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC), ObservationStale: true,

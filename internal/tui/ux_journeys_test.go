@@ -47,7 +47,7 @@ var uxJourneyCases = []struct {
 	{"14", "agent detection and write destination", TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution},
 	{"15", "management, settings and help hierarchy", TestUXSettingsCategoriesHaveRelatedControlsOnly},
 	{"16", "pane-local keyboard navigation and scroll cues", TestHomeLayerTwoScrollShowsContinuationCues},
-	{"17", "capability-specific authentication sections", TestUXAzureAndForgejoTaskSections},
+	{"17", "capability-specific authentication sections", TestUXAzureAndGitProviderTaskSections},
 }
 
 func runUXJourney(t *testing.T, id string) {
@@ -257,28 +257,28 @@ func TestUXLocateSourceOpensCenteredTaskSpecificRecoveryForm(t *testing.T) {
 	m.home.Capabilities.ID = rows[len(rows)-1].ID
 	m.reconcileHome()
 	m.focusPane(ProfilesPane)
-	m.selectContext(0) // Locate source…
+	m.selectContext(0) // Locate Capability Pack…
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.form == nil || m.pending.action != "locate-source" || m.pending.source != "gone" {
-		t.Fatalf("L2 Locate source did not preserve the unavailable source identity: form=%v pending=%+v", m.form != nil, m.pending)
+		t.Fatalf("L2 Locate Capability Pack did not preserve the unavailable pack identity: form=%v pending=%+v", m.form != nil, m.pending)
 	}
 	if !m.management.FormOverlay {
-		t.Fatal("Locate source is not marked as a centered management overlay")
+		t.Fatal("Locate Capability Pack is not marked as a centered management overlay")
 	}
 	x, y, width, height, ok := m.setupOverlayBounds()
 	if !ok || y < 1 || width >= m.width || height >= m.height {
-		t.Fatalf("Locate source did not use narrow overlay geometry: bounds=(%d,%d %dx%d) ok=%t", x, y, width, height, ok)
+		t.Fatalf("Locate Capability Pack did not use narrow overlay geometry: bounds=(%d,%d %dx%d) ok=%t", x, y, width, height, ok)
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Locate source · gone", "Capabilities"} {
+	for _, want := range []string{"Locate Capability Pack · gone", "Capabilities"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("Locate source overlay lost %q or its L1/L2 context:\n%s", want, view)
+			t.Errorf("Locate Capability Pack overlay lost %q or its L1/L2 context:\n%s", want, view)
 		}
 	}
 	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
 	belowMinimum := ansi.Strip(m.View().Content)
-	if !strings.Contains(belowMinimum, "Resize to continue") || strings.Contains(belowMinimum, "Source checkout directory") {
-		t.Fatalf("below-minimum Locate source form exposed hidden controls instead of recovery:\n%s", belowMinimum)
+	if !strings.Contains(belowMinimum, "Resize to continue") || strings.Contains(belowMinimum, "Capability Pack directory") {
+		t.Fatalf("below-minimum Locate Capability Pack form exposed hidden controls instead of recovery:\n%s", belowMinimum)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresS
 	m.form.FocusSection()
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view = ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Locate source checkout") || !strings.Contains(view, "Complete agent bindings require") {
+	if !strings.Contains(view, "Locate Capability Pack") || !strings.Contains(view, "Complete agent bindings require") {
 		t.Fatalf("Agents does not explain source requirement and recovery action:\n%s", view)
 	}
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -457,12 +457,12 @@ func TestUXSuccessfulLoadRetryEndsOnlyItsOwnProgress(t *testing.T) {
 	}
 }
 
-func TestUXSettingsHighlightsOnlyTheFocusedDetailControl(t *testing.T) {
+func TestUXSettingsHighlightsOnlyTheFocusedAction(t *testing.T) {
 	m := fixtureModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.navigate("Settings")
 	m.management.Focus = ProfilesPane
-	m.management.SettingsDetailIndex = 0 // The focused detail is a fact, not an action.
+	m.management.SettingsDetailIndex = 0 // Informational facts are never selectable.
 	_, right := managementPaneWidths(m.width)
 	details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
 	actionIndex, ok := m.settingsActionIndex(details)
@@ -485,15 +485,16 @@ func TestUXSettingsHighlightsOnlyTheFocusedDetailControl(t *testing.T) {
 		}
 	}
 	if actionRow == "" || factRow == "" {
-		t.Fatalf("fixture did not render the focused fact and action: action=%q fact=%q", actionRow, factRow)
+		t.Fatalf("fixture did not render the action and fact: action=%q fact=%q", actionRow, factRow)
 	}
 	if strings.Contains(actionRow, selectedMarker+details[actionIndex]) {
-		t.Fatalf("settings action retained the selection style while a fact had focus:\n%s", ansi.Strip(view))
+		t.Fatalf("settings action is highlighted while it is not focused:\n%s", ansi.Strip(view))
 	}
-	if !strings.Contains(factRow, selectedMarker+details[0]) {
-		t.Fatalf("focused fact is missing its selection style:\n%s", ansi.Strip(view))
+	if strings.Contains(factRow, selectedMarker+details[0]) {
+		t.Fatalf("read-only fact received an action selection style:\n%s", ansi.Strip(view))
 	}
 	m.management.SettingsDetailIndex = actionIndex
+	m.management.Focus = ProfilesPane
 	view = m.View().Content
 	for _, row := range strings.Split(view, "\n") {
 		if strings.Contains(ansi.Strip(row), details[actionIndex]) {

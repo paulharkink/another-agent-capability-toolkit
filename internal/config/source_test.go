@@ -43,6 +43,32 @@ func TestExplicitConfigWins(t *testing.T) {
 		t.Fatalf("%#v %v", s, e)
 	}
 }
+
+func TestCapabilityPackDefaultsEnvironmentDirectoryInsidePack(t *testing.T) {
+	root := checkout(t)
+	put(t, filepath.Join(root, "aact.toml"), "schema_version=1\nsource_id='pack'\n")
+	s, err := Discover(root, "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "environments"); s.EnvironmentRoot != want {
+		t.Fatalf("default environment directory = %q, want %q", s.EnvironmentRoot, want)
+	}
+}
+
+func TestCapabilityPackCanUseEnvironmentDirectoryOutsidePack(t *testing.T) {
+	root := checkout(t)
+	external := filepath.Join(t.TempDir(), "shared-environments")
+	put(t, filepath.Join(root, "aact.toml"), "schema_version=1\nsource_id='pack'\n[environments]\nroot='"+external+"'\n")
+	s, err := Discover(root, "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.EnvironmentRoot != external {
+		t.Fatalf("configured external environment directory = %q, want %q", s.EnvironmentRoot, external)
+	}
+}
+
 func TestBundledCatalogWithoutConfig(t *testing.T) {
 	bundle := t.TempDir()
 	put(t, filepath.Join(bundle, "public", "SKILL.md"), "# Public")

@@ -18,7 +18,6 @@ docker run --rm --network none -v "$PWD/packages/_shared:/port:ro" aact/shared-t
 
 docker build -f packages/azure-inspector/mcp/Dockerfile.test -t aact/config-tests:local packages/azure-inspector/mcp
 docker run --rm --network none -v "$PWD/packages/azure-inspector/mcp:/port:ro" aact/config-tests:local
-docker run --rm --network none -v "$PWD/packages/forgejo/mcp:/port:ro" aact/config-tests:local
 
 docker build -t aact/find-session:test-runtime packages/find-session/container
 docker build -f packages/find-session/container/Dockerfile.test -t aact/session-tests:local packages/find-session/container
@@ -28,4 +27,4 @@ go test ./tests/packages
 go test -tags docker_integration ./tests/packages
 ```
 
-The opt-in Go suite builds its own Azure and Forgejo resources and checks actual published endpoints against synthetic fixtures. It creates/removes only containers bearing unique validation names.
+The opt-in Go suite builds its own Azure resources and checks actual published endpoints against synthetic fixtures. It creates/removes only containers bearing unique validation names.

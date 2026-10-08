@@ -80,13 +80,13 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 	}
 	m.form.SetSectionContentID(sectionOverviewID, []string{
 		"Package configuration unavailable: this package is absent from the local catalog.",
-		"Source: " + key.Source + " · Package: " + key.Package,
+		"Capability Pack: " + key.Source + " · Capability: " + key.Package,
 		"Runtime: " + nonempty(profile.RuntimeStatus, "unknown") + " · Ownership: " + nonempty(profile.Ownership, "unknown"),
-		"Locate the source checkout to edit capability settings and manage complete agent bindings.",
+		"Locate the Capability Pack directory to edit capability settings and manage complete agent bindings.",
 	})
 	m.form.SetSectionContentID(sectionAgentsID, []string{
 		"Observed registrations: " + registered,
-		"Complete agent bindings require the capability manifest. Locate its source to manage them.",
+		"Complete agent bindings require the Capability Pack catalog. Locate the pack directory to manage them.",
 	})
 	m.form.SetSectionContentID(sectionEndpointID, []string{
 		"Endpoint: " + nonempty(profile.URL, "not configured"),
@@ -101,15 +101,15 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 	}
 	m.form.SetSectionActionsID(sectionEndpointID, forms.FormAction{ID: "check-connection", Label: "Check connection", Disabled: checkDisabled})
 	m.form.SetSectionContentID(sectionInformationID, []string{
-		"Observed target identity: " + key.Source + " / " + key.Package + " / " + nonempty(key.Environment, "(none)") + " / " + nonempty(key.Target, "default"),
+		"Observed target: Capability Pack " + key.Source + " · Capability " + key.Package + " · Environment " + nonempty(key.Environment, "(none)") + " · Target " + nonempty(key.Target, "default"),
 		"Observed endpoint: " + nonempty(profile.URL, "unavailable"),
 		"Observed transport: " + nonempty(profile.Transport, "unknown"),
 		"Runtime status: " + nonempty(profile.RuntimeStatus, "unknown"),
 		"Runtime ownership: " + nonempty(profile.Ownership, "unknown"),
 		"This workspace reflects observed profile facts; it does not imply package installation or local runtime ownership.",
 	})
-	m.form.SetSectionActionsID(sectionOverviewID, forms.FormAction{ID: "locate-source", Label: "Locate source checkout"})
-	m.form.SetSectionActionsID(sectionAgentsID, forms.FormAction{ID: "locate-source", Label: "Locate source checkout"})
+	m.form.SetSectionActionsID(sectionOverviewID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
+	m.form.SetSectionActionsID(sectionAgentsID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
 }
 
 func (s *workspaceState) cacheDraft(draft map[string]any) { s.Draft = cloneSetupValues(draft) }
@@ -124,7 +124,7 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	lines := []string{
 		"Capability information",
 		fmt.Sprintf("Capability: %s · package %s", name, preview.Key.Package),
-		fmt.Sprintf("Source identity: %s · checkout %s", preview.Key.Source, preview.SourceRoot),
+		fmt.Sprintf("Capability Pack: %s · directory %s", preview.Key.Source, preview.SourceRoot),
 	}
 	if preview.CredentialState != "" {
 		lines = append(lines, "Credential state: "+preview.CredentialState)

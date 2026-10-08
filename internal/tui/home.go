@@ -86,7 +86,7 @@ func (m *Model) contextRows() []contextRow {
 	}
 	if c.CatalogIndex < 0 {
 		rows := []contextRow{
-			{ID: "locate", Label: "Locate source…", Kind: "locate-source"},
+			{ID: "locate", Label: "Locate Capability Pack…", Kind: "locate-source"},
 			{ID: "information", Label: "View saved information", Kind: "saved-information"},
 		}
 		for i, p := range m.profiles() {
@@ -572,8 +572,8 @@ func (m *Model) openObservedProfileWorkspace(p ProfileRow) {
 
 func (m *Model) locateSelectedSource() {
 	m.pending = operation{action: "locate-source", source: m.selectedCapabilitySource()}
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Source checkout directory", Type: "directory", Required: true}}, map[string]any{})
-	m.form.SetTitle("Locate source · " + m.selectedCapabilitySource())
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Capability Pack directory", Type: "directory", Required: true}}, map[string]any{})
+	m.form.SetTitle("Locate Capability Pack · " + m.selectedCapabilitySource())
 	m.form.SetBackNavigation(true)
 	m.management.FormOverlay = true
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
@@ -585,7 +585,7 @@ func (m *Model) showSavedCapabilityInformation() {
 	if !ok {
 		return
 	}
-	info := "Saved capability identity: " + c.Source + " / " + c.Package + ". Package unavailable. Locate the original source checkout to configure it."
+	info := "Saved capability: " + c.Package + " · Capability Pack: " + c.Source + ". The pack is unavailable. Locate its directory to configure it."
 	if m.profileSnapshot != nil {
 		for _, p := range m.profileSnapshot.Profiles {
 			if p.Key.Source == c.Source && p.Key.Package == c.Package {
@@ -659,7 +659,7 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		installReason = "absent from local catalog"
 	}
 	if c.CatalogIndex < 0 {
-		return []homeMenuItem{{"Locate source…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Back", "back", ""}}
+		return []homeMenuItem{{"Locate Capability Pack…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Back", "back", ""}}
 	}
 	items := []homeMenuItem{{capabilitySetupLabel(m, c), "parameters", installReason}}
 	if m.hasNamedPreset(c) && !c.MCP {
@@ -831,7 +831,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			}
 			if action == "parameters" {
 				if packageUnavailable {
-					m.output = "Package configuration is unavailable. Enter on this observed target opens its read-only workspace; use Locate source… to restore package settings."
+					m.output = "Capability Pack configuration is unavailable. Enter on this observed target opens its read-only workspace; use Locate Capability Pack… to restore package settings."
 					return nil
 				}
 				if reason := m.profileActionReason(p, action); reason != "" {
@@ -856,7 +856,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		}
 	}
 	if c.CatalogIndex < 0 {
-		m.output = "Package is absent from the local catalog; Enter a saved target to open its observed workspace, or choose Locate source… to restore package settings."
+		m.output = "Capability is absent from the active catalog; Enter a saved target to open its observed workspace, or choose Locate Capability Pack… to restore package settings."
 		return nil
 	}
 	m.selected = c.CatalogIndex
@@ -957,7 +957,7 @@ func (m *Model) selectedDetail() string {
 		return "No capabilities in this catalog"
 	}
 	if c.CatalogIndex < 0 {
-		return "Package unavailable · saved identity " + c.Source + " / " + c.Package + " · use Locate source to recover configuration access"
+		return "Capability Pack unavailable · capability " + c.Package + " · use Locate Capability Pack to recover configuration access"
 	}
 	if m.home.Focus == ProfilesPane {
 		if p, ok := m.selectedContextProfile(); ok {
@@ -980,7 +980,7 @@ func (m *Model) selectedDetail() string {
 			}
 		}
 	}
-	detail := fmt.Sprintf("%s · %s · %s", m.label(c.Source), c.Name, strings.Join(components, " + "))
+	detail := fmt.Sprintf("Capability Pack · %s · %s", c.Name, strings.Join(components, " + "))
 	if c.MCP {
 		detail += fmt.Sprintf(" · %d related MCP profiles", len(m.profiles()))
 	}
@@ -1020,7 +1020,7 @@ func (m *Model) homeView() tea.View {
 	contextDisplay := []displayRow{{text: "Capability", contextIndex: -1, kind: "heading"}}
 	contextRows := m.contextRows()
 	if c.CatalogIndex < 0 {
-		contextDisplay = append(contextDisplay, displayRow{text: "Package unavailable · " + c.Source + " / " + c.Package, contextIndex: -1, kind: "heading"})
+		contextDisplay = append(contextDisplay, displayRow{text: "Capability Pack unavailable · " + c.Package, contextIndex: -1, kind: "heading"})
 		for i := 0; i < min(3, len(contextRows)); i++ {
 			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
 		}
@@ -1091,7 +1091,7 @@ func (m *Model) homeView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
+	scope := " Capability Pack: " + m.settings["source"] + " · Environment directory: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
 	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"

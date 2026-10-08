@@ -464,7 +464,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if !q.UpdateSource {
 		for _, ref := range refs {
 			if ref.ID == s.Source.ID && !sameSourceLocation(ref.Root, s.Source.Root) {
-				return out, invalid(fmt.Errorf("source %s is registered at %s; use --update-source to select this checkout", s.Source.ID, ref.Root))
+				return out, invalid(fmt.Errorf("Capability Pack %s is registered at %s; use --update-source to select this pack directory", s.Source.ID, ref.Root))
 			}
 		}
 	}

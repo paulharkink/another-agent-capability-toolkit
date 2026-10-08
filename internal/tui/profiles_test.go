@@ -488,7 +488,7 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 	id := m.home.Capabilities.ID
 	for _, action := range []string{"parameters", "i", "a", "s"} {
 		cmd := m.homeOperation(action)
-		if cmd != nil || m.form != nil || m.busy || !strings.Contains(m.output, "local catalog") {
+		if cmd != nil || m.form != nil || m.busy || !strings.Contains(m.output, "active catalog") {
 			t.Fatalf("foreign capability %s attempted local package operation", action)
 		}
 	}
@@ -509,7 +509,7 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 		t.Fatal("foreign profile did not remain selectable")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.form == nil || !m.workspace.ObservedOnly || !strings.Contains(strings.ToLower(m.View().Content), "locate source") {
+	if m.form == nil || !m.workspace.ObservedOnly || !strings.Contains(strings.ToLower(m.View().Content), "locate capability pack") {
 		t.Fatalf("unknown catalog source incorrectly exposed local capability binding controls: workspace=%+v\n%s", m.workspace, m.View().Content)
 	}
 	press(m, tea.KeyEscape, "")

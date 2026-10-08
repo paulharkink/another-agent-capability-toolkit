@@ -15,7 +15,7 @@ import (
 
 var environmentPathID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-// UIEnvironmentSnapshot scans the current source's target root without
+// UIEnvironmentSnapshot scans the current Capability Pack's environment directory without
 // changing state. It never infers TOML files from saved installation profiles.
 func (s *Service) UIEnvironmentSnapshot(ctx context.Context) (viewmodel.EnvironmentSnapshot, error) {
 	out := viewmodel.EnvironmentSnapshot{SourceID: s.Source.ID, Root: s.Source.EnvironmentRoot}
@@ -30,7 +30,7 @@ func (s *Service) UIEnvironmentSnapshot(ctx context.Context) (viewmodel.Environm
 		return out, nil
 	}
 	if err != nil {
-		return out, fmt.Errorf("read environment root %s: %w", out.Root, err)
+		return out, fmt.Errorf("read environment directory %s: %w", out.Root, err)
 	}
 	for _, environment := range environments {
 		if !environment.IsDir() || !validEnvironmentID(environment.Name()) {
@@ -113,7 +113,7 @@ func (s *Service) UIEnvironmentTarget(ctx context.Context, path string) (string,
 		return "", err
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("target %s resolves outside environment root", path)
+		return "", fmt.Errorf("target %s resolves outside the environment directory", path)
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {

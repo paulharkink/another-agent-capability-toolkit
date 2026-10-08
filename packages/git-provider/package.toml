@@ -206,3 +206,19 @@ endpoint_path = "/mcp"
 env = { ENABLE_HTTP_TRANSPORT = "true", MCP_HTTP_PORT = "3001", MCP_HTTP_ENDPOINT = "mcp" }
 env_inputs = { BITBUCKET_URL = "bitbucket_url" }
 registration_timeout_ms = 30000
+
+[ui]
+[[ui.sections]]
+id = "github"
+title = "GitHub"
+fields = ["github_enabled", "github_host", "github_port", "github_registration_name", "github_token", "github_token_file", "github_token_env"]
+
+[[ui.sections]]
+id = "gitlab"
+title = "GitLab"
+fields = ["gitlab_enabled", "gitlab_api_url", "gitlab_port", "gitlab_registration_name", "gitlab_token", "gitlab_token_file", "gitlab_token_env"]
+
+[[ui.sections]]
+id = "bitbucket"
+title = "Bitbucket Data Center"
+fields = ["bitbucket_enabled", "bitbucket_url", "bitbucket_port", "bitbucket_registration_name", "bitbucket_token", "bitbucket_token_file", "bitbucket_token_env"]

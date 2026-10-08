@@ -144,13 +144,13 @@ func (m *Model) environmentEntries() []environmentEntry {
 	if m.environmentSnapshot != nil {
 		for _, name := range m.environmentSnapshot.Environments {
 			key := m.environmentSnapshot.SourceID + " / " + name
-			actual[key] = &environmentEntry{Name: key + " · TOML files"}
+			actual[key] = &environmentEntry{Name: "Pack: " + m.environmentSnapshot.SourceID + " · Environment: " + name + " · TOML"}
 		}
 		for _, target := range m.environmentSnapshot.Targets {
 			key := target.SourceID + " / " + target.Environment
 			entry := actual[key]
 			if entry == nil {
-				entry = &environmentEntry{Name: key + " · TOML files"}
+				entry = &environmentEntry{Name: "Pack: " + target.SourceID + " · Environment: " + target.Environment + " · TOML"}
 				actual[key] = entry
 			}
 			label := target.PackageID + " / " + target.Name
@@ -195,7 +195,8 @@ func (m *Model) environmentEntries() []environmentEntry {
 			targets = append(targets, target)
 		}
 		sort.Strings(targets)
-		entries = append(entries, environmentEntry{Name: strings.Replace(name, "\x00", " / ", 1) + " · Saved profiles", Targets: targets})
+		packID, environment, _ := strings.Cut(name, "\x00")
+		entries = append(entries, environmentEntry{Name: "Saved · Pack: " + packID + " · Environment: " + environment, Targets: targets})
 	}
 	return entries
 }
@@ -239,9 +240,7 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 		}
 		if m.view == "Settings" {
 			if m.management.Focus == CapabilitiesPane {
-				m.management.Focus = ProfilesPane
-				m.management.SettingsDetailOffset = 0
-				m.management.SettingsDetailIndex = 0
+				m.focusSettingsDetails()
 				return nil
 			}
 			return m.activateSettingsDetail()
@@ -253,9 +252,7 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 				m.management.Focus = ProfilesPane
 				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
 			} else if m.view == "Settings" && m.management.Focus == CapabilitiesPane {
-				m.management.Focus = ProfilesPane
-				m.management.SettingsDetailOffset = 0
-				m.management.SettingsDetailIndex = 0
+				m.focusSettingsDetails()
 			} else if m.view == "Agents" {
 				return m.activateAgentDetail()
 			} else if m.view == "Settings" {
@@ -279,11 +276,11 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 		if m.view == "Agents" || m.view == "Settings" {
 			if stroke == "left" || stroke == "shift+tab" {
 				m.management.Focus = CapabilitiesPane
+			} else if m.view == "Settings" {
+				m.focusSettingsDetails()
 			} else {
 				m.management.Focus = ProfilesPane
-				if m.view == "Agents" {
-					m.management.AgentDetailIndex = m.agentDetailInitialIndex()
-				}
+				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
 			}
 		} else if m.view == "Environments" {
 			if stroke == "left" {
@@ -309,8 +306,13 @@ func (m *Model) moveManagementSelection(stroke string) {
 	if m.view == "Settings" && m.management.Focus == ProfilesPane {
 		_, right := managementPaneWidths(m.width)
 		details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
-		m.management.SettingsDetailIndex = moveBounded(m.management.SettingsDetailIndex, len(details), stroke, max(1, m.height-12))
-		m.keepSettingsDetailVisible(len(details))
+		if actionIndex, hasAction := m.settingsActionIndex(details); hasAction {
+			m.management.SettingsDetailIndex = actionIndex
+			m.keepSettingsDetailVisible(len(details))
+		} else {
+			m.management.SettingsDetailIndex = -1
+			m.management.SettingsDetailOffset = moveBounded(m.management.SettingsDetailOffset, max(1, len(details)-max(1, m.height-12)+1), stroke, 1)
+		}
 		return
 	}
 	if m.view == "Settings" {
@@ -515,6 +517,20 @@ func (m *Model) activateSettingsDetail() tea.Cmd {
 	return m.activateSettingsCategory()
 }
 
+// Settings detail text is read-only. Focus lands on its sole actionable control
+// when one exists; otherwise the right pane is only a scrollable information area.
+func (m *Model) focusSettingsDetails() {
+	m.management.Focus = ProfilesPane
+	m.management.SettingsDetailOffset = 0
+	m.management.SettingsDetailIndex = -1
+	_, right := managementPaneWidths(max(80, m.width))
+	details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
+	if actionIndex, ok := m.settingsActionIndex(details); ok {
+		m.management.SettingsDetailIndex = actionIndex
+		m.keepSettingsDetailVisible(len(details))
+	}
+}
+
 func (m *Model) keepSettingsDetailVisible(detailCount int) {
 	visible := max(1, m.height-12)
 	maxStart := max(0, detailCount-visible)
@@ -592,13 +608,13 @@ func (m *Model) managementMenuEntries() []string {
 				viewer = "View target"
 			}
 		}
-		return []string{setup, viewer, "Environment root", "Close"}
+		return []string{setup, viewer, "Environment directory", "Close"}
 	case "Settings":
 		defaults := "Default named agents — disabled: service support pending"
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
 			defaults = "Default named agents"
 		}
-		return []string{"Edit environment root", defaults, "Docker backend — disabled: service support pending", "Back"}
+		return []string{"Edit environment directory", defaults, "Docker backend — disabled: service support pending", "Back"}
 	}
 	return nil
 }
@@ -626,7 +642,7 @@ func (m *Model) environmentSetupReason(selected environmentEntry) string {
 			return ""
 		}
 	}
-	return "target capability is not available in this checkout"
+	return "target capability is not available in this Capability Pack"
 }
 
 func (m *Model) managementModalKey(stroke string) tea.Cmd {
@@ -746,7 +762,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 			target := selected.TargetDefs[m.management.TargetIndex]
 			return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: target.SourceID, PackageID: target.PackageID, Environment: target.Environment, Target: target.Name}, "Overview")
 		}
-		if entries[i] == "Environment root" || entries[i] == "Edit environment root" {
+		if entries[i] == "Environment directory" || entries[i] == "Edit environment directory" {
 			m.management.Modal = ""
 			m.editEnvironmentRoot()
 			return nil
@@ -769,8 +785,8 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
 	m.management.FormOverlay = true
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment root", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
-	m.form.SetTitle("Environment source · Edit environment root")
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
+	m.form.SetTitle("Capability Pack · Choose environment directory")
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
@@ -837,13 +853,13 @@ func agentDisplayName(id string) string {
 }
 
 func (m *Model) managementSettingsRows() []string {
-	return []string{"Environment source", "Agent defaults", "Runtime backend", "Diagnostics"}
+	return []string{"Capability Pack", "Agent defaults", "Runtime backend", "Diagnostics"}
 }
 
 func (m *Model) managementSettingsDetails() []string {
 	switch m.selected {
 	case 0:
-		return []string{"Environment source", "Source: " + nonempty(m.settings["source"], "not selected"), "Checkout: " + nonempty(m.settings["checkout"], "not reported"), "Environment root: " + nonempty(m.environmentRoot(), "not configured"), "[ Edit environment root… ]"}
+		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Environment directory: " + nonempty(m.environmentRoot(), "not configured"), "Environment TOML files usually live in <Capability Pack>/environments (for example, ota or prod); choose an external directory to keep them elsewhere.", "[ Change environment directory… ]"}
 	case 1:
 		lines := []string{"Agent defaults", "Default named agents affect future MCP installations only.", "Existing registrations are unchanged.", "Skill-only installations use All — ~/.agents/skills."}
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
@@ -853,7 +869,7 @@ func (m *Model) managementSettingsDetails() []string {
 	case 2:
 		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
 	default:
-		return []string{"Diagnostics", "Source: " + nonempty(m.settings["source"], "not reported"), "Checkout: " + nonempty(m.settings["checkout"], "not reported"), "Environment root: " + nonempty(m.environmentRoot(), "not reported"), "State: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Known checkout listing: unavailable from this service"}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Environment directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	}
 }
 
@@ -892,7 +908,7 @@ func (m *Model) managementView() tea.View {
 		return filepath.Base(path)
 	}
 	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
-	scope := " Checkout: " + shortPath(m.settings["checkout"]) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH + " · Source: " + m.settings["source"] + " · Env: " + shortPath(m.environmentRoot())
+	scope := " Capability Pack: " + m.settings["source"] + " · Environment directory: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"
@@ -1042,6 +1058,9 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 			rightWidth = right - 1
 			rightMark = scrollbarGlyph(detailStart, len(details), visible, y)
 		}
+		if y == 0 && len(details) > visible {
+			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: 5, Width: right, Height: visible, Control: "settings-scroll"})
+		}
 		leftCell := fit(leftText, leftWidth) + leftMark
 		if m.management.Focus == CapabilitiesPane && i == m.selected {
 			leftCell = managementSelected.Render(leftCell)
@@ -1054,11 +1073,6 @@ func (m *Model) renderSettingsManagement(lines []string, visible int) {
 			rightCell = managementGold.Render(fit(label, right))
 			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
 				rightCell = managementSelected.Render(fit(label, rightWidth) + rightMark)
-			}
-		} else if detailIndex < len(details) {
-			m.management.Hits = append(m.management.Hits, hitRegion{X: left + 2, Y: y + 5, Width: right, Height: 1, Index: detailIndex, Control: "settings-detail"})
-			if m.management.Focus == ProfilesPane && detailIndex == m.management.SettingsDetailIndex {
-				rightCell = managementSelected.Render(fit(rightText, rightWidth) + rightMark)
 			}
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
@@ -1276,12 +1290,12 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
-	root := " Environment root: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
+	root := " Environment directory: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
 	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
 		root = " Invalid TOML: " + selected.Errors[m.management.TargetIndex]
 	}
 	lines[m.height-8] = "║" + fit(root, m.width-2) + "║"
-	labels := []string{"Configure / install", "View target", "Environment root", "Close"}
+	labels := []string{"Configure / install", "View target", "Environment directory", "Close"}
 	inline := " "
 	for i, label := range labels {
 		if i > 0 {
@@ -1349,14 +1363,14 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 		if m.management.Modal != "" && hit.Control != "menu" {
 			continue
 		}
-		if _, ok := msg.(tea.MouseWheelMsg); ok && (hit.Control == "row" || hit.Control == "agent-detail" || hit.Control == "settings-detail") {
+		if _, ok := msg.(tea.MouseWheelMsg); ok && (hit.Control == "row" || hit.Control == "agent-detail" || hit.Control == "settings-scroll") {
 			key := "down"
 			if mouse.Button == tea.MouseWheelUp {
 				key = "up"
 			}
 			if m.view == "Environments" {
 				m.management.Focus = hit.Pane
-			} else if hit.Control == "agent-detail" || hit.Control == "settings-detail" {
+			} else if hit.Control == "agent-detail" || hit.Control == "settings-scroll" {
 				m.management.Focus = ProfilesPane
 			} else if m.view == "Agents" || m.view == "Settings" {
 				m.management.Focus = CapabilitiesPane
@@ -1395,17 +1409,9 @@ func (m *Model) managementMouse(msg tea.MouseMsg) tea.Cmd {
 			m.management.Focus = ProfilesPane
 			m.management.AgentDetailIndex = hit.Index
 			return m.activateAgentDetail()
-		case "agent-detail", "settings-detail":
+		case "agent-detail":
 			m.management.Focus = ProfilesPane
-			if hit.Control == "agent-detail" {
-				m.management.AgentDetailIndex = hit.Index
-			}
-			if hit.Control == "settings-detail" {
-				m.management.SettingsDetailIndex = hit.Index
-				_, right := managementPaneWidths(max(80, m.width))
-				details := wrapManagementDetails(m.managementSettingsDetails(), right-1)
-				m.keepSettingsDetailVisible(len(details))
-			}
+			m.management.AgentDetailIndex = hit.Index
 			return nil
 		case "settings-action":
 			m.management.SettingsDetailIndex = hit.Index

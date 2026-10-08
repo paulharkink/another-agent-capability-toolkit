@@ -10,7 +10,7 @@ for package in cluster-inspector grafana-inspector; do
   docker build -f "packages/$package/mcp/Dockerfile.test" --build-arg "RUNTIME_IMAGE=aact/$package:test-runtime" -t "aact/$package:test" "packages/$package/mcp"
   docker run --rm -v "$root/packages/$package/mcp:/port:ro" "aact/$package:test"
 done
-for package in azure-inspector forgejo; do
+for package in azure-inspector; do
   docker build -f "packages/$package/mcp/Dockerfile.test" -t "aact/$package:test" "packages/$package/mcp"
   docker run --rm -v "$root/packages/$package/mcp:/port:ro" "aact/$package:test"
 done
