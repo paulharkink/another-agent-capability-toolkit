@@ -142,6 +142,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 			return ActionResult{}, fmt.Errorf("prepare returned choices for undeclared input %s", name)
 		}
 	}
+	result.Diagnostic = scrub(result.Diagnostic)
 	return result, nil
 }
 
