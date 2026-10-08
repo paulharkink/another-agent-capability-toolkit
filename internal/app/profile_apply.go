@@ -12,6 +12,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -631,4 +632,95 @@ func validateEndpointURL(value string) error {
 		return fmt.Errorf("MCP endpoint %q must be an absolute HTTP(S) URL", value)
 	}
 	return nil
+}
+
+func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
+	p, pr, key, err := s.loadProfile(q.Ref)
+	if err != nil {
+		return out, err
+	}
+	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
+	out.Step = "remove"
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return out, err
+	}
+	for _, row := range rows {
+		if !sameCapabilityKey(row.Key, key) || (q.DestinationIDs != nil && !slices.Contains(q.DestinationIDs, row.AgentID)) {
+			continue
+		}
+		if row.Component == "runtime" {
+			continue
+		}
+		if err = s.removeProfileBinding(ctx, row); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+		out.Changes = append(out.Changes, row)
+	}
+	if q.DestinationIDs == nil {
+		for _, row := range rows {
+			if row.Component == "runtime" && sameCapabilityKey(row.Key, key) && !row.ExternalRegistration {
+				out.Step = "stop"
+				if err = s.Options.Runtime.Stop(ctx, row.Key); err != nil {
+					return out, err
+				}
+			}
+		}
+	}
+	out.Step = "complete"
+	return out, nil
+}
+func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileRequest, mcpName string) (out Result, err error) {
+	if action == "list" || action == "status" {
+		out.Instances, err = s.Options.Runtime.List(ctx)
+		return out, err
+	}
+	p, pr, key, err := s.loadProfile(q.Ref)
+	if err != nil {
+		return out, err
+	}
+	definition, err := selectMCPProfile(p, mcpName)
+	if err != nil {
+		return out, invalid(err)
+	}
+	child := mcpProfileKey(key, p, definition)
+	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name + " / " + definition.Name
+	out.Step = action
+	switch action {
+	case "stop":
+		err = s.Options.Runtime.Stop(ctx, child)
+	case "logs":
+		var r io.ReadCloser
+		r, err = s.Options.Runtime.Logs(ctx, child)
+		if err == nil {
+			defer r.Close()
+			b, e := io.ReadAll(io.LimitReader(r, 1<<20))
+			out.Logs = string(b)
+			err = e
+		}
+	case "start", "prepare", "authenticate":
+		values, _, e := s.profileValues(p, pr, key, q)
+		if e != nil {
+			return out, e
+		}
+		if e = forms.Validate(p.Inputs, values); e != nil {
+			return out, invalid(e)
+		}
+		cp := p
+		cp.MCP = &definition
+		cp.MCPs = nil
+		if action == "start" {
+			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			if e != nil {
+				return out, e
+			}
+			out.Instances = []mcp.Instance{instance}
+		} else {
+			_, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+		}
+	default:
+		err = invalid(fmt.Errorf("unknown MCP action %q", action))
+	}
+	return out, err
 }

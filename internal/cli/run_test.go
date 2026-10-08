@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,18 @@ import (
 func cliFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
+	// Fixture executable evidence only; these skill installs do not invoke the agent CLI.
+	bin := filepath.Join(root, "bin")
+	os.MkdirAll(bin, 0700)
+	for _, name := range []string{"codex", "hermes"} {
+		body := []byte("#!/bin/sh\nexit 0\n")
+		if runtime.GOOS == "windows" {
+			name += ".cmd"
+			body = []byte("@exit /b 0\r\n")
+		}
+		os.WriteFile(filepath.Join(bin, name), body, 0700)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	pkg := filepath.Join(root, "demo")
 	os.MkdirAll(pkg, 0755)
 	os.WriteFile(filepath.Join(pkg, "SKILL.md.mustache"), []byte("Hello {{{inputs.label}}}"), 0644)
@@ -75,7 +88,7 @@ func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
 			if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
 				t.Fatalf("config command failed (%d): %s", code, errout.String())
 			}
-			if !strings.Contains(out.String(), "Environment directory: "+environments) {
+			if !strings.Contains(out.String(), "Profile configuration directory: "+environments) {
 				t.Fatalf("output did not use pack terminology: %s", out.String())
 			}
 			data, err := os.ReadFile(filepath.Join(stateDir, "config-root"))
@@ -112,24 +125,18 @@ func TestCLIInstallAcceptsHermesSkillsOnlyFlag(t *testing.T) {
 	}
 }
 
-func TestAgentEnvironmentsHonorNativeConfigOverridesWithoutCustomHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	codexRoot := filepath.Join(home, "codex-override")
-	xdgRoot := filepath.Join(home, "xdg-override")
-	t.Setenv("CODEX_HOME", codexRoot)
-	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
-	envs, err := agentEnvironments(flags{agents: []string{"codex", "opencode"}})
-	if err != nil || len(envs) != 2 || envs[0].ConfigPath != filepath.Join(codexRoot, "config.toml") || envs[1].ConfigPath != filepath.Join(xdgRoot, "opencode", "opencode.json") {
-		t.Fatalf("native overrides ignored: %+v, %v", envs, err)
+func TestAgentScopesKeepNativeOverridesInsideAdapters(t *testing.T) {
+	scopes, err := agentScopes(flags{agents: []string{"codex", "opencode"}})
+	if err != nil || scopes["codex"].ExplicitHome || scopes["codex"].Home != "" {
+		t.Fatalf("%v %v", scopes, err)
 	}
-	custom := filepath.Join(home, "custom-agent")
-	envs, err = agentEnvironments(flags{agents: []string{"codex"}, homes: []string{"codex=" + custom}})
-	if err != nil || len(envs) != 1 || envs[0].ConfigPath != filepath.Join(custom, ".codex", "config.toml") {
-		t.Fatalf("explicit agent home overridden: %+v, %v", envs, err)
+	custom := t.TempDir()
+	scopes, err = agentScopes(flags{agents: []string{"codex"}, homes: []string{"codex=" + custom}})
+	if err != nil || !scopes["codex"].ExplicitHome || scopes["codex"].Home != custom || scopes["codex"].ConfigPathOverride != "" {
+		t.Fatalf("%v %v", scopes, err)
 	}
 }
+
 func TestMissingInputExitTwo(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer
