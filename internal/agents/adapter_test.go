@@ -350,6 +350,7 @@ func TestResolveJetBrainsAIAssistantDefaultMCPPath(t *testing.T) {
 	}
 }
 func TestCopilotIntellijUsesServers(t *testing.T) {
+	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming"))
 	a, e := configFixture(t, "copilot-intellij", `{}`)
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
 		t.Fatal(err)

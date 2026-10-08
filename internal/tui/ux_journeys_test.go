@@ -561,7 +561,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				assertRenderedTextIsComplete(t, allAgentViews.String(), paths...)
 			}
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
-				visible := ansi.Strip(m.View().Content)
+				visible := strings.ReplaceAll(ansi.Strip(m.View().Content), "\\", "/")
 				for _, chunk := range []string{"Credential note:", "Managed credential", "is missing at", "auth/kubeconfig."} {
 					if !strings.Contains(visible, chunk) {
 						t.Fatalf("Information does not show credential provenance chunk %q", chunk)

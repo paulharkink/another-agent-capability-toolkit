@@ -70,7 +70,11 @@ func TestBuiltAactDispatchesInspectorHelperForTemporaryPackageWithoutDocker(t *t
 	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	binary := filepath.Join(temp, "aact")
+	binaryName := "aact"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(temp, binaryName)
 	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
 	build := exec.Command(goBinary, "build", "-o", binary, "./cmd/aact")
 	build.Dir = root
