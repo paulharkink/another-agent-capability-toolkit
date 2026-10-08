@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/install"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -333,7 +331,7 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 			discovery := agents.DiscoverAgent(ctx, env.Kind, probe)
 			detection = discovery.Detection
 			if p.HasMCP() {
-				disabledReason = mcpDestinationDisabledReason(ctx, env.Kind, env.ConfigPath, discovery, adapterErr, probe)
+				disabledReason = agents.MCPDestinationDisabledReason(ctx, env.Kind, env.ConfigPath, discovery, adapterErr, probe)
 			}
 		}
 		path := env.SkillsDir
@@ -350,11 +348,11 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 		note := ""
 		if filepath.Clean(env.Home) != filepath.Clean(currentUserHome()) {
 			note = "Uses recorded custom home override " + env.Home
-		} else if override := nativeConfigOverride(env.Kind, env); override != "" {
+		} else if override := agents.NativeConfigOverride(env.Kind, env); override != "" {
 			note = override
 		}
 		if p.HasMCP() && adapterErr == nil {
-			nativePath, nativeErr := nativePlannedConfigPath(id, env.Kind, currentUserHome())
+			nativePath, nativeErr := agents.NativePlannedConfigPath(id, env.Kind, currentUserHome())
 			if nativeErr != nil {
 				return viewmodel.SetupPreview{}, nativeErr
 			}
@@ -447,78 +445,6 @@ func (s *Service) discoveryProbe() agents.DiscoveryProbe {
 		return *s.Options.DiscoveryProbe
 	}
 	return uiDiscoveryProbe()
-}
-
-func mcpDestinationDisabledReason(ctx context.Context, kind, configPath string, discovery agents.AgentDiscovery, adapterErr error, probe agents.DiscoveryProbe) string {
-	if adapterErr != nil {
-		return adapterErr.Error()
-	}
-	lookPath := probe.LookPath
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
-	switch kind {
-	case "codex":
-		if _, err := lookPath("codex"); err != nil {
-			if discovery.Detection == "installed" {
-				return "Codex desktop detected; this adapter requires the codex CLI, which is unavailable"
-			}
-			return "Install the codex CLI to manage MCP registrations"
-		}
-	case "copilot-cli", "copilot":
-		if _, err := lookPath("copilot"); err != nil {
-			return "Install the Copilot CLI to manage MCP registrations"
-		}
-	case "opencode", "claude":
-		if discovery.Detection != "installed" {
-			return fmt.Sprintf("%s was not detected; install it before adding MCP registrations", discovery.Name)
-		}
-	case "copilot-intellij":
-		if _, err := os.Stat(configPath); err != nil {
-			return "Copilot IntelliJ config is missing; open Copilot Chat and select Add MCP Tools first"
-		}
-	default:
-		if discovery.Detection != "installed" {
-			return fmt.Sprintf("%s was not detected", discovery.Name)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return "Discovery was interrupted; try loading setup again"
-	}
-	return ""
-}
-
-func nativeConfigOverride(kind string, env agents.Environment) string {
-	var variable string
-	switch kind {
-	case "codex":
-		variable = "CODEX_HOME"
-	case "opencode":
-		variable = "XDG_CONFIG_HOME"
-	case "claude":
-		variable = "CLAUDE_CONFIG_DIR"
-	}
-	if variable == "" {
-		return ""
-	}
-	if value := os.Getenv(variable); value != "" {
-		return "Uses process-native " + variable + " for agent config paths: " + value
-	}
-	return ""
-}
-
-func nativePlannedConfigPath(id, kind, home string) (string, error) {
-	env, err := agents.ResolveEnvironment(id, kind, home)
-	if err != nil {
-		return "", err
-	}
-	if kind == "codex" || kind == "opencode" {
-		env, err = agents.ApplyNativeConfigOverrides(env)
-		if err != nil {
-			return "", err
-		}
-	}
-	return agents.ResolveConfigWritePath(env)
 }
 
 // targetInputChoices turns wildcard table keys in a target TOML into stable
@@ -804,7 +730,7 @@ func (s *Service) removeCapabilityBindings(ctx context.Context, p catalog.Packag
 		if e != nil {
 			return e
 		}
-		skills := install.NewSkills(s.Store)
+		skills := agents.NewCompatibilitySkills(s.Store)
 		for id, environment := range destinations {
 			env := s.ownedEnvironment(environment, rows)
 			failed := false
@@ -846,7 +772,7 @@ func (s *Service) removeCapabilityBindings(ctx context.Context, p catalog.Packag
 				}
 			}
 			if hasSkill {
-				if e := skills.Uninstall(ctx, key, install.SkillDestination{ID: env.ID, Home: env.Home, Kind: env.Kind, SkillsDir: env.SkillsDir}); e != nil {
+				if e := skills.Uninstall(ctx, key, env); e != nil {
 					out.Errors = append(out.Errors, id+": "+e.Error())
 				} else {
 					out.Changes = append(out.Changes, skillRows...)

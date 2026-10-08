@@ -65,12 +65,16 @@ func DiscoverProfiles(pack Pack, capabilityID string) ([]Profile, error) {
 	}
 	return profiles, nil
 }
+func ValidProfileName(name string) bool {
+	return safeID.MatchString(name) && name != "." && name != ".."
+}
+
 func LoadProfile(pack Pack, capabilityID, name string) (Profile, error) {
 	pkg, err := profilePackage(pack, capabilityID)
 	if err != nil {
 		return Profile{}, err
 	}
-	if !safeID.MatchString(name) || name == "." || name == ".." {
+	if !ValidProfileName(name) {
 		return Profile{}, fmt.Errorf("invalid profile name %q", name)
 	}
 	if pack.ProfileRoot == "" {

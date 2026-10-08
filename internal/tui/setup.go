@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"path/filepath"
 	"strings"
 	"time"
@@ -131,6 +132,17 @@ func (m *Model) targetHasInstallRecord(key state.Key) bool {
 }
 
 func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
+	if _, ok := m.backend.(capabilityProfilesBackend); ok {
+		for _, p := range m.capabilityProfiles[key.Package].Profiles {
+			if p.Key == key {
+				if len(p.MCPs) == 1 {
+					return configurationRuntimeProfile(p, p.MCPs[0], nil)
+				}
+				return nil
+			}
+		}
+	}
+
 	if m.profileSnapshot != nil {
 		for index := range m.profileSnapshot.Profiles {
 			profile := m.profileSnapshot.Profiles[index]
@@ -352,16 +364,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		if name == "" {
 			name = destination.ID
 		}
-		switch strings.ToLower(name) {
-		case "all":
-			name = "All"
-		case "codex":
-			name = "Codex"
-		case "opencode":
-			name = "OpenCode"
-		case "claude", "claude-code":
-			name = "Claude Code"
-		}
+		name = agents.DisplayName(name)
 		path := destinationDisplayPath(preview, destination)
 		label := name
 		if path != "" {
@@ -760,6 +763,12 @@ func setupTargetLabel(key state.Key) string {
 		parts = append(parts, key.Source+" / "+key.Package)
 	} else if key.Package != "" {
 		parts = append(parts, key.Package)
+	}
+	// Profile references reuse the legacy Target storage slot for identity.
+	// Keep that compatibility detail out of user-facing operation progress.
+	if key.Environment == "" && key.Source != "" && key.Target != "" {
+		parts = append(parts, "Profile "+key.Target)
+		return strings.Join(parts, " · ")
 	}
 	if key.Environment != "" || key.Target != "" {
 		environment, target := key.Environment, key.Target

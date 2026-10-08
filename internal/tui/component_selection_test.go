@@ -83,3 +83,10 @@ func TestComponentSelectionRequiresEverySkillForCheckedDestination(t *testing.T)
 		t.Fatalf("partial capability checked: %v", ids)
 	}
 }
+
+func TestPluginChoiceRequiresEverySelectedDestinationSupport(t *testing.T) {
+	p := viewmodel.SetupPreview{Items: []catalog.InstallationItem{{ID: "plugin:native", Plugins: []string{"native"}}}, PluginDefinitions: []catalog.Plugin{{Name: "native", Format: "claude-code"}}, Destinations: []viewmodel.SetupDestination{{ID: "a", Features: agents.FeatureSet{PluginFormats: []string{"claude-code"}}}, {ID: "b", Features: agents.FeatureSet{Skills: true}}}}
+	if choices := componentOptions(p, []string{"a", "b"}); len(choices) != 1 || choices[0].DisabledReason == "" {
+		t.Fatalf("incompatible mixed destination offered: %v", choices)
+	}
+}

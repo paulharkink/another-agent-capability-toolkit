@@ -1031,6 +1031,9 @@ func (m *Model) selectedDetail() string {
 	}
 	if m.home.Focus == ProfilesPane {
 		if p, ok := m.selectedContextProfile(); ok {
+			if p.Configuration != nil {
+				return c.Name + " · Profile " + p.Name + " · " + profileStatusSummary(*p.Configuration)
+			}
 			return fmt.Sprintf("%s / %s / %s / %s · %s · %s", p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target, p.Name, p.URL) + " · owner: " + p.Instance.Ownership
 		}
 		if row, ok := m.selectedContextRow(); ok {
@@ -1052,7 +1055,11 @@ func (m *Model) selectedDetail() string {
 	}
 	detail := fmt.Sprintf("Capability Pack · %s · %s", c.Name, strings.Join(components, " + "))
 	if c.MCP {
-		detail += fmt.Sprintf(" · %d related MCP profiles", len(m.profiles()))
+		if m.profileMode() {
+			detail += fmt.Sprintf(" · %d configuration profiles", len(m.profiles()))
+		} else {
+			detail += fmt.Sprintf(" · %d related MCP profiles", len(m.profiles()))
+		}
 	}
 	status, _ := m.installationDetails(c)
 	detail += " · AACT records: " + status
@@ -1089,17 +1096,13 @@ func (m *Model) homeView() tea.View {
 	}
 	contextDisplay := []displayRow{{text: "Capability", contextIndex: -1, kind: "heading"}}
 	contextRows := m.contextRows()
-	if m.profileMode() {
+	if m.profileMode() && c.CatalogIndex >= 0 {
 		contextDisplay = []displayRow{{text: "Configuration profiles", contextIndex: -1, kind: "heading"}}
 		for i, row := range contextRows {
 			contextDisplay = append(contextDisplay, displayRow{text: row.Label, contextIndex: i, kind: "action"})
 			if row.Kind == "profile" {
-				profile := ps[row.ProfileIndex].Configuration
-				if profile.ConfigError != "" {
-					contextDisplay = append(contextDisplay, displayRow{text: profile.ConfigError, contextIndex: -1, kind: "empty"})
-				}
-				for _, component := range profile.Components {
-					contextDisplay = append(contextDisplay, displayRow{text: component.AgentID + " · " + component.Kind + " · " + component.Name + " · " + component.Status, contextIndex: -1, kind: "empty"})
+				for _, detail := range profileConfigurationDetails(ps[row.ProfileIndex]) {
+					contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
 				}
 			}
 		}

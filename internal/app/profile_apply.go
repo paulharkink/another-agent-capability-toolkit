@@ -20,6 +20,8 @@ import (
 	"strings"
 )
 
+type profileOperationLockKey struct{}
+
 type AdapterProvider interface {
 	Adapter(string) (agents.Adapter, error)
 	Adapters() []agents.Adapter
@@ -125,7 +127,7 @@ func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) erro
 	if _, err := s.packageByID(ref.CapabilityID); err != nil {
 		return err
 	}
-	if ref.Name == "" || ref.Name == "." || ref.Name == ".." || strings.ContainsAny(ref.Name, "/\\\n\x00") {
+	if !config.ValidProfileName(ref.Name) {
 		return invalid(fmt.Errorf("invalid profile name %q", ref.Name))
 	}
 	existing, err := s.profilesForCapability(ref.CapabilityID)
@@ -163,7 +165,31 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 		}
 		delete(saved, name)
 	}
-	inherited, err := forms.ResolvePartial(p.Inputs, s.Source.PackageDefaults[p.ID], pr.Raw)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, nil, err
+	}
+	defaults := map[string]any{}
+	for _, def := range p.Inputs {
+		if def.Default != nil {
+			defaults[def.Name] = def.Default
+		}
+	}
+	packFile := s.Source.ManifestPath
+	if packFile == "" {
+		packFile = filepath.Join(s.Source.Root, "aact.toml")
+	}
+	layers := []map[string]any{defaults, s.Source.PackageDefaults[p.ID], pr.Raw, saved, q.Inputs}
+	files := []string{filepath.Join(p.Dir, "package.toml"), packFile, pr.Path, filepath.Join(s.Store.Root(), "answers", key.ID()+".json"), filepath.Join(cwd, ".aact-inputs")}
+	for n := range layers {
+		layers[n], err = config.ResolveInputPaths(p.Inputs, layers[n], files[n])
+		if err != nil {
+			return nil, nil, invalid(err)
+		}
+	}
+	saved = layers[3]
+	submitted := layers[4]
+	inherited, err := forms.ResolvePartial(p.Inputs, layers[0], layers[1], layers[2])
 	if err != nil {
 		return nil, nil, invalid(err)
 	}
@@ -177,7 +203,7 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 			input[k] = v
 		}
 	}
-	for k, v := range q.Inputs {
+	for k, v := range submitted {
 		if _, locked := fixed[k]; !locked {
 			input[k] = v
 		}
@@ -301,6 +327,8 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		row := viewmodel.SetupDestination{Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath, Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID())}
 		if e != nil {
 			row.DisabledReason = e.Error()
+		} else if p.HasMCP() && d.MCPDisabledReason != "" {
+			row.DisabledReason = d.MCPDisabledReason
 		} else if !d.Installed {
 			row.DisabledReason = "Agent is not detected: " + d.Reason
 		}
@@ -316,7 +344,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 				if hadSelection {
 					scope := s.agentScope(id)
 					scope.ID = id
-					observation, e := a.Observe(ctx, scope, agents.ObservationRequest{Key: key, Managed: profileManagedRows(achievedRows, key, id)})
+					observation, e := a.Observe(ctx, scope, agents.ObservationRequest{IncludeInventory: true, Key: key, Managed: profileManagedRows(achievedRows, key, id)})
 					row.Selected = e == nil && observedSelectionComplete(p, preview.SelectedItemIDs, values, key, observation)
 				}
 			}
@@ -329,6 +357,16 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if observer := viewmodel.OperationProgressObserver(ctx); observer != nil && ctx.Value(operationProgressScopeContextKey{}) != true {
 		scoped, progress := s.withOperationProgress(ctx, observer)
 		return scoped.ApplyProfile(progress, q)
+	}
+	if ctx.Value(profileOperationLockKey{}) != s.Store {
+		err = s.Store.WithLock(ctx, func() error {
+			out, err = s.ApplyProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			return err
+		})
+		if err != nil && len(out.Errors) == 0 {
+			out.Errors = append(out.Errors, err.Error())
+		}
+		return out, err
 	}
 	out.SavedApplicable = true
 	out.Changes = []state.Installation{}
@@ -418,6 +456,9 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		if e != nil {
 			return out, e
 		}
+		if len(mcps) > 0 && d.MCPDisabledReason != "" {
+			return out, invalid(errors.New(d.MCPDisabledReason))
+		}
 		if !d.Installed {
 			return out, invalid(fmt.Errorf("agent %s is not detected: %s", id, d.Reason))
 		}
@@ -432,6 +473,22 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		}
 		adapters[id] = a
 	}
+	if err = s.validateRegistrationNames(p, packageMCPProfiles(p, values), key, values, nil); err != nil {
+		return out, invalid(err)
+	}
+	for _, definition := range p.MCPDefinitions() {
+		if !mcps[definition.Name] {
+			continue
+		}
+		if _, e := profileRegistrationHeaders(definition, values); e != nil {
+			return out, invalid(e)
+		}
+		if endpoint := q.ExternalURLs[definition.Name]; endpoint != "" {
+			if e := validateEndpointURL(endpoint); e != nil {
+				return out, invalid(e)
+			}
+		}
+	}
 	for name := range q.ExternalURLs {
 		if !mcps[name] {
 			return out, invalid(fmt.Errorf("external endpoint supplied for unselected MCP %q", name))
@@ -439,12 +496,16 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	}
 	out.Step = "save"
 	reportOperationStep(ctx, out.Step)
-	err = s.Store.WithLock(ctx, func() error {
+	previousAnswers, err := s.Store.Answers(key)
+	if err != nil {
+		return out, err
+	}
+	err = func() error {
 		if e := s.saveAnswersWithReset(key, p, values, q.SkillsOnly, q.ResetInputs); e != nil {
 			return e
 		}
 		return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
-	})
+	}()
 	if err != nil {
 		return out, err
 	}
@@ -494,7 +555,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil
-		if _, yes := definition.Actions["authenticate"]; yes {
+		if _, yes := definition.Actions["authenticate"]; yes && needsProfileAuthentication(s, cp, child, values, previousAnswers) {
 			out.Step = "authenticate"
 			reportOperationStep(ctx, out.Step)
 			_, e := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
@@ -675,6 +736,13 @@ func validateEndpointURL(value string) error {
 }
 
 func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
+	if ctx.Value(profileOperationLockKey{}) != s.Store {
+		err = s.Store.WithLock(ctx, func() error {
+			out, err = s.RemoveProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			return err
+		})
+		return out, err
+	}
 	p, pr, key, err := s.loadProfile(q.Ref)
 	if err != nil {
 		return out, err
@@ -712,6 +780,13 @@ func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out view
 	return out, nil
 }
 func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileRequest, mcpName string) (out Result, err error) {
+	if ctx.Value(profileOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
+		err = s.Store.WithLock(ctx, func() error {
+			out, err = s.RunProfileMCP(context.WithValue(ctx, profileOperationLockKey{}, s.Store), action, q, mcpName)
+			return err
+		})
+		return out, err
+	}
 	if action == "list" || action == "status" {
 		out.Instances, err = s.Options.Runtime.List(ctx)
 		return out, err
@@ -814,4 +889,12 @@ func observedSelectionComplete(p catalog.Package, ids []string, values map[strin
 		}
 	}
 	return true
+}
+
+func needsProfileAuthentication(s *Service, p catalog.Package, key state.Key, values, previous map[string]any) bool {
+	status, _ := s.credentialObservation(p, key)
+	if status != "present" {
+		return true
+	}
+	return hasSubmittedAuthentication(s, p, key, values, previous)
 }

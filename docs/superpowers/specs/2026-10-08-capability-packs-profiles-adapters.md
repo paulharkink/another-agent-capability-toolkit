@@ -1,6 +1,6 @@
 # Capability Packs, Profiles, Components, and Agent Adapters
 
-Status: implementation authorized on 2026-10-08 with executing-plans. Concrete TOML and Go interfaces below are the approved implementation contract.
+Status: implementation authorized on 2026-10-08. The TOML and Go interfaces below remain the approved implementation contract. The original executing-plans direction was superseded by the user’s later requirement that all implementation and repository/terminal tool work run through Luna subagents, with the primary controller coordinating only.
 
 This records the full discussion after the user selected the primary checkout's `feature/restructure-concepts` branch. It supersedes environment/target selection and the narrow MCP-only adapter contract in the older AACT designs. Existing input forms, navigation, rendering, ownership protections, and local-state storage remain the foundation.
 
@@ -8,7 +8,7 @@ This records the full discussion after the user selected the primary checkout's 
 
 - Use `/Users/pharkink/sources/another-agent-capability-toolkit` on the user-created `feature/restructure-concepts` branch. Do not create or reuse another branch or worktree.
 - Preserve unrelated changes, including the existing untracked UX proposal images.
-- The user subsequently selected inline executing-plans. Implement tasks inline with TDD and a final fresh `gpt-6-luna` review; request permission before using a more expensive reviewer.
+- The user now requires all implementation and repository/terminal tool execution through Luna subagents; use subagent-driven-development with TDD and independent review gates. The primary controller coordinates only; do not spawn nested subagents. Use Luna for implementation and final review unless the user authorizes escalation.
 - Capability behavior comes from manifests, declared commands/scripts, and templates. AACT contains generic interpretation, rendering, execution, coordination, and state tracking.
 - Agent detection, locations, config inspection, skill installation/removal, MCP registration changes, and supported native plugin installation/removal belong to agent adapters.
 - Pack profile TOMLs are read-only inputs. Keep the current local-state root, JSON files, hashed identifiers, locks, ownership records, and credentials; do not replace them with mirrored TOMLs.

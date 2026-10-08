@@ -177,7 +177,7 @@ func (s *Service) UIMCPs(ctx context.Context) ([]mcp.Instance, error) {
 	return s.Options.Runtime.List(ctx)
 }
 func (s *Service) UIAgents(context.Context) ([]string, error) {
-	out := []string{"all", "codex", "opencode", "claude", "copilot-cli", "intellij", "copilot-intellij", "generic"}
+	out := agents.CompatibilityIDs()
 	seen := map[string]bool{}
 	for _, id := range out {
 		seen[id] = true
@@ -443,16 +443,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 			env.ConfigPath = r.Destination
 		}
 	}
-	// OpenCode's adapter prefers the effective JSONC sibling and creates JSONC
-	// when neither sibling exists. Keep the TUI preview, adapter write, and
-	// installation ledger on that same concrete path.
-	if env.Kind == "opencode" {
-		env.ConfigPath, e = agents.ResolveConfigWritePath(env)
-		if e != nil {
-			return env, e
-		}
-	}
-	return env, nil
+	return agents.EffectiveCompatibilityConfig(env)
 }
 func (s *Service) Sources() ([]string, error) {
 	refs, e := s.sourceRefs()

@@ -55,6 +55,30 @@ func profileStatusSummary(p viewmodel.CapabilityProfile) string {
 	}
 	return strings.Join(parts, " · ")
 }
+
+func profileComponentStatusText(c viewmodel.ComponentStatus) string {
+	status := c.Status
+	if status == "installed" && !c.Managed {
+		status = "installed · unmanaged"
+	}
+	return c.AgentID + " · " + c.Kind + " · " + c.Name + " · " + status
+}
+
+func profileConfigurationDetails(row ProfileRow) []string {
+	profile := row.Configuration
+	if profile == nil {
+		return nil
+	}
+	rows := make([]string, 0, 1+len(profile.Components))
+	if profile.ConfigError != "" {
+		rows = append(rows, profile.ConfigError)
+	}
+	for _, component := range profile.Components {
+		rows = append(rows, profileComponentStatusText(component))
+	}
+	return rows
+}
+
 func (m *Model) openProfileCreation(c CapabilityRow) {
 	ref := config.ProfileRef{PackID: c.Source, CapabilityID: c.Package}
 	m.creatingProfile = &ref
