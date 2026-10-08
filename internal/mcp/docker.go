@@ -415,19 +415,80 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		return Instance{}, e
 	}
 	var previous *dockerInfo
+	replacingRegistrationName := false
+	legacyNameLookup := false
 	old, inspectErr := r.inspect(ctx, name)
 	if inspectErr != nil && isDockerNotFound(inspectErr) && containerName(k) != name {
 		// Saved installations may still own a key-derived container name.
 		old, inspectErr = r.inspect(ctx, containerName(k))
+		legacyNameLookup = inspectErr == nil
+	}
+	hasRecordedRuntime := false
+	for _, row := range rows {
+		if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath != "" && row.Destination != containerName(k) {
+			hasRecordedRuntime = true
+			break
+		}
+	}
+	if inspectErr != nil && isDockerNotFound(inspectErr) && hasRecordedRuntime {
+		// A registration rename changes the desired Docker name, but Docker's
+		// immutable key/owner labels and container ID still identify our current
+		// runtime. Resolve that current observation before attempting another bind.
+		observed, listErr := r.List(ctx)
+		if listErr != nil {
+			return Instance{}, fmt.Errorf("refresh Docker inventory before registration-name replacement: %w", listErr)
+		}
+		var keyed []Instance
+		for _, item := range observed {
+			if item.Key == k && item.Status != "missing" && item.Status != "external" && item.ID != "" {
+				keyed = append(keyed, item)
+			}
+		}
+		if len(keyed) > 1 {
+			return Instance{}, errors.New("multiple Docker runtime observations match this MCP profile; refusing ambiguous replacement")
+		}
+		if len(keyed) == 1 {
+			candidate, candidateErr := r.inspect(ctx, keyed[0].ID)
+			if candidateErr != nil {
+				return Instance{}, candidateErr
+			}
+			if ownership(candidate, k, installationID, rows) != "local" {
+				return Instance{}, errors.New("container name collision: the current MCP runtime belongs to another installation or has unknown ownership")
+			}
+			registeredName := candidate.Config.Labels["aact.registration_name"]
+			candidateName, nameErr := containerNameForRegistration(registeredName)
+			if registeredName == "" || nameErr != nil || registeredName == s.RegistrationName || candidateName == name {
+				return Instance{}, errors.New("container name collision: existing runtime does not identify a distinct registration name")
+			}
+			old, inspectErr = candidate, nil
+			replacingRegistrationName = true
+		}
 	}
 	if inspectErr == nil {
 		if ownership(old, k, installationID, rows) != "local" {
 			return Instance{}, errors.New("container name collision: the readable name belongs to another installation, key, or an unknown owner")
 		}
-		if existingName := old.Config.Labels["aact.registration_name"]; existingName != "" && existingName != s.RegistrationName {
+		if legacyNameLookup {
+			if _, recorded := runtimeRecord(rows, k, old.ID); !recorded && old.State.Running {
+				return Instance{}, errors.New("container name collision: legacy runtime has no matching locally recorded container ID")
+			}
+			actualName := strings.TrimPrefix(old.Name, "/")
+			registeredName := old.Config.Labels["aact.registration_name"]
+			if actualName == name {
+				return Instance{}, errors.New("container name collision: legacy runtime unexpectedly occupies the desired readable name")
+			}
+			if registeredName != "" && registeredName != s.RegistrationName {
+				registeredDockerName, nameErr := containerNameForRegistration(registeredName)
+				if nameErr == nil && registeredDockerName == name {
+					return Instance{}, errors.New("container name collision: different MCP registration names normalize to the same Docker name")
+				}
+			}
+			replacingRegistrationName = true
+		}
+		if existingName := old.Config.Labels["aact.registration_name"]; !replacingRegistrationName && existingName != "" && existingName != s.RegistrationName {
 			return Instance{}, errors.New("container name collision: different MCP registration names normalize to the same Docker name")
 		}
-		if old.State.Running {
+		if old.State.Running && !replacingRegistrationName {
 			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
 				return Instance{}, ErrRunningWithDifferentSettings
 			}
@@ -536,6 +597,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		}
 	}()
 	if previous != nil {
+		if previous.State.Running && replacingRegistrationName {
+			if _, e := r.run(ctx, []string{"stop", previous.ID}); e != nil {
+				return Instance{}, fmt.Errorf("stop prior MCP runtime before registration-name replacement: %w", e)
+			}
+		}
 		backupName := "aact-previous-" + previous.ID[:min(12, len(previous.ID))] + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 		if _, e := r.run(ctx, []string{"rename", previous.ID, backupName}); e != nil {
 			return Instance{}, e
@@ -560,6 +626,13 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		defer cancel()
 		if _, e = r.run(cleanupCtx, []string{"rm", previous.ID}); e != nil {
 			return out, fmt.Errorf("MCP started but prior stopped container cleanup failed: %w", e)
+		}
+		for _, row := range rows {
+			if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath == previous.ID {
+				if e = r.Store.Remove(row); e != nil {
+					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
+				}
+			}
 		}
 	}
 	return out, nil
