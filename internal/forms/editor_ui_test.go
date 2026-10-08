@@ -407,6 +407,50 @@ func TestMouseChoicesAndBooleanUseEditorValues(t *testing.T) {
 	}
 }
 
+func TestUnavailableChoicesAreMutedAndCannotBeSelectedByKeyboardOrMouse(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{
+		Name: "destinations", Label: "Destinations", Type: "multichoice",
+		Options: []catalog.Choice{
+			{Value: "retired", Label: "Retired agent", DisabledReason: "Adapter is unavailable"},
+			{Value: "codex", Label: "Codex"},
+		},
+	}}, nil)
+	m.SetSections(FormSection{Title: "Destinations", Fields: []string{"destinations"}})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	view := m.View().Content
+	if !strings.Contains(ansi.Strip(view), "Retired agent — Adapter is unavailable") {
+		t.Fatalf("unavailable option reason is missing:\n%s", ansi.Strip(view))
+	}
+	if !strings.Contains(view, "38;2;124;133;147") {
+		t.Fatalf("unavailable option is not rendered in muted grey:\n%s", view)
+	}
+
+	// Keyboard toggling must leave an unavailable, unselected destination out.
+	m.selected, m.area = 0, 1
+	m.choiceIndex["destinations"] = 0
+	m.Update(key(tea.KeySpace, " "))
+	if got, _ := m.Values()["destinations"].([]string); len(got) != 0 {
+		t.Fatalf("keyboard selected unavailable destination: %v", got)
+	}
+
+	// Clicking its visible row must enforce the same rule.
+	clickVisibleText(t, m, "[ ] Retired agent")
+	if got, _ := m.Values()["destinations"].([]string); len(got) != 0 {
+		t.Fatalf("mouse selected unavailable destination: %v", got)
+	}
+
+	stale := NewForm(context.Background(), []catalog.Input{{
+		Name: "destinations", Label: "Destinations", Type: "multichoice",
+		Options: []catalog.Choice{{Value: "retired", Label: "Retired agent", DisabledReason: "Adapter is unavailable"}},
+	}}, map[string]any{"destinations": []string{"retired"}})
+	stale.SetSections(FormSection{Title: "Destinations", Fields: []string{"destinations"}})
+	stale.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	clickVisibleText(t, stale, "[x] Retired agent")
+	if got, _ := stale.Values()["destinations"].([]string); len(got) != 0 {
+		t.Fatalf("mouse could not remove an unavailable historical selection: %v", got)
+	}
+}
+
 func TestMouseClickAfterScrollTargetsVisibleField(t *testing.T) {
 	defs := make([]catalog.Input, 30)
 	for i := range defs {

@@ -2459,6 +2459,7 @@ func (m *FormModel) splitLayout() formLayout {
 	}
 	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
+	disabledChoiceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7c8593"))
 	body := make([]string, max(len(leftRows), len(rightRows)))
 	removeX := make([]int, len(body))
 	for i := range body {
@@ -2485,6 +2486,7 @@ func (m *FormModel) splitLayout() formLayout {
 		rightCell := right + strings.Repeat(" ", max(0, rightWidth-1-lipgloss.Width(right)))
 		rightCell += scrollbarGlyph(rightScrollable, i, rightTotal, rightTarget, bodyHeight)
 		selected := false
+		disabledChoice := false
 		if m.area == 1 && i < len(splitFields) && splitFields[i] == m.selected {
 			selected = true
 			if choice := splitChoices[i]; choice >= 0 {
@@ -2492,10 +2494,17 @@ func (m *FormModel) splitLayout() formLayout {
 				selected = choice == m.choiceIndex[def.Name]
 			}
 		}
+		if i < len(splitFields) && splitFields[i] >= 0 && i < len(splitChoices) && splitChoices[i] >= 0 {
+			def := m.defs[splitFields[i]]
+			option := splitChoices[i]
+			disabledChoice = option < len(def.Options) && def.Options[option].DisabledReason != ""
+		}
 		if m.area == 1 && m.focusedAction && i < len(splitFields) && splitFields[i] < 0 && i < len(splitChoices) {
 			selected = splitChoices[i] == m.sectionActionIndex
 		}
-		if selected {
+		if disabledChoice {
+			rightCell = disabledChoiceStyle.Render(rightCell)
+		} else if selected {
 			rightCell = selectedStyle.Render(rightCell)
 		} else if i < len(splitFields) && splitFields[i] >= 0 && m.exclusiveInactive(m.defs[splitFields[i]].Name, values) {
 			rightCell = inactiveStyle.Render(rightCell)
