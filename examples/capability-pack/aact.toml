@@ -1,0 +1,12 @@
+schema_version = 1
+pack_id = "example-company"
+
+[[imports]]
+catalog = "./vendor/neutral-tools/aact.toml"
+include = ["guidance"]
+[imports.overrides.guidance]
+id = "company-guidance"
+[[imports.overrides.guidance.sets]]
+name = "reference"
+skills = ["guide"]
+mcps = ["reference-api"]

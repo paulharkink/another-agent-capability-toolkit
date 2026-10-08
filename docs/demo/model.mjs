@@ -3,7 +3,7 @@ export const capabilities = [
   { id: 'cluster-inspector', name: 'Cluster Inspector', kind: 'skill + MCP', mcp: true, installation: 'Partial', installationDetails: ['Skill: codex', 'MCP registration: no AACT record'] },
   { id: 'grafana-inspector', name: 'Grafana Inspector', kind: 'skill + MCP', mcp: true, installation: 'Installed', installationDetails: ['Skill: codex', 'MCP registration: codex'] },
   { id: 'azure-inspector', name: 'Azure Inspector', kind: 'skill + MCP', mcp: true, installation: 'Not installed' },
-  { id: 'forgejo', name: 'Forgejo', kind: 'skill + MCP', mcp: true, installation: 'Not installed' },
+  { id: 'git-provider-inspector', name: 'Git Provider Inspector', kind: 'skill + MCP', mcp: true, installation: 'Not installed' },
   { id: 'find-session', name: 'Find Session', kind: 'skill', mcp: false, installation: 'Installed', installationDetails: ['Skill: all'] },
   { id: 'non-interactive-ready-planning', name: 'Non Interactive Ready Planning', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'git-repo-map', name: 'Local Git Repository Map', kind: 'skill', mcp: false, installation: 'Not installed' },
@@ -15,11 +15,12 @@ export const capabilities = [
   { id: 'live-cluster-diagnostics', name: 'target-a-live-cluster-diagnostics', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'cluster-inspector-skill', name: 'cluster-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'grafana-inspector-skill', name: 'grafana-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
+  {id:'guidance-bundle',name:'Guidance bundle',kind:'2 skills + optional plugin',mcp:false,installation:'Not installed'},
 ];
 
 export const profiles = [
   {
-    id: 'cluster-home-target-a', capabilityId: 'cluster-inspector', name: 'sample-env / target-a',
+    id: 'cluster-home-target-a', capabilityId: 'cluster-inspector', name: 'ota', configStatus: 'Configured', skills: '1/1', registered: '0/1',
     environment: "sample-env", target: 'target-a', runtime: 'Not observed', owner: 'Unknown',
     connection: 'Unreachable', endpoint: 'http://127.0.0.1:18766/mcp',
     observation: 'Sample: no matching container observed',
@@ -27,7 +28,7 @@ export const profiles = [
     ownerEvidence: 'No local start record or matching ownership label in this sample',
   },
   {
-    id: 'grafana-home', capabilityId: 'grafana-inspector', name: 'home / default',
+    id: 'grafana-home', capabilityId: 'grafana-inspector', name: 'default', configStatus: 'Configured', skills: '1/1', registered: '1/1',
     environment: "sample-env", target: 'default', runtime: 'Stopped', owner: 'This AACT',
     connection: 'Not checked', endpoint: 'http://127.0.0.1:18767/mcp',
     observation: 'Sample: stopped', connectionError: '', ownerEvidence: 'Local start record',
@@ -47,9 +48,9 @@ export const databases = [
   'shared_postgres/plane',
 ];
 
-export const setupSections = ['Connection', 'Authentication', 'Databases', 'Destinations'];
+export const setupSections = ['Overview', 'Connection', 'Authentication', 'Databases', 'Components', 'Agents', 'Runtime', 'Information'];
 export function setupSectionsFor(state) {
-  return selectedCapability(state).id === 'cluster-inspector' ? setupSections : ['Inputs', 'Destinations'];
+  return selectedCapability(state).id === 'cluster-inspector' ? setupSections : selectedCapability(state).mcp ? ['Overview', 'Inputs', 'Components', 'Agents', 'Runtime', 'Information'] : ['Overview','Inputs','Components','Agents','Information'];
 }
 
 export function nextOverlayControlIndex(groups, current, step) {
@@ -81,14 +82,15 @@ export const helpSections = ['Navigation', 'Status labels', 'Forms and values'];
 
 export function createInitialState() {
   return {
-    scope: { checkout: 'agent-skills', platform: 'macOS / arm64', source: 'sample-skills' },
+    scope: { pack: 'example-company', directory: '/packs/example-company', platform: 'macOS / arm64', profiles: 'environments' },
+ localProfiles: [], draftProfileName: '',
     view: 'home', focus: 'capabilities', capabilityIndex: 0, homeDetailIndex: 0,
     agentIndex: 0, environmentIndex: 0, targetIndex: 0, settingsIndex: 0, helpIndex: 0,
     menuIndex: 0, overlay: null, toast: 'Interactive design sample — no files or containers are changed.',
     setup: {
       section: 'Authentication', authMode: 'token', token: '', kubeconfig: '',
       listenAddress: '127.0.0.1', listenPort: '18766',
-      databases: [], destinations: ['codex'], dirty: false, kind: 'existing', error: '',
+      items: ['set:capability'], enabled: false, databases: [], destinations: ['codex'], dirty: false, kind: 'existing', error: '',
     },
     registrations: ['codex'],
     settings: { section: 'Default agents', defaultAgents: ['codex', 'opencode'], backend: 'Follow Docker CLI selection' },
@@ -100,12 +102,11 @@ export function selectedCapability(state) {
 }
 
 export function visibleProfiles(state) {
-  return profiles.filter(profile => profile.capabilityId === selectedCapability(state).id);
+  return [...profiles,...(state.localProfiles ?? [])].filter(profile => profile.capabilityId === selectedCapability(state).id);
 }
 
 export function selectedProfile(state) {
-  return state.homeDetailIndex >= 2 && state.homeDetailIndex < 2 + visibleProfiles(state).length
-    ? visibleProfiles(state)[state.homeDetailIndex - 2] : null;
+  return visibleProfiles(state)[state.homeDetailIndex] ?? null;
 }
 
 export function destinationsFor(state) {
@@ -152,7 +153,7 @@ export function transition(state, action) {
       const skillOnly = !capabilities[capabilityIndex].mcp;
       return {
         ...state, capabilityIndex, homeDetailIndex: 0, focus: 'capabilities',
-        setup: { ...state.setup, destinations: skillOnly ? ['all'] : ['codex'], dirty: false },
+        setup: { ...state.setup, items:componentItemsFor({...state,capabilityIndex}).filter(item=>item.skills.length).map(item=>item.id),destinations:skillOnly?['all']:['codex'],dirty:false },
       };
     }
     case 'selectHomeDetail':
@@ -163,9 +164,19 @@ export function transition(state, action) {
       return { ...state, focus: 'capabilities' };
     case 'enterHome':
       if (state.focus === 'capabilities') return { ...state, focus: 'profiles' };
-      if (state.homeDetailIndex === 0) return transition(state, { type: 'openSetup', kind: 'new' });
-      if (state.homeDetailIndex === 1) return transition(state, { type: 'openDetails' });
-      return transition(state, { type: 'openActions' });
+      if (selectedProfile(state)) return transition(state, {type:'openSetup',kind:'existing'});
+      if (state.homeDetailIndex===visibleProfiles(state).length) return {...state,draftProfileName:'',overlay:{kind:'profile-create',layout:'single'}};
+      return transition(state,{type:'openDetails'});
+    case 'editProfileName': return {...state,draftProfileName:action.name};
+    case 'createProfile': {
+      const name=state.draftProfileName;
+      if(!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)||visibleProfiles(state).some(p=>p.name===name)) return {...state,toast:'Choose a unique, valid profile name.'};
+      const profile={id:`local-${selectedCapability(state).id}-${name}`,capabilityId:selectedCapability(state).id,name,configStatus:'Needs input',skills:'0/1',registered:'0/1',runtime:'Stopped',owner:'This AACT',endpoint:'',connection:'Not checked',observation:'Local profile (simulation)'};
+      return transition({...state,localProfiles:[...state.localProfiles,profile],homeDetailIndex:visibleProfiles(state).length,overlay:null},{type:'openSetup',kind:'new'});
+    }
+    case 'toggleComponent': {const items=new Set(state.setup.items);if(items.has(action.id))items.delete(action.id);else if(!componentItemsFor(state).find(i=>i.id===action.id)?.disabled)items.add(action.id);return withSetup(state,{items:[...items]});}
+    case 'selectAllSkills': {const items=new Set(state.setup.items);for(const item of componentItemsFor(state))if(item.skills.length)items.add(item.id);return withSetup(state,{items:[...items]});}
+    case 'toggleEnabled':return withSetup(state,{enabled:!state.setup.enabled});
     case 'setView':
       return { ...state, view: action.view, overlay: null, focus: action.view === 'home' ? 'capabilities' : state.focus };
     case 'selectAgent':
@@ -215,7 +226,7 @@ export function transition(state, action) {
     }
     case 'openSetup':
       {
-      const section = selectedCapability(state).id === 'cluster-inspector' ? 'Authentication' : 'Inputs';
+      const section = 'Overview';
       return {
         ...state,
         setup: { ...state.setup, section, kind: action.kind ?? (selectedProfile(state) ? 'existing' : 'new'), dirty: false, error: '' },
@@ -259,8 +270,8 @@ export function transition(state, action) {
       if (state.setup.destinations.length === 0) {
         return {
           ...state,
-          setup: { ...state.setup, section: 'Destinations', error: selectedCapability(state).mcp ? 'Select at least one named agent destination.' : 'Select All or at least one named agent destination.' },
-          overlay: { ...state.overlay, section: 'Destinations' },
+          setup: { ...state.setup, section: 'Agents', error: selectedCapability(state).mcp ? 'Select at least one named agent destination.' : 'Select All or at least one named agent destination.' },
+          overlay: { ...state.overlay, section: 'Agents' },
         };
       }
       const error = state.setup.listenPort === '9999';
@@ -301,3 +312,5 @@ export function transition(state, action) {
       return state;
   }
 }
+
+export function componentItemsFor(state){const capability=selectedCapability(state);if(capability.id==='guidance-bundle')return [{id:'skill:guide',label:'Guide',skills:['guide'],mcps:[]},{id:'skill:review',label:'Review',skills:['review'],mcps:[]},{id:'plugin:native',label:'Claude native plugin',skills:[],mcps:[],disabled:!state.setup.destinations.includes('claude')}];return [{id:capability.mcp?'set:capability':'skill:capability',label:capability.name,skills:[capability.id],mcps:capability.mcp?[capability.id]:[]}];}

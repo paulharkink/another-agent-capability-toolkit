@@ -1,0 +1,6 @@
+[inputs]
+project = "production-project"
+enabled = true
+[aact.input_policy]
+project = "fixed"
+enabled = "default"

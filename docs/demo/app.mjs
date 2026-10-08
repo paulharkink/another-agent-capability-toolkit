@@ -2,7 +2,7 @@ import {
   agents, capabilities, createInitialState, databases, destinationsFor, helpSections,
   nextOverlayArea, nextOverlayControlIndex, overlayKeyCommand, profileActions,
   scrollCues, selectedCapability, selectedProfile,
-  settingsSections, setupSectionsFor, transition, visibleProfiles,
+  settingsSections, setupSectionsFor, componentItemsFor, transition, visibleProfiles,
 } from './model.mjs';
 
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -18,7 +18,7 @@ function scrollFrame(content, name) {
 }
 
 function pane(title, content, position, name, focused) {
-  return `<section class="pane${focused ? ' focused' : ''}" data-pane="${name}" tabindex="-1"><div class="pane-title"><strong>${escapeHTML(title)}</strong><span>${focused ? '● focused' : ''}</span></div>${scrollFrame(content, name)}<div class="pane-bottom">${escapeHTML(position)}</div></section>`;
+  return `<section class="pane${focused ? ' focused' : ''}" data-pane="${name}" tabindex="-1"><div class="pane-title"><strong>${escapeHTML(title)}</strong><span>${focused ? '●' : ''}</span></div>${scrollFrame(content, name)}<div class="pane-bottom">${escapeHTML(position)}</div></section>`;
 }
 
 function listRow(label, meta, kind, index, selected, detail = '') {
@@ -32,23 +32,13 @@ function renderHome(state) {
   const left = capabilities.map((item, index) => {
     return listRow(`${item.installation} · ${item.name}`, item.kind, 'capability', index, index === state.capabilityIndex, item.name);
   }).join('');
-  const right = `<div class="list-heading">Capability</div>`
-    + listRow(`Configure / install ${capability.name}…`, 'Inputs and destinations', 'homeDetail', 0, state.homeDetailIndex === 0)
-    + listRow('View capability details', 'Source, package and status', 'homeDetail', 1, state.homeDetailIndex === 1)
-    + (capability.mcp
-      ? `<div class="list-heading">Related MCP profiles</div>` + (related.length
-        ? related.map((item, index) => listRow(`MCP · ${item.name}`, `${item.runtime} · ${item.owner}`, 'homeDetail', index + 2, state.homeDetailIndex === index + 2, item.endpoint)).join('')
-        : `<p class="empty-list">No profiles yet. Configure/install to create one.</p>`)
-      : '')
-    + `<div class="list-heading">Installation · AACT records: ${escapeHTML(capability.installation)} <span class="subtle">(sample)</span></div>`
-    + (capability.installationDetails ?? [capability.mcp ? 'Skill and MCP registration: no AACT record' : 'Skill: no AACT record'])
-      .map(detail => `<p class="empty-list">· ${escapeHTML(detail)}</p>`).join('');
+  const right=`<div class="list-heading">Configuration profiles</div>`+related.map((item,index)=>listRow(item.name,`${item.configStatus ?? 'Configured'} · skills ${item.skills ?? '0/1'} · registered ${item.registered ?? '0/1'} · ${item.runtime}`,'homeDetail',index,state.homeDetailIndex===index)).join('')+listRow('Create another profile…','Local user state','homeDetail',related.length,state.homeDetailIndex===related.length)+listRow('View capability details','Definition and observed state','homeDetail',related.length+1,state.homeDetailIndex===related.length+1);
   const status = state.focus === 'profiles' && profile
     ? `<strong>${escapeHTML(profile.name)}</strong> · ${escapeHTML(profile.endpoint)}<br>Runtime: ${escapeHTML(profile.runtime)} · Owner: ${escapeHTML(profile.owner)} · Connection: ${escapeHTML(profile.connection)}<br><span class="subtle">${escapeHTML(profile.observation)} · ${escapeHTML(profile.connectionError || profile.ownerEvidence)}</span>`
     : state.focus === 'profiles'
       ? `<strong>${escapeHTML(capability.name)}</strong> · ${state.homeDetailIndex === 0 ? 'Configure / install' : 'Capability details'}<br><span class="subtle">${state.homeDetailIndex === 0 ? 'Enter opens the setup form for this capability.' : 'Enter opens read-only package details.'}</span>`
-      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · AACT records: ${escapeHTML(capability.installation)}${capability.mcp ? ` · ${related.length} related MCP profile${related.length === 1 ? '' : 's'}` : ''}<br><span class="subtle">Enter moves into the selected capability’s details on the right. Installation labels here are illustrative sample data.</span>`;
-  return `<div class="panes base-panes">${pane('Capabilities · layer 1', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${2 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
+      : `<strong>${escapeHTML(capability.name)}</strong> · ${escapeHTML(capability.kind)} · AACT records: ${escapeHTML(capability.installation)}${capability.mcp ? ` · ${related.length} configuration profile${related.length === 1 ? '' : 's'}` : ''}<br><span class="subtle">Enter moves into the selected capability’s details on the right. Installation labels here are illustrative sample data.</span>`;
+  return `<div class="panes base-panes">${pane('Capabilities', left, `${state.capabilityIndex + 1} / ${capabilities.length}`, 'capabilities', state.focus === 'capabilities')}${pane(`Selected capability · ${capability.name}`, right, `${state.homeDetailIndex + 1} / ${2 + related.length}`, 'profiles', state.focus === 'profiles')}</div><div class="status-strip">${status}</div>`;
 }
 
 function renderAgents(state) {
@@ -65,7 +55,7 @@ function renderEnvironments(state) {
     ? ['Cluster Inspector · target-a', 'Grafana Inspector · default']
     : ['Public package defaults · all inputs visible'];
   const left = environments.map((environment, index) => listRow(environment, index === 0 ? 'Configured targets' : 'Package defaults', 'environment', index, index === state.environmentIndex)).join('');
-  const right = targets.map((target, index) => listRow(target, index === 0 && selected === 'home' ? 'Target TOML · fixed and default inputs' : 'Target', 'target', index, index === state.targetIndex)).join('') + `<div class="inline-actions">${button('Use for new setups', 'useEnvironment', true)}${button('View target', 'viewTarget')}${button('Environment root…', 'environmentRoot')}</div>`;
+  const right = targets.map((target, index) => listRow(target, index === 0 && selected === 'home' ? 'Target TOML · fixed and default inputs' : 'Target', 'target', index, index === state.targetIndex)).join('') + `<div class="inline-actions">${button('Use for new setups', 'useEnvironment', true)}${button('View target', 'viewTarget')}${button('Profile directory…', 'environmentRoot')}</div>`;
   return `<div class="panes base-panes">${pane('Environments', left, `${state.environmentIndex + 1} / ${environments.length}`, 'environments', true)}${pane(`Configured targets · ${selected}`, right, `${state.targetIndex + 1} / ${targets.length}`, 'targets', false)}</div><div class="status-strip">Root: agent-skills/environments · sample checkout data. Select a target to inspect its source.</div>`;
 }
 
@@ -87,7 +77,7 @@ function renderHelp(state) {
   const copy = [
     '<h3>Navigation</h3><p>Layer 1: overview on the left. Enter moves into the selected item’s layer-2 details on the right. Only a selection in layer 2 can open a deeper layer. A detail needing its own controls opens layers 3 and 4 side by side above the base screen.</p><p>Tab or ←/→ switches base panes. ↑/↓ selects within the focused pane. Enter or F2 moves one layer deeper. Esc steps back.</p>',
     '<h3>Status labels</h3><p>Runtime observation, connection result, and owner evidence are separate facts. Unknown owner does not mean that a server is stopped. Refresh, Check connection, and Details help diagnose it.</p>',
-    '<h3>Forms and values</h3><p>Environment fixed values are omitted from setup. Editable defaults show their origin. Token and Source kubeconfig are both focusable; entering one makes it active and clears the other. Save applies immediately.</p>',
+    '<h3>Forms and values</h3><p>Profile fixed values are omitted from setup. Editable defaults show their origin. Token and Source kubeconfig are both focusable; entering one makes it active and clears the other. Save applies immediately.</p>',
   ][state.helpIndex];
   return `<div class="panes base-panes">${pane('Help topics', left, `${state.helpIndex + 1} / ${helpSections.length}`, 'help', true)}${pane(helpSections[state.helpIndex], `<div class="detail-copy">${copy}</div>`, 'Details', 'help-details', false)}</div><div class="status-strip">${button('Back to Home', 'back')}</div>`;
 }
@@ -104,7 +94,7 @@ function renderBody(state) {
 
 function menuItems(state) {
   if (state.overlay?.kind === 'main') return [
-    { id: 'agents', label: 'Agents' }, { id: 'environments', label: 'Environments' },
+    { id: 'agents', label: 'Agents' },
     { id: 'settings', label: 'Settings' }, { id: 'help', label: 'Help' }, { id: 'closeOverlay', label: 'Back' },
   ];
   if (state.view === 'home') return profileActions(state);
@@ -114,7 +104,7 @@ function menuItems(state) {
   ];
   if (state.view === 'environments') return [
     { id: 'useEnvironment', label: 'Use for new setups' }, { id: 'viewTarget', label: 'View target' },
-    { id: 'environmentRoot', label: 'Environment root…' }, { id: 'closeOverlay', label: 'Back' },
+    { id: 'environmentRoot', label: 'Profile directory…' }, { id: 'closeOverlay', label: 'Back' },
   ];
   return [{ id: 'closeOverlay', label: 'Back' }];
 }
@@ -134,16 +124,21 @@ function renderMenu(state) {
 }
 
 function setupSectionButton(section, current) {
-  return `<button type="button" class="section-row${current === section ? ' selected' : ''}" data-section="${section}"><span>${section}</span><small>${section === 'Databases' ? 'Optional read-only access' : section === 'Destinations' ? 'Agent installation and MCP config' : 'Inputs'}</small></button>`;
+  return `<button type="button" class="section-row${current === section ? ' selected' : ''}" data-section="${section}"><span>${section}</span><small>${section === 'Databases' ? 'Optional read-only access' : section === 'Agents' ? 'Agent installation and MCP config' : 'Inputs'}</small></button>`;
 }
 
 function setupRight(state) {
   const section = state.setup.section;
+ if(section==='Overview')return `<h3>Profile ${escapeHTML(selectedProfile(state)?.name ?? state.draftProfileName ?? 'new')}</h3><p>Configuration, selected skills and MCP registrations apply together. Use the bottom Save and apply button.</p>`;
+ if(section==='Components')return `<h3>Capability components</h3>${componentItemsFor(state).map(item=>`<label class="check-row"><input type="checkbox" data-toggle-component="${item.id}" ${state.setup.items.includes(item.id)?'checked':''} ${item.disabled?'disabled':''}><span>${escapeHTML(item.label)} · ${item.skills.length} skill(s) + ${item.mcps.length} MCP(s) ${item.disabled?' · unavailable for selected agents':''}</span></label>`).join('')}${button('Select all skills','selectAllSkills')}`;
+ if(section==='Runtime')return `<h3>Runtime</h3><p>${escapeHTML(selectedProfile(state)?.runtime ?? 'Stopped')} · ${escapeHTML(selectedProfile(state)?.endpoint ?? 'No endpoint')}</p>${button('Check connection','check')}`;
+ if(section==='Information')return `<h3>Definition and profile</h3><p>Capability Pack: example-company. Profile TOMLs are read-only; edits are local state.</p>`;
+  if (section === 'Inputs' && selectedCapability(state).id==='guidance-bundle')return `<h3>Guidance</h3><label class="check-row"><input type="checkbox" data-toggle-enabled ${state.setup.enabled?'checked':''}><span>Include review guidance · Boolean profile default</span></label>`;
   if (section === 'Inputs') return `<h3>Inputs</h3><p class="hint">${selectedCapability(state).id === 'git-repo-map' ? 'This packaged skill can ask for one or more local repository directories. The Mac TUI adds them one at a time with a directory picker.' : selectedCapability(state).mcp ? 'This capability’s package-specific inputs are not represented in this interaction sample.' : 'This packaged skill has no required inputs in this sample.'}</p>`;
-  if (section === 'Connection') return `<h3>Connection</h3><p class="hint">Environment: sample-env / target-a. Fixed Kubernetes URL and CA values are supplied by its target TOML and omitted here.</p><label class="field-block"><span>Listen address <small>Environment default · editable</small></span><input data-field="listenAddress" value="${escapeHTML(state.setup.listenAddress)}"></label><label class="field-block"><span>Listen port <small>Saved override</small></span><input data-field="listenPort" inputmode="numeric" value="${escapeHTML(state.setup.listenPort)}"></label><p class="hint">The MCP endpoint shown to local agents uses this address and port.</p>`;
+  if (section === 'Connection') return `<h3>Connection</h3><p class="hint">Profile: ota. Fixed Kubernetes URL and CA values are supplied by its profile TOML and omitted here.</p><label class="field-block"><span>Listen address <small>Profile default · editable</small></span><input data-field="listenAddress" value="${escapeHTML(state.setup.listenAddress)}"></label><label class="field-block"><span>Listen port <small>Saved override</small></span><input data-field="listenPort" inputmode="numeric" value="${escapeHTML(state.setup.listenPort)}"></label><p class="hint">The MCP endpoint shown to local agents uses this address and port.</p>`;
   if (section === 'Authentication') return `<h3>Authentication</h3><p class="hint">Both inputs stay available. Entering one activates it and clears the other. Source kubeconfig is imported into managed credentials.</p><label class="credential ${state.setup.authMode === 'token' ? 'active-credential' : 'inactive-credential'}"><span>Token <small>${state.setup.authMode === 'token' ? 'Active method' : 'Type here to switch to Token'}</small></span><input type="text" autocomplete="off" data-field="token" value="${escapeHTML(state.setup.token)}" placeholder="Enter token"></label><label class="credential ${state.setup.authMode === 'kubeconfig' ? 'active-credential' : 'inactive-credential'}"><span>Source kubeconfig <small>${state.setup.authMode === 'kubeconfig' ? 'Active method · imported, not a live path' : 'Type a path to switch to kubeconfig'}</small></span><input type="text" autocomplete="off" data-field="kubeconfig" value="${escapeHTML(state.setup.kubeconfig)}" placeholder="Choose or enter a file path"></label><p class="hint">The real Mac TUI also offers a file picker. This browser sample accepts a path for interaction testing.</p>`;
   if (section === 'Databases') return `<h3>Read-only database queries</h3><p class="hint">Optional. The choices below are shown directly in this detail pane; there is no database submenu.</p>${databases.map(database => `<label class="check-row"><input type="checkbox" data-toggle-database="${escapeHTML(database)}" ${state.setup.databases.includes(database) ? 'checked' : ''}><span>${escapeHTML(database)}</span></label>`).join('')}<p class="hint">Each selected database grants only the packaged read-only queries.</p>`;
-  return `<h3>Destinations</h3><p class="hint">${selectedCapability(state).mcp ? 'An MCP capability requires at least one named agent. There is no All or generic destination.' : 'All installs this skill into ~/.agents/skills; named agents can be selected too.'}</p>${destinationsFor(state).map(destination => `<label class="destination-row"><input type="checkbox" data-toggle-destination="${destination.id}" ${destination.selected ? 'checked' : ''}><span><strong>${escapeHTML(destination.name)}</strong><small>${escapeHTML(destination.status)} · ${escapeHTML(destination.config)}</small><small>${escapeHTML(destination.effect)}</small></span></label>`).join('')}`;
+  return `<h3>Agents</h3><p class="hint">${selectedCapability(state).mcp ? 'An MCP capability requires at least one named agent. There is no All or generic destination.' : 'All installs this skill into ~/.agents/skills; named agents can be selected too.'}</p>${destinationsFor(state).map(destination => `<label class="destination-row"><input type="checkbox" data-toggle-destination="${destination.id}" ${destination.selected ? 'checked' : ''}><span><strong>${escapeHTML(destination.name)}</strong><small>${escapeHTML(destination.status)} · ${escapeHTML(destination.config)}</small><small>${escapeHTML(destination.effect)}</small></span></label>`).join('')}`;
 }
 
 function renderSetup(state) {
@@ -152,9 +147,9 @@ function renderSetup(state) {
   const sections = sectionsForCapability.map(section => setupSectionButton(section, state.setup.section)).join('');
   const left = pane('Setup sections', sections, `${sectionsForCapability.indexOf(state.setup.section) + 1} / ${sectionsForCapability.length}`, 'setup-sections', true);
   const right = pane(`${capability.name} · ${state.setup.section}`, `<div class="detail-copy">${setupRight(state)}</div>`, 'Details', 'setup-detail', false);
-  const scope = capability.id === 'cluster-inspector' ? 'Environment: sample-env · Target: target-a' : capability.mcp ? 'Environment: sample-env · Target: default' : 'Source: sample-skills · Package defaults';
-  const content = `<div class="dialog-scope">${scope} · ${state.setup.kind === 'new' ? 'New setup' : 'Existing profile'} · Sample data</div>${state.setup.error ? `<div class="form-error" role="alert">${escapeHTML(state.setup.error)}</div>` : ''}<div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: sections → details → actions · ↑↓ Controls · ← at start of text: sections · Ctrl/Cmd+S ${state.setup.kind === 'new' ? 'Install' : 'Save'} · Esc Back/Cancel</div>`;
-  return dialog(content, `${state.setup.kind === 'new' ? 'Install' : 'Parameters'} · ${capability.name}`, button('Cancel', 'closeOverlay') + button(state.setup.kind === 'new' ? 'Install' : 'Save', 'saveSetup', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
+  const scope=`Capability Pack: example-company · Profile: ${selectedProfile(state)?.name ?? state.draftProfileName ?? 'new'}`;
+  const content = `<div class="dialog-scope">${scope} · ${state.setup.kind === 'new' ? 'New setup' : 'Existing profile'} · Sample data</div>${state.setup.error ? `<div class="form-error" role="alert">${escapeHTML(state.setup.error)}</div>` : ''}<div class="panes overlay-panes">${left}${right}</div><div class="dialog-nav">Tab: sections → details → actions · ↑↓ Controls · ← at start of text: sections · Ctrl/Cmd+S ${'Save and apply'} · Esc Back/Cancel</div>`;
+  return dialog(content, `Configure · ${capability.name}`, button('Cancel', 'closeOverlay') + button('Save and apply', 'saveSetup', true, 'aria-keyshortcuts="Control+S Meta+S"'), 'split');
 }
 
 function renderRegistrations(state) {
@@ -182,7 +177,7 @@ function renderRegistrations(state) {
 function renderDetails(state) {
   const profile = state.view === 'home' && state.focus === 'profiles' ? selectedProfile(state) : null;
   let content;
-  if (profile) content = `<dl><dt>Source / package</dt><dd>sample-skills / ${escapeHTML(selectedCapability(state).name)}</dd><dt>Environment / target</dt><dd>${escapeHTML(profile.environment)} / ${escapeHTML(profile.target)}</dd><dt>Endpoint</dt><dd>${escapeHTML(profile.endpoint)}</dd><dt>Runtime observation</dt><dd>${escapeHTML(profile.runtime)} · ${escapeHTML(profile.observation)}</dd><dt>Owner evidence</dt><dd>${escapeHTML(profile.owner)} · ${escapeHTML(profile.ownerEvidence)}</dd><dt>Connection</dt><dd>${escapeHTML(profile.connection)} · ${escapeHTML(profile.connectionError)}</dd><dt>Local registrations</dt><dd>${escapeHTML(state.registrations.join(', ') || 'None')}</dd></dl><p class="hint">Unknown owner does not mean stopped. Refresh or check the endpoint, then register it with a local agent if appropriate.</p>`;
+  if (profile) content = `<dl><dt>Capability Pack / capability</dt><dd>sample-skills / ${escapeHTML(selectedCapability(state).name)}</dd><dt>Profile</dt><dd>${escapeHTML(profile.name)}</dd><dt>Endpoint</dt><dd>${escapeHTML(profile.endpoint)}</dd><dt>Runtime observation</dt><dd>${escapeHTML(profile.runtime)} · ${escapeHTML(profile.observation)}</dd><dt>Owner evidence</dt><dd>${escapeHTML(profile.owner)} · ${escapeHTML(profile.ownerEvidence)}</dd><dt>Connection</dt><dd>${escapeHTML(profile.connection)} · ${escapeHTML(profile.connectionError)}</dd><dt>Local registrations</dt><dd>${escapeHTML(state.registrations.join(', ') || 'None')}</dd></dl><p class="hint">Unknown owner does not mean stopped. Refresh or check the endpoint, then register it with a local agent if appropriate.</p>`;
   else if (state.view === 'home') content = `<p><strong>${escapeHTML(selectedCapability(state).name)}</strong> · ${escapeHTML(selectedCapability(state).kind)}</p><p>Source: sample-skills · checkout: agent-skills</p><p>Inputs and destinations appear together in its Install / Parameters screen.</p>`;
   else content = `<p>Selected ${escapeHTML(state.view)} item. This viewer is read-only in the sample.</p>`;
   return dialog(scrollFrame(`<div class="detail-copy">${content}</div>`, 'details'), profile ? `Details · ${profile.name}` : 'Capability details', button('Back', 'closeOverlay'));
@@ -198,6 +193,7 @@ function renderOverlay(state) {
   if (!state.overlay) return '';
   switch (state.overlay.kind) {
     case 'main': case 'actions': return renderMenu(state);
+    case 'profile-create':return dialog('<div class="dialog-content"><label class="field-block"><span>Profile name</span><input data-profile-name value="'+escapeHTML(state.draftProfileName)+'"></label><p>Creates local state. The Capability Pack remains read-only.</p></div>','Create another profile',button('Create','createProfile',true)+button('Cancel','closeOverlay'));
     case 'setup': return renderSetup(state);
     case 'registrations': return renderRegistrations(state);
     case 'details': return renderDetails(state);
@@ -209,7 +205,7 @@ function renderOverlay(state) {
 
 export function render(state) {
   const footer = `<footer class="terminal-footer"><button data-action="help"><b>F1</b> Help</button><button data-action="actions"><b>F2</b> Open / Focus</button><button data-action="details"><b>F3</b> Details</button><button data-action="parameters"><b>F4</b> Parameters</button><button data-action="refresh"><b>F5</b> Refresh</button><button data-action="main"><b>F9</b> Main menu</button><button data-action="${state.view === 'home' ? 'quit' : 'back'}"><b>${state.view === 'home' ? 'F10' : 'Esc'}</b> ${state.view === 'home' ? 'Quit' : 'Back'}</button></footer>`;
-  return `<div class="terminal"><div class="shell" ${state.overlay ? 'inert' : ''}><header class="terminal-title"><strong>AACT · Another Agent Capability Toolkit</strong><span>INTERACTIVE DESIGN SAMPLE</span></header><div class="menubar"><button data-action="main"><b>F9</b> Main menu: Agents | Environments | Settings | Help</button><button data-action="actions"><b>F2</b> Open / Focus selected layer</button></div><div class="scope">Checkout: ${escapeHTML(state.scope.checkout)} · Managing: ${escapeHTML(state.scope.platform)} · Source: ${escapeHTML(state.scope.source)} · Env: home</div><div class="terminal-body">${renderBody(state)}</div><div class="toast" role="status">${escapeHTML(state.toast)}</div>${footer}</div>${renderOverlay(state)}</div>`;
+  return `<div class="terminal"><div class="shell" ${state.overlay ? 'inert' : ''}><header class="terminal-title"><strong>AACT · Another Agent Capability Toolkit</strong><span>INTERACTIVE DESIGN SAMPLE</span></header><div class="menubar"><button data-action="main"><b>F9</b> Main menu: Agents | Settings | Help</button><button data-action="actions"><b>F2</b> Open / Focus selected layer</button></div><div class="scope">Capability Pack: ${escapeHTML(state.scope.pack)} · Profiles: ${escapeHTML(state.scope.profiles)} · Managing: ${escapeHTML(state.scope.platform)}</div><div class="terminal-body">${renderBody(state)}</div><div class="toast" role="status">${escapeHTML(state.toast)}</div>${footer}</div>${renderOverlay(state)}</div>`;
 }
 
 function updateScrollCues(root) {
@@ -294,14 +290,16 @@ export function mount(root) {
       case 'refresh': show('Observation refreshed in the simulation. Runtime: not observed; owner: unknown; endpoint connection: unreachable. Check Details for the evidence.'); break;
       case 'start': case 'stop': show(`${action === 'start' ? 'Start' : 'Stop'} simulated. No container was changed.`); break;
       case 'logs': show('No locally owned container logs are available in this sample.'); break;
+      case 'createProfile':send({type:'createProfile'});break;
+      case 'selectAllSkills':send({type:'selectAllSkills'});break;
       case 'applyRegistrations': send({ type: 'applyRegistrations' }, '.dialog-actions button'); break;
       case 'viewConfig': show(`${agents[state.agentIndex].config}: example viewer only; no local config file is read.`); break;
       case 'location': show('Configure location would open a form for this agent adapter. This sample does not change paths.'); break;
       case 'useEnvironment': show('Environment selected for new setups (simulation).'); break;
       case 'viewTarget': show('sample-env / target-a target TOML: sample fixed Kubernetes API and CA; editable listen address and port.'); break;
-      case 'environmentRoot': show('Environment root: agent-skills/environments (sample).'); break;
+      case 'environmentRoot': show('Profile directory: agent-skills/environments (sample).'); break;
       case 'checkBackend': show('Docker context desktop-linux is reachable (simulation).'); break;
-      case 'knownCheckouts': show('Known checkout: agent-skills (sample).'); break;
+      case 'knownCheckouts': show('Other Capability Pack: example-company (sample).'); break;
       default: break;
     }
   };
@@ -325,6 +323,7 @@ export function mount(root) {
   });
 
   root.addEventListener('input', event => {
+    if(event.target.hasAttribute('data-profile-name')) {send({type:'editProfileName',name:event.target.value},'[data-profile-name]');return;}
     const field = event.target.dataset.field;
     if (!field) return;
     const start = event.target.selectionStart;
@@ -335,7 +334,9 @@ export function mount(root) {
 
   root.addEventListener('change', event => {
     const input = event.target;
-    if (input.dataset.toggleDatabase) send({ type: 'toggleDatabase', id: input.dataset.toggleDatabase }, `[data-toggle-database="${CSS.escape(input.dataset.toggleDatabase)}"]`);
+    if(input.hasAttribute('data-toggle-enabled'))send({type:'toggleEnabled'},'[data-toggle-enabled]');
+    else if(input.dataset.toggleComponent)send({type:'toggleComponent',id:input.dataset.toggleComponent},`[data-toggle-component="${input.dataset.toggleComponent}"]`);
+    else if (input.dataset.toggleDatabase) send({ type: 'toggleDatabase', id: input.dataset.toggleDatabase }, `[data-toggle-database="${CSS.escape(input.dataset.toggleDatabase)}"]`);
     else if (input.dataset.toggleDestination) send({ type: 'toggleDestination', id: input.dataset.toggleDestination }, `[data-toggle-destination="${input.dataset.toggleDestination}"]`);
     else if (input.dataset.toggleRegistration) send({ type: 'toggleRegistration', id: input.dataset.toggleRegistration }, `[data-toggle-registration="${input.dataset.toggleRegistration}"]`);
     else if (input.dataset.toggleDefault) send({ type: 'toggleDefaultAgent', id: input.dataset.toggleDefault }, `[data-toggle-default="${input.dataset.toggleDefault}"]`);

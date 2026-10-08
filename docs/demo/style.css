@@ -62,7 +62,7 @@ button { cursor: pointer; }
 .action-button:hover { background: #2454a6; }
 .action-button.primary { background: #e5d17d; color: #10275c; border-color: #fff2af; font-weight: bold; }
 .action-button:disabled { opacity: .55; cursor: not-allowed; }
-.overlay { position: absolute; inset: 0; z-index: 4; display: flex; justify-content: center; align-items: center; background: #06164ac7; }
+.overlay { position: absolute; inset: 0; z-index: 4; display: flex; justify-content: center; align-items: center; background: transparent; }
 .dialog { display: flex; flex-direction: column; min-height: 0; max-height: 82%; overflow: hidden; background: #0c3185; border: 4px double #ffdf86; box-shadow: 0 18px 36px #021141; }
 .single-dialog { width: min(94%, 590px); }
 .split-dialog { position: absolute; top: 28px; left: 50%; transform: translateX(-50%); width: calc(100% - 48px); max-width: 1130px; height: min(580px, calc(100% - 56px)); max-height: calc(100% - 56px); }

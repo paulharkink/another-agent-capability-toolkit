@@ -1,0 +1,6 @@
+[inputs]
+project = "example-project"
+enabled = false
+[aact.input_policy]
+project = "fixed"
+enabled = "default"

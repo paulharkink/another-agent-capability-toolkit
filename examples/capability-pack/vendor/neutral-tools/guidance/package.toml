@@ -1,0 +1,38 @@
+schema_version = 1
+id = "guidance"
+name = "Team guidance"
+[[skills]]
+name = "guide"
+source = "./skills/guide"
+[[skills.templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+[[skills]]
+name = "review"
+source = "./skills/review"
+[[skills.templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+[[inputs]]
+name = "project"
+label = "Project name"
+type = "string"
+required = true
+regex = '^[a-z][a-z0-9-]*$'
+[[inputs]]
+name = "enabled"
+label = "Include review guidance"
+type = "boolean"
+required = true
+default = false
+[[ui.sections]]
+id = "guidance"
+title = "Guidance"
+fields = ["project", "enabled"]
+[mcp]
+name = "reference-api"
+runtime = "docker"
+image = "example/reference-api:1"
+transport = "streamable-http"
+container_port = 8080
+endpoint_path = "/mcp"

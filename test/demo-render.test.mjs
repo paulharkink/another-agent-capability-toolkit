@@ -5,18 +5,18 @@ import { render } from '../docs/demo/app.mjs';
 
 test('home renders the Mac scope and separates profile observations', () => {
   let state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
-  state = transition(state, { type: 'selectHomeDetail', index: 2 });
+  state = transition(state, { type: 'selectHomeDetail', index: 0 });
   const html = render(state);
-  assert.match(html, /Checkout: agent-skills/);
+  assert.match(html, /Capability Pack: example-company/);
   assert.match(html, /Managing: macOS \/ arm64/);
   assert.match(html, /data-pane="capabilities"/);
   assert.match(html, /data-pane="profiles"/);
   assert.match(html, /data-pane="profiles" tabindex="-1"/);
   assert.match(html, /Selected capability · Cluster Inspector/);
   assert.match(html, /data-select="homeDetail" data-index="0"/);
-  assert.match(html, /Configure \/ install/);
+  assert.match(html, /Create another profile/);
   assert.match(html, /data-select="homeDetail" data-index="2"/);
-  assert.match(html, /home \/ target-a/);
+  assert.match(html, /ota/);
   assert.match(html, /Runtime: Not observed/);
   assert.match(html, /Owner: Unknown/);
   assert.match(html, /Connection: Unreachable/);
@@ -24,14 +24,15 @@ test('home renders the Mac scope and separates profile observations', () => {
 });
 
 test('setup overlay has its own left and right panes and direct credential fields', () => {
-  const state = transition(createInitialState(), { type: 'openSetup' });
+  let state = transition(createInitialState(), { type: 'openSetup' });
+ state=transition(state,{type:'selectSetupSection',section:'Authentication'});
   const html = render(state);
   assert.match(html, /data-layer="3-4"/);
   assert.match(html, /data-area="actions"/);
-  assert.match(html, /Ctrl\/Cmd\+S Install/);
+  assert.match(html, /Ctrl\/Cmd\+S Save and apply/);
   assert.match(html, /data-section="Authentication"/);
   assert.match(html, /data-section="Databases"/);
-  assert.match(html, /data-section="Destinations"/);
+  assert.match(html, /data-section="Agents"/);
   assert.match(html, /data-field="token"/);
   assert.match(html, /data-field="kubeconfig"/);
   assert.match(html, /Source kubeconfig/);
@@ -46,11 +47,11 @@ test('skill-only setup omits MCP sections and shows All as a destination', () =>
   state = transition(state, { type: 'openSetup' });
   const html = render(state);
   assert.match(html, /data-section="Inputs"/);
-  assert.match(html, /data-section="Destinations"/);
+  assert.match(html, /data-section="Agents"/);
   assert.doesNotMatch(html, /data-section="Authentication"/);
   assert.doesNotMatch(html, /data-section="Databases"/);
   assert.doesNotMatch(html, /data-field="token"/);
-  state = transition(state, { type: 'selectSetupSection', section: 'Destinations' });
+  state = transition(state, { type: 'selectSetupSection', section: 'Agents' });
   assert.match(render(state), /All — ~\/\.agents\/skills/);
 });
 
@@ -58,7 +59,7 @@ test('another MCP does not inherit Cluster Inspector inputs', () => {
   let state = transition(createInitialState(), { type: 'selectCapability', index: 1 });
   state = transition(state, { type: 'openSetup' });
   const html = render(state);
-  assert.match(html, /Install · Grafana Inspector/);
+  assert.match(html, /Configure.*Grafana Inspector/);
   assert.match(html, /data-section="Inputs"/);
   assert.doesNotMatch(html, /data-section="Databases"/);
   assert.doesNotMatch(html, /data-field="kubeconfig"/);
@@ -72,7 +73,7 @@ test('database and destination sections render inline details without generic MC
   assert.match(databases, /shared_postgres\/plane/);
   assert.doesNotMatch(databases, /data-layer="5"/);
 
-  state = transition(state, { type: 'selectSetupSection', section: 'Destinations' });
+  state = transition(state, { type: 'selectSetupSection', section: 'Agents' });
   const destinations = render(state);
   assert.match(destinations, /~\/.codex\/config.toml/);
   assert.match(destinations, /~\/.config\/opencode\/opencode.json/);
@@ -82,7 +83,7 @@ test('database and destination sections render inline details without generic MC
 
 test('unknown-owner actions expose diagnosis and recovery paths', () => {
   let state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
-  state = transition(state, { type: 'selectHomeDetail', index: 2 });
+  state = transition(state, { type: 'selectHomeDetail', index: 0 });
   state = transition(state, { type: 'openActions' });
   const html = render(state);
   assert.match(html, /data-layer="3"/);
@@ -95,7 +96,7 @@ test('unknown-owner actions expose diagnosis and recovery paths', () => {
 
 test('registration detail belongs to the selected endpoint or agent', () => {
   let state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
-  state = transition(state, { type: 'selectHomeDetail', index: 2 });
+  state = transition(state, { type: 'selectHomeDetail', index: 0 });
   state = transition(state, { type: 'openRegistrations' });
   let html = render(state);
   assert.match(html, /data-select="registrationItem" data-index="0"/);
