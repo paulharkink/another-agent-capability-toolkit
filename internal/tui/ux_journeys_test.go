@@ -565,7 +565,8 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 				visible := ""
 				for i := 0; i < 16; i++ {
-					visible += strings.ReplaceAll(ansi.Strip(m.View().Content), "\\", "/")
+					page := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
+					visible += page
 					allVisible := true
 					for _, chunk := range chunks {
 						allVisible = allVisible && strings.Contains(visible, chunk)
