@@ -97,6 +97,147 @@ registration_timeout_ms = -1
 		t.Fatal("negative registration timeout accepted")
 	}
 }
+
+func TestLoadMultipleOptionalMCPProfiles(t *testing.T) {
+	p, err := Load(writeManifest(t, plainManifest+`[[inputs]]
+name = "enable_github"
+type = "boolean"
+default = false
+
+[[inputs]]
+name = "github_port"
+type = "integer"
+default = 8781
+
+[[inputs]]
+name = "enable_bitbucket"
+type = "boolean"
+default = false
+
+[[inputs]]
+name = "bitbucket_port"
+type = "integer"
+default = 8782
+
+[[mcps]]
+name = "github"
+runtime = "docker"
+image = "github/mcp:1"
+transport = "streamable-http"
+container_port = 8080
+endpoint_path = "/mcp"
+host_port_input = "github_port"
+enabled_input = "enable_github"
+
+[[mcps]]
+name = "bitbucket"
+runtime = "docker"
+image = "bitbucket/mcp:1"
+transport = "streamable-http"
+container_port = 3001
+endpoint_path = "/mcp"
+host_port_input = "bitbucket_port"
+enabled_input = "enable_bitbucket"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.MCPs) != 2 || p.MCPs[0].Name != "github" || p.MCPs[1].Name != "bitbucket" {
+		t.Fatalf("MCP profiles not loaded in manifest order: %#v", p.MCPs)
+	}
+}
+
+func TestLoadMCPProfileContainerArgumentsAndEnvironment(t *testing.T) {
+	p, err := Load(writeManifest(t, plainManifest+`[[inputs]]
+name = "api_url"
+type = "string"
+
+[[inputs]]
+name = "access_token"
+type = "secret"
+
+[[mcps]]
+name = "gitlab"
+runtime = "docker"
+image = "example/gitlab-mcp:1"
+args = ["--http"]
+env = { STREAMABLE_HTTP = "true" }
+env_inputs = { GITLAB_API_URL = "api_url" }
+secret_env_inputs = { GITLAB_TOKEN = "access_token" }
+transport = "streamable-http"
+container_port = 3002
+endpoint_path = "/mcp"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := p.MCPs[0]
+	if len(profile.Args) != 1 || profile.Args[0] != "--http" || profile.Env["STREAMABLE_HTTP"] != "true" || profile.EnvInputs["GITLAB_API_URL"] != "api_url" || profile.SecretEnvInputs["GITLAB_TOKEN"] != "access_token" {
+		t.Fatalf("MCP profile launch configuration did not load: %#v", profile)
+	}
+}
+
+func TestPackageHasMCPForLegacyAndProfileManifests(t *testing.T) {
+	for name, p := range map[string]Package{
+		"legacy":   {MCP: &MCP{Name: "legacy"}},
+		"profiles": {MCPs: []MCP{{Name: "github"}, {Name: "gitlab"}}},
+		"none":     {},
+	} {
+		want := name != "none"
+		if got := p.HasMCP(); got != want {
+			t.Errorf("%s: HasMCP()=%v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestRejectDuplicateMCPProfileNames(t *testing.T) {
+	manifest := plainManifest + `[[mcps]]
+name = "github"
+[[mcps]]
+name = "github"
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate MCP profile name should be rejected, got %v", err)
+	}
+}
+
+func TestRejectMCPProfileWithUnknownEnableInput(t *testing.T) {
+	manifest := plainManifest + `[[mcps]]
+name = "github"
+enabled_input = "missing_toggle"
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil || !strings.Contains(err.Error(), "enabled_input") {
+		t.Fatalf("unknown MCP enable input should be rejected, got %v", err)
+	}
+}
+
+func TestRejectMCPProfileEnableInputOfWrongType(t *testing.T) {
+	manifest := plainManifest + `[[inputs]]
+name = "enable_github"
+type = "string"
+[[mcps]]
+name = "github"
+enabled_input = "enable_github"
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil || !strings.Contains(err.Error(), "must be boolean") {
+		t.Fatalf("non-boolean MCP enable input should be rejected, got %v", err)
+	}
+}
+
+func TestRejectMCPProfileWithInvalidTokenHeader(t *testing.T) {
+	manifest := plainManifest + `[[inputs]]
+name = "token"
+type = "secret"
+[[mcps]]
+name = "github"
+token_input = "token"
+token_header = "Authorization\nX-Injected: yes"
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil || !strings.Contains(err.Error(), "token_header") {
+		t.Fatalf("invalid token header should be rejected by the manifest loader, got %v", err)
+	}
+}
+
 func TestLoadExclusiveInputGroup(t *testing.T) {
 	p, err := Load(writeManifest(t, plainManifest+`[[inputs]]
 name = "token"

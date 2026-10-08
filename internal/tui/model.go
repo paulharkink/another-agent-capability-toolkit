@@ -28,7 +28,7 @@ type Backend interface {
 	UIAgents(context.Context) ([]string, error)
 	UISettings(context.Context) (map[string]string, error)
 	UISourceLabels(context.Context) (map[string]string, error)
-	UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error)
+	UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error)
 }
 
 type agentManagementBackend interface {
@@ -91,7 +91,7 @@ type Model struct {
 	pending                    operation
 	management                 managementState
 }
-type operation struct{ action, source, packageID, agent, environment, target, mcp string }
+type operation struct{ action, source, packageID, agent, environment, target, mcp, profile string }
 type loadedMsg struct {
 	catalog             []catalog.Package
 	inventory           []state.Installation
@@ -1095,7 +1095,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 					m.output = "External registrations support status; use profile Actions to configure registrations."
 					return nil
 				}
-				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target}
+				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.Profile}
 				return m.run(op)
 			}
 		}
@@ -1189,14 +1189,14 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if op.mcp != "" {
+		if op.mcp != "" || op.profile != "" {
 			profileBackend, ok := backend.(profileRunBackend)
 			if !ok {
 				return operationMsg{origin: origin, err: errors.New("backend does not support MCP-specific runtime actions"), target: op.target}
 			}
-			output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp})
+			output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, Profile: op.profile})
 		} else {
-			output, err = backend.UIRun(ctx, op.action, op.source, op.packageID, op.agent, op.environment, op.target)
+			output, err = backend.UIRun(ctx, op.action, op.source, op.packageID, op.profile, op.agent, op.environment, op.target)
 		}
 		return operationMsg{origin: origin, output: output, err: err, target: op.target}
 	}

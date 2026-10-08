@@ -59,7 +59,7 @@ func (b *localInstallCapture) UIInstall(_ context.Context, request viewmodel.Set
 	return viewmodel.OperationResult{Saved: true, Message: "captured local UIInstall"}, nil
 }
 
-func (b *localInstallCapture) UIRun(context.Context, string, string, string, string, string, string) (string, error) {
+func (b *localInstallCapture) UIRun(context.Context, string, string, string, string, string, string, string) (string, error) {
 	b.uiRunCalls++
 	return "", errors.New("legacy UIRun must not be called for a workspace action")
 }

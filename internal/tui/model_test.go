@@ -119,7 +119,7 @@ func (fixtureBackend) UISettings(context.Context) (map[string]string, error) {
 func (fixtureBackend) UISourceLabels(context.Context) (map[string]string, error) {
 	return map[string]string{"/catalog/plain": "team-source", "team-source": "Team checkout"}, nil
 }
-func (fixtureBackend) UIRun(context.Context, string, string, string, string, string, string) (string, error) {
+func (fixtureBackend) UIRun(context.Context, string, string, string, string, string, string, string) (string, error) {
 	return "partial generator progress", errors.New("generator failed")
 }
 func fixtureModel(t *testing.T) *Model {

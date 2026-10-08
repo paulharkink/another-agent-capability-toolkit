@@ -80,10 +80,10 @@ type InstallRequest struct {
 	UpdateSource                 bool
 }
 type MCPRequest struct {
-	Action, Package, Environment, Target string
-	MCP                                  string
-	Inputs                               map[string]any
-	Interactive                          bool
+	Action, Package, Environment, Target, Profile string
+	MCP                                           string
+	Inputs                                        map[string]any
+	Interactive                                   bool
 }
 type Result struct {
 	Changes   []state.Installation `json:"changes"`
@@ -127,6 +127,21 @@ func (s *Service) key(p, env, target string) state.Key {
 		target = "default"
 	}
 	return state.Key{Source: s.Source.ID, Package: p, Environment: env, Target: target}
+}
+
+func packageMCPProfiles(p catalog.Package, values map[string]any) []catalog.MCP {
+	profiles := p.MCPProfiles()
+	enabled := make([]catalog.MCP, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.EnabledInput != "" {
+			value, ok := values[profile.EnabledInput].(bool)
+			if !ok || !value {
+				continue
+			}
+		}
+		enabled = append(enabled, profile)
+	}
+	return enabled
 }
 
 func sameCapabilityKey(a, b state.Key) bool {
@@ -303,8 +318,12 @@ func (s *Service) saveAnswersWithReset(k state.Key, p catalog.Package, values ma
 	if err := s.Store.SaveAnswers(k, safe); err != nil {
 		return err
 	}
-	if p.MCP != nil && !skillsOnly {
-		return s.Store.RecordProfile(state.ProfileRecord{Key: k})
+	if p.HasMCP() && !skillsOnly {
+		for _, profile := range packageMCPProfiles(p, values) {
+			if err := s.Store.RecordProfile(state.ProfileRecord{Key: mcpProfileKey(k, p, profile)}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -339,7 +358,9 @@ func registrationName(k state.Key) string {
 	if k.Target != "default" {
 		parts = append(parts, k.Target)
 	}
-	if k.MCP != "" {
+	if k.Profile != "" {
+		parts = append(parts, k.Profile)
+	} else if k.MCP != "" {
 		parts = append(parts, k.MCP)
 	}
 	return strings.Join(parts, "-")
@@ -372,7 +393,9 @@ func operationTarget(k state.Key) string {
 		target = "default"
 	}
 	identity := k.Source + "/" + k.Package
-	if k.MCP != "" {
+	if k.Profile != "" {
+		identity += " profile " + k.Profile
+	} else if k.MCP != "" {
 		identity += " MCP " + k.MCP
 	}
 	if k.Environment != "" {
@@ -402,10 +425,6 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	}
 	mcpDefinitions := p.MCPDefinitions()
 	multiMCP := len(p.MCPs) > 0
-	if p.MCP == nil && len(mcpDefinitions) > 0 {
-		primary := mcpDefinitions[0]
-		p.MCP = &primary
-	}
 	if multiMCP {
 		for name := range q.ExternalURLs {
 			found := false
@@ -467,6 +486,15 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 	if e != nil {
 		return out, e
 	}
+	if !q.SkillsOnly {
+		mcpDefinitions = packageMCPProfiles(p, values)
+		multiMCP = len(p.MCPs) > 0
+		for _, definition := range mcpDefinitions {
+			if _, tokenErr := profileRegistrationHeaders(definition, values); tokenErr != nil {
+				return out, invalid(fmt.Errorf("MCP %s authentication: %w", definition.Name, tokenErr))
+			}
+		}
+	}
 	if !q.SkillsOnly && len(mcpDefinitions) > 0 {
 		if e := s.validateRegistrationNames(p, mcpDefinitions, k, values, q.Agents); e != nil {
 			return out, invalid(e)
@@ -525,12 +553,9 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			if q.SkillsOnly {
 				continue
 			}
-			mcpKey := k
+			mcpKey := mcpProfileKey(k, p, definition)
 			packageForMCP := p
 			packageForMCP.MCP = &definition
-			if multiMCP {
-				mcpKey.MCP = definition.Name
-			}
 			if _, hasAuthenticate := definition.Actions["authenticate"]; hasAuthenticate && hasSubmittedAuthentication(s, packageForMCP, mcpKey, q.Inputs, previousAnswers) {
 				out.Step = "authenticate"
 				reportOperationStep(ctx, out.Step)
@@ -550,7 +575,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			out.Step = "start"
 			reportOperationStep(ctx, out.Step)
 			out.Target = operationTarget(mcpKey)
-			instance, startErr := s.start(ctx, packageForMCP, t, mcpKey, values, q.Interactive)
+			instance, startErr := s.startProfile(ctx, p, definition, t, mcpKey, values, q.Interactive)
 			if startErr != nil {
 				var failure operationFailure
 				if errors.As(startErr, &failure) {
@@ -601,10 +626,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 				for _, definition := range mcpDefinitions {
 					out.Step = "register"
 					reportOperationStep(ctx, out.Step)
-					mcpKey := k
-					if multiMCP {
-						mcpKey.MCP = definition.Name
-					}
+					mcpKey := mcpProfileKey(k, p, definition)
 					out.Target = operationTarget(mcpKey)
 					if env.ConfigPath == "" && agents.IsManual(env.Kind) {
 						env.ConfigPath = s.manualConfigPath(env)
@@ -624,7 +646,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 							break
 						}
 						for _, old := range rows {
-							if sameCapabilityKey(old.Key, mcpKey) && old.Key.MCP == mcpKey.MCP && old.AgentID == env.ID && old.Component == "mcp" && old.Destination == env.ConfigPath && old.RegistrationName != name {
+							if sameCapabilityKey(old.Key, mcpKey) && old.Key.MCP == mcpKey.MCP && old.Key.Profile == mcpKey.Profile && old.AgentID == env.ID && old.Component == "mcp" && old.Destination == env.ConfigPath && old.RegistrationName != name {
 								files, snapshotErr := snapshotRegistration(env)
 								if snapshotErr == nil {
 									snapshotErr = adapter.Unregister(ctx, env, old.RegistrationName)
@@ -649,7 +671,12 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 						if agentErr != nil {
 							break
 						}
-						reg := agents.Registration{Name: name, URL: urls[definition.Name], Transport: definition.Transport, TimeoutMS: registrationTimeoutMS(&definition)}
+						headers, headerErr := profileRegistrationHeaders(definition, values)
+						if headerErr != nil {
+							agentErr = headerErr
+							break
+						}
+						reg := agents.Registration{Name: name, URL: urls[definition.Name], Transport: definition.Transport, TimeoutMS: registrationTimeoutMS(&definition), Headers: headers}
 						files, snapshotErr := snapshotRegistration(env)
 						agentErr = snapshotErr
 						if agentErr == nil {
@@ -710,10 +737,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 func (s *Service) validateRegistrationNames(p catalog.Package, definitions []catalog.MCP, key state.Key, values map[string]any, destinations []agents.Environment) error {
 	used := map[string]string{}
 	for _, definition := range definitions {
-		child := key
-		if len(p.MCPs) > 0 {
-			child.MCP = definition.Name
-		}
+		child := mcpProfileKey(key, p, definition)
 		name, err := declaredRegistrationName(definition, child, values)
 		if err != nil {
 			return err
@@ -729,10 +753,7 @@ func (s *Service) validateRegistrationNames(p catalog.Package, definitions []cat
 	}
 	for _, env := range destinations {
 		for _, definition := range definitions {
-			child := key
-			if len(p.MCPs) > 0 {
-				child.MCP = definition.Name
-			}
+			child := mcpProfileKey(key, p, definition)
 			name, _ := declaredRegistrationName(definition, child, values)
 			for _, row := range rows {
 				if row.Component != "mcp" || row.AgentID != env.ID || filepath.Clean(row.Destination) != filepath.Clean(env.ConfigPath) || row.RegistrationName != name {
@@ -815,7 +836,39 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
-	spec := mcp.RunSpec{Image: p.MCP.Image, Host: "127.0.0.1", ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), Host: "127.0.0.1", ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	for name, value := range p.MCP.Env {
+		if spec.Env == nil {
+			spec.Env = map[string]string{}
+		}
+		spec.Env[name] = value
+	}
+	for name, inputName := range p.MCP.EnvInputs {
+		if value, ok := values[inputName]; ok && value != nil {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env[name] = fmt.Sprint(value)
+		}
+	}
+	for name, inputName := range p.MCP.SecretEnvInputs {
+		if value, ok := values[inputName].(string); ok && strings.TrimSpace(value) != "" {
+			if spec.SecretEnv == nil {
+				spec.SecretEnv = map[string]string{}
+			}
+			spec.SecretEnv[name] = value
+		}
+	}
+	if p.MCP.TokenContainerEnv != "" {
+		token, tokenErr := resolveProfileToken(*p.MCP, values)
+		if tokenErr != nil {
+			return mcp.Instance{}, operationFailure{step: "authenticate", err: tokenErr}
+		}
+		if spec.SecretEnv == nil {
+			spec.SecretEnv = map[string]string{}
+		}
+		spec.SecretEnv[p.MCP.TokenContainerEnv] = token
+	}
 	if p.MCP.BuildContext != "" {
 		spec.BuildContext = filepath.Join(p.Dir, p.MCP.BuildContext)
 	}
@@ -857,6 +910,13 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 	}
 	return instance, nil
 }
+
+func (s *Service) startProfile(ctx context.Context, p catalog.Package, profile catalog.MCP, t config.Target, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+	profilePackage := p
+	profilePackage.MCP = &profile
+	return s.start(ctx, profilePackage, t, k, values, interactive)
+}
+
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error) {
 	switch q.Action {
 	case "list", "status":
@@ -869,6 +929,9 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 	}
 	definitions := p.MCPDefinitions()
 	k := s.key(p.ID, q.Environment, q.Target)
+	if q.MCP == "" {
+		q.MCP = q.Profile
+	}
 	if q.MCP != "" {
 		found := false
 		for _, definition := range definitions {
@@ -881,15 +944,18 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 		if !found {
 			return out, invalid(fmt.Errorf("unknown MCP %q for package %s", q.MCP, p.ID))
 		}
-		if len(p.MCPs) > 0 {
-			k.MCP = q.MCP
-		}
+		k = mcpProfileKey(k, p, func() catalog.MCP {
+			for _, definition := range definitions {
+				if definition.Name == q.MCP {
+					return definition
+				}
+			}
+			return catalog.MCP{}
+		}())
 	} else if len(definitions) == 1 {
 		definition := definitions[0]
 		p.MCP = &definition
-		if len(p.MCPs) > 0 {
-			k.MCP = definition.Name
-		}
+		k = mcpProfileKey(k, p, definition)
 	} else if len(definitions) > 1 && q.Action != "start" && q.Action != "stop" {
 		return out, invalid(errors.New("select an MCP name for this action"))
 	}
@@ -901,8 +967,7 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 			}
 			var stopErrors []error
 			for _, definition := range definitions {
-				child := k
-				child.MCP = definition.Name
+				child := mcpProfileKey(k, p, definition)
 				if stopErr := s.Options.Runtime.Stop(ctx, child); stopErr != nil {
 					stopErrors = append(stopErrors, stopErr)
 				}
@@ -925,12 +990,15 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 			return out, e
 		}
 		answerKey := k
-		if len(p.MCPs) > 0 {
-			if q.MCP != "" {
-				k.MCP = q.MCP
-			} else if len(definitions) == 1 {
-				k.MCP = definitions[0].Name
+		if q.MCP != "" {
+			for _, definition := range definitions {
+				if definition.Name == q.MCP {
+					k = mcpProfileKey(k, p, definition)
+					break
+				}
 			}
+		} else if len(definitions) == 1 {
+			k = mcpProfileKey(k, p, definitions[0])
 		}
 		err = s.Store.WithLock(ctx, func() error {
 			if e := s.rememberSource(); e != nil {
@@ -947,12 +1015,8 @@ func (s *Service) MCP(ctx context.Context, q MCPRequest) (out Result, err error)
 					}
 				}
 				for _, definition := range startDefinitions {
-					child, childPackage := k, p
-					childPackage.MCP = &definition
-					if q.MCP == "" && len(p.MCPs) > 0 {
-						child.MCP = definition.Name
-					}
-					i, startErr := s.start(ctx, childPackage, t, child, values, q.Interactive)
+					child := mcpProfileKey(k, p, definition)
+					i, startErr := s.startProfile(ctx, p, definition, t, child, values, q.Interactive)
 					if startErr != nil {
 						return startErr
 					}

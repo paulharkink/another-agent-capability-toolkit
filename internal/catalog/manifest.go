@@ -12,6 +12,7 @@ import (
 )
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func Load(dir string) (Package, error) {
 	abs, err := filepath.Abs(dir)
@@ -150,6 +151,75 @@ func Validate(p Package) error {
 		}
 	}
 	for _, mcp := range p.MCPDefinitions() {
+		if mcp.EnabledInput != "" {
+			input, ok := inputsByName[mcp.EnabledInput]
+			if !ok {
+				return fmt.Errorf("mcp %s enabled_input %q does not name a package input", mcp.Name, mcp.EnabledInput)
+			}
+			if input.Type != "boolean" {
+				return fmt.Errorf("mcp %s enabled_input %q must be boolean", mcp.Name, mcp.EnabledInput)
+			}
+		}
+		for _, ref := range []struct{ field, name, wantType string }{
+			{"token_input", mcp.TokenInput, "secret"},
+			{"token_file_input", mcp.TokenFileInput, "file"},
+			{"token_env_input", mcp.TokenEnvInput, "string"},
+		} {
+			if ref.name == "" {
+				continue
+			}
+			input, ok := inputsByName[ref.name]
+			if !ok || input.Type != ref.wantType {
+				return fmt.Errorf("mcp %s %s %q must reference a declared %s input", mcp.Name, ref.field, ref.name, ref.wantType)
+			}
+		}
+		if mcp.TokenHeader != "" && mcp.TokenContainerEnv != "" {
+			return fmt.Errorf("mcp %s cannot set both token_header and token_container_env", mcp.Name)
+		}
+		if mcp.TokenHeader != "" && mcp.TokenInput == "" && mcp.TokenFileInput == "" && mcp.TokenEnvInput == "" {
+			return fmt.Errorf("mcp %s token_header requires a token source input", mcp.Name)
+		}
+		if mcp.TokenHeader != "" && (strings.TrimSpace(mcp.TokenHeader) != mcp.TokenHeader || strings.ContainsAny(mcp.TokenHeader, ":\r\n\x00")) {
+			return fmt.Errorf("mcp %s token_header must be a valid HTTP header name", mcp.Name)
+		}
+		if strings.ContainsAny(mcp.TokenPrefix, "\r\n\x00") {
+			return fmt.Errorf("mcp %s token_prefix cannot contain line breaks or NUL", mcp.Name)
+		}
+		if mcp.TokenContainerEnv != "" {
+			if mcp.TokenInput == "" && mcp.TokenFileInput == "" && mcp.TokenEnvInput == "" {
+				return fmt.Errorf("mcp %s token_container_env requires a token source input", mcp.Name)
+			}
+			if !environmentName.MatchString(mcp.TokenContainerEnv) {
+				return fmt.Errorf("mcp %s token_container_env has invalid environment variable name %q", mcp.Name, mcp.TokenContainerEnv)
+			}
+		}
+		usedEnvironment := map[string]bool{}
+		for name := range mcp.Env {
+			if !environmentName.MatchString(name) {
+				return fmt.Errorf("mcp %s env has invalid environment variable name %q", mcp.Name, name)
+			}
+			usedEnvironment[name] = true
+		}
+		for name, inputName := range mcp.EnvInputs {
+			if !environmentName.MatchString(name) || usedEnvironment[name] {
+				return fmt.Errorf("mcp %s env_inputs has invalid or duplicate environment variable %q", mcp.Name, name)
+			}
+			usedEnvironment[name] = true
+			input, ok := inputsByName[inputName]
+			if !ok || input.Type == "secret" || input.Type == "file" || input.Type == "directory" || input.Type == "multichoice" || input.Type == "multiple-choice" {
+				return fmt.Errorf("mcp %s env_inputs %s must reference a declared non-secret scalar input", mcp.Name, name)
+			}
+		}
+		for name, inputName := range mcp.SecretEnvInputs {
+			if !environmentName.MatchString(name) || usedEnvironment[name] {
+				return fmt.Errorf("mcp %s secret_env_inputs has invalid or duplicate environment variable %q", mcp.Name, name)
+			}
+			usedEnvironment[name] = true
+			input, ok := inputsByName[inputName]
+			if !ok || input.Type != "secret" {
+				return fmt.Errorf("mcp %s secret_env_inputs %s must reference a declared secret input", mcp.Name, name)
+			}
+		}
 		if mcp.RegistrationNameInput == "" {
 			continue
 		}

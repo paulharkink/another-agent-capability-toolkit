@@ -453,7 +453,7 @@ type recordingUIRunBackend struct {
 	action string
 }
 
-func (b *recordingUIRunBackend) UIRun(_ context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error) {
+func (b *recordingUIRunBackend) UIRun(_ context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error) {
 	b.action = action
 	return "ok", nil
 }

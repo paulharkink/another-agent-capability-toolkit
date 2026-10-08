@@ -641,7 +641,7 @@ func TestUIUninstallUsesPersistedCustomAgentHome(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "generic:work", "", "default")
+	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "generic:work", "", "default")
 	if e != nil {
 		t.Fatal(e)
 	}

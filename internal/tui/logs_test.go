@@ -73,9 +73,9 @@ func (b *logWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.S
 	return b.setup.UIInstall(ctx, request)
 }
 
-func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, _, environment, target string) (string, error) {
+func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, profile, _, environment, target string) (string, error) {
 	b.actions = append(b.actions, action)
-	b.key = state.Key{Source: source, Package: packageID, Environment: environment, Target: target}
+	b.key = state.Key{Source: source, Package: packageID, Profile: profile, Environment: environment, Target: target}
 	return b.logs, b.err
 }
 

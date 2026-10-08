@@ -31,7 +31,7 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 		if instance.Ownership != "local" {
 			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
 		}
-		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP})
+		result, err := source.MCP(ctx, MCPRequest{Action: "logs", Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP, Profile: key.Profile})
 		return result.Logs, err
 	}
 	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
@@ -45,7 +45,7 @@ func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key
 		return "", err
 	}
 	result, err := source.MCP(ctx, MCPRequest{
-		Action: action, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP,
+		Action: action, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: key.MCP, Profile: key.Profile,
 	})
 	if err != nil {
 		return "", err
@@ -98,8 +98,12 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		if k.Source == s.Source.ID {
 			for _, packageInfo := range s.Source.Catalog {
 				if packageInfo.ID == k.Package {
+					profileName := k.Profile
+					if profileName == "" {
+						profileName = k.MCP
+					}
 					for _, definition := range packageInfo.MCPDefinitions() {
-						if (len(packageInfo.MCPs) == 0 && k.MCP == "") || definition.Name == k.MCP {
+						if (len(packageInfo.MCPs) == 0 && profileName == "") || definition.Name == profileName {
 							profile.Transport = definition.Transport
 							break
 						}

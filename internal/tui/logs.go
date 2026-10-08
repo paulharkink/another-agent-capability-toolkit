@@ -79,7 +79,7 @@ func (m *Model) fetchLogs(_ uint64) tea.Cmd {
 		if logs, ok := backend.(profileLogsBackend); ok {
 			content, err = logs.UIProfileLogs(ctx, key)
 		} else {
-			content, err = backend.UIRun(ctx, "logs", key.Source, key.Package, "", key.Environment, key.Target)
+			content, err = backend.UIRun(ctx, "logs", key.Source, key.Package, key.Profile, "", key.Environment, key.Target)
 		}
 		return logsMsg{label: label, content: content, err: err, session: session}
 	}

@@ -149,6 +149,27 @@ func TestOpenCodeUpdatesExistingJSONAndJSONC(t *testing.T) {
 	}
 }
 
+func TestHTTPRegistrationIncludesHeadersForOpenCodeClaudeAndGeneric(t *testing.T) {
+	for _, kind := range []string{"opencode", "claude", "generic"} {
+		t.Run(kind, func(t *testing.T) {
+			adapter, _ := For(kind, nil)
+			jsonConfig, ok := adapter.(jsonAdapter)
+			if !ok {
+				t.Fatalf("%s adapter is not JSON-backed", kind)
+			}
+			registration := Registration{
+				Name: "git-provider-github", URL: "http://127.0.0.1:8080/mcp", Transport: "http",
+				Headers: map[string]string{"Authorization": "Bearer test-token"},
+			}
+			value := jsonConfig.value(registration)
+			headers, ok := value["headers"].(map[string]string)
+			if !ok || headers["Authorization"] != "Bearer test-token" {
+				t.Fatalf("registration headers were not serialized: %#v", value)
+			}
+		})
+	}
+}
+
 func TestOpenCodeJSONCOnlyDoesNotCreateJSON(t *testing.T) {
 	a, e := configFixture(t, "opencode", "")
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"

@@ -776,7 +776,7 @@ func TestUXRunStartAndAuthenticateNeverInvokeLegacyEditor(t *testing.T) {
 			if action == "start" {
 				svc.Options.Runtime = &fakeRuntime{}
 			}
-			if _, err := svc.UIRun(context.Background(), action, "fixture", "demo", "", "", "default"); err != nil {
+			if _, err := svc.UIRun(context.Background(), action, "fixture", "demo", "", "", "", "default"); err != nil {
 				t.Fatal(err)
 			}
 			if editorCalls != 0 {

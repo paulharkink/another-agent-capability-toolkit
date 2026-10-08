@@ -16,16 +16,21 @@ type Package struct {
 }
 
 func (p Package) MCPDefinitions() []MCP {
-	if len(p.MCPs) > 0 {
-		return append([]MCP(nil), p.MCPs...)
-	}
-	if p.MCP != nil {
-		return []MCP{*p.MCP}
-	}
-	return nil
+	return p.MCPProfiles()
 }
 
-func (p Package) HasMCP() bool { return p.MCP != nil || len(p.MCPs) > 0 }
+func (p Package) HasMCP() bool { return len(p.MCPProfiles()) > 0 }
+
+// MCPProfiles returns every declared MCP in declaration order while retaining
+// compatibility with the original single [mcp] manifest form.
+func (p Package) MCPProfiles() []MCP {
+	profiles := make([]MCP, 0, len(p.MCPs)+1)
+	if p.MCP != nil {
+		profiles = append(profiles, *p.MCP)
+	}
+	profiles = append(profiles, p.MCPs...)
+	return profiles
+}
 
 type Presentation struct {
 	Sections []Section `toml:"sections" json:"sections"`
@@ -73,7 +78,18 @@ type Command struct {
 }
 type MCP struct {
 	Name                  string             `toml:"name" json:"name"`
+	EnabledInput          string             `toml:"enabled_input" json:"enabled_input,omitempty"`
 	RegistrationNameInput string             `toml:"registration_name_input" json:"registration_name_input,omitempty"`
+	TokenInput            string             `toml:"token_input" json:"token_input,omitempty"`
+	TokenFileInput        string             `toml:"token_file_input" json:"token_file_input,omitempty"`
+	TokenEnvInput         string             `toml:"token_env_input" json:"token_env_input,omitempty"`
+	TokenHeader           string             `toml:"token_header" json:"token_header,omitempty"`
+	TokenPrefix           string             `toml:"token_prefix" json:"token_prefix,omitempty"`
+	TokenContainerEnv     string             `toml:"token_container_env" json:"token_container_env,omitempty"`
+	Args                  []string           `toml:"args" json:"args,omitempty"`
+	Env                   map[string]string  `toml:"env" json:"env,omitempty"`
+	EnvInputs             map[string]string  `toml:"env_inputs" json:"env_inputs,omitempty"`
+	SecretEnvInputs       map[string]string  `toml:"secret_env_inputs" json:"secret_env_inputs,omitempty"`
 	Runtime               string             `toml:"runtime" json:"runtime"`
 	BuildContext          string             `toml:"build_context" json:"build_context"`
 	Image                 string             `toml:"image" json:"image"`

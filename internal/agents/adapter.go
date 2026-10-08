@@ -49,5 +49,13 @@ func validate(r Registration) error {
 	if r.TimeoutMS < 0 {
 		return errors.New("MCP timeout must not be negative")
 	}
+	for name, value := range r.Headers {
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n\x00:") {
+			return errors.New("MCP request header has an invalid name")
+		}
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("MCP request header %q has an invalid value", name)
+		}
+	}
 	return nil
 }

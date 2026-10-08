@@ -298,7 +298,7 @@ func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	}
 	return labels, nil
 }
-func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error) {
+func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error) {
 	if action == "locate-source" {
 		if err := s.UILocateSource(ctx, sourceID, target); err != nil {
 			return "", err
@@ -366,7 +366,7 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 			out, e = svc.Uninstall(ctx, q)
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Interactive: false})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Profile: profile, Interactive: false})
 	}
 	if out.Logs != "" {
 		return out.Logs, e

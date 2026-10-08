@@ -24,12 +24,16 @@ type Key struct {
 	Environment string `json:"environment"`
 	Target      string `json:"target"`
 	MCP         string `json:"mcp,omitempty"`
+	Profile     string `json:"profile,omitempty"`
 }
 
 func (k Key) ID() string {
 	parts := []string{k.Source, k.Package, k.Environment, k.Target}
 	if k.MCP != "" {
 		parts = append(parts, k.MCP)
+	}
+	if k.Profile != "" {
+		parts = append(parts, k.Profile)
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:])
