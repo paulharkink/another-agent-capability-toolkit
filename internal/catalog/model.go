@@ -2,17 +2,21 @@ package catalog
 
 // Package declares the components and typed inputs of a catalog entry.
 type Package struct {
-	SchemaVersion int           `toml:"schema_version" json:"schema_version"`
-	ID            string        `toml:"id" json:"id"`
-	Name          string        `toml:"name" json:"name"`
-	Dir           string        `toml:"-" json:"dir"`
-	Skill         *Skill        `toml:"skill" json:"skill"`
-	MCP           *MCP          `toml:"mcp" json:"mcp"`
-	MCPs          []MCP         `toml:"mcps" json:"mcps"`
-	UI            *Presentation `toml:"ui" json:"ui"`
-	Inputs        []Input       `toml:"inputs" json:"inputs"`
-	Templates     []Template    `toml:"templates" json:"templates"`
-	Generator     *Command      `toml:"generator" json:"generator"`
+	SchemaVersion int            `toml:"schema_version" json:"schema_version"`
+	ID            string         `toml:"id" json:"id"`
+	Name          string         `toml:"name" json:"name"`
+	Dir           string         `toml:"-" json:"dir"`
+	Skill         *Skill         `toml:"skill" json:"skill"`
+	Skills        []Skill        `toml:"skills" json:"skills,omitempty"`
+	Plugins       []Plugin       `toml:"plugins" json:"plugins,omitempty"`
+	Sets          []ComponentSet `toml:"-" json:"sets,omitempty"`
+	ManifestID    string         `toml:"-" json:"manifest_id,omitempty"`
+	MCP           *MCP           `toml:"mcp" json:"mcp"`
+	MCPs          []MCP          `toml:"mcps" json:"mcps"`
+	UI            *Presentation  `toml:"ui" json:"ui"`
+	Inputs        []Input        `toml:"inputs" json:"inputs"`
+	Templates     []Template     `toml:"templates" json:"templates"`
+	Generator     *Command       `toml:"generator" json:"generator"`
 }
 
 func (p Package) MCPDefinitions() []MCP {
@@ -41,8 +45,17 @@ type Section struct {
 	Fields []string `toml:"fields" json:"fields"`
 }
 type Skill struct {
-	Name  string   `toml:"name" json:"name"`
-	Files []string `toml:"files" json:"files"`
+	Name      string     `toml:"name" json:"name"`
+	Source    string     `toml:"source" json:"source"`
+	Files     []string   `toml:"files" json:"files"`
+	Templates []Template `toml:"templates" json:"templates,omitempty"`
+	Generator *Command   `toml:"generator" json:"generator,omitempty"`
+}
+type Plugin struct {
+	Name         string `toml:"name" json:"name"`
+	Format       string `toml:"format" json:"format"`
+	Source       string `toml:"source" json:"source"`
+	EnabledInput string `toml:"enabled_input" json:"enabled_input,omitempty"`
 }
 type Input struct {
 	Name           string         `toml:"name" json:"name"`
