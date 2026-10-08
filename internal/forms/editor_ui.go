@@ -2574,3 +2574,17 @@ func (m *FormModel) View() tea.View {
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
+
+// SetChoices updates dynamic availability without changing selection or dirty state.
+func (m *FormModel) SetChoices(name string, choices []catalog.Choice) {
+	for i := range m.defs {
+		if m.defs[i].Name == name {
+			m.defs[i].Options = append([]catalog.Choice(nil), choices...)
+		}
+	}
+	for i := range m.editor.defs {
+		if m.editor.defs[i].Name == name {
+			m.editor.defs[i].Options = append([]catalog.Choice(nil), choices...)
+		}
+	}
+}

@@ -480,6 +480,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.workspace.Preview = &stored
 	sections := workspaceFormSections(preview, m.form.Definitions(), m.pendingSetupField)
 	m.form.SetSections(sections...)
+	m.configureComponentActions()
 	m.form.SetSectionHeading("Workspace sections")
 	if m.workspace.Section == "" {
 		m.workspace.Section = "Agents"
@@ -617,6 +618,9 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 	ordered := make([]string, 0, len(defs))
 	hasDestination := false
 	for _, def := range defs {
+		if def.Name == preview.ItemFieldName {
+			continue
+		}
 		if def.Name == destinationField {
 			hasDestination = true
 			continue
@@ -639,6 +643,9 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 		}
 	} else if len(ordered) > 0 {
 		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
+	}
+	if preview.ItemFieldName != "" {
+		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
 	}
 	var agentFields []string
 	if hasDestination {

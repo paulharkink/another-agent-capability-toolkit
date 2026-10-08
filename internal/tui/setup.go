@@ -195,6 +195,7 @@ func copyProfileSnapshot(snapshot *viewmodel.ProfileSnapshot) *viewmodel.Profile
 }
 
 type setupRetryDraft struct {
+	itemField        string
 	preview          viewmodel.SetupPreview
 	values           map[string]any
 	resetInputs      []string
@@ -209,6 +210,9 @@ type setupRetryDraft struct {
 func (m *Model) achievedDestinationIDs(draft *setupRetryDraft, result *viewmodel.OperationResult) []string {
 	if draft == nil || result == nil || draft.destinationField == "" {
 		return nil
+	}
+	if draft.itemField != "" {
+		return achievedComponentDestinations(draft, result)
 	}
 	requested, _ := draft.values[draft.destinationField].([]string)
 	if len(requested) == 0 {
@@ -344,7 +348,10 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		if requiresNamedDestination && strings.EqualFold(destination.ID, "all") {
 			continue
 		}
-		name := destination.ID
+		name := destination.Name
+		if name == "" {
+			name = destination.ID
+		}
 		switch strings.ToLower(name) {
 		case "all":
 			name = "All"
@@ -370,6 +377,26 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		values[destinationField] = selected
 	} else {
 		destinationField = ""
+	}
+	m.pendingSetupItemsField = ""
+	if len(preview.Items) > 0 {
+		field := "__aact_components"
+		for {
+			collision := false
+			for _, def := range defs {
+				if def.Name == field {
+					collision = true
+				}
+			}
+			if !collision {
+				break
+			}
+			field = "_" + field
+		}
+		m.pendingSetupItemsField = field
+		preview.ItemFieldName = field
+		defs = append(defs, catalog.Input{Name: field, Label: "Capability components", Type: "multichoice", Options: componentOptions(preview, selected)})
+		values[field] = append([]string{}, preview.SelectedItemIDs...)
 	}
 	replayValues := make(map[string]any, len(overrides))
 	for name, value := range overrides {
@@ -422,7 +449,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 			m.form.SetDisabled(input.Definition.Name, fixed+" is fixed by target")
 			continue
 		}
-		if input.Provenance == "saved" {
+		if input.Provenance == "saved" || input.Provenance == "Saved override" {
 			name := input.Definition.Name
 			m.form.SetResetValue(name, input.InheritedValue, input.HasInheritedValue)
 			inheritedOrigin := input.InheritedOrigin
@@ -446,6 +473,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 	// Preview values and synthetic destination controls define the initial
 	// resolved state. Replayed overrides/drafts are the only changes that should
 	// appear in the unsaved summary.
+	m.configureComponentActions()
 	m.form.MarkClean()
 	if len(replayValues) > 0 {
 		if err := m.form.ApplyValues(replayValues); err != nil {
@@ -583,7 +611,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	m.pendingSetup = nil
 	destinations, _ := values[destinationField].([]string)
 	m.pendingSetupField = ""
-	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, origin: origin, section: section}
+	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, itemField: m.pendingSetupItemsField, origin: origin, section: section}
 	m.setupOperationPending = true
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
@@ -600,6 +628,11 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	if m.profileMode() {
 		request.SetupRequest = m.packProfileRequest(preview.Key)
+	}
+	if m.pendingSetupItemsField != "" {
+		items, _ := values[m.pendingSetupItemsField].([]string)
+		request.ItemIDs = make([]string, len(items))
+		copy(request.ItemIDs, items)
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		var profiles []viewmodel.Profile

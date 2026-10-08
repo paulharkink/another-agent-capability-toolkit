@@ -95,3 +95,8 @@ func configurationRuntimeProfile(p viewmodel.CapabilityProfile, r viewmodel.Runt
 type configurationProfileRunBackend interface {
 	UIConfigurationProfileRun(context.Context, string, config.ProfileRef, string) (string, error)
 }
+
+type packAgentManagementBackend interface {
+	UIPackAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
+	UIPackAgentConfig(context.Context, string, string) (string, error)
+}

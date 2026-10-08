@@ -200,7 +200,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		return viewmodel.SetupPreview{}, err
 	}
 	values, inherited, err := s.profileValues(p, pr, key, q)
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions()}
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions()}
 	if p.UI != nil {
 		preview.Sections = p.UI.Sections
 		preview.HasManifestUI = len(p.UI.Sections) > 0
@@ -264,13 +264,41 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	if err != nil {
 		return preview, err
 	}
+	destinationIDs := q.DestinationIDs
+	hadSelection := false
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			hadSelection = true
+			if destinationIDs == nil {
+				destinationIDs = record.Selection.DestinationIDs
+			}
+		}
+	}
+	if destinationIDs == nil && !hadSelection {
+		settings, e := s.UISettings(ctx)
+		if e != nil {
+			return preview, e
+		}
+		for _, id := range strings.Split(settings["default_agents"], ",") {
+			if id != "" {
+				destinationIDs = append(destinationIDs, id)
+			}
+		}
+		if len(destinationIDs) == 0 && !p.HasMCP() && len(p.Plugins) == 0 {
+			destinationIDs = []string{"generic"}
+		}
+	}
+	achievedRows, e := s.Store.Installations()
+	if e != nil {
+		return preview, e
+	}
 	for _, a := range s.adapterRegistry().Adapters() {
 		features := a.Features()
 		if p.HasMCP() && !features.MCPs {
 			continue
 		}
 		d, e := a.Detect(ctx, s.agentScope(a.ID()))
-		row := viewmodel.SetupDestination{ID: a.ID(), Kind: a.ID(), Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(q.DestinationIDs, a.ID())}
+		row := viewmodel.SetupDestination{Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath, Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID())}
 		if e != nil {
 			row.DisabledReason = e.Error()
 		} else if !d.Installed {
@@ -279,6 +307,18 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		for _, f := range d.ConfigFiles {
 			if f.Precedence == "effective" || row.ConfigPath == "" {
 				row.ConfigPath = f.Path
+			}
+		}
+		for _, id := range destinationIDs {
+			selectedAdapter, e := s.adapterRegistry().Adapter(id)
+			if e == nil && selectedAdapter.ID() == a.ID() {
+				row.Selected = true
+				if hadSelection {
+					scope := s.agentScope(id)
+					scope.ID = id
+					observation, e := a.Observe(ctx, scope, agents.ObservationRequest{Key: key, Managed: profileManagedRows(achievedRows, key, id)})
+					row.Selected = e == nil && observedSelectionComplete(p, preview.SelectedItemIDs, values, key, observation)
+				}
 			}
 		}
 		preview.Destinations = append(preview.Destinations, row)
@@ -723,4 +763,55 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		err = invalid(fmt.Errorf("unknown MCP action %q", action))
 	}
 	return out, err
+}
+
+func profileManagedRows(rows []state.Installation, key state.Key, id string) []state.Installation {
+	result := []state.Installation{}
+	for _, r := range rows {
+		if r.AgentID == id && sameCapabilityKey(r.Key, key) {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+func observedSelectionComplete(p catalog.Package, ids []string, values map[string]any, key state.Key, o agents.Observation) bool {
+	items, _, err := componentSelection(p, values, ids, false)
+	if err != nil || len(items) == 0 {
+		return false
+	}
+	installed := func(kind, name string) bool {
+		for _, c := range o.Components {
+			if c.Kind == kind && c.Status == "installed" && (c.Name == name || c.RegistrationName == name) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, item := range items {
+		for _, name := range item.Skills {
+			if !installed("skill", name) {
+				return false
+			}
+		}
+		for _, name := range item.MCPs {
+			for _, d := range p.MCPDefinitions() {
+				if d.Name == name {
+					registration, e := declaredRegistrationName(d, mcpProfileKey(key, p, d), values)
+					if e != nil || !installed("mcp", registration) {
+						return false
+					}
+				}
+			}
+		}
+		for _, name := range item.Plugins {
+			present := false
+			for _, c := range o.Components {
+				present = present || (c.Kind == "plugin" && c.Status == "installed" && (c.Name == name || strings.HasPrefix(c.Name, name+"@")))
+			}
+			if !present {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -483,7 +483,13 @@ func (m *Model) activateAgentDetail() tea.Cmd {
 	path := row.ConfigFiles[candidateIndex].Path
 	m.management.ViewerReturn = ""
 	return func() tea.Msg {
-		content, err := backend.UIAgentConfig(m.ctx, row.ID, path)
+		var content string
+		var err error
+		if pack, ok := m.backend.(packAgentManagementBackend); ok {
+			content, err = pack.UIPackAgentConfig(m.ctx, row.ID, path)
+		} else {
+			content, err = backend.UIAgentConfig(m.ctx, row.ID, path)
+		}
 		return agentConfigMsg{path: path, content: content, err: err}
 	}
 }

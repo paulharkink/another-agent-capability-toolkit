@@ -40,6 +40,7 @@ type profileRunBackend interface {
 	UIProfileRun(context.Context, string, state.Key) (string, error)
 }
 type Model struct {
+	pendingSetupItemsField     string
 	capabilityProfiles         map[string]viewmodel.CapabilityProfileSnapshot
 	creatingProfile            *config.ProfileRef
 	home                       homeState
@@ -185,7 +186,12 @@ func (m *Model) load() tea.Cmd {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if managementBackend, ok := backend.(agentManagementBackend); ok {
+		if managementBackend, ok := backend.(packAgentManagementBackend); ok {
+			msg.agentManagement, e = managementBackend.UIPackAgentManagement(ctx)
+			if e != nil {
+				errs = append(errs, e)
+			}
+		} else if managementBackend, ok := backend.(agentManagementBackend); ok {
 			msg.agentManagement, e = managementBackend.UIAgentManagement(ctx)
 			if e != nil {
 				errs = append(errs, e)
@@ -391,6 +397,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseMsg:
 			return m, nil
 		}
+	}
+	if action, ok := msg.(forms.ActionMsg); ok && action.SectionID == sectionComponentsID && action.ID == "select-all-skills" {
+		m.selectAllSkills()
+		return m, nil
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
 		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Profile != nil {
@@ -598,6 +608,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
+		m.refreshComponentAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
 			if m.unsavedExitApplying {

@@ -29,14 +29,16 @@ type SetupInput struct {
 }
 
 type SetupDestination struct {
-	Features                                                agents.FeatureSet
-	ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
-	DisabledReason                                          string
-	Path                                                    string
-	Selected                                                bool
+	Features                                                      agents.FeatureSet
+	Name, ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
+	DisabledReason                                                string
+	Path                                                          string
+	Selected                                                      bool
 }
 
 type SetupPreview struct {
+	ItemFieldName                                     string
+	PluginDefinitions                                 []catalog.Plugin
 	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
 	Items                                             []catalog.InstallationItem
 	SelectedItemIDs, ValidationIssues                 []string
