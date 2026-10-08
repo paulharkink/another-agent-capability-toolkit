@@ -627,6 +627,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		if !m.unsavedExitApplying {
+			if m.pendingSetup != nil {
+				m.pendingSetup.ActiveInputGroups = m.form.ActiveInputGroups()
+			}
 			m.form = nil
 			m.management.FormOverlay = false
 		}

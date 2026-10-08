@@ -107,6 +107,94 @@ func TestSourceScopedAnswers(t *testing.T) {
 		t.Fatalf("other source got=%v err=%v", two, err)
 	}
 }
+
+func TestActiveInputGroupsSurviveAnswerStoreReopenWithoutSecretValues(t *testing.T) {
+	root := t.TempDir()
+	key := sampleKey("fixture")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveAnswersWithActiveInputGroups(key, map[string]any{"kubeconfig": ""}, map[string]string{"credential-source": "token"}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := reopened.Answers(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := values["token"]; ok {
+		t.Fatalf("secret input persisted: %#v", values)
+	}
+	if value, ok := values["kubeconfig"]; !ok || value != "" {
+		t.Fatalf("empty alternate credential was not preserved: %#v", values)
+	}
+	groups, err := reopened.ActiveInputGroups(key)
+	if err != nil || groups["credential-source"] != "token" {
+		t.Fatalf("active groups = %#v, %v", groups, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "answers", key.ID()+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "raw-secret") {
+		t.Fatalf("secret material found in state: %s", raw)
+	}
+}
+
+func TestPendingAuthInputGroupsArePerMCPAndSurviveOrdinaryAnswerWrites(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := sampleKey("fixture")
+	if err = store.SaveAnswersWithActiveInputGroups(key, map[string]any{"source_document": ""}, map[string]string{"credential-choice": "source_document"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpdatePendingAuthInputGroups(key, "mcp-a", map[string]string{"credential-choice": "source_document"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpdatePendingAuthInputGroups(key, "mcp-b", map[string]string{"credential-choice": "other_method"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpdatePendingAuthInputGroups(key, "mcp-a", map[string]string{"credential-choice": "newer_method"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveAnswers(key, map[string]any{"unrelated": "value"}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(store.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := reopened.PendingAuthInputGroups(key, "mcp-a")
+	if err != nil || a["credential-choice"] != "newer_method" {
+		t.Fatalf("mcp-a pending groups = %#v, %v", a, err)
+	}
+	b, err := reopened.PendingAuthInputGroups(key, "mcp-b")
+	if err != nil || b["credential-choice"] != "other_method" {
+		t.Fatalf("mcp-b pending groups = %#v, %v", b, err)
+	}
+	if err = reopened.ClearPendingAuthInputGroups(key, "mcp-a", map[string]string{"credential-choice": "source_document"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = reopened.PendingAuthInputGroups(key, "mcp-a")
+	b, _ = reopened.PendingAuthInputGroups(key, "mcp-b")
+	if a["credential-choice"] != "newer_method" || b["credential-choice"] != "other_method" {
+		t.Fatalf("clearing one child changed another: a=%#v b=%#v", a, b)
+	}
+	if err = reopened.ClearPendingAuthInputGroups(key, "mcp-a", map[string]string{"credential-choice": "newer_method"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = reopened.PendingAuthInputGroups(key, "mcp-a")
+	b, _ = reopened.PendingAuthInputGroups(key, "mcp-b")
+	if len(a) != 0 || b["credential-choice"] != "other_method" {
+		t.Fatalf("matching clear changed wrong child: a=%#v b=%#v", a, b)
+	}
+}
 func TestUnsupportedWritePreservesPreviousAnswers(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	key := sampleKey("one")

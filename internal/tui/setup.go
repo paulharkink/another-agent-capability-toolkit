@@ -496,7 +496,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		for _, index := range indices {
 			names = append(names, preview.Inputs[index].Definition.Name)
 		}
-		m.form.SetExclusiveFields(names...)
+		m.form.SetActiveExclusiveGroup(group, preview.ActiveInputGroups[group], names...)
 	}
 	for _, input := range preview.Inputs {
 		if !input.Editable {
@@ -628,6 +628,26 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	preview := *m.pendingSetup
 	preview.Inputs = append([]viewmodel.SetupInput(nil), m.pendingSetup.Inputs...)
+	activeGroups := make(map[string]string, len(preview.ActiveInputGroups))
+	for group, input := range preview.ActiveInputGroups {
+		activeGroups[group] = input
+	}
+	if m.form != nil {
+		activeGroups = m.form.ActiveInputGroups()
+	}
+	for _, name := range resetInputs {
+		for _, input := range preview.Inputs {
+			if input.Definition.Name != name || input.Definition.ExclusiveGroup == "" {
+				continue
+			}
+			if activeGroups[input.Definition.ExclusiveGroup] == name {
+				activeGroups[input.Definition.ExclusiveGroup] = ""
+			}
+		}
+	}
+	if len(activeGroups) > 0 {
+		preview.ActiveInputGroups = activeGroups
+	}
 	reset := make(map[string]bool, len(resetInputs))
 	for _, name := range resetInputs {
 		reset[name] = true
@@ -681,7 +701,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: m.packProfileRequest(preview.Key),
-		Inputs:       inputs, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
+		Inputs:       inputs, ActiveInputGroups: activeGroups, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
 	}
 	if m.pendingSetupItemsField != "" {
 		items, _ := values[m.pendingSetupItemsField].([]string)

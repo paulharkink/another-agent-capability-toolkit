@@ -29,6 +29,7 @@ type AdapterProvider interface {
 type ProfileRequest struct {
 	Ref                                  config.ProfileRef
 	Inputs                               map[string]any
+	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
 	Interactive, SkillsOnly              bool
 	ExternalURLs                         map[string]string
@@ -255,6 +256,118 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 	values, err := forms.ResolvePartial(p.Inputs, inherited, input, fixed)
 	return values, inherited, invalidIf(err)
 }
+
+// effectiveActiveInputGroups resolves UI method metadata from declared
+// exclusive groups. Fixed profile values take precedence over submitted UI
+// metadata; legacy records fall back to a unique populated declared input.
+func effectiveActiveInputGroups(defs []catalog.Input, values, fixed map[string]any, explicit, saved map[string]string) map[string]string {
+	members := map[string]map[string]bool{}
+	for _, def := range defs {
+		if def.ExclusiveGroup != "" {
+			if members[def.ExclusiveGroup] == nil {
+				members[def.ExclusiveGroup] = map[string]bool{}
+			}
+			members[def.ExclusiveGroup][def.Name] = true
+		}
+	}
+	out := map[string]string{}
+	for group, groupMembers := range members {
+		for _, def := range defs {
+			if def.ExclusiveGroup == group {
+				if _, isFixed := fixed[def.Name]; isFixed && formsValueFilled(fixed[def.Name]) {
+					out[group] = def.Name
+					break
+				}
+			}
+		}
+		if out[group] != "" {
+			continue
+		}
+		if candidate, specified := explicit[group]; specified {
+			if groupMembers[candidate] {
+				if _, isFixed := fixed[candidate]; !isFixed || formsValueFilled(fixed[candidate]) {
+					out[group] = candidate
+					continue
+				}
+			}
+			if candidate == "" {
+				populated := ""
+				ambiguous := false
+				for _, def := range defs {
+					if def.ExclusiveGroup == group && formsValueFilled(values[def.Name]) {
+						if populated != "" {
+							ambiguous = true
+							break
+						}
+						populated = def.Name
+					}
+				}
+				if !ambiguous && populated != "" {
+					out[group] = populated
+				}
+				continue
+			}
+		}
+		populated := ""
+		ambiguous := false
+		for _, def := range defs {
+			if def.ExclusiveGroup == group && formsValueFilled(values[def.Name]) {
+				if populated != "" {
+					ambiguous = true
+					break
+				}
+				populated = def.Name
+			}
+		}
+		if !ambiguous && populated != "" {
+			out[group] = populated
+			continue
+		}
+		if candidate := saved[group]; groupMembers[candidate] {
+			if _, isFixed := fixed[candidate]; !isFixed || formsValueFilled(fixed[candidate]) {
+				out[group] = candidate
+			}
+		}
+	}
+	return out
+}
+
+func formsValueFilled(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []string:
+		return len(v) > 0
+	case bool:
+		return v
+	case nil:
+		return false
+	default:
+		return true
+	}
+}
+
+func validateActiveInputGroups(defs []catalog.Input, groups map[string]string) error {
+	declared := map[string]map[string]bool{}
+	for _, def := range defs {
+		if def.ExclusiveGroup == "" {
+			continue
+		}
+		if declared[def.ExclusiveGroup] == nil {
+			declared[def.ExclusiveGroup] = map[string]bool{}
+		}
+		declared[def.ExclusiveGroup][def.Name] = true
+	}
+	for group, input := range groups {
+		if input == "" {
+			continue
+		}
+		if !declared[group][input] {
+			return fmt.Errorf("active input %q is not a member of declared group %q", input, group)
+		}
+	}
+	return nil
+}
 func invalidIf(err error) error {
 	if err != nil {
 		return invalid(err)
@@ -275,6 +388,18 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	if err != nil {
 		return preview, err
 	}
+	storedGroups, err := s.Store.ActiveInputGroups(key)
+	if err != nil {
+		return preview, err
+	}
+	fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
+	if err != nil {
+		return preview, invalid(err)
+	}
+	if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
+		return preview, invalid(err)
+	}
+	preview.ActiveInputGroups = effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, storedGroups)
 	if p.UI != nil {
 		preview.Sections = p.UI.Sections
 		preview.HasManifestUI = len(p.UI.Sections) > 0
@@ -656,8 +781,16 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if err != nil {
 		return out, err
 	}
+	previousGroups, err := s.Store.ActiveInputGroups(key)
+	if err != nil {
+		return out, err
+	}
+	if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
+		return out, invalid(err)
+	}
+	activeGroups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
 	err = func() error {
-		if e := s.saveAnswersWithReset(key, p, values, q.SkillsOnly, q.ResetInputs); e != nil {
+		if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 			return e
 		}
 		return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
@@ -711,12 +844,29 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil
-		if _, yes := definition.Actions["authenticate"]; yes && needsProfileAuthentication(s, cp, child, values, previousAnswers) {
-			out.Step = "authenticate"
-			reportOperationStep(ctx, out.Step)
-			_, e := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+		if _, yes := definition.Actions["authenticate"]; yes {
+			changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
+			if len(changes) > 0 {
+				if e := s.Store.UpdatePendingAuthInputGroups(key, child.ID(), changes); e != nil {
+					return out, e
+				}
+			}
+			pendingGroups, e := s.Store.PendingAuthInputGroups(key, child.ID())
 			if e != nil {
 				return out, e
+			}
+			if needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
+				out.Step = "authenticate"
+				reportOperationStep(ctx, out.Step)
+				result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+				if e != nil {
+					return out, e
+				}
+				if !result.AuthRequired {
+					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+						return out, e
+					}
+				}
 			}
 		}
 		out.Step = "start"
@@ -1113,10 +1263,31 @@ func observedSelectionComplete(p catalog.Package, ids []string, values map[strin
 	return true
 }
 
-func needsProfileAuthentication(s *Service, p catalog.Package, key state.Key, values, previous map[string]any) bool {
+func needsProfileAuthentication(s *Service, p catalog.Package, key state.Key, values, previous map[string]any, pendingGroups, activeGroups map[string]string) bool {
 	status, _ := s.credentialObservation(p, key)
 	if status != "present" {
 		return true
 	}
+	for group, method := range activeGroups {
+		if method != "" && pendingGroups[group] == method {
+			return true
+		}
+	}
 	return hasSubmittedAuthentication(s, p, key, values, previous)
+}
+
+func changedActiveInputGroups(defs []catalog.Input, previous, current map[string]string) map[string]string {
+	changes := map[string]string{}
+	groups := map[string]bool{}
+	for _, def := range defs {
+		if def.ExclusiveGroup != "" {
+			groups[def.ExclusiveGroup] = true
+		}
+	}
+	for group := range groups {
+		if previous[group] != current[group] {
+			changes[group] = current[group]
+		}
+	}
+	return changes
 }

@@ -70,6 +70,8 @@ type FormModel struct {
 	area                        int
 	actionIndex                 int
 	exclusive                   map[string][]string
+	exclusiveGroup              map[string]string
+	activeGroups                map[string]string
 	visibilityContext           map[string]any
 	resetValues                 map[string]resetValue
 	resetApplied                map[string]bool
@@ -551,12 +553,7 @@ func (m *FormModel) FocusSection() {
 // the group while leaving every field directly focusable.
 func (m *FormModel) SetExclusiveFields(names ...string) {
 	values := m.editor.Values()
-	active := ""
-	for _, name := range names {
-		if value, ok := values[name].(string); ok && strings.TrimSpace(value) != "" {
-			active = name
-		}
-	}
+	group := ""
 	for _, name := range names {
 		if m.exclusive == nil {
 			m.exclusive = map[string][]string{}
@@ -568,13 +565,70 @@ func (m *FormModel) SetExclusiveFields(names ...string) {
 			}
 		}
 		m.exclusive[name] = others
+		if def, err := m.editor.definition(name); err == nil && def.ExclusiveGroup != "" {
+			group = def.ExclusiveGroup
+			if m.exclusiveGroup == nil {
+				m.exclusiveGroup = map[string]string{}
+			}
+			m.exclusiveGroup[name] = def.ExclusiveGroup
+		}
+	}
+	active := ""
+	if selected := m.activeGroups[group]; group != "" {
+		for _, name := range names {
+			if name == selected {
+				active = selected
+				break
+			}
+		}
+	}
+	if active == "" {
+		for _, name := range names {
+			if value, ok := values[name].(string); ok && strings.TrimSpace(value) != "" {
+				active = name
+			}
+		}
 	}
 	if active != "" {
 		m.activateExclusive(active)
 	}
 }
 
+// SetActiveExclusiveGroup restores a declared method selection separately
+// from field values, which may omit a redacted secret.
+func (m *FormModel) SetActiveExclusiveGroup(group, active string, names ...string) {
+	valid := false
+	for _, name := range names {
+		if name == active {
+			valid = true
+			break
+		}
+	}
+	if valid {
+		if m.activeGroups == nil {
+			m.activeGroups = map[string]string{}
+		}
+		m.activeGroups[group] = active
+	}
+	m.SetExclusiveFields(names...)
+}
+
+// ActiveInputGroups returns the selected input name for each configured group.
+func (m *FormModel) ActiveInputGroups() map[string]string {
+	groups := make(map[string]string, len(m.activeGroups))
+	for group, input := range m.activeGroups {
+		groups[group] = input
+	}
+	return groups
+}
+
 func (m *FormModel) activateExclusive(name string) {
+	if group := m.exclusiveGroup[name]; group != "" {
+		if m.activeGroups == nil {
+			m.activeGroups = map[string]string{}
+		}
+		m.activeGroups[group] = name
+	}
 	for _, other := range m.exclusive[name] {
 		m.setError(m.editor.Apply(other, ""))
 	}
@@ -591,8 +645,11 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 	}
 	others, exclusive := m.exclusive[def.Name]
 	if exclusive {
-		active := ""
+		active := m.activeGroups[def.ExclusiveGroup]
 		for _, name := range append([]string{def.Name}, others...) {
+			if active != "" {
+				break
+			}
 			if value, ok := values[name].(string); ok && strings.TrimSpace(value) != "" {
 				active = name
 				break
@@ -607,6 +664,8 @@ func (m *FormModel) displayHint(def catalog.Input, values map[string]any) string
 			state = "Enter a value for " + label
 		} else if active != def.Name {
 			state = "Type a value to switch to " + label
+		} else if def.Type == "secret" && !filled(values[def.Name]) {
+			state += " · Re-enter to authenticate"
 		}
 		parts = append([]string{state}, parts...)
 	}
@@ -617,6 +676,9 @@ func (m *FormModel) exclusiveInactive(name string, values map[string]any) bool {
 	others, ok := m.exclusive[name]
 	if !ok {
 		return false
+	}
+	if active := m.activeGroups[m.exclusiveGroup[name]]; active != "" {
+		return active != name
 	}
 	for _, candidate := range append([]string{name}, others...) {
 		if value, ok := values[candidate].(string); ok && strings.TrimSpace(value) != "" {

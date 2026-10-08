@@ -165,6 +165,10 @@ func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]
 }
 
 func (s *Service) saveAnswersWithReset(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool, resetInputs []string) error {
+	return s.saveAnswersWithActiveGroups(k, p, values, skillsOnly, resetInputs, nil)
+}
+
+func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool, resetInputs []string, activeGroups map[string]string) error {
 	reset := make(map[string]bool, len(resetInputs))
 	for _, name := range resetInputs {
 		reset[name] = true
@@ -177,7 +181,7 @@ func (s *Service) saveAnswersWithReset(k state.Key, p catalog.Package, values ma
 			}
 		}
 	}
-	if err := s.Store.SaveAnswers(k, safe); err != nil {
+	if err := s.Store.SaveAnswersWithActiveInputGroups(k, safe, activeGroups); err != nil {
 		return err
 	}
 	if p.HasMCP() && !skillsOnly {

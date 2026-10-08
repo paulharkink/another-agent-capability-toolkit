@@ -84,10 +84,13 @@ func (a *uxCancelDuringRegisterAdapter) Unregister(ctx context.Context, scope ag
 }
 
 type uxActionExecutor struct {
-	calls  []uxActionCall
-	failOn string
-	stderr string
-	cancel context.CancelFunc
+	calls        []uxActionCall
+	failOn       string
+	stderr       string
+	cancel       context.CancelFunc
+	authRequired bool
+	authCalls    int
+	failNthAuth  int
 }
 
 type uxBlockingProgressExecutor struct {
@@ -136,6 +139,12 @@ func (e *uxActionExecutor) Run(_ context.Context, argv []string, _ string, input
 		return nil, err
 	}
 	e.calls = append(e.calls, call)
+	if call.Action == "authenticate" {
+		e.authCalls++
+		if e.failNthAuth > 0 && e.authCalls == e.failNthAuth {
+			return nil, errors.New("selected child auth failed")
+		}
+	}
 	if call.Action == e.failOn && e.cancel != nil {
 		e.cancel()
 		return nil, context.Canceled
@@ -148,6 +157,9 @@ func (e *uxActionExecutor) Run(_ context.Context, argv []string, _ string, input
 	}
 	if call.Action == "prepare" {
 		return []byte(`{"runtime":{"image":"fixture/image","host":"127.0.0.1","container_port":9000,"transport":"streamable-http","endpoint_path":"/mcp"}}`), nil
+	}
+	if call.Action == "authenticate" && e.authRequired {
+		return []byte(`{"auth_required":true}`), nil
 	}
 	_ = argv
 	return []byte(`{}`), nil
@@ -353,6 +365,258 @@ func TestUXSaveAuthFailureRetainsAnswersAndExactStderr(t *testing.T) {
 	}
 	if result.Step != "authenticate" || !strings.Contains(result.Target, "demo") || !strings.Contains(result.Target, "default") {
 		t.Fatalf("authentication failure omitted operation step/target: %#v", result)
+	}
+}
+
+func TestActiveCredentialMethodSurvivesFailedApplyAndProfileReopen(t *testing.T) {
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
+	secret := "opaque-credential-that-must-not-persist"
+	exec := &uxActionExecutor{failOn: "authenticate", stderr: "login refused"}
+	svc.Options.Runner = exec
+	svc.Options.Runtime = &fakeRuntime{}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Inputs = []catalog.Input{
+		{Name: "access_key", Type: "secret", ExclusiveGroup: "access_method", Required: true},
+		{Name: "source_document", Type: "file", ExclusiveGroup: "access_method"},
+	}
+	pkg.MCP = &catalog.MCP{Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{
+		Ref: ref, DestinationIDs: []string{agentID},
+		Inputs:            map[string]any{"access_key": secret, "source_document": ""},
+		ActiveInputGroups: map[string]string{"access_method": "access_key"},
+	})
+	if err == nil || result.Step != "authenticate" || !result.Saved {
+		t.Fatalf("failed auth result = %#v, %v", result, err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil || answers["access_key"] != nil {
+		t.Fatalf("secret persisted in answer values: %#v, %v", answers, err)
+	}
+	if value, ok := answers["source_document"]; !ok || value != "" {
+		t.Fatalf("empty alternate value was not preserved: %#v", answers)
+	}
+	groups, err := store.ActiveInputGroups(key)
+	if err != nil || groups["access_method"] != "access_key" {
+		t.Fatalf("active method = %#v, %v", groups, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(store.Root(), "answers", key.ID()+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("plain answer record leaked secret: %s", raw)
+	}
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil || preview.ActiveInputGroups["access_method"] != "access_key" {
+		t.Fatalf("reopened preview lost selected method: %#v, %v", preview.ActiveInputGroups, err)
+	}
+	for _, input := range preview.Inputs {
+		if input.Definition.Name == "access_key" && input.HasValue {
+			t.Fatalf("reopened preview synthesized a secret value: %#v", input)
+		}
+	}
+	exec.failOn = ""
+	result, err = svc.ApplyProfile(context.Background(), ProfileRequest{
+		Ref: ref, DestinationIDs: []string{agentID},
+		Inputs:            map[string]any{"access_key": secret, "source_document": ""},
+		ActiveInputGroups: preview.ActiveInputGroups,
+	})
+	if err != nil || !result.Saved {
+		t.Fatalf("retry with re-entered selected credential = %#v, %v", result, err)
+	}
+	if len(exec.calls) == 0 || exec.calls[len(exec.calls)-1].Action != "authenticate" || exec.calls[len(exec.calls)-1].Inputs["access_key"] != secret {
+		t.Fatalf("retry did not authenticate using the selected credential: %#v", exec.calls)
+	}
+}
+
+func TestActiveInputGroupResolutionUsesDeclaredMembersAndFixedProfileValues(t *testing.T) {
+	defs := []catalog.Input{
+		{Name: "key_material", Type: "secret", ExclusiveGroup: "credential-choice"},
+		{Name: "source_bundle", Type: "file", ExclusiveGroup: "credential-choice"},
+		{Name: "unrelated", Type: "string"},
+	}
+	values := map[string]any{"source_bundle": "/tmp/source"}
+	saved := map[string]string{"credential-choice": "key_material"}
+	if got := effectiveActiveInputGroups(defs, values, nil, nil, saved)["credential-choice"]; got != "source_bundle" {
+		t.Fatalf("legacy value inference = %q; want declared populated member", got)
+	}
+	if got := effectiveActiveInputGroups(defs, values, nil, map[string]string{"credential-choice": "key_material"}, saved)["credential-choice"]; got != "key_material" {
+		t.Fatalf("explicit group selection = %q; want key_material", got)
+	}
+	if got := effectiveActiveInputGroups(defs, values, map[string]any{"source_bundle": "/fixed"}, map[string]string{"credential-choice": "key_material"}, saved)["credential-choice"]; got != "source_bundle" {
+		t.Fatalf("fixed profile member lost precedence: %q", got)
+	}
+	if got := effectiveActiveInputGroups(defs, values, map[string]any{"source_bundle": "/fixed"}, map[string]string{"credential-choice": "key_material"}, map[string]string{"credential-choice": "key_material"})["credential-choice"]; got != "source_bundle" {
+		t.Fatalf("fixed profile member lost precedence over both form and saved selection: %q", got)
+	}
+	if err := validateActiveInputGroups(defs, map[string]string{"credential-choice": "unrelated"}); err == nil {
+		t.Fatal("input outside declared group was accepted")
+	}
+}
+
+func TestActiveInputGroupResolutionIgnoresFixedFalseMemberSelection(t *testing.T) {
+	defs := []catalog.Input{
+		{Name: "use_source", Type: "boolean", ExclusiveGroup: "credential-choice"},
+		{Name: "access_token", Type: "secret", ExclusiveGroup: "credential-choice"},
+	}
+	fixed := map[string]any{"use_source": false}
+	values := map[string]any{"use_source": false, "access_token": "secret"}
+
+	for _, tc := range []struct {
+		name     string
+		explicit map[string]string
+		saved    map[string]string
+	}{
+		{name: "explicit", explicit: map[string]string{"credential-choice": "use_source"}},
+		{name: "saved", saved: map[string]string{"credential-choice": "use_source"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveActiveInputGroups(defs, values, fixed, tc.explicit, tc.saved)
+			if got["credential-choice"] != "access_token" {
+				t.Fatalf("fixed false member displaced populated editable member: %#v", got)
+			}
+		})
+	}
+	if got := effectiveActiveInputGroups(defs, map[string]any{"use_source": false}, fixed, map[string]string{"credential-choice": "use_source"}, nil)["credential-choice"]; got != "" {
+		t.Fatalf("fixed false member was treated as an active auth method without an alternate: %q", got)
+	}
+	if got := effectiveActiveInputGroups(defs, map[string]any{"use_source": false}, fixed, nil, map[string]string{"credential-choice": "use_source"})["credential-choice"]; got != "" {
+		t.Fatalf("stale fixed false saved method was treated as active without an alternate: %q", got)
+	}
+	if got := effectiveActiveInputGroups(defs, map[string]any{}, fixed, map[string]string{"credential-choice": "access_token"}, nil)["credential-choice"]; got != "access_token" {
+		t.Fatalf("editable omitted secret could not remain selected for re-entry: %q", got)
+	}
+}
+
+func TestFixedEmptyStringInputPolicyIsRejected(t *testing.T) {
+	defs := []catalog.Input{{Name: "source_bundle", Type: "file", ExclusiveGroup: "credential-choice"}}
+	_, err := fixedTargetInputs(defs, config.Target{Path: "profile.toml", InputPolicy: map[string]string{"source_bundle": "fixed"}}, map[string]any{"source_bundle": ""})
+	if err == nil {
+		t.Fatal("fixed empty string should be rejected before active-method resolution")
+	}
+}
+
+func TestSwitchingCredentialMethodDoesNotReuseAnotherMethodsManagedCredential(t *testing.T) {
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
+	exec := &uxActionExecutor{failOn: "authenticate", stderr: "new method rejected"}
+	svc.Options.Runner = exec
+	svc.Options.Runtime = &fakeRuntime{}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Inputs = []catalog.Input{
+		{Name: "credential_a", Type: "secret", ExclusiveGroup: "credential-choice"},
+		{Name: "credential_b_file", Type: "file", ExclusiveGroup: "credential-choice"},
+	}
+	pkg.MCP = &catalog.MCP{Transport: "streamable-http", CredentialFiles: []string{"managed.bin"}, Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{}, map[string]string{"credential-choice": "credential_a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.AuthDir(key), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.AuthDir(key), "managed.bin"), []byte("old method material"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, ActiveInputGroups: map[string]string{"credential-choice": "credential_b_file"}}
+	if _, err := svc.ApplyProfile(context.Background(), request); err == nil || !strings.Contains(err.Error(), "new method rejected") {
+		t.Fatalf("switch did not attempt authentication: %v", err)
+	}
+	exec.failOn = ""
+	if _, err := svc.ApplyProfile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != 2 || exec.calls[0].Action != "authenticate" || exec.calls[1].Action != "authenticate" {
+		t.Fatalf("retry reused old method's managed material: %#v", exec.calls)
+	}
+}
+
+func TestPendingCredentialTransitionSurvivesAuthRequiredResult(t *testing.T) {
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
+	exec := &uxActionExecutor{authRequired: true}
+	svc.Options.Runner = exec
+	svc.Options.Runtime = &fakeRuntime{}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Inputs = []catalog.Input{
+		{Name: "auth_secret", Type: "secret", ExclusiveGroup: "auth_mode"},
+		{Name: "auth_source", Type: "file", ExclusiveGroup: "auth_mode"},
+	}
+	pkg.MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", CredentialFiles: []string{"managed.bin"}, Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{}, map[string]string{"auth_mode": "auth_secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.AuthDir(key), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.AuthDir(key), "managed.bin"), []byte("old method material"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, ActiveInputGroups: map[string]string{"auth_mode": "auth_source"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, *pkg, *pkg.MCP)
+	pending, err := store.PendingAuthInputGroups(key, child.ID())
+	if err != nil || pending["auth_mode"] != "auth_source" {
+		t.Fatalf("unresolved auth transition was cleared: %#v, %v", pending, err)
+	}
+}
+
+func TestPendingCredentialTransitionsAreIsolatedAcrossMCPChildren(t *testing.T) {
+	svc, _, store := fixture(t)
+	ref, agentID := profileTestAgent(t, svc, "opencode")
+	exec := &uxActionExecutor{failNthAuth: 2}
+	svc.Options.Runner = exec
+	svc.Options.Runtime = &fakeRuntime{}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.MCP = nil
+	pkg.Inputs = []catalog.Input{
+		{Name: "first_method", Type: "secret", ExclusiveGroup: "credential_mode"},
+		{Name: "second_method", Type: "file", ExclusiveGroup: "credential_mode"},
+	}
+	definitions := []catalog.MCP{
+		{Name: "alpha", Transport: "streamable-http", CredentialFiles: []string{"alpha.bin"}, Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"auth-alpha"}}}},
+		{Name: "beta", Transport: "streamable-http", CredentialFiles: []string{"beta.bin"}, Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"auth-beta"}}}},
+	}
+	pkg.MCPs = definitions
+	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{}, map[string]string{"credential_mode": "first_method"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range definitions {
+		child := mcpProfileKey(key, *pkg, definition)
+		if err := os.MkdirAll(store.AuthDir(child), 0700); err != nil {
+			t.Fatal(err)
+		}
+		filename := definition.CredentialFiles[0]
+		if err := os.WriteFile(filepath.Join(store.AuthDir(child), filename), []byte("old method material"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, ActiveInputGroups: map[string]string{"credential_mode": "second_method"}})
+	if err == nil || !strings.Contains(err.Error(), "selected child auth failed") {
+		t.Fatalf("second child failure not returned: %v", err)
+	}
+	alpha := mcpProfileKey(key, *pkg, definitions[0])
+	beta := mcpProfileKey(key, *pkg, definitions[1])
+	alphaPending, err := store.PendingAuthInputGroups(key, alpha.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	betaPending, err := store.PendingAuthInputGroups(key, beta.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alphaPending) != 0 || betaPending["credential_mode"] != "second_method" {
+		t.Fatalf("child transition markers crossed: alpha=%#v beta=%#v", alphaPending, betaPending)
 	}
 }
 
