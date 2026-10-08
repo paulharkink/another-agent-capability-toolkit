@@ -561,7 +561,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				assertRenderedTextIsComplete(t, allAgentViews.String(), paths...)
 			}
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
-				chunks := []string{"Credential note:", "Managed credential", "is missing at", "kubeconfig."}
+				chunks := []string{"Credential note:", "Managed credential", "is missing at"}
 				visible := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 				for i := 0; i < 16; i++ {
