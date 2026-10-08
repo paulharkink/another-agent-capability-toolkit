@@ -64,6 +64,9 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 	if err != nil {
 		return state.Installation{}, err
 	}
+	if d.MCPDisabledReason != "" {
+		return state.Installation{}, fmt.Errorf("%s", d.MCPDisabledReason)
+	}
 	if !d.Installed {
 		return state.Installation{}, fmt.Errorf("agent %s is not installed: %s", a.Name(), d.Reason)
 	}

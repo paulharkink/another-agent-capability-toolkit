@@ -106,3 +106,15 @@ func TestAdapterDetectionReportsResolvedSkillDestination(t *testing.T) {
 		t.Fatalf("adapter layout missing: %+v %v", d, err)
 	}
 }
+
+func TestAdapterOwnsCodexDesktopMCPReadiness(t *testing.T) {
+	home := t.TempDir()
+	apps := t.TempDir()
+	os.MkdirAll(filepath.Join(apps, "Codex.app"), 0700)
+	r := NewRegistry(Dependencies{Probe: DiscoveryProbe{GOOS: "darwin", Home: home, AppRoots: []string{apps}, LookPath: func(string) (string, error) { return "", fmt.Errorf("missing") }}})
+	a, _ := r.Adapter("codex")
+	d, err := a.Detect(context.Background(), Scope{})
+	if err != nil || !d.Installed || d.CanCreateConfig || d.MCPDisabledReason == "" {
+		t.Fatalf("desktop mistaken for usable CLI adapter: %+v %v", d, err)
+	}
+}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -846,16 +847,7 @@ func (m *Model) initSettingsDraft() {
 }
 
 func agentDisplayName(id string) string {
-	switch strings.ToLower(id) {
-	case "codex":
-		return "Codex"
-	case "opencode":
-		return "OpenCode"
-	case "claude", "claude-code":
-		return "Claude Code"
-	default:
-		return id
-	}
+	return agents.DisplayName(id)
 }
 
 func (m *Model) managementSettingsRows() []string {

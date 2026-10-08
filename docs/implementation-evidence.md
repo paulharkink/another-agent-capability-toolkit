@@ -286,3 +286,77 @@ agent registrations and validation against CR/LF/NUL injection. The focused
 adapter test and full suite passed. GitHub and GitLab use agent MCP config
 headers; Bitbucket receives its token through the container environment because
 that server requires startup credentials.
+
+## Capability pack/profile integration, packaging, and native TUI — 2026-10-08
+
+Task 17 adds end-to-end coverage for imported catalogs, profile discovery and
+creation, policy/regex validation, multi-skill and linked component apply,
+adapter observations, unsupported features, generic child stderr failures,
+packaged resources, and ownership-aware profile status. The live snapshot now
+carries the adapter's `Managed` observation bit through the viewmodel. If the
+same skill is present in an agent inventory but not recorded for a particular
+profile, the profile UI identifies it as installed but unmanaged; it does not
+attribute a sibling profile's binding. A native pane run panicked in homeView at
+`home.go:1105` while exiting the configuration view. The executable SHA-256
+matched a fresh build of the then-current source, so that occurrence is not
+attributed to a stale binary. The dereference reads `ProfileRow.Configuration`.
+A focused nil-configuration test was added; its first run failed to compile
+because the helper was not yet defined. After adding the helper with a nil guard,
+the guard was temporarily removed and the test failed with a nil-pointer panic
+at `profile_home.go:69`; restoring the guard made the focused test pass. This
+proves the pointer failure mode but does not reproduce the native transition
+that supplied the nil row. A later fresh-binary run selected the state-only
+`cluster-inspector` row and exited with F10 without a panic. A bounded five-
+second wait on another launch showed the expected example-company catalog,
+Team guidance, and ota/prod rows; an earlier empty-catalog frame was transient
+during asynchronous loading. A fresh-source unsaved Boolean edit, discard, and
+F10 exit also completed without a panic. These clean runs do not clear the
+earlier native crash; its transition remains open for review.
+
+Native verification on macOS arm64:
+
+- `go test ./... -count=1` passed after the nil-configuration guard (`task-17-suite-post-panic-guard.log`).
+- `go vet ./...` passed with an empty diagnostics log (`task-17-vet-post-panic-guard.log`).
+- `go test -race ./internal/app ./internal/state ./internal/agents ./internal/mcp ./internal/render -count=1` passed (`task-17-race-post-panic-guard.log`).
+- `node --test test/*.test.mjs` passed all 43 demo tests (mock/reference model, not a live browser deployment).
+- `TestDockerMCP` passed against the harmless test-owned Docker fixture. The test
+  exercised the real local Docker build/start/HTTP lifecycle; it did not contact
+  a production service.
+- A fresh GoReleaser snapshot (`task17-dist-final5`) built all six darwin/linux/windows amd64/arm64
+  archives and declared helpers. `TestArchiveContracts` verified checksums,
+  resource/executable contents and executed the unpacked macOS-native catalog.
+  Linux and Windows binaries were cross-built, not natively executed. Native
+  Linux and Windows CI remains pending because this task did not push a branch.
+- AACT dependency checks found no `internal/packagehelpers` dependency in the
+  executable path and no agent-ID-specific literal in core app/UI/CLI behavior
+  covered by the Task 17 check. The audit still finds production compatibility
+  paths resolving detection/config policy through `internal/agents` helper
+  functions from app code; this boundary concern is listed as open below.
+
+The real branch TUI was exercised only in the pre-existing designated tmux
+pane 2 with the fixture pack, state directory, agent home, and Docker MCP. The
+actual terminal captures are under the plan workspace's `tui/captures/`:
+profile home and component selection; hidden files and file/directory pickers;
+local profile creation; regex rejection and tmux bracketed-paste replacement;
+Boolean toggle; failed no-destination result/recovery; agent feature availability;
+Runtime and Logs; Settings and Help; resize and exit. The pane was restored to
+80x24. The local-only profile remains an isolated fixture record with no applied
+bindings. Test-owned runtime/registration/skills were stopped and removed through
+the fixture AACT CLI. Status output also showed unrelated `other-aact` runtime
+rows; those were left untouched.
+
+The terminal shows truthful failures and operation results. Narrow two-pane rows
+truncate some long absolute paths and component labels; scroll/detail views expose
+additional text. Captures are terminal text/ANSI evidence, not desktop screenshots.
+The updated browser demo was covered by its Node model/render tests; no claim of
+pixel-level parity with a live browser mock is made.
+
+Independent audit of committed Tasks 1–16 identified open cross-task concerns
+for the final review: Claude plugin apply does not reconcile an already listed
+plugin with changed staged content, and first-install marketplace registration
+can survive a later plugin install failure without an achieved-effect record;
+legacy app setup/agent-management compatibility paths still call detection and
+config-path policy helpers outside the adapter interface. Task 17 fixed the
+profile component snapshot's loss of inventory ownership provenance and added
+same-name cross-profile coverage. These audit concerns are not declared resolved
+by the Task 17 suite; the reviewer should decide their scope and disposition.

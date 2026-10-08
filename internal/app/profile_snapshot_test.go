@@ -55,6 +55,9 @@ func TestObservedProfileDetectsDeletedSkillAndRegistration(t *testing.T) {
 		if c.Status != "installed" {
 			t.Fatalf("not observed installed: %+v", c)
 		}
+		if c.Kind == "skill" && !c.Managed {
+			t.Fatalf("profile-owned skill lost managed provenance: %+v", c)
+		}
 	}
 	for _, row := range out.Changes {
 		if row.Component == "skill" {
@@ -113,5 +116,49 @@ func TestCapabilityProfileSnapshotInvalidFileStaysVisible(t *testing.T) {
 	rows, _ := s.Store.Installations()
 	if len(rows) != 0 {
 		t.Fatal("observation changed state")
+	}
+}
+
+func TestProfileSnapshotDistinguishesUnmanagedInventoryFromProfileEffects(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	q.Ref.Name = "sibling"
+	if err := s.CreateProfile(context.Background(), q.Ref); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	s.Options.Adapters = agents.NewRegistry(agents.Dependencies{Store: s.Store, Probe: agents.DiscoveryProbe{GOOS: "linux", Home: home, LookPath: func(name string) (string, error) {
+		if name == "opencode" {
+			return "fixture-opencode", nil
+		}
+		return "", fmt.Errorf("not installed")
+	}, Getenv: func(string) string { return "" }}})
+	s.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: home, ExplicitHome: true}}
+	path := filepath.Join(home, ".config", "opencode", "skills", "one")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte("# External skill\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.ProfileSnapshot(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Profiles) != 2 {
+		t.Fatalf("profiles = %+v", snapshot.Profiles)
+	}
+	for _, profile := range snapshot.Profiles {
+		found := false
+		for _, component := range profile.Components {
+			if component.AgentID == "opencode" && component.Kind == "skill" && component.Name == "one" {
+				if component.Status != "installed" || component.Managed {
+					t.Fatalf("inventory was attributed to profile %q: %+v", profile.Ref.Name, component)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("profile %q omitted external installed skill", profile.Ref.Name)
+		}
 	}
 }

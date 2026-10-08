@@ -122,7 +122,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			a, e := registry.Adapter(kind)
 			var observation agents.Observation
 			if e == nil {
-				observation, e = a.Observe(ctx, scope, agents.ObservationRequest{Key: key, Managed: managed})
+				observation, e = a.Observe(ctx, scope, agents.ObservationRequest{IncludeInventory: true, Key: key, Managed: managed})
 			}
 			if e != nil {
 				snapshot.Errors = append(snapshot.Errors, id+": "+e.Error())
@@ -140,6 +140,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 						if c.Kind == kind && (c.Name == native || c.RegistrationName == native) {
 							status.Status = c.Status
 							status.Error = c.Error
+							status.Managed = c.Managed
 							break
 						}
 					}

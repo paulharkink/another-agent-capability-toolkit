@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"path/filepath"
 	"strings"
 	"time"
@@ -139,15 +140,7 @@ func (m *Model) registrationAgentName(id string) string {
 			return agent.Name
 		}
 	}
-	switch strings.ToLower(id) {
-	case "codex":
-		return "Codex"
-	case "claude":
-		return "Claude Code"
-	case "opencode":
-		return "OpenCode"
-	}
-	return id
+	return agents.DisplayName(id)
 }
 
 func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {

@@ -7,6 +7,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"os"
 	"runtime"
+	"strings"
 )
 
 type Dependencies struct {
@@ -21,6 +22,11 @@ type registeredAdapter struct {
 }
 
 func NewRegistry(deps Dependencies) *Registry {
+	if deps.Probe.GOOS == "" && deps.Probe.Home == "" {
+		if probe, err := DefaultDiscoveryProbe(); err == nil {
+			deps.Probe = probe
+		}
+	}
 	if deps.Probe.GOOS == "" {
 		deps.Probe.GOOS = runtime.GOOS
 	}
@@ -44,6 +50,7 @@ func NewRegistry(deps Dependencies) *Registry {
 	return r
 }
 func (r *Registry) Adapter(id string) (Adapter, error) {
+	id, _, _ = strings.Cut(id, ":")
 	if id == "all" {
 		id = "generic"
 	}
@@ -103,7 +110,8 @@ func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection,
 		result.ConfigFiles = []ConfigFile{{Path: scope.ConfigPathOverride, Scope: "explicit", Precedence: "effective", Evidence: "Explicit agent config override", Exists: err == nil}}
 	}
 	if _, err := For(a.kind, a.deps.Runner); err == nil && result.Installed {
-		result.CanCreateConfig = true
+		result.MCPDisabledReason = MCPDestinationDisabledReason(ctx, a.kind, environment.ConfigPath, d, nil, a.scopedProbe(scope))
+		result.CanCreateConfig = result.MCPDisabledReason == ""
 	}
 	return result, nil
 }

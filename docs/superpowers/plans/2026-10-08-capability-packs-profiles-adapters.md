@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Execution override (2026-10-08):** The user selected superpowers:executing-plans and authorized implementation. Execute inline with TDD, task checkpoints and the shared ledger; use one final Luna reviewer. This overrides the original per-task subagent protocol below.
+**Historical execution direction (superseded by the user’s later instruction):** The user selected superpowers:executing-plans and authorized implementation on 2026-10-08. The current direction requires all implementation and repository/terminal tool work through Luna subagents; the primary controller coordinates only. Use subagent-driven-development, TDD, independent review gates, and no nested subagents. Task checkpoints and the shared ledger remain required.
 
 **Goal:** Make AACT operate on a Capability Pack's profiles, composed catalogs and selectable skill/MCP/plugin components through complete agent adapters, with generic execution and truthful status.
 
@@ -18,7 +18,7 @@
 
 - Use `/Users/pharkink/sources/another-agent-capability-toolkit` on the user-created `feature/restructure-concepts` branch. Do not create or reuse another branch or worktree.
 - Preserve unrelated changes, including the existing untracked UX proposal images.
-- The user subsequently selected inline executing-plans. Implement tasks inline with TDD and a final fresh `gpt-6-luna` review; request permission before using a more expensive reviewer.
+- The user requires all implementation and repository/terminal tool execution through Luna subagents; follow subagent-driven-development with TDD and independent review gates. The primary controller coordinates only. Do not spawn nested subagents. Use Luna for implementation and final review unless the user authorizes escalation.
 - Capability behavior comes from manifests, declared commands/scripts, and templates. AACT contains generic interpretation, rendering, execution, coordination, and state tracking.
 - Agent detection, locations, config inspection, skill installation/removal, MCP registration changes, and supported native plugin installation/removal belong to agent adapters.
 - Pack profile TOMLs are read-only inputs. Keep the current local-state root, JSON files, hashed identifiers, locks, ownership records, and credentials; do not replace them with mirrored TOMLs.
@@ -91,7 +91,7 @@ At execution start, verify the user branch and existing checkout; that explicitl
 
 Use a fresh `gpt-6-luna` implementer for each task, with `fork_turns="none"`; use the skill's `task-brief` file plus the task's dependencies, exact contracts, allowed files, global constraints, report-file path and a prohibition on child subagents. One implementation worker at a time in this shared checkout. Independent read-only context gathering or review preparation may overlap. Batch small adapter variants within the task rather than creating a worker for each trivial edit.
 
-The controller owns `go.mod`, `go.sum` and Git commits as the repo requires. Workers write code/tests and a report. After execution has been approved, the controller checks the worker's file list and verification evidence, then makes a local task checkpoint before review; never stage all files. Include the repository's `Agent-Conversation` provenance trailer. Capture task BASE before dispatch, produce a BASE..HEAD review package covering every task change, then use a fresh Luna reviewer for both spec compliance and quality. Fixes return to a worker, receive a new controller checkpoint, and get a scoped re-review. The controller does not implement fixes. A local checkpoint is not approval to push or merge.
+Luna subagents perform all implementation, repository and terminal work, and local task commits; the primary controller coordinates only. Do not spawn nested subagents. Never stage all files. Include the repository's `Agent-Conversation` provenance trailer. Capture task BASE before dispatch, produce a BASE..HEAD review package covering every task change, then use a fresh Luna reviewer for both spec compliance and quality. Fixes return to a worker and receive a scoped re-review. A local checkpoint is not approval to push or merge.
 
 Preflight records a table for every shared interface/file between tasks and every task's internal consistency. Ledger routine rulings, red/green commands/output, commits, reviews, deferred findings and completion. Resume completed tasks from the ledger after compaction. Do not silently reinterpret architectural requirements.
 
@@ -341,7 +341,7 @@ The order is chosen for a single buildable branch; the dependency table enables 
   Do not publish, tag or use `--clean`. On a repeat verification attempt, choose a fresh task-owned dist path instead of cleaning another run's artifacts. If the checked-in config has acquired a `dist` key, replace that key only in the scratch copy rather than adding a duplicate.
 - [ ] Exercise the real branch TUI in an existing user-designated tmux pane against isolated pack/state/agent fixtures. Traverse home profiles, creation, components, Boolean/text/file/directory inputs, the existing in-TUI picker, paste/regex, agents, supported/unsupported plugins, progress, successful/failed results, logs, settings/help, resizing/scrolling and exit. Capture actual terminal output/screenshots and compare to the updated reference. Do not create another tmux session or run a live company/home profile.
 - [ ] Dispatch the final whole-branch review with the merge-base..HEAD package, spec, plan and ledger; use Luna unless the user approves escalation. Consolidate final findings into one worker fix wave, then one scoped re-review. Report all rulings, open findings, exact evidence and native verification gaps; leave the branch for user review with no push/merge/release.
-- [ ] Controller checkpoint before the task and whole-branch reviews: `test: verify capability profiles and adapter features`. All subsequent fixes require their own checkpoint and scoped review before the final evidence report.
+- [ ] Luna worker checkpoint before independent task and whole-branch reviews: `test: verify capability profiles and adapter features`. All subsequent fixes require their own local checkpoint and scoped review before the final evidence report.
 
 ## Requirement coverage and plan self-review
 

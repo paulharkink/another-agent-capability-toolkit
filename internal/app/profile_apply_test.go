@@ -18,9 +18,10 @@ func (f fixtureAdapters) Adapter(string) (agents.Adapter, error) { return f.a, n
 func (f fixtureAdapters) Adapters() []agents.Adapter             { return []agents.Adapter{f.a} }
 
 type profileAdapter struct {
-	calls []string
-	fail  string
-	home  string
+	calls   []string
+	fail    string
+	inspect func()
+	home    string
 }
 
 func (a *profileAdapter) ID() string   { return "test-agent" }
@@ -35,6 +36,9 @@ func (a *profileAdapter) Observe(context.Context, agents.Scope, agents.Observati
 	return agents.Observation{}, nil
 }
 func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installation, error) {
+	if a.inspect != nil {
+		a.inspect()
+	}
 	a.calls = append(a.calls, kind+":"+name)
 	if a.fail == kind {
 		return state.Installation{}, errors.New("specific " + kind + " failure")

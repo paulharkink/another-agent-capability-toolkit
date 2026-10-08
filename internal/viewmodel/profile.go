@@ -57,7 +57,10 @@ type CapabilityProfile struct {
 	Components                        []ComponentStatus
 	MCPs                              []RuntimeStatus
 }
-type ComponentStatus struct{ AgentID, Kind, Name, Status, Error string }
+type ComponentStatus struct {
+	AgentID, Kind, Name, Status, Error string
+	Managed                            bool
+}
 type RuntimeStatus struct {
 	MCPID, Status, Ownership, URL, Error string
 	ObservedAt                           time.Time

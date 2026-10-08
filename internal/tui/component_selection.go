@@ -36,14 +36,18 @@ func componentOptions(preview viewmodel.SetupPreview, destinations []string) []c
 					format = p.Format
 				}
 			}
-			compatible := false
-			for _, destination := range preview.Destinations {
-				if slices.Contains(destinations, destination.ID) && slices.Contains(destination.Features.PluginFormats, format) && format != "" {
-					compatible = true
+			compatible := len(destinations) > 0 && format != ""
+			for _, id := range destinations {
+				found := false
+				for _, destination := range preview.Destinations {
+					if destination.ID == id {
+						found = slices.Contains(destination.Features.PluginFormats, format)
+					}
 				}
+				compatible = compatible && found
 			}
 			if !compatible {
-				choice.DisabledReason = "Select an agent that supports this native plugin"
+				choice.DisabledReason = "Every selected agent must support this native plugin"
 			}
 		}
 		choices = append(choices, choice)

@@ -22,6 +22,7 @@ type ConfigFile struct {
 type Detection struct {
 	Home, SkillsPath           string
 	State, Evidence, Reason    string
+	MCPDisabledReason          string
 	Installed, CanCreateConfig bool
 	ConfigFiles                []ConfigFile
 }

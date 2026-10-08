@@ -27,7 +27,7 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 	if err != nil {
 		return nil, err
 	}
-	ids = append(ids, "claude-desktop", "opencode-desktop")
+	ids = append(ids, agents.DesktopDiscoveryIDs()...)
 	installed, err := s.Store.Installations()
 	if err != nil {
 		return nil, err
@@ -60,19 +60,12 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 			return nil, pathErr
 		}
 		effectivePath := writePath
-		if kind == "opencode" {
-			for _, file := range discovery.ConfigFiles {
-				if file.Exists && file.Path == writePath {
-					effectivePath = file.Path
-				}
-			}
-		}
 		row := viewmodel.AgentManagementRow{
 			ID: id, Name: discovery.Name, Detection: discovery.Detection,
 			Evidence: discovery.Evidence, Note: discovery.Note, Home: native.Home,
 			EffectiveConfigPath: effectivePath, WriteConfigPath: writePath,
 		}
-		if override := nativeConfigOverride(kind, native); override != "" {
+		if override := agents.NativeConfigOverride(kind, native); override != "" {
 			if row.Note != "" {
 				row.Note += "; "
 			}
