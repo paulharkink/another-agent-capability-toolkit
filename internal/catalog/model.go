@@ -112,6 +112,8 @@ type MCP struct {
 	ContainerPort         int                `toml:"container_port" json:"container_port"`
 	EndpointPath          string             `toml:"endpoint_path" json:"endpoint_path"`
 	HostPortInput         string             `toml:"host_port_input" json:"host_port_input"`
+	BindIPInput           string             `toml:"bind_ip_input" json:"bind_ip_input,omitempty"`
+	AdvertisedHostInput   string             `toml:"advertised_host_input" json:"advertised_host_input,omitempty"`
 	RegistrationTimeoutMS int                `toml:"registration_timeout_ms" json:"registration_timeout_ms"`
 	Actions               map[string]Command `toml:"actions" json:"actions"`
 }

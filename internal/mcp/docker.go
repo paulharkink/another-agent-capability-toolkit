@@ -13,6 +13,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -26,18 +27,22 @@ type Mount struct {
 	ReadOnly    bool   `json:"read_only"`
 }
 type RunSpec struct {
-	User          string            `json:"user,omitempty"`
-	Image         string            `json:"image"`
-	BuildContext  string            `json:"build_context,omitempty"`
-	Args          []string          `json:"args,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
-	SecretEnv     map[string]string `json:"secret_env,omitempty"`
-	Mounts        []Mount           `json:"mounts,omitempty"`
-	Host          string            `json:"host"`
-	HostPort      int               `json:"host_port"`
-	ContainerPort int               `json:"container_port"`
-	Transport     string            `json:"transport"`
-	EndpointPath  string            `json:"endpoint_path"`
+	User           string            `json:"user,omitempty"`
+	Image          string            `json:"image"`
+	BuildContext   string            `json:"build_context,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	SecretEnv      map[string]string `json:"secret_env,omitempty"`
+	Mounts         []Mount           `json:"mounts,omitempty"`
+	BindIP         string            `json:"bind_ip,omitempty"`
+	AdvertisedHost string            `json:"advertised_host,omitempty"`
+	// Host is retained for actions and saved specs written before bind and
+	// advertised endpoint addressing were separated.
+	Host          string `json:"host"`
+	HostPort      int    `json:"host_port"`
+	ContainerPort int    `json:"container_port"`
+	Transport     string `json:"transport"`
+	EndpointPath  string `json:"endpoint_path"`
 }
 type Instance struct {
 	Key          state.Key `json:"key"`
@@ -63,11 +68,68 @@ func NewDockerRuntime(s *state.Store) *Runtime {
 }
 func containerName(k state.Key) string { return "aact-" + k.ID()[:24] }
 func specURL(s RunSpec) string {
-	h := s.Host
+	h := s.AdvertisedHost
 	if h == "" {
-		h = "127.0.0.1"
+		h = s.Host
+	}
+	if h == "" {
+		h = "localhost"
+	}
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")) != nil {
+		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	}
 	return "http://" + net.JoinHostPort(h, strconv.Itoa(s.HostPort)) + s.EndpointPath
+}
+
+func effectiveBindIP(s RunSpec) string {
+	if s.BindIP != "" {
+		return s.BindIP
+	}
+	if ip := net.ParseIP(s.Host); ip != nil && ip.IsLoopback() {
+		return ip.String()
+	}
+	return "127.0.0.1"
+}
+
+func effectiveAdvertisedHost(s RunSpec) string {
+	if s.AdvertisedHost != "" {
+		return s.AdvertisedHost
+	}
+	if s.Host != "" {
+		return s.Host
+	}
+	return "localhost"
+}
+
+func validateAdvertisedHost(host string) error {
+	if host == "" || strings.ContainsAny(host, "\r\n\x00 /\\?#@") {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")) != nil {
+		return nil
+	}
+	dnsName := strings.TrimSuffix(host, ".")
+	if len(dnsName) == 0 || len(dnsName) > 253 {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	for _, label := range strings.Split(dnsName, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+			}
+		}
+	}
+	u, err := url.Parse("http://" + host)
+	if err != nil || u.Scheme != "http" || u.Host != host || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == "" || u.Port() != "" {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	return nil
 }
 func labels(k state.Key, s RunSpec) map[string]string {
 	b, _ := json.Marshal(s)
@@ -173,11 +235,14 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	local := *r
 	local.Executor = redactingExecutor{base: r.Executor, values: secretValues}
 	r = &local
-	if s.Host == "" {
-		s.Host = "127.0.0.1"
+	s.BindIP = effectiveBindIP(s)
+	s.AdvertisedHost = effectiveAdvertisedHost(s)
+	bindIP := net.ParseIP(s.BindIP)
+	if bindIP == nil || !bindIP.IsLoopback() {
+		return Instance{}, errors.New("MCP Docker bind IP must be a numeric loopback address")
 	}
-	if s.Host != "127.0.0.1" && s.Host != "localhost" && s.Host != "::1" {
-		return Instance{}, errors.New("MCP host must be loopback")
+	if err := validateAdvertisedHost(s.AdvertisedHost); err != nil {
+		return Instance{}, err
 	}
 	if s.HostPort < 1 || s.HostPort > 65535 || s.ContainerPort < 1 || s.ContainerPort > 65535 {
 		return Instance{}, errors.New("MCP port outside 1..65535")
@@ -243,7 +308,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	for _, n := range names {
 		a = append(a, "--label", n+"="+expected[n])
 	}
-	a = append(a, "--publish", net.JoinHostPort(s.Host, strconv.Itoa(s.HostPort))+":"+strconv.Itoa(s.ContainerPort))
+	a = append(a, "--publish", net.JoinHostPort(s.BindIP, strconv.Itoa(s.HostPort))+":"+strconv.Itoa(s.ContainerPort))
 	for _, m := range s.Mounts {
 		if strings.Contains(m.Source, ",") || strings.Contains(m.Destination, ",") {
 			return Instance{}, errors.New("Docker mount paths cannot contain commas")
@@ -327,7 +392,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	}
 	b, e := r.run(ctx, a)
 	if e != nil {
-		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.Host, s.HostPort, e)
+		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.BindIP, s.HostPort, e)
 	}
 	createdID = strings.TrimSpace(string(b))
 	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
