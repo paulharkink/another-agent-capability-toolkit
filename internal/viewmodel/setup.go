@@ -54,6 +54,7 @@ type SetupPreview struct {
 	MCPDefinitions                                    []catalog.MCP
 	CredentialState                                   string
 	CredentialNote                                    string
+	ActiveInputGroups                                 map[string]string
 	Inputs                                            []SetupInput
 	Destinations                                      []SetupDestination
 }
@@ -61,9 +62,10 @@ type SetupPreview struct {
 type SetupInstallRequest struct {
 	ItemIDs []string
 	SetupRequest
-	Inputs         map[string]any
-	ResetInputs    []string
-	DestinationIDs []string
-	ExternalURL    string
-	ExternalURLs   map[string]string
+	Inputs            map[string]any
+	ActiveInputGroups map[string]string
+	ResetInputs       []string
+	DestinationIDs    []string
+	ExternalURL       string
+	ExternalURLs      map[string]string
 }

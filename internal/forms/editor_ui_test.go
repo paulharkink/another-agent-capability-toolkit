@@ -62,6 +62,22 @@ func TestKeyboardFormEditsPrefillAndSaves(t *testing.T) {
 	}
 }
 
+func TestActiveExclusiveMethodDisplaysWhenSecretValueIsUnavailable(t *testing.T) {
+	defs := []catalog.Input{
+		{Name: "access_key", Label: "Access key", Type: "secret", ExclusiveGroup: "access_method"},
+		{Name: "source_document", Label: "Source document", Type: "file", ExclusiveGroup: "access_method"},
+	}
+	m := NewForm(context.Background(), defs, map[string]any{"source_document": ""})
+	m.SetActiveExclusiveGroup("access_method", "access_key", "access_key", "source_document")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	if !strings.Contains(m.View().Content, "Active method · Access key · Re-enter to authenticate") {
+		t.Fatalf("selected method not displayed: %s", m.View().Content)
+	}
+	if got := m.ActiveInputGroups()["access_method"]; got != "access_key" {
+		t.Fatalf("active input groups = %#v", m.ActiveInputGroups())
+	}
+}
+
 func TestLongFormKeepsSelectedFieldAndSaveVisible(t *testing.T) {
 	defs := make([]catalog.Input, 30)
 	for i := range defs {

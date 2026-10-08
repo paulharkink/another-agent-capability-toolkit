@@ -108,5 +108,5 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.OperationResult{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
 	}
-	return s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
+	return s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
 }

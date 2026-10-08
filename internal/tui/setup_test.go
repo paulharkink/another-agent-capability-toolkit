@@ -516,13 +516,57 @@ func TestSwitchingAuthenticationClearsPreviouslyPrefilledCredential(t *testing.T
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'm', Text: "m"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/new-kubeconfig"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := m.form.ActiveInputGroups()["credential"]; got != "kubeconfig" {
+		t.Fatalf("form selection after switching = %#v", m.form.ActiveInputGroups())
+	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.form != nil && m.form.ActiveInputGroups()["credential"] != "kubeconfig" {
+		t.Fatalf("form selection after submit key = %#v", m.form.ActiveInputGroups())
+	}
 	if cmd == nil {
 		t.Fatalf("switching authentication blocked Save: %s", m.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || b.installRequest.Inputs["token"] != "" {
 		t.Fatalf("inactive prefilled token was submitted: %+v", b.installRequest)
+	}
+	if b.installRequest.ActiveInputGroups["credential"] != "kubeconfig" {
+		t.Fatalf("switched method was not submitted separately from values: %+v", b.installRequest)
+	}
+}
+
+func TestReopenedSecretMethodDisplaysReentryAndSubmitsSelection(t *testing.T) {
+	b := &setupBackendFixture{}
+	m := NewContext(context.Background(), b)
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key:               state.Key{Source: "generic-source", Package: "generic-capability", Target: "default"},
+		ActiveInputGroups: map[string]string{"credential-source": "private_key"},
+		Sections:          []catalog.Section{{ID: "auth", Title: "Authentication", Fields: []string{"private_key", "source_file"}}},
+		Inputs: []viewmodel.SetupInput{
+			{Definition: catalog.Input{Name: "private_key", Label: "Private key", Type: "secret", ExclusiveGroup: "credential-source"}, Editable: true},
+			{Definition: catalog.Input{Name: "source_file", Label: "Source file", Type: "file", ExclusiveGroup: "credential-source"}, Value: "", HasValue: true, Editable: true},
+		},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
+	})
+	setupSection(m, 0)
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Private key") || !strings.Contains(view, "Re-enter to authenticate") {
+		t.Fatalf("reopened method/reentry hint missing: %s", m.View().Content)
+	}
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	_, _ = m.form.Update(tea.PasteMsg{Content: "reentered-private-key"})
+	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("reopened credential method setup did not submit")
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	if b.installRequest == nil || b.installRequest.ActiveInputGroups["credential-source"] != "private_key" {
+		t.Fatalf("reopened method was not submitted: %+v", b.installRequest)
+	}
+	if value, exists := b.installRequest.Inputs["private_key"]; !exists || value != "reentered-private-key" {
+		t.Fatalf("re-entered secret was not submitted: %#v", b.installRequest.Inputs)
 	}
 }
 

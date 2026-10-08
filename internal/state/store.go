@@ -71,8 +71,10 @@ type ledger struct {
 	Installations []Installation `json:"installations"`
 }
 type answerRecord struct {
-	Version int            `json:"version"`
-	Values  map[string]any `json:"values"`
+	Version                int                          `json:"version"`
+	Values                 map[string]any               `json:"values"`
+	ActiveInputGroups      map[string]string            `json:"active_input_groups,omitempty"`
+	PendingAuthInputGroups map[string]map[string]string `json:"pending_auth_input_groups,omitempty"`
 }
 
 func DefaultRoot(goos, home string, getenv func(string) string) string {
@@ -205,12 +207,142 @@ func (s *Store) HasAnswers(k Key) (bool, error) {
 	return true, nil
 }
 func (s *Store) SaveAnswers(k Key, v map[string]any) error {
+	return s.SaveAnswersWithActiveInputGroups(k, v, nil)
+}
+
+// ActiveInputGroups returns declared exclusive-group selections stored with
+// an answer record. The values contain input names, never credential values.
+func (s *Store) ActiveInputGroups(k Key) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.readAnswerRecord(k)
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[string]string, len(rec.ActiveInputGroups))
+	for group, input := range rec.ActiveInputGroups {
+		groups[group] = input
+	}
+	return groups, nil
+}
+
+// SaveAnswersWithActiveInputGroups atomically stores safe answer values and
+// non-secret UI selections while retaining the existing v1 answer format.
+func (s *Store) SaveAnswersWithActiveInputGroups(k Key, v map[string]any, groups map[string]string) error {
 	if s.readonly {
 		return ErrReadOnly
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return WriteJSON(filepath.Join(s.root, "answers", k.ID()+".json"), answerRecord{1, v})
+	previous, err := s.readAnswerRecord(k)
+	if err != nil {
+		return err
+	}
+	active := make(map[string]string, len(groups))
+	for group, input := range groups {
+		if group != "" && input != "" {
+			active[group] = input
+		}
+	}
+	if groups == nil {
+		// Ordinary answer writes do not erase independently selected methods.
+		for group, input := range previous.ActiveInputGroups {
+			active[group] = input
+		}
+	}
+	return WriteJSON(filepath.Join(s.root, "answers", k.ID()+".json"), answerRecord{Version: 1, Values: v, ActiveInputGroups: active, PendingAuthInputGroups: previous.PendingAuthInputGroups})
+}
+
+// PendingAuthInputGroups returns group selections whose authenticate action
+// still needs to run for one MCP child identity.
+func (s *Store) PendingAuthInputGroups(k Key, childID string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.readAnswerRecord(k)
+	if err != nil {
+		return nil, err
+	}
+	return cloneStringMap(rec.PendingAuthInputGroups[childID]), nil
+}
+
+// UpdatePendingAuthInputGroups replaces or removes pending transition markers
+// for selected groups, scoped to one MCP child identity.
+func (s *Store) UpdatePendingAuthInputGroups(k Key, childID string, changes map[string]string) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.readAnswerRecord(k)
+	if err != nil {
+		return err
+	}
+	if rec.PendingAuthInputGroups == nil {
+		rec.PendingAuthInputGroups = map[string]map[string]string{}
+	}
+	child := cloneStringMap(rec.PendingAuthInputGroups[childID])
+	for group, input := range changes {
+		if input == "" {
+			delete(child, group)
+		} else {
+			child[group] = input
+		}
+	}
+	if len(child) == 0 {
+		delete(rec.PendingAuthInputGroups, childID)
+	} else {
+		rec.PendingAuthInputGroups[childID] = child
+	}
+	return WriteJSON(filepath.Join(s.root, "answers", k.ID()+".json"), rec)
+}
+
+// ClearPendingAuthInputGroups clears only markers still matching the snapshot
+// successfully handled by that child action.
+func (s *Store) ClearPendingAuthInputGroups(k Key, childID string, snapshot map[string]string) error {
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.readAnswerRecord(k)
+	if err != nil {
+		return err
+	}
+	child := cloneStringMap(rec.PendingAuthInputGroups[childID])
+	for group, input := range snapshot {
+		if child[group] == input {
+			delete(child, group)
+		}
+	}
+	if len(child) == 0 {
+		delete(rec.PendingAuthInputGroups, childID)
+	} else {
+		rec.PendingAuthInputGroups[childID] = child
+	}
+	return WriteJSON(filepath.Join(s.root, "answers", k.ID()+".json"), rec)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
+func (s *Store) readAnswerRecord(k Key) (answerRecord, error) {
+	var rec answerRecord
+	err := readJSON(filepath.Join(s.root, "answers", k.ID()+".json"), &rec)
+	if errors.Is(err, os.ErrNotExist) {
+		return answerRecord{Version: 1}, nil
+	}
+	if err != nil {
+		return rec, err
+	}
+	if rec.Version != 1 {
+		return rec, fmt.Errorf("unsupported answers state version %d", rec.Version)
+	}
+	return rec, nil
 }
 func (s *Store) loadLedger() (ledger, error) {
 	var l ledger
