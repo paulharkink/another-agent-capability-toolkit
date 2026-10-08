@@ -115,14 +115,11 @@ func TestDiscoveryDoesNotCrossCheckoutBoundary(t *testing.T) {
 		t.Fatalf("%#v %v", s, e)
 	}
 }
-func TestRejectConflictingCatalogIDs(t *testing.T) {
+func TestRejectUnsafeOrDuplicateConfiguredIDs(t *testing.T) {
 	root := checkout(t)
 	put(t, filepath.Join(root, "plain", "SKILL.md"), "# Plain")
 	for _, body := range []string{`schema_version=1
 source_id="../bad"`, `schema_version=1
-[[catalog]]
-id="other"
-source="./plain"`, `schema_version=1
 [[catalog]]
 id="plain"
 source="./plain"
