@@ -207,24 +207,51 @@ type dockerInfo struct {
 	State  dockerState  `json:"State"`
 }
 
+var errDockerObjectNotFound = errors.New("expected Docker object-not-found probe")
+
+type dockerObjectNotFoundError struct{ cause error }
+
+func (e dockerObjectNotFoundError) Error() string { return e.cause.Error() }
+func (e dockerObjectNotFoundError) Unwrap() error { return e.cause }
+func (e dockerObjectNotFoundError) Is(target error) bool {
+	return target == errDockerObjectNotFound
+}
+
 func (r *Runtime) run(ctx context.Context, args []string) ([]byte, error) {
+	b, commandErr, diagnostics := r.runCapture(ctx, args, true)
+	if commandErr != nil {
+		return b, dockerCommandError(args[0], commandErr, diagnostics)
+	}
+	return b, nil
+}
+func (r *Runtime) runCapture(ctx context.Context, args []string, stream bool) ([]byte, error, []byte) {
 	var diagnostics bytes.Buffer
 	b, e := r.Executor.Run(ctx, append([]string{"docker"}, args...), "", nil, nil, func(p []byte) {
 		if diagnostics.Len() < 8192 {
 			diagnostics.Write(p)
 		}
-		if r.OnStderr != nil {
+		if stream && r.OnStderr != nil {
 			r.OnStderr(p)
 		}
 	})
-	if e != nil {
-		return b, fmt.Errorf("Docker %s: %w: %s", args[0], e, strings.TrimSpace(diagnostics.String()))
-	}
-	return b, nil
+	return b, e, diagnostics.Bytes()
+}
+func dockerCommandError(operation string, commandErr error, diagnostics []byte) error {
+	return fmt.Errorf("Docker %s: %w: %s", operation, commandErr, strings.TrimSpace(string(diagnostics)))
 }
 func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) {
-	b, e := r.run(ctx, []string{"inspect", name})
+	// Inspect is a probe during first install. Keep its stderr buffered until
+	// the result distinguishes an expected missing container from a real error.
+	b, e, diagnostics := r.runCapture(ctx, []string{"inspect", name}, false)
 	if e != nil {
+		if isExpectedDockerNotFound(e, diagnostics) {
+			e = dockerObjectNotFoundError{cause: dockerCommandError("inspect", e, diagnostics)}
+		} else if r.OnStderr != nil && len(diagnostics) > 0 {
+			r.OnStderr(diagnostics)
+		}
+		if !isDockerNotFound(e) {
+			e = dockerCommandError("inspect", e, diagnostics)
+		}
 		return dockerInfo{}, e
 	}
 	var v []dockerInfo
@@ -237,8 +264,46 @@ func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) 
 	return v[0], nil
 }
 func isDockerNotFound(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "no such object:") || strings.Contains(message, "no such container:")
+	return errors.Is(err, errDockerObjectNotFound)
+}
+func isExpectedDockerNotFound(exitErr error, diagnostics []byte) bool {
+	if exitErr == nil {
+		return false
+	}
+	message := strings.TrimSpace(exitErr.Error())
+	statusText, hasStatus := strings.CutPrefix(message, "exit status ")
+	if strings.HasPrefix(message, "command docker failed: ") {
+		statusText, hasStatus = strings.CutPrefix(strings.TrimPrefix(message, "command docker failed: "), "exit status ")
+	}
+	if !hasStatus {
+		return false
+	}
+	status, err := strconv.Atoi(statusText)
+	if err != nil || status < 1 {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(string(diagnostics), "\r\n", "\n"), "\n")
+	matched := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		knownNotFound := false
+		for _, prefix := range []string{"error: no such object: ", "error: no such container: "} {
+			if strings.HasPrefix(lowerLine, prefix) && strings.TrimSpace(line[len(prefix):]) != "" {
+				knownNotFound = true
+				break
+			}
+		}
+		if knownNotFound {
+			matched++
+			continue
+		}
+		return false
+	}
+	return matched > 0
 }
 func ownership(d dockerInfo, k state.Key, localID string, rows []state.Installation) string {
 	l := d.Config.Labels
@@ -269,7 +334,33 @@ func runtimeRecord(rows []state.Installation, k state.Key, id string) (state.Ins
 func (r *Runtime) recordAction(k state.Key, i Instance, action string) (Instance, error) {
 	i.LastAction = action
 	i.LastActionAt = time.Now().UTC()
-	if err := r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: i.Name, SourcePath: i.ID, Mode: "docker", URL: i.URL, LastAction: action, LastActionAt: i.LastActionAt}); err != nil {
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return i, err
+	}
+	var canonical state.Installation
+	hasCanonical := false
+	duplicates := []state.Installation{}
+	for _, row := range rows {
+		if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.SourcePath != i.ID {
+			continue
+		}
+		if !hasCanonical {
+			canonical, hasCanonical = row, true
+		} else if row.Destination != canonical.Destination {
+			duplicates = append(duplicates, row)
+		}
+	}
+	destination := i.Name
+	if hasCanonical {
+		destination = canonical.Destination
+	}
+	for _, duplicate := range duplicates {
+		if err := r.Store.Remove(duplicate); err != nil {
+			return i, err
+		}
+	}
+	if err := r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: destination, SourcePath: i.ID, Mode: "docker", URL: i.URL, LastAction: action, LastActionAt: i.LastActionAt}); err != nil {
 		return i, err
 	}
 	return i, nil
@@ -521,25 +612,38 @@ func instance(d dockerInfo) Instance {
 	}
 	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], Profile: l["aact.profile"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
 }
+func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
+	instances, err := r.List(ctx)
+	if err != nil {
+		return Instance{}, fmt.Errorf("refresh Docker observation before controlling runtime: %w", err)
+	}
+	var match *Instance
+	for i := range instances {
+		item := &instances[i]
+		if item.Key != k || item.Status == "missing" || item.Status == "external" || item.ID == "" {
+			continue
+		}
+		if match != nil {
+			return Instance{}, fmt.Errorf("multiple Docker runtime observations match this MCP profile; refusing ambiguous control")
+		}
+		match = item
+	}
+	if match == nil {
+		return Instance{}, errors.New("no current Docker runtime observation matches this MCP profile")
+	}
+	if match.Ownership != "local" {
+		return Instance{}, fmt.Errorf("refusing to control a container owned by %s", match.Ownership)
+	}
+	return *match, nil
+}
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
-	installationID, err := r.Store.InstallationID()
+	observed, err := r.observedContainer(ctx, k)
 	if err != nil {
 		return err
 	}
-	rows, err := r.Store.Installations()
-	if err != nil {
-		return err
-	}
-	d, e := r.inspect(ctx, containerName(k))
-	if e != nil {
-		return e
-	}
-	if ownership(d, k, installationID, rows) != "local" {
-		return errors.New("refusing to stop a container owned by another installation or an unknown owner")
-	}
-	_, e = r.run(ctx, []string{"rm", "--force", d.ID})
+	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
 	if e == nil {
-		if _, err := r.recordAction(k, instance(d), "stop"); err != nil {
+		if _, err := r.recordAction(k, observed, "stop"); err != nil {
 			return err
 		}
 	}
@@ -608,23 +712,13 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 	return out, nil
 }
 func (r *Runtime) Logs(ctx context.Context, k state.Key) (io.ReadCloser, error) {
-	installationID, err := r.Store.InstallationID()
+	observed, err := r.observedContainer(ctx, k)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := r.Store.Installations()
-	if err != nil {
-		return nil, err
-	}
-	d, e := r.inspect(ctx, containerName(k))
+	b, e := r.run(ctx, []string{"logs", "--tail", "200", observed.ID})
 	if e != nil {
 		return nil, e
 	}
-	if ownership(d, k, installationID, rows) != "local" {
-		return nil, errors.New("refusing logs for a container owned by another installation or an unknown owner")
-	}
-	var errlog bytes.Buffer
-	b, e := r.Executor.Run(ctx, []string{"docker", "logs", "--tail", "200", d.ID}, "", nil, nil, func(p []byte) { errlog.Write(p) })
-	b = append(b, errlog.Bytes()...)
-	return io.NopCloser(bytes.NewReader(b)), e
+	return io.NopCloser(bytes.NewReader(b)), nil
 }

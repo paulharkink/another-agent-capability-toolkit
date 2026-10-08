@@ -24,13 +24,22 @@ type fakeExec struct {
 func (f *fakeExec) Run(ctx context.Context, a []string, _ string, _ []byte, _ map[string]string, cb func([]byte)) ([]byte, error) {
 	f.calls = append(f.calls, append([]string{}, a...))
 	f.contextErrors = append(f.contextErrors, ctx.Err())
-	if cb != nil && f.stderr != "" {
+	var output []byte
+	var err error
+	if f.f != nil {
+		output, err = f.f(a)
+	}
+	expectedMiss := len(a) > 1 && a[1] == "inspect" && err != nil && (strings.HasPrefix(err.Error(), "No such object:") || strings.HasPrefix(err.Error(), "No such container:"))
+	if cb != nil && f.stderr != "" && !expectedMiss {
 		cb([]byte(f.stderr))
 	}
-	if f.f != nil {
-		return f.f(a)
+	if expectedMiss {
+		if cb != nil {
+			cb([]byte("Error: " + err.Error()))
+		}
+		return nil, errors.New("exit status 1")
 	}
-	return nil, nil
+	return output, err
 }
 
 func TestSecretEnvNotLogged(t *testing.T) {
@@ -422,13 +431,16 @@ func TestAdvertisedIPv6HostBuildsBracketedURL(t *testing.T) {
 }
 func TestNoUnlabelledContainerRemoval(t *testing.T) {
 	r, f, k := testRuntime(t)
-	f.f = func([]string) ([]byte, error) {
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "ps" {
+			return []byte("foreign\n"), nil
+		}
 		return []byte(`[{"Id":"foreign","Config":{"Labels":{}},"State":{"Running":true}}]`), nil
 	}
 	if e := r.Stop(context.Background(), k); e == nil {
 		t.Fatal("foreign stop accepted")
 	}
-	if len(f.calls) != 1 {
+	if len(f.calls) != 2 || f.calls[0][1] != "ps" || f.calls[1][1] != "inspect" {
 		t.Fatal(f.calls)
 	}
 }
