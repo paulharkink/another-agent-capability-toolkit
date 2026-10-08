@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/expressions"
 	"github.com/pelletier/go-toml/v2"
 	"os"
 	"path/filepath"
@@ -15,11 +16,12 @@ type ProfileRef struct {
 	Name         string `json:"name"`
 }
 type Profile struct {
-	Ref         ProfileRef        `json:"ref"`
-	Path        string            `json:"path"`
-	Error       string            `json:"error,omitempty"`
-	Raw         map[string]any    `json:"raw"`
-	InputPolicy map[string]string `json:"input_policy,omitempty"`
+	Ref              ProfileRef        `json:"ref"`
+	Path             string            `json:"path"`
+	Error            string            `json:"error,omitempty"`
+	Raw              map[string]any    `json:"raw"`
+	InputPolicy      map[string]string `json:"input_policy,omitempty"`
+	ExpressionSource map[string]any    `json:"-"`
 }
 
 func profilePackage(pack Pack, capabilityID string) (catalog.Package, error) {
@@ -92,6 +94,12 @@ func LoadProfile(pack Pack, capabilityID, name string) (Profile, error) {
 	if err := toml.Unmarshal(data, &raw); err != nil {
 		return Profile{}, fmt.Errorf("profile %s: %w", path, err)
 	}
+	expressionSource := cloneMap(raw)
+	evaluated, err := expressions.EvaluateTreeDeferringRoot(raw, expressions.DocumentEnvironment(raw), path, "inputs")
+	if err != nil {
+		return Profile{}, err
+	}
+	raw, _ = evaluated.(map[string]any)
 	policy, err := parseInputPolicy(raw, path)
 	if err != nil {
 		return Profile{}, err
@@ -105,11 +113,39 @@ func LoadProfile(pack Pack, capabilityID, name string) (Profile, error) {
 			return Profile{}, fmt.Errorf("%s: input policy refers to undeclared input %q", path, field)
 		}
 	}
-	raw, err = ResolveInputPaths(pkg.Inputs, raw, path)
+	raw, err = ResolveInputPathsUnresolved(pkg.Inputs, raw, path)
 	if err != nil {
 		return Profile{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return Profile{Ref: ProfileRef{PackID: pack.ID, CapabilityID: capabilityID, Name: name}, Path: path, Raw: raw, InputPolicy: policy}, nil
+	return Profile{Ref: ProfileRef{PackID: pack.ID, CapabilityID: capabilityID, Name: name}, Path: path, Raw: raw, InputPolicy: policy, ExpressionSource: expressionSource}, nil
+}
+
+// ResolveExpressions reevaluates profile values against the final resolved
+// inputs while preserving the document's own top-level HCL context.
+func ResolveExpressions(profile Profile, inputs map[string]any, defs []catalog.Input) (Profile, error) {
+	if len(profile.ExpressionSource) == 0 {
+		return profile, nil
+	}
+	environment := expressions.DocumentEnvironment(profile.ExpressionSource)
+	environment["inputs"] = inputs
+	value, err := expressions.EvaluateTree(profile.ExpressionSource, environment, profile.Path)
+	if err != nil {
+		return Profile{}, err
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return Profile{}, fmt.Errorf("%s: profile must be a TOML table", profile.Path)
+	}
+	policy, err := parseInputPolicy(raw, profile.Path)
+	if err != nil {
+		return Profile{}, err
+	}
+	raw, err = ResolveInputPaths(defs, raw, profile.Path)
+	if err != nil {
+		return Profile{}, fmt.Errorf("%s: %w", profile.Path, err)
+	}
+	profile.Raw, profile.InputPolicy = raw, policy
+	return profile, nil
 }
 
 func parseInputPolicy(raw map[string]any, path string) (map[string]string, error) {

@@ -33,6 +33,22 @@ func TestDiscoverNearestCheckoutConfig(t *testing.T) {
 		t.Fatalf("%#v %v", s, e)
 	}
 }
+
+func TestDiscoverEvaluatesHCLPackValuesInDocumentContext(t *testing.T) {
+	root := t.TempDir()
+	put(t, filepath.Join(root, "aact.toml"), `schema_version=1
+pack_id="CORE"
+[packages.capability.inputs]
+team="${ lower(pack_id) }"
+`)
+	s, err := Discover(root, "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PackageDefaults["capability"]["team"] != "core" {
+		t.Fatalf("pack expression not evaluated: %#v", s.PackageDefaults)
+	}
+}
 func TestExplicitConfigWins(t *testing.T) {
 	root := checkout(t)
 	put(t, filepath.Join(root, "aact.toml"), "schema_version=1\nsource_id='root'\n")

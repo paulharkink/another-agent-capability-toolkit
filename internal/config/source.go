@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/expressions"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -36,6 +37,29 @@ type sourceManifest struct {
 }
 
 var safeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+func decodeSourceManifest(data []byte, path string) (sourceManifest, error) {
+	var document map[string]any
+	if err := toml.Unmarshal(data, &document); err != nil {
+		return sourceManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	evaluated, err := expressions.EvaluateTree(document, expressions.DocumentEnvironment(document), path)
+	if err != nil {
+		return sourceManifest{}, err
+	}
+	encoded, err := toml.Marshal(evaluated)
+	if err != nil {
+		return sourceManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	var manifest sourceManifest
+	if err := toml.NewDecoder(bytes.NewReader(encoded)).DisallowUnknownFields().Decode(&manifest); err != nil {
+		if strict, ok := err.(*toml.StrictMissingError); ok {
+			return sourceManifest{}, fmt.Errorf("%s: %s", path, strict.String())
+		}
+		return sourceManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return manifest, nil
+}
 
 func Discover(cwd, explicitConfig, bundledRoot, stateRoot string) (Source, error) {
 	return discover(cwd, explicitConfig, bundledRoot, stateRoot, false)
@@ -80,12 +104,9 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	if err != nil {
 		return Source{}, err
 	}
-	var m sourceManifest
-	if err = toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&m); err != nil {
-		if strict, ok := err.(*toml.StrictMissingError); ok {
-			return Source{}, fmt.Errorf("%s: %s", manifest, strict.String())
-		}
-		return Source{}, fmt.Errorf("%s: %w", manifest, err)
+	m, err := decodeSourceManifest(data, manifest)
+	if err != nil {
+		return Source{}, err
 	}
 	if m.SchemaVersion != 1 {
 		return Source{}, fmt.Errorf("%s: unsupported schema_version %d", manifest, m.SchemaVersion)
