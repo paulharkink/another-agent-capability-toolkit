@@ -28,6 +28,7 @@ type ActionRequest struct {
 }
 type ActionResult struct {
 	AuthRequired bool                        `json:"auth_required"`
+	Diagnostic   string                      `json:"diagnostic,omitempty"`
 	Choices      map[string][]catalog.Choice `json:"choices,omitempty"`
 	Runtime      *RunSpec                    `json:"runtime,omitempty"`
 }

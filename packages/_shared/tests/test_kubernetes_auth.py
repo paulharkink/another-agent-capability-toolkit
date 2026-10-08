@@ -379,3 +379,72 @@ def test_rejected_explicit_kubeconfig_preserves_previous_target_credential(tmp_p
     with patch("kubernetes_auth.subprocess.run",side_effect=run):
         with pytest.raises(ValueError):copy_kubeconfig(source,destination,"https://cluster.invalid")
     assert destination.read_text()=="previous private credential"
+
+
+def test_auth_failure_diagnostic_preserves_http_cause_without_guessing_expiry():
+    from urllib.error import HTTPError
+
+    secret = "synthetic-secret-token"
+    with patch("urllib.request.urlopen", side_effect=HTTPError("https://cluster.invalid", 401, "Unauthorized", {}, None)):
+        result = check_token("https://cluster.invalid", None, secret)
+
+    assert result.status == "invalid"
+    assert result.diagnostic == "Kubernetes API rejected credentials (HTTP 401)."
+    assert secret not in result.diagnostic
+    assert "expired" not in result.diagnostic.lower()
+
+
+def test_successful_auth_with_denied_optional_probe_is_labeled_secondary():
+    from urllib.error import HTTPError
+
+    with patch("urllib.request.urlopen", side_effect=HTTPError("https://cluster.invalid", 403, "Forbidden", {}, None)):
+        result = check_token("https://cluster.invalid", None, "synthetic-token")
+
+    assert result.status == "valid"
+    assert result.diagnostic.startswith("Secondary:")
+    assert "HTTP 403" in result.diagnostic
+
+
+def test_auth_network_and_response_errors_keep_safe_diagnostics():
+    from urllib.error import URLError
+
+    with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
+        unreachable = check_token("https://cluster.invalid", None, "synthetic-token")
+    assert unreachable.status == "unknown"
+    assert "connection refused" in unreachable.diagnostic
+
+    class MalformedResponse:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return b"not-json"
+
+    with patch("urllib.request.urlopen", return_value=MalformedResponse()):
+        malformed = check_token("https://cluster.invalid", None, "synthetic-token")
+    assert malformed.status == "unknown"
+    assert "malformed authentication response" in malformed.diagnostic
+
+
+@pytest.mark.parametrize("ca_data", ["%%%", "bm90IGEgcGVt"])
+def test_invalid_local_ca_is_not_reported_as_server_response_error(ca_data):
+    with patch("urllib.request.urlopen") as network:
+        result = check_token("https://cluster.invalid", ca_data, "synthetic-token")
+
+    assert result.status == "unknown"
+    assert result.diagnostic.startswith("Kubernetes CA certificate configuration is invalid:")
+    assert "certificate authority data" in result.diagnostic.lower() or "certificate" in result.diagnostic.lower()
+    network.assert_not_called()
+
+
+def test_forbidden_self_subject_review_does_not_claim_authentication():
+    from urllib.error import HTTPError
+    from io import BytesIO
+
+    with patch("urllib.request.urlopen", side_effect=HTTPError(
+        "https://cluster.invalid", 403, "Forbidden", {}, BytesIO(b"untrusted body with synthetic-token")
+    )):
+        result = check_token("https://cluster.invalid", None, "synthetic-token")
+
+    assert result.status == "valid"
+    assert result.diagnostic == "Secondary: SelfSubjectReview was denied (HTTP 403); authentication could not be confirmed by this probe."
+    assert "authenticated" not in result.diagnostic.lower()
+    assert "synthetic-token" not in result.diagnostic

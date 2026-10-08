@@ -42,6 +42,17 @@ class ApiTokenModeTests(unittest.TestCase):
             server._validate_api_token()
         get.assert_called_once_with("/api/datasources")
 
+    def test_authentication_and_permission_failures_have_distinct_diagnostics(self):
+        cases = {
+            401: "Grafana rejected credentials (HTTP 401).",
+            403: "Grafana denied access (HTTP 403); the configured identity may lack permission.",
+        }
+        for status, expected in cases.items():
+            response = MagicMock(status_code=status, is_redirect=False, headers={})
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, expected.replace("(", r"\(").replace(")", r"\)")) as raised:
+                server._response_json(response)
+            self.assertNotIn("expired", str(raised.exception).lower())
+
     def test_api_token_request_never_runs_cookie_rotation(self):
         response=MagicMock(status_code=200,is_redirect=False,headers={})
         response.json.return_value={"database":"ok"}

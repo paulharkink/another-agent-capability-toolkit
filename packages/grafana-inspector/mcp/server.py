@@ -266,8 +266,10 @@ def _query_range(datasource_uid: str, query: dict[str, Any], start: str, end: st
 
 
 def _response_json(response: requests.Response) -> Any:
-    if response.status_code in {401, 403}:
-        raise ValueError("Grafana rejected the bootstrap cookies: grafana_session or oauth_refresh is invalid or expired.")
+    if response.status_code == 401:
+        raise ValueError("Grafana rejected credentials (HTTP 401). Check the configured authentication method and credentials.")
+    if response.status_code == 403:
+        raise ValueError("Grafana denied access (HTTP 403); the configured identity may lack permission.")
     if response.is_redirect:
         raise ValueError("Grafana redirected to interactive login. Restart this MCP with fresh browser cookies from a successful Grafana API request.")
     if response.status_code == 404:

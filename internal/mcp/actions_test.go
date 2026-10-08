@@ -190,3 +190,20 @@ func (f *chunkedActionFailureExec) Run(_ context.Context, _ []string, _ string, 
 	}
 	return nil, f.err
 }
+
+func TestActionResultDecodesOptionalProviderDiagnostic(t *testing.T) {
+	var result ActionResult
+	if err := json.Unmarshal([]byte(`{"auth_required":true,"diagnostic":"Kubernetes API rejected credentials (HTTP 401)."}`), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Diagnostic != "Kubernetes API rejected credentials (HTTP 401)." {
+		t.Fatalf("diagnostic = %q", result.Diagnostic)
+	}
+	var legacy ActionResult
+	if err := json.Unmarshal([]byte(`{"auth_required":true}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Diagnostic != "" {
+		t.Fatalf("legacy diagnostic = %q", legacy.Diagnostic)
+	}
+}

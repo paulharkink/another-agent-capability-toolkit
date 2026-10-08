@@ -44,6 +44,8 @@ def prepare_auth(request: dict) -> dict:
     else:
         check = load_cached_auth(state, credential, profile.api_server, ca, strict)
     result = {"auth_required": check.status != "valid"}
+    if check.diagnostic:
+        result["diagnostic"] = check.diagnostic
     known = sorted(f"{db}/{tenant}" for db, item in profile.dbms.items() for tenant in item.tenants)
     if known:
         result["choices"] = {"connections": [{"value": value, "label": value} for value in known]}
