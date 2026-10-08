@@ -11,7 +11,7 @@ Date: 2026-10-02. Read-only inspection of installed agents plus isolated tempora
 | OpenCode CLI | `/opt/homebrew/bin/opencode`, version `1.18.30` | `debug config` accepts JSON-only, JSONC-only, and no existing config. Both files merge; JSONC wins conflicting MCP values. With neither present, this installed version creates `opencode.jsonc` on config loading. Probe MCPs were disabled. |
 | Claude Desktop | Installed `/Applications/Claude.app`, version `2.110.1`; its separate desktop config exists | Presence/config location inspected. Desktop reload and MCP functionality not exercised. |
 | OpenCode Desktop | Installed `/Applications/OpenCode.app`, version `1.18.31` | Presence verified; Desktop-specific behavior not exercised. |
-| JetBrains | IntelliJ IDEA `2026.2.0.1` installed; 2026.2 settings contain `options/llm.mcpServers.xml` with `McpApplicationServerCommands`, `commands`, and `urls` | Existing generic JSON adapter assumption is wrong for the installed AI Assistant settings. Real XML was inspected for structure only; no server values printed and no write performed. |
+| JetBrains | IntelliJ IDEA `2026.2.0.1` / `IU-262.8665.337` installed; 2026.2 settings contain `options/llm.mcpServers.xml` with `McpApplicationServerCommands`, `commands`, and `urls` | XML structure inspected without emitting setting values. No external writer schema or live AI Assistant client consumption was verified; MCP registration is disabled. |
 
 Additional existing config paths inspected: `~/.codex/config.toml`, `~/.config/opencode/opencode.json`, `~/.claude.json`, and `~/Library/Application Support/Claude/claude_desktop_config.json`. Their contents were not emitted. `~/.ai/mcp/mcp.json` and the current assumed Copilot configs were absent.
 
@@ -27,12 +27,50 @@ The first Codex probe established that an explicitly configured `CODEX_HOME` mus
 - [JetBrains AI Assistant MCP](https://www.jetbrains.com/help/ai-assistant/mcp.html): UI accepts JSON snippets and offers global/project scope. This does not establish a standalone JSON config file; local settings use XML.
 - [GitHub Copilot MCP in IDEs](https://docs.github.com/en/copilot/how-tos/copilot-in-your-ide/customize-copilot/extend-copilot-with-tools-and-context/extend-copilot-chat-with-mcp?tool=jetbrains): JetBrains plugin uses an MCP configuration file. Exact OS paths, absent-file bootstrap behavior, and installed plugin behavior still need direct verification.
 
+## IntelliJ AI Assistant registration status (2026-10-08)
+
+The installed product inspected read-only was IntelliJ IDEA `2026.2.0.1`, build
+`IU-262.8665.337`. Its default macOS configuration root contains
+`options/llm.mcpServers.xml` with an `application` root and a
+`McpApplicationServerCommands` component containing `commands` and `urls`
+collections. Both collections were empty. Inspection emitted only element and
+attribute names; no server values were read into output. The app bundle's
+`mcpserver` plugin is the IDE's MCP server (it exposes IDE tools to clients),
+not evidence of the AI Assistant MCP client or a client-side config loader.
+An AI Assistant client plugin directory was not present in the inspected app
+bundle. No account, license, or plugin entitlement was inferred.
+
+JetBrains' [AI Assistant MCP guide](https://www.jetbrains.com/help/ai-assistant/mcp.html)
+documents adding server definitions in **Settings | Tools | AI Assistant | Model
+Context Protocol (MCP)**, using JSON fields such as `mcpServers`, with global
+or project scope. It describes applying the settings to establish a connection.
+It does not document a standalone JSON file path, an external JSON import or
+watcher, or the serialization schema for `llm.mcpServers.xml`. JetBrains also
+documents that global settings live under the IDE configuration directory and
+that `idea.config.path` can override its default ([directory documentation](https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html)).
+That identifies where IDE state lives; it does not establish the MCP component's
+external write schema or reload behavior.
+
+AACT no longer writes the assumed `~/.ai/mcp/mcp.json` file for IntelliJ. The
+adapter retains its existing skills route, reports the native XML path as
+metadata, and disables MCP registration with an explicit reason. The obsolete
+JSON writer tests were replaced by tests asserting no default or explicit
+override can enable that writer. Isolated temporary-home tests verify Registry
+capability exposure and discovery metadata only. These are adapter behavior
+tests, not proof that a live IDE consumed a registration.
+
+Live client-consumption verification remains open. It requires an installed AI
+Assistant client plus a supported, isolated configuration mechanism and
+evidence from the IDE that a harmless test server was loaded. No such client
+or documented external file mechanism was available for the non-interactive,
+no-profile-write check, so no XML writer or live consumption claim is made.
+
 ## Current code assumptions needing correction or verification
 
 - Existing adapter interface only exposes register/unregister; detection and config discovery are not adapter responsibilities yet.
 - Claude Code now has a scoped user-config JSON adapter. A temporary `CLAUDE_CONFIG_DIR` CLI probe confirmed the `mcpServers` entry shape with `type = http` and URL. Claude Desktop remains separate and unsupported.
 - OpenCode now writes to the effective JSONC file when present and avoids creating a JSON sibling. It validates both files and retires matching AACT-owned shadow entries on update/removal so an older lower-priority value cannot reappear. This has fixture coverage; live OpenCode reload after a write was not exercised.
-- JetBrains AI Assistant's previously assumed JSON writer has been disabled: the installed IDE stores its MCP settings in XML. Its XML writer/detection are not implemented, so AACT must report it as unavailable rather than claim a successful registration.
+- JetBrains AI Assistant's previously assumed JSON writer has been disabled. The observed XML is native IDE state, not a verified external integration point; AACT reports MCP registration unavailable pending a supported mechanism.
 - Missing-config handling must distinguish agent presence from config presence.
 - Copilot-specific discovery, config overrides, and native Windows paths are not certified by the existing path constants.
 

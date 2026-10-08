@@ -105,14 +105,14 @@ func TestDiscoverySeparatesDesktopAppFromCLIAndJetBrainsXML(t *testing.T) {
 		t.Fatal(err)
 	}
 	jetbrains := DiscoverAgent(context.Background(), "intellij", p)
-	if jetbrains.Detection != "unverified" || jetbrains.Evidence == "" || len(jetbrains.ConfigFiles) != 2 {
+	if jetbrains.Detection != "unverified" || jetbrains.Evidence == "" || len(jetbrains.ConfigFiles) != 1 {
 		t.Fatalf("JetBrains IDE or XML settings were treated as plugin evidence: %+v", jetbrains)
 	}
-	if jetbrains.ConfigFiles[0].Path != filepath.Join(home, ".ai", "mcp", "mcp.json") || jetbrains.ConfigFiles[0].Exists {
-		t.Fatalf("JetBrains JSON config did not show the default missing file: %+v", jetbrains.ConfigFiles)
-	}
-	if jetbrains.ConfigFiles[1].Path != xml || !jetbrains.ConfigFiles[1].Exists || jetbrains.ConfigFiles[1].Precedence != "metadata" {
+	if jetbrains.ConfigFiles[0].Path != xml || !jetbrains.ConfigFiles[0].Exists || jetbrains.ConfigFiles[0].Precedence != "metadata" {
 		t.Fatalf("JetBrains IDE metadata path was not reported separately: %+v", jetbrains.ConfigFiles)
+	}
+	if !strings.Contains(strings.ToLower(jetbrains.Note), "no supported external config file path") {
+		t.Fatalf("JetBrains discovery did not explain the unverified writer mechanism: %s", jetbrains.Note)
 	}
 }
 
@@ -272,7 +272,7 @@ func TestDiscoveryWindowsJetBrainsFindsRoamingIDEStateAndCopilotConfig(t *testin
 		t.Fatal(err)
 	}
 	got := DiscoverAgent(context.Background(), "intellij", p)
-	if got.Detection != "unverified" || len(got.ConfigFiles) != 2 || got.ConfigFiles[1].Path != xml || !got.ConfigFiles[1].Exists {
+	if got.Detection != "unverified" || len(got.ConfigFiles) != 1 || got.ConfigFiles[0].Path != xml || !got.ConfigFiles[0].Exists {
 		t.Fatalf("Windows JetBrains discovery failed: %+v", got)
 	}
 	copilot := DiscoverAgent(context.Background(), "copilot-intellij", p)

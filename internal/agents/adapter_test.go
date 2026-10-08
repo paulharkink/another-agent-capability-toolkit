@@ -447,62 +447,18 @@ func TestMalformedConfigRemainsUnchanged(t *testing.T) {
 		}
 	}
 }
-func TestIntellijAIAssistantJSONAdapterPreservesOtherServers(t *testing.T) {
+func TestJetBrainsAIJSONSnippetDoesNotEnableUnverifiedFileAdapter(t *testing.T) {
 	for _, kind := range []string{"intellij", "intellij-ai-assistant"} {
-		a, e := configFixture(t, kind, "{\"theme\":\"dark\",\"mcpServers\":{\"other\":{\"url\":\"http://other\"}}}")
-		reg := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "http"}
-		if err := a.Register(context.Background(), e, reg); err != nil {
-			t.Fatalf("%s register: %v", kind, err)
+		if _, err := For(kind, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "no supported external config file") {
+			t.Fatalf("For(%q) = %v, want an explicit unsupported-mechanism error", kind, err)
 		}
-		v := readJSON(t, e.ConfigPath)
-		if v["theme"] != "dark" || server(t, v, "mcpServers", "local")["url"] != reg.URL || server(t, v, "mcpServers", "other")["url"] != "http://other" {
-			t.Fatalf("%s changed unrelated config: %+v", kind, v)
+		env, err := ResolveEnvironment(kind, kind, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
 		}
-		e.Owned = map[string]Registration{"local": reg}
-		if err := a.Unregister(context.Background(), e, "local"); err != nil {
-			t.Fatalf("%s unregister: %v", kind, err)
+		if env.ConfigPath != "" {
+			t.Fatalf("ResolveEnvironment(%q) advertised a config file %q", kind, env.ConfigPath)
 		}
-		v = readJSON(t, e.ConfigPath)
-		if v["theme"] != "dark" || v["mcpServers"].(map[string]any)["local"] != nil || server(t, v, "mcpServers", "other")["url"] != "http://other" {
-			t.Fatalf("%s removed unrelated configuration: %+v", kind, v)
-		}
-	}
-}
-
-func TestJetBrainsAIAssistantCreatesDefaultMCPJSONWhenMissing(t *testing.T) {
-	a, e := configFixture(t, "intellij", "")
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := server(t, readJSON(t, e.ConfigPath), "mcpServers", "local")["url"]; got != "http://localhost:1/mcp" {
-		t.Fatalf("new JetBrains configuration URL = %v", got)
-	}
-}
-
-func TestJetBrainsAIAssistantHonorsExplicitConfigPath(t *testing.T) {
-	a, e := configFixture(t, "intellij", "{\"mcpServers\":{}}")
-	other := filepath.Join(t.TempDir(), "registry-selected", "mcp.json")
-	e.ConfigPath = other
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := server(t, readJSON(t, other), "mcpServers", "local")["url"]; got != "http://localhost:1/mcp" {
-		t.Fatalf("explicit JetBrains config path not used: %v", got)
-	}
-	if readJSON(t, filepath.Join(e.Home, ".ai", "mcp", "mcp.json"))["mcpServers"].(map[string]any)["local"] != nil {
-		t.Fatal("adapter wrote default path when explicit path was selected")
-	}
-}
-
-func TestResolveJetBrainsAIAssistantDefaultMCPPath(t *testing.T) {
-	home := t.TempDir()
-	e, err := ResolveEnvironment("intellij", "intellij", home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(home, ".ai", "mcp", "mcp.json")
-	if e.ConfigPath != want {
-		t.Fatalf("JetBrains AI Assistant path = %q, want %q", e.ConfigPath, want)
 	}
 }
 func TestCopilotIntellijUsesServers(t *testing.T) {

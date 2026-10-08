@@ -28,7 +28,7 @@ func For(kind string, runner process.Executor) (LegacyMCPAdapter, error) {
 	case "claude":
 		return jsonAdapter{kind: kind, parent: "mcpServers"}, nil
 	case "intellij", "intellij-ai-assistant":
-		return jsonAdapter{kind: "intellij", parent: "mcpServers"}, nil
+		return nil, fmt.Errorf("JetBrains AI Assistant MCP registration is unavailable: no supported external config file mechanism is verified")
 	case "copilot-intellij":
 		return jsonAdapter{kind: kind, parent: "servers"}, nil
 	case "generic", "generic-mcp":
