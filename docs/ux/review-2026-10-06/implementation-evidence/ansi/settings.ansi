@@ -1,0 +1,23 @@
+[38;2;233;245;255;48;2;9;38;111m╔[38;2;255;227;138m AACT · Another Agent Capability Toolkit                                                          [38;2;233;245;255;48;2;9;38;111m╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                          ║
+║ Checkout: checkout · Managing: darwin/arm64 · Source: one · Env: none                            ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+╠[38;2;255;227;138m► Settings categories                      [38;2;233;245;255;48;2;9;38;111m╦[38;2;255;227;138m Details · Environment source                         [38;2;233;245;255;48;2;9;38;111m╣
+║[38;2;8;31;91;48;2;233;242;251m> Environment source                       [38;2;233;245;255;48;2;9;38;111m║Environment source                                    ║
+║› Agent defaults                           ║Source: one                                           ║
+║› Runtime backend                          ║Checkout: /checkout                                   ║
+║› Diagnostics                              ║Environment root: not configured                      ║
+║                                           ║[38;2;255;227;138m[ Edit environment root… ]                            [38;2;233;245;255;48;2;9;38;111m║
+║                                           ║                                                      ║
+║                                           ║                                                      ║
+║                                           ║                                                      ║
+║                                           ║                                                      ║
+║                                           ║                                                      ║
+║                                           ║                                                      ║
+║                                                                                                  ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                                  ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F5 Refresh  F9 Main menu  F10 Quit                                     ║
+║ Esc Back · ↑↓ Select focused pane · Enter / F2 Open / Focus                                      ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝[m

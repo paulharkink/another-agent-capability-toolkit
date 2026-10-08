@@ -16,7 +16,7 @@ func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing
 		t.Skip("macOS Codex path fixture")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	t.Setenv("CODEX_HOME", "")
 	svc, _, _ := fixture(t)
 	path := filepath.Join(home, ".codex", "config.toml")
@@ -47,7 +47,7 @@ func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing
 
 func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	t.Setenv("USERPROFILE", home)
 	codexRoot := filepath.Join(home, "alternate-codex")
 	xdgRoot := filepath.Join(home, "alternate-xdg")
@@ -56,7 +56,7 @@ func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 	svc, _, _ := fixture(t)
 	for _, tc := range []struct{ id, want string }{
 		{"codex", filepath.Join(codexRoot, "config.toml")},
-		{"opencode", filepath.Join(xdgRoot, "opencode", "opencode.json")},
+		{"opencode", filepath.Join(xdgRoot, "opencode", "opencode.jsonc")},
 	} {
 		env, err := svc.uiEnvironment(tc.id, state.Key{Source: "fixture", Package: "demo", Target: "default"})
 		if err != nil || env.ConfigPath != tc.want {
@@ -68,12 +68,33 @@ func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 	}
 }
 
+func TestUIEnvironmentRestoresCustomHomeFromNamedMCPChildren(t *testing.T) {
+	home := t.TempDir()
+	isolateUXUserHome(t, home)
+	t.Setenv("CODEX_HOME", "")
+	svc, _, store := fixture(t)
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "sample-env", Target: "target-a"}
+	customHome := filepath.Join(home, "custom-agent-home")
+	configPath := filepath.Join(customHome, ".codex", "config.toml")
+	for _, name := range []string{"inspector", "metrics"} {
+		childKey := key
+		childKey.MCP = name
+		if err := store.Record(state.Installation{Key: childKey, AgentID: "codex", AgentHome: customHome, AgentKind: "codex", Component: "mcp", Destination: configPath, RegistrationName: "demo-home-" + name, URL: "http://127.0.0.1/mcp"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := svc.uiEnvironment("codex", key)
+	if err != nil || resolved.Home != customHome || resolved.ConfigPath != configPath {
+		t.Fatalf("named child rows lost prior custom agent paths: %+v %v", resolved, err)
+	}
+}
+
 func TestUIAgentConfigShowsExactContentsAndRejectsUndiscoveredPaths(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS Codex path fixture")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	t.Setenv("CODEX_HOME", "")
 	svc, _, _ := fixture(t)
 	path := filepath.Join(home, ".codex", "config.toml")
@@ -102,7 +123,7 @@ func TestUIAgentConfigShowsExactContentsAndRejectsUndiscoveredPaths(t *testing.T
 
 func TestUIAgentManagementIncludesAACTRegistrationPathWithoutClaimingClientInstall(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
 	path := filepath.Join(home, "custom", "mcp.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -136,7 +157,7 @@ func TestUIAgentManagementIncludesAACTRegistrationPathWithoutClaimingClientInsta
 
 func TestUIAgentManagementDoesNotRepeatProfileForMultipleConfigFiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateUXUserHome(t, home)
 	svc, _, store := fixture(t)
 	key := state.Key{Source: "s", Package: "p", Target: "t"}
 	for _, path := range []string{"first.json", "second.jsonc"} {

@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠Capabilities                                                                       ╦► Selected capability · cluster-inspector · sample-skills                      ╣
+║› Partial · Cluster Inspector  skill + MCP                                         ║── Capability                                                                       ║
+║› Partial · Grafana Inspector  skill + MCP                                         ║> Configure / install cluster-inspector · sample-skills…                       ║
+║› Not installed · Azure Inspector  skill + MCP                                     ║› View capability details                                                           ║
+║› Not installed · Forgejo  skill + MCP                                             ║── Related MCP profiles                                                             ║
+║› Installed · Find Session  skill                                                  ║› MCP · cluster-inspector  never-started                                            ║
+║› Installed · Non Interactive Ready Planning  skill                                ║── Installation · AACT records: Not installed                                       ║
+║› Not installed · Local Git Repository Map  skill                                  ║· MCP registration: no AACT record                                                  ║
+║› Not installed · skills-source-management  skill                                   ║                                                                                    ║
+║› Installed · clean-up  skill                                                      ║                                                                                    ║
+║› Not installed · kinfer-platform  skill                                           ║                                                                                    ║
+║› Not installed · kubedock-docker  skill                                           ║                                                                                    ║
+║› Not installed · kubedock-nmap  skill                                             ║                                                                                    ║
+║› Not installed · local-gitops-triage  skill                                       ║                                                                                    ║
+║› Not installed · local-live-cluster-diagnostics  skill                            ║                                                                                    ║
+║› Not installed · vault-backed-trigger-delivery  skill                             ║                                                                                    ║
+║> Not installed · cluster-inspector · sample-skills  MCP                      ║                                                                                    ║
+║› Not installed · grafana-inspector · sample-skills  MCP                      ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║16/17                                                                              ║1/3                                                                                 ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║cluster-inspector · sample-skills · Configure / install cluster-inspector · sample-skills…                                                                    ║
+║Package is absent from the local catalog; use profile Actions for registrations.                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh                                                                                                        ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                                                                                           ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

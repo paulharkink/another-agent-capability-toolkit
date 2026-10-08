@@ -18,7 +18,7 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	if m.form == nil {
 		t.Fatal("setup form did not open")
 	}
@@ -31,7 +31,7 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("setup Save did not submit")
 	}
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if backend.installRequest == nil || backend.installRequest.Inputs["repo"] != "/repos/edited" {
 		t.Fatalf("edited draft was not submitted: %+v", backend.installRequest)
 	}
@@ -52,15 +52,16 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
-	m.Update(m.homeOperation("parameters")())
+	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m.Update(cmd())
+	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil || !m.result.Failed || !strings.Contains(m.View().Content, "Edit answers") {
 		t.Fatal("partial installation failure was displayed as success")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Retry
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Close
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.result != nil || m.form != nil {
-		t.Fatal("Back action in failed result did not return to the previous screen")
+		t.Fatal("Close action in failed result did not return to the parent screen")
 	}
 }

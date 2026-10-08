@@ -28,9 +28,9 @@ func For(kind string, runner process.Executor) (Adapter, error) {
 	case "claude":
 		return jsonAdapter{kind: kind, parent: "mcpServers"}, nil
 	case "intellij", "intellij-ai-assistant":
-		return nil, errors.New("JetBrains AI Assistant stores MCP settings in IDE XML; its adapter is not implemented")
+		return jsonAdapter{kind: "intellij", parent: "mcpServers"}, nil
 	case "copilot-intellij":
-		return jsonAdapter{kind: kind, parent: "servers", requireExisting: true}, nil
+		return jsonAdapter{kind: kind, parent: "servers"}, nil
 	case "generic", "generic-mcp":
 		return jsonAdapter{kind: kind, parent: "servers"}, nil
 	default:
@@ -48,6 +48,14 @@ func validate(r Registration) error {
 	}
 	if r.TimeoutMS < 0 {
 		return errors.New("MCP timeout must not be negative")
+	}
+	for name, value := range r.Headers {
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n\x00:") {
+			return errors.New("MCP request header has an invalid name")
+		}
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("MCP request header %q has an invalid value", name)
+		}
 	}
 	return nil
 }

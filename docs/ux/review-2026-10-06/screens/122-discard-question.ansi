@@ -1,0 +1,42 @@
+[38;5;195m[48;5;17m╔ AACT · Another Agent Capability Toolkit[39m                                                                                                                                [38;5;195m╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments[39m                                                                                  [38;5;195m║
+╠[38;5;222mCapabilities[39m                                                                       [38;5;195m╦[38;5;222m► Selected capability · Local Git Repository Map[39m                                    [38;5;195m╣
+║› Installed · Cluster Inspector  skill + MCP[39m                                       [38;5;195m║[38;5;222m── Capability[39m                                                                       [38;5;195m║
+║› Not installed · Grafana Inspector  skill + MCP[39m                                   [38;5;195m║[38;5;17m[48;5;195m> Configure / install Local Git Repository Map…[39m                                     [38;5;195m[48;5;17m║
+║› Not installed · Azure Inspector  skill + MCP[39m                                     [38;5;195m║› View capability details[39m                                                           [38;5;195m║
+║› Not installed · Forgejo  skill + MCP[39m                                             [38;5;195m║[38;5;222m── Installation · AACT records: Not installed[39m                                       [38;5;195m║
+║› Not installed · Find Session  skill[39m                                              [38;5;195m║[38;5;146m· Skill: no AACT record[39m                                                             [38;5;195m║
+║› Not installed · Non Interactive Ready Planning  skill[39m                            [38;5;195m║[39m                                                                                    [38;5;195m║
+║> Not installed · Local Git Repository Map  skill[39m                                  [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · skills-source-management  skill[39m                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · clean-up  skill[39m                                                  [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kinfer-platform  skill[39m                                           [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kubedock-docker  skill[39m                                           [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kubedock-nmap  skill[39m                                             [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · local-gitops-triage  skill[39m                                       [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · local-live-cluster-diagnostics  skill[39m                            [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · vault-backed-trigger-delivery  skill[39m                             [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · cluster-inspector · sample-skills  MCP[39m                      [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · grafana-inspector · sample-skills  MCP[39m                      [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║7/17[39m                                                                               [38;5;195m║1/2[39m                                                                                 [38;5;195m║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║Local Git Repository Map · Configure / install Local Git Repository Map…[39m                                                                                                [38;5;195m║
+║Cancelled[39m                                                                                                                                                               [38;5;195m║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh[39m                                                                                                        [38;5;195m║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit[39m                                                                                                           [38;5;195m║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

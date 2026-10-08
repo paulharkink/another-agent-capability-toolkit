@@ -114,6 +114,58 @@ func (s *Service) forSource(id string) (*Service, error) {
 	}
 	return nil, fmt.Errorf("source %s is not registered; launch aact in its checkout", id)
 }
+
+// UILocateSource explicitly updates the saved location for an existing source
+// only when the candidate checkout resolves to the same source identity.
+func (s *Service) UILocateSource(ctx context.Context, id, root string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == "" || root == "" {
+		return errors.New("source ID and checkout directory are required")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source location is not a directory: %s", root)
+	}
+	refs, err := s.sourceRefs()
+	if err != nil {
+		return err
+	}
+	index := -1
+	for i := range refs {
+		if refs[i].ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return fmt.Errorf("source %s is not a remembered source", id)
+	}
+	old := refs[index]
+	manifest := filepath.Join(root, "aact.toml")
+	source, err := config.Discover(root, manifest, old.BundledRoot, s.Store.Root())
+	if err != nil {
+		return fmt.Errorf("locate source %s: %w", id, err)
+	}
+	if source.ID != id {
+		return fmt.Errorf("source identity mismatch: expected %s, found %s", id, source.ID)
+	}
+	updated := sourceRef{ID: source.ID, Root: source.Root, ManifestPath: source.ManifestPath, EnvironmentRoot: source.EnvironmentRoot, BundledRoot: old.BundledRoot}
+	for _, pkg := range source.Catalog {
+		updated.PackageDirs = append(updated.PackageDirs, pkg.Dir)
+	}
+	refs[index] = updated
+	return state.WriteJSON(filepath.Join(s.Store.Root(), "manager", "sources.json"), refs)
+}
+
 func (s *Service) UICatalog(ctx context.Context) ([]catalog.Package, error) { return s.Catalog(ctx) }
 func (s *Service) UIInventory(ctx context.Context) ([]state.Installation, error) {
 	if e := ctx.Err(); e != nil {
@@ -177,10 +229,10 @@ func (s *Service) UISetDefaultAgents(ctx context.Context, ids []string) error {
 	}
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		if id == "" || id == "all" || !known[id] || seen[id] {
+		kind, _, _ := strings.Cut(id, ":")
+		if id == "" || id == "all" || !known[id] || seen[id] || agents.IsManual(kind) {
 			return invalid(fmt.Errorf("invalid default MCP agent %q", id))
 		}
-		kind, _, _ := strings.Cut(id, ":")
 		if _, err := agents.For(kind, s.Options.Runner); err != nil {
 			return invalid(fmt.Errorf("default MCP agent %q: %w", id, err))
 		}
@@ -221,8 +273,10 @@ func (s *Service) UIAgentDefaultOptions(ctx context.Context) ([]string, error) {
 			continue
 		}
 		kind, _, _ := strings.Cut(id, ":")
-		if _, err := agents.For(kind, s.Options.Runner); err == nil {
-			options = append(options, id)
+		if !agents.IsManual(kind) {
+			if _, err := agents.For(kind, s.Options.Runner); err == nil {
+				options = append(options, id)
+			}
 		}
 	}
 	return options, nil
@@ -244,7 +298,13 @@ func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	}
 	return labels, nil
 }
-func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentID, environment, target string) (string, error) {
+func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error) {
+	if action == "locate-source" {
+		if err := s.UILocateSource(ctx, sourceID, target); err != nil {
+			return "", err
+		}
+		return "Located source " + sourceID + " at " + target, nil
+	}
 	svc, e := s.forSource(sourceID)
 	if e != nil {
 		return "", e
@@ -299,14 +359,14 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, agentI
 			}
 			envs = append(envs, a)
 		}
-		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: action == "install"}
+		q := InstallRequest{Package: packageID, Environment: environment, Target: target, Agents: envs, Interactive: false}
 		if action == "install" {
 			out, e = svc.Install(ctx, q)
 		} else {
 			out, e = svc.Uninstall(ctx, q)
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Interactive: action == "start" || action == "authenticate"})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Package: packageID, Environment: environment, Target: target, Profile: profile, Interactive: false})
 	}
 	if out.Logs != "" {
 		return out.Logs, e
@@ -328,7 +388,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 	}
 	matching := []state.Installation{}
 	for _, r := range rows {
-		if r.AgentID == id && r.Key == k && r.Component != "runtime" {
+		if r.AgentID == id && sameCapabilityKey(r.Key, k) && r.Component != "runtime" {
 			matching = append(matching, r)
 		}
 	}
@@ -377,6 +437,15 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 			env.SkillsDir = filepath.Dir(r.Destination)
 		case "mcp":
 			env.ConfigPath = r.Destination
+		}
+	}
+	// OpenCode's adapter prefers the effective JSONC sibling and creates JSONC
+	// when neither sibling exists. Keep the TUI preview, adapter write, and
+	// installation ledger on that same concrete path.
+	if env.Kind == "opencode" {
+		env.ConfigPath, e = agents.ResolveConfigWritePath(env)
+		if e != nil {
+			return env, e
 		}
 	}
 	return env, nil

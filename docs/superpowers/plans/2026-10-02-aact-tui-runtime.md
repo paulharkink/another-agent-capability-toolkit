@@ -6,7 +6,7 @@
 
 **Architecture:** The TUI has two home panes, a modal stack, and management screens; it calls typed application operations and renders service-provided status rather than interpreting Docker directly. Docker inspection provides live observation, while a local installation identity and action record provide ownership and last intent. Windows and WSL never read one another's agent configs or state, even when they observe the same Docker Engine.
 
-**Tech Stack:** Go 1.27.1, Bubble Tea v2.0.10, Lip Gloss v2.0.6, Docker CLI, standard Go testing. Use `/Users/pharkink/.cache/aact-build-tools/go/bin/go` for local commands.
+**Tech Stack:** Go 1.27.1, Bubble Tea v2.0.10, Lip Gloss v2.0.6, Docker CLI, standard Go testing. Use `/Users/user/.cache/aact-build-tools/go/bin/go` for local commands.
 
 **Spec:** `docs/superpowers/specs/2026-10-02-aact-tui-interaction-design.md`, `docs/superpowers/specs/2026-10-02-aact-agent-adapters-design.md`, and the approved interaction mock in `.superpowers/brainstorm/6056-1790946803/content/aact-menu-interaction-v4.html`.
 
@@ -36,7 +36,7 @@
 **Interfaces:** `Store.InstallationID() (string,error)` returns a persistent random ID under this state root. `mcp.Instance` gains an ownership/status projection that distinguishes locally owned, other AACT, and unknown. `Runtime.List` combines Docker inspection with local runtime records without treating a matching capability key as proof of ownership.
 
 - [ ] Write failing tests for persistent installation ID, two state roots seeing the same labeled container, legacy container ownership via exact local container ID, and Docker/current-state disagreement.
-- [ ] Run `/Users/pharkink/.cache/aact-build-tools/go/bin/go test ./internal/state ./internal/mcp -count=1`; capture the expected failures.
+- [ ] Run `/Users/user/.cache/aact-build-tools/go/bin/go test ./internal/state ./internal/mcp -count=1`; capture the expected failures.
 - [ ] Add an installation-owner Docker label and local last-successful-action record. Live Docker state remains observation, not a derived state-file status. Never expose foreign Start/Stop.
 - [ ] Run focused tests, then the full `go test ./...`; record evidence in `docs/implementation-evidence.md`.
 
@@ -47,7 +47,7 @@
 **Interfaces:** Keep `tui.Backend` compatible while introducing typed local `CapabilityRow` and `ProfileRow` view projections. `Model` stores separate selected stable IDs and scroll offsets for Capabilities and related MCP profiles, a focused pane, screen, and modal state.
 
 - [ ] Write failing tests for two-pane rendering, selected-capability profile filtering by source+package, skill-only and no-profile empty states, Tab/left/right pane focus, up/down/page/home/end scrolling, and resize/refresh selection preservation.
-- [ ] Run `/Users/pharkink/.cache/aact-build-tools/go/bin/go test ./internal/tui -count=1`; confirm the intended red assertions.
+- [ ] Run `/Users/user/.cache/aact-build-tools/go/bin/go test ./internal/tui -count=1`; confirm the intended red assertions.
 - [ ] Implement the approved Norton Commander layout and keyboard navigation with visible F-key/menu affordances. Agents, Environments, Settings, and Help are destinations from Main menu, not Tab destinations.
 - [ ] Add mouse hit regions for rows, pane focus, visible controls, and wheel scrolling; test click/scroll against resized and scrolled layouts. Keep keyboard use complete.
 - [ ] Run focused and full Go tests; record evidence.

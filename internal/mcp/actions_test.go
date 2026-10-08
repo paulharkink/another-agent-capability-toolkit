@@ -3,11 +3,107 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestMissingBuiltInInspectorHelperUsesCurrentAactExecutable(t *testing.T) {
+	packageDir := filepath.Join(t.TempDir(), "grafana-inspector")
+	if err := os.MkdirAll(filepath.Join(packageDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &recordingActionExec{output: `{}`}
+	pkg := catalog.Package{
+		ID:  "grafana-inspector",
+		Dir: packageDir,
+		MCP: &catalog.MCP{Actions: map[string]catalog.Command{
+			"prepare": {Argv: []string{"bin/inspector-helper", "grafana-inspector", "prepare"}},
+		}},
+	}
+	if _, err := (&ActionRunner{Executor: executor}).Run(context.Background(), pkg, ActionRequest{Action: "prepare"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.argv) != 4 || executor.argv[0] != self || executor.argv[1] != "__aact_internal_inspector_helper" || executor.argv[2] != "grafana-inspector" || executor.argv[3] != "prepare" {
+		t.Fatalf("fallback helper argv = %#v", executor.argv)
+	}
+	if executor.cwd != packageDir {
+		t.Fatalf("fallback helper working directory = %q, want %q", executor.cwd, packageDir)
+	}
+}
+
+func TestMissingArbitraryPackageCommandKeepsDeclaredExecutable(t *testing.T) {
+	packageDir := filepath.Join(t.TempDir(), "custom-package")
+	executor := &recordingActionExec{output: `{}`}
+	pkg := actionPackage()
+	pkg.Dir = packageDir
+	if _, err := (&ActionRunner{Executor: executor}).Run(context.Background(), pkg, ActionRequest{Action: "prepare"}); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(packageDir, "bin", "helper")
+	if len(executor.argv) == 0 || executor.argv[0] != want {
+		t.Fatalf("arbitrary action command changed to %#v, want %q", executor.argv, want)
+	}
+}
+
+func TestBuiltAactDispatchesInspectorHelperForTemporaryPackageWithoutDocker(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := t.TempDir()
+	packageDir := filepath.Join(temp, "grafana-inspector")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"grafana-inspector\"\nname = \"Temporary Grafana Inspector\"\n[mcp]\nname = \"grafana-inspector\"\nruntime = \"docker\"\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binaryName := "aact"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(temp, binaryName)
+	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
+	build := exec.Command(goBinary, "build", "-o", binary, "./cmd/aact")
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build AACT binary: %v\n%s", err, output)
+	}
+	request, err := json.Marshal(ActionRequest{ProtocolVersion: 1, Action: "prepare", PackageDir: packageDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "__aact_internal_inspector_helper", "grafana-inspector", "prepare")
+	cmd.Stdin = strings.NewReader(string(request))
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "target state directory required") {
+		t.Fatalf("built AACT helper dispatch did not reach pre-Docker validation: err=%v output=%s", err, output)
+	}
+}
+
+type recordingActionExec struct {
+	argv   []string
+	cwd    string
+	output string
+}
+
+func (f *recordingActionExec) Run(_ context.Context, argv []string, cwd string, _ []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	f.argv = append([]string(nil), argv...)
+	f.cwd = cwd
+	return []byte(f.output), nil
+}
 
 type actionExec struct {
 	request ActionRequest
@@ -105,4 +201,60 @@ func TestActionRejectsTrailingOutputAndRedactsProgress(t *testing.T) {
 	if strings.Contains(progress, "private-secret") {
 		t.Fatal(progress)
 	}
+}
+
+func TestActionFailureWrapsCauseAndKeepsScrubbedDiagnostic(t *testing.T) {
+	var progress string
+	r := ActionRunner{Executor: &actionFailureExec{err: context.Canceled, stderr: "progress private-secret"}, OnStderr: func(b []byte) { progress += string(b) }}
+	_, err := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", Inputs: map[string]any{"token": "private-secret"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("wrapped action error does not preserve cancellation: %v", err)
+	}
+	want := "p prepare failed: context canceled: progress [redacted]"
+	if err.Error() != want {
+		t.Fatalf("visible error = %q, want %q", err, want)
+	}
+	if strings.Contains(progress, "private-secret") {
+		t.Fatalf("stderr was not redacted: %q", progress)
+	}
+}
+
+type actionFailureExec struct {
+	err    error
+	stderr string
+}
+
+func (f *actionFailureExec) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	if stderr != nil {
+		stderr([]byte(f.stderr))
+	}
+	return nil, f.err
+}
+
+func TestActionFailureRetainsDistinctiveCauseAfterLongBuildOutput(t *testing.T) {
+	const cause = "compiler rejected configured entrypoint"
+	var progress string
+	r := ActionRunner{Executor: &chunkedActionFailureExec{err: errors.New("exit status 1"), stderr: strings.Repeat("build output ", 900) + cause}, OnStderr: func(b []byte) { progress += string(b) }}
+	_, err := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare"})
+	if err == nil || !strings.Contains(err.Error(), cause) {
+		t.Fatalf("failure lost distinctive cause after long stderr: %v", err)
+	}
+	if !strings.Contains(progress, cause) {
+		t.Fatalf("streaming output lost distinctive cause: %q", progress[len(progress)-min(100, len(progress)):])
+	}
+}
+
+type chunkedActionFailureExec struct {
+	err    error
+	stderr string
+}
+
+func (f *chunkedActionFailureExec) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
+	if stderr != nil {
+		for start := 0; start < len(f.stderr); start += 256 {
+			end := min(start+256, len(f.stderr))
+			stderr([]byte(f.stderr[start:end]))
+		}
+	}
+	return nil, f.err
 }

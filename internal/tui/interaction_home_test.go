@@ -17,6 +17,16 @@ func pressAndRun(m *Model, key rune) {
 	}
 }
 
+func startHomeSetup(m *Model) {
+	cmd := m.homeOperation("parameters")
+	if m.home.Modal != nil && m.home.Modal.Kind == "target-chooser" {
+		cmd = m.modalKey("enter")
+	}
+	if cmd != nil {
+		m.Update(cmd())
+	}
+}
+
 func focusHomeContext(t *testing.T, m *Model) {
 	t.Helper()
 	press(m, tea.KeyEnter, "")
@@ -39,7 +49,7 @@ func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
 			if m.home.Modal != nil {
 				t.Fatalf("first %s opened a deeper overlay: %#v", test.name, m.home.Modal)
 			}
-			for _, want := range []string{"Configure / install Inspector", "View capability details", "Related MCP profiles", "MCP · profile"} {
+			for _, want := range []string{"Configure now", "View capability details", "Related MCP profiles", "MCP · profile"} {
 				if !strings.Contains(m.View().Content, want) {
 					t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
 				}
@@ -51,11 +61,12 @@ func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
 func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 	t.Run("setup", func(t *testing.T) {
 		m, _ := homeFixture()
-		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: &setupBackendFixture{}}
+		setup := &setupBackendFixture{}
+		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 		focusHomeContext(t, m)
-		pressAndRun(m, tea.KeyEnter) // Configure / install is the default layer-2 row.
-		if m.form == nil {
-			t.Fatal("Enter on Configure / install did not open the setup form")
+		pressAndRun(m, tea.KeyEnter) // Configure now opens the package directly.
+		if m.home.Modal != nil || m.form == nil {
+			t.Fatalf("Configure now did not open the setup form directly: modal=%#v form=%v", m.home.Modal, m.form != nil)
 		}
 	})
 
@@ -69,20 +80,16 @@ func TestHomeLayerTwoEnterOpensSetupDetailsOrProfileActions(t *testing.T) {
 		}
 	})
 
-	t.Run("related profile", func(t *testing.T) {
+	t.Run("related profile actions", func(t *testing.T) {
 		m, _ := homeFixture()
+		setup := &setupBackendFixture{}
+		m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 		focusHomeContext(t, m)
 		press(m, tea.KeyDown, "")
-		press(m, tea.KeyDown, "") // First related MCP profile.
-		press(m, tea.KeyEnter, "")
-		if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-			t.Fatalf("Enter on a related MCP profile should open profile actions, got %#v", m.home.Modal)
-		}
-		joined := strings.Join(m.menuEntries(), "\n")
-		for _, want := range []string{"Restart", "Configure agent registrations", "View details"} {
-			if !strings.Contains(joined, want) {
-				t.Errorf("profile actions missing %q: %s", want, joined)
-			}
+		press(m, tea.KeyDown, "") // Related MCP profile.
+		pressAndRun(m, tea.KeyEnter)
+		if m.form == nil || setup.previewRequest.Target != "production" || setup.previewRequest.Environment != "dev" {
+			t.Fatalf("Enter on a server profile should open its exact shared workspace: form=%v request=%+v", m.form != nil, setup.previewRequest)
 		}
 	})
 }
@@ -115,13 +122,13 @@ func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
 	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
 	focusHomeContext(t, m)
 	view := m.View().Content
-	for _, want := range []string{"Configure / install Plain", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
 	pressAndRun(m, tea.KeyEnter)
-	if m.form == nil {
+	if m.home.Modal != nil || m.form == nil {
 		t.Fatal("Enter on skill-only Configure / install did not open the setup form")
 	}
 }

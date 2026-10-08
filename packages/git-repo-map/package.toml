@@ -32,3 +32,9 @@ timeout_seconds = 300
 
 [generator.windows]
 command = ["bin/repo-map.exe"]
+
+[ui]
+[[ui.sections]]
+id = "repositories"
+title = "Repositories"
+fields = ["scan_roots", "hosts"]

@@ -13,8 +13,7 @@ import (
 )
 
 type jsonAdapter struct {
-	kind, parent    string
-	requireExisting bool
+	kind, parent string
 }
 
 func standardJSON(b []byte) (map[string]any, error) {
@@ -62,17 +61,22 @@ func validateAST(v *hujson.Value) error {
 }
 func pointer(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1") }
 func (a jsonAdapter) value(r Registration) map[string]any {
+	var value map[string]any
 	if a.kind == "opencode" {
-		return map[string]any{"type": "remote", "url": r.URL, "enabled": true, "oauth": false, "timeout": r.TimeoutMS}
-	}
-	if a.kind == "claude" {
+		value = map[string]any{"type": "remote", "url": r.URL, "enabled": true, "oauth": false, "timeout": r.TimeoutMS}
+	} else if a.kind == "claude" {
 		transport := "http"
 		if r.Transport == "sse" {
 			transport = "sse"
 		}
-		return map[string]any{"type": transport, "url": r.URL}
+		value = map[string]any{"type": transport, "url": r.URL}
+	} else {
+		value = map[string]any{"url": r.URL}
 	}
-	return map[string]any{"url": r.URL}
+	if len(r.Headers) > 0 {
+		value["headers"] = r.Headers
+	}
+	return value
 }
 func sameJSON(a, b any) bool {
 	x, _ := json.Marshal(a)
@@ -152,9 +156,6 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			return err
 		}
 		if !existed {
-			if a.requireExisting {
-				return fmt.Errorf("Copilot IntelliJ config does not exist: %s; open Copilot Chat and select Add MCP Tools first", file)
-			}
 			if r == nil {
 				continue
 			}

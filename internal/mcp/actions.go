@@ -10,6 +10,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,6 +36,14 @@ type ActionRunner struct {
 	GOOS     string
 	OnStderr func([]byte)
 }
+
+type actionFailure struct {
+	message string
+	cause   error
+}
+
+func (e actionFailure) Error() string { return e.message }
+func (e actionFailure) Unwrap() error { return e.cause }
 
 func RunAction(ctx context.Context, p catalog.Package, q ActionRequest) (ActionResult, error) {
 	return (&ActionRunner{Executor: process.OSExecutor{}}).Run(ctx, p, q)
@@ -70,8 +79,22 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	if len(argv) == 0 {
 		return ActionResult{}, errors.New("empty action command")
 	}
+	workingDir := p.Dir
 	if strings.ContainsAny(argv[0], "/\\") && !filepath.IsAbs(argv[0]) {
-		argv[0] = filepath.Join(p.Dir, argv[0])
+		executable := filepath.Join(p.Dir, argv[0])
+		if isInspectorHelperCommand(argv, p, q) {
+			if _, err := os.Stat(executable); errors.Is(err, os.ErrNotExist) {
+				if self, err := os.Executable(); err == nil {
+					argv = []string{self, "__aact_internal_inspector_helper", p.ID, q.Action}
+				} else {
+					argv[0] = executable
+				}
+			} else {
+				argv[0] = executable
+			}
+		} else {
+			argv[0] = executable
+		}
 	}
 	q.ProtocolVersion = 1
 	q.PackageDir = p.Dir
@@ -103,19 +126,18 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 		return s
 	}
-	var diagnostics bytes.Buffer
+	var diagnostics []byte
 	redactor := process.NewRedactor(secrets, func(b []byte) {
-		if diagnostics.Len() < 8192 {
-			diagnostics.Write(b)
-		}
+		diagnostics = appendDiagnosticTail(diagnostics, b, 8192)
 		if r.OnStderr != nil {
 			r.OnStderr(b)
 		}
 	})
-	out, e := executor.Run(ctx, argv, p.Dir, b, nil, redactor.Write)
+	out, e := executor.Run(ctx, argv, workingDir, b, nil, redactor.Write)
 	redactor.Flush()
 	if e != nil {
-		return ActionResult{}, fmt.Errorf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(diagnostics.String()))
+		message := fmt.Sprintf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(string(diagnostics)))
+		return ActionResult{}, actionFailure{message: message, cause: e}
 	}
 	var result ActionResult
 	if len(out) > process.MaxStdout {
@@ -144,4 +166,34 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 	}
 	return result, nil
+}
+
+func isInspectorHelperCommand(argv []string, p catalog.Package, q ActionRequest) bool {
+	if len(argv) != 3 || argv[1] != p.ID || argv[2] != q.Action {
+		return false
+	}
+	switch p.ID {
+	case "cluster-inspector", "grafana-inspector", "azure-inspector", "forgejo":
+	default:
+		return false
+	}
+	return isInspectorHelper(argv[0])
+}
+
+func isInspectorHelper(path string) bool {
+	name := strings.ToLower(filepath.Base(path))
+	return name == "inspector-helper" || name == "inspector-helper.exe"
+}
+
+func appendDiagnosticTail(previous, chunk []byte, limit int) []byte {
+	if limit <= 0 {
+		return nil
+	}
+	if len(chunk) >= limit {
+		return append(previous[:0], chunk[len(chunk)-limit:]...)
+	}
+	if overflow := len(previous) + len(chunk) - limit; overflow > 0 {
+		previous = previous[overflow:]
+	}
+	return append(previous, chunk...)
 }

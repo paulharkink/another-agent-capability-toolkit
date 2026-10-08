@@ -1,7 +1,7 @@
 # AACT interactive TUI design mock
 
 This static page demonstrates the intended Mac experience for discussion and
-review. It uses illustrative `agent-skills`, macOS, and `home / pms15` data. It
+review. It uses illustrative `agent-skills`, macOS, and `sample-env / target-a` data. It
 does not read or change local state, agent configuration, credentials, or Docker.
 
 Open `index.html` through any static HTTP server. Its CSS and JavaScript are

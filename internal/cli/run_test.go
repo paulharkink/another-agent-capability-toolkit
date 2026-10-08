@@ -42,6 +42,19 @@ func TestCLIInstallRenderRemove(t *testing.T) {
 	}
 }
 
+func TestParseNamedExternalURLs(t *testing.T) {
+	f, err := parse([]string{"install", "demo", "--external-url", "search=https://search.example/mcp", "--external-url=docs=http://docs.example/mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.externalURLs["search"] != "https://search.example/mcp" || f.externalURLs["docs"] != "http://docs.example/mcp" || f.url != "" {
+		t.Fatalf("named endpoints parsed incorrectly: %+v", f)
+	}
+	if _, err := parse([]string{"install", "demo", "--external-url", "search=https://one", "--external-url", "search=https://two"}); err == nil {
+		t.Fatal("duplicate named endpoint accepted")
+	}
+}
+
 func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer
@@ -147,5 +160,26 @@ func TestDryRunCannotSilentlyInstall(t *testing.T) {
 	}
 	if _, e := os.Stat(home); !os.IsNotExist(e) {
 		t.Fatal("ignored --dry-run and installed")
+	}
+}
+
+func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
+	var tuiTerminal bytes.Buffer
+	tuiOptions := appOptions(&tuiTerminal, "", true)
+	if tuiOptions.OnStderr != nil {
+		tuiOptions.OnStderr([]byte("BuildKit output\n"))
+	}
+	if got := tuiTerminal.String(); got != "" {
+		t.Fatalf("TUI subprocess output escaped model ownership to terminal stderr: %q", got)
+	}
+
+	var cliDiagnostics bytes.Buffer
+	cliOptions := appOptions(&cliDiagnostics, "", false)
+	if cliOptions.OnStderr == nil {
+		t.Fatal("noninteractive CLI lost its subprocess stderr diagnostics")
+	}
+	cliOptions.OnStderr([]byte("BuildKit output\n"))
+	if got := cliDiagnostics.String(); got != "BuildKit output\n" {
+		t.Fatalf("CLI stderr = %q, want preserved diagnostic", got)
 	}
 }

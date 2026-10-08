@@ -9,11 +9,29 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+type homeWorkspaceSetupBackend struct {
+	Backend
+	setup *setupBackendFixture
+}
+
+func (b *homeWorkspaceSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	b.setup.previewRequest = request
+	return viewmodel.SetupPreview{
+		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		PackageName: request.PackageID, Configured: true, MCP: request.PackageID == "inspect",
+	}, nil
+}
+
+func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstall(ctx, request)
+}
 
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
@@ -83,7 +101,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› MCP · profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "› dev / production · MCP · profile"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -100,7 +118,7 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Configure / install Plain", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
@@ -156,7 +174,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "Configure / install Plain") {
+	if !strings.Contains(m.View().Content, "Configure now") {
 		t.Fatal(m.View().Content)
 	}
 }
@@ -282,6 +300,7 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 }
 func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
 	m, _ := homeFixture()
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.View()
 	m.Update(tea.MouseClickMsg{X: 4, Y: 4, Button: tea.MouseLeft})
 	if strings.Contains(ansi.Strip(m.View().Content), "[x]") {
@@ -290,8 +309,11 @@ func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
 	id := m.home.Profiles.ID
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEscape, "")
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil {
+		t.Fatal("F2 did not open the selected target workspace")
+	}
+	pressAndRun(m, tea.KeyEscape)
 	if m.home.Focus != ProfilesPane || m.home.Profiles.ID != id {
 		t.Fatal("modal changed origin")
 	}
@@ -318,7 +340,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
 			t.Fatal("short view omitted its scroll cue", v.Content)
 		}
-		if size.Height > 16 && !strings.Contains(v.Content, "Configure / install Plain") {
+		if size.Height > 16 && !strings.Contains(v.Content, "Configure now") {
 			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
@@ -326,57 +348,23 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 
 func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 	for _, ownership := range []string{"local", "foreign"} {
-		for _, input := range []string{"keyboard", "mouse"} {
-			t.Run(ownership+"/"+input, func(t *testing.T) {
-				m, msg := homeFixture()
-				msg.catalog[0].Skill = &catalog.Skill{Name: "companion"}
-				msg.mcps[0].Ownership = ownership
-				m.Update(msg)
-				m.selectContext(2)
-				press(m, tea.KeyEnter, "")
-				index := -1
-				for i, entry := range m.menuEntries() {
-					if strings.Contains(entry, "Remove agent registrations") {
-						index = i
-						break
-					}
-				}
-				if index < 0 {
-					t.Fatal("remove registrations row missing")
-				}
-				m.home.Modal.Selected = index
-				var cmd tea.Cmd
-				if input == "keyboard" {
-					_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				} else {
-					m.View()
-					found := false
-					for _, hit := range m.home.Hits {
-						if hit.Control == "menu" && hit.Index == index {
-							found = true
-							_, cmd = m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
-							break
-						}
-					}
-					if !found {
-						t.Fatal("remove registrations menu hit region missing")
-					}
-				}
-				if cmd != nil || m.form != nil || m.busy || m.pending.action == "uninstall" {
-					t.Fatalf("registration removal dispatched or opened uninstall: form=%v busy=%v pending=%q", m.form != nil, m.busy, m.pending.action)
-				}
-				if m.home.Modal == nil || !strings.Contains(m.menuEntries()[index], "disabled") {
-					t.Fatal("registration removal must remain visibly disabled")
-				}
-				if !strings.Contains(m.output, "registration-only") {
-					t.Fatal("disabled action must explain missing registration-only service support")
-				}
-			})
-		}
+		t.Run(ownership, func(t *testing.T) {
+			m, backend := typedProfileFixture()
+			backend.snapshot.Profiles[1].Ownership = ownership
+			backend.snapshot.Profiles[1].RegisteredAgents = []string{"claude"}
+			m.Update(m.load()())
+			openRegistrationWorkspaceAction(t, m, true)
+			if m.registration != nil || m.form == nil || !m.form.HasSectionID(sectionAgentsID) || m.busy || backend.request != nil || m.pending.action == "uninstall" {
+				t.Fatalf("agent management did not use the complete capability workspace: registration=%+v form=%v busy=%v pending=%q", m.registration, m.form != nil, m.busy, m.pending.action)
+			}
+			if strings.Contains(m.View().Content, "Uninstall capability") || strings.Contains(m.View().Content, "Remove registrations") {
+				t.Fatal("separate registration removal flow remained visible")
+			}
+		})
 	}
 }
 
-func TestHomeMenusMatchApprovedCommands(t *testing.T) {
+func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyF9, "")
 	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Environments", "Settings", "Help", "Back"}) {
@@ -387,31 +375,37 @@ func TestHomeMenusMatchApprovedCommands(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatal("F2 should focus the context list before opening an action")
 	}
-	for _, want := range []string{"Configure / install Inspector", "View capability details", "MCP · profile", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "MCP · profile", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
 	}
 	m.selectContext(2)
-	press(m, tea.KeyEnter, "")
-	got := strings.Join(m.menuEntries(), "\n")
-	for _, want := range []string{"Restart", "Stop", "Authenticate", "Edit parameters", "Configure agent registrations", "Remove agent registrations", "Check connection", "View logs", "View details", "Back"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("profile menu missing %q: %s", want, got)
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil || m.form.SectionTitle() != "Overview" {
+		t.Fatalf("F2 on a target did not open the shared Overview workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	}
+	for _, want := range []string{"Configure ·", "Overview", "Agents", "Runtime", "Logs", "Information"} {
+		if !strings.Contains(ansi.Strip(m.View().Content), want) {
+			t.Fatalf("shared target workspace omitted %q:\n%s", want, ansi.Strip(m.View().Content))
 		}
 	}
 }
 
-func TestDisabledProfileMenuActionStaysOpenAndExplainsReason(t *testing.T) {
+func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
 	m.Update(msg)
+	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)
-	press(m, tea.KeyEnter, "")
-	m.home.Modal.Selected = 0
-	press(m, tea.KeyEnter, "")
-	if m.home.Modal == nil || m.busy || !strings.Contains(m.output, "not locally owned") {
-		t.Fatalf("disabled start activated or hid reason: modal=%v busy=%t output=%q", m.home.Modal, m.busy, m.output)
+	pressAndRun(m, tea.KeyF2)
+	if m.form == nil || m.workspace == nil {
+		t.Fatalf("F2 did not open the shared workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	}
+	handled, cmd := m.workspaceOverviewAction("s")
+	if !handled || cmd != nil || m.busy || !strings.Contains(strings.ToLower(m.output), "another installation") {
+		t.Fatalf("disabled Start activated or hid reason: handled=%t cmd=%v busy=%t output=%q", handled, cmd != nil, m.busy, m.output)
 	}
 }
 

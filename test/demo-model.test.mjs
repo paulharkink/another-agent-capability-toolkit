@@ -20,7 +20,7 @@ test('Mac sample starts in the two-pane home view with only related MCP profiles
   assert.equal(state.scope.platform, 'macOS / arm64');
   assert.equal(state.scope.checkout, 'agent-skills');
   assert.equal(state.focus, 'capabilities');
-  assert.deepEqual(visibleProfiles(state).map(profile => profile.name), ['home / pms15']);
+  assert.deepEqual(visibleProfiles(state).map(profile => profile.name), ['sample-env / target-a']);
 
   const skillIndex = capabilities.findIndex(capability => capability.name === 'Find Session');
   const selected = transition(state, { type: 'selectCapability', index: skillIndex });
@@ -57,7 +57,7 @@ test('home Enter moves from layer 1 to layer 2 before opening deeper content', (
 
   state = transition(createInitialState(), { type: 'focusPane', pane: 'profiles' });
   state = transition(state, { type: 'selectHomeDetail', index: 2 });
-  assert.equal(selectedProfile(state).name, 'home / pms15');
+  assert.equal(selectedProfile(state).name, 'sample-env / target-a');
   state = transition(state, { type: 'enterHome' });
   assert.equal(state.overlay.kind, 'actions');
 });
@@ -244,7 +244,7 @@ test('closing a deeper detail restores the selected profile action layer', () =>
   state = transition(state, { type: 'closeOverlay' });
   assert.equal(state.overlay.kind, 'actions');
   assert.equal(state.menuIndex, 4);
-  assert.equal(selectedProfile(state).name, 'home / pms15');
+  assert.equal(selectedProfile(state).name, 'sample-env / target-a');
 
   state = transition(state, { type: 'openDetails' });
   assert.equal(state.overlay.kind, 'details');

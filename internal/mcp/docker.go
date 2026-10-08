@@ -72,7 +72,14 @@ func specURL(s RunSpec) string {
 func labels(k state.Key, s RunSpec) map[string]string {
 	b, _ := json.Marshal(s)
 	h := sha256.Sum256(b)
-	return map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	if k.Profile != "" {
+		result["aact.profile"] = k.Profile
+	}
+	if k.MCP != "" {
+		result["aact.mcp"] = k.MCP
+	}
+	return result
 }
 
 type dockerConfig struct {
@@ -386,7 +393,7 @@ func instance(d dockerInfo) Instance {
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], Profile: l["aact.profile"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	installationID, err := r.Store.InstallationID()
@@ -467,7 +474,7 @@ func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 	}
 	for _, row := range rows {
 		identity := registration{row.Key, row.URL}
-		if row.Component == "mcp" && row.URL != "" && !seen[identity] {
+		if row.Component == "mcp" && row.ExternalRegistration && row.URL != "" && !seen[identity] {
 			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL, Ownership: "unknown"})
 			seen[identity] = true
 		}

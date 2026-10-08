@@ -260,3 +260,29 @@ terminal session. This was a comparison against its approved written spec and
 captured TUI renders, not a pixel-by-pixel comparison with the browser. Native
 terminal rendering, colors, and every mock interaction still need direct visual
 review before claiming full mockup parity.
+
+## Git Provider Inspector capability, 2026-10-07
+
+Added failing catalog tests for multiple optional MCP profiles, duplicate MCP
+profile names, invalid enable-input references, and non-boolean enable inputs.
+The initial Docker test failed to compile because `Package.MCPs` did not exist.
+After adding the profile model and validation, `docker run --rm -v "$PWD:/src"
+-w /src golang:1.27.1 go test ./internal/catalog` passed.
+
+Added a failing forms test for a required exclusive credential group with raw,
+file, or environment-variable choices. The initial test failed because the
+existing per-field required check rejected a blank raw-token field before it
+could accept the populated file/environment alternative. After group-level
+required validation, `docker run --rm -v "$PWD:/src" -w /src golang:1.27.1 go
+test ./internal/forms ./internal/catalog` passed. Tests ran inside the official
+Go Docker image on macOS arm64; Docker warned that the pulled image is linux/amd64.
+
+Added a failing manifest/runtime test for profile-specific container args and
+environment variables, including secret environment values. The first runtime
+test showed the declared args and variables were absent from `RunSpec`; after
+mapping them in `startProfile`, the focused catalog/app tests passed. Added a
+failing adapter test for HTTP headers, then added header support to JSON-based
+agent registrations and validation against CR/LF/NUL injection. The focused
+adapter test and full suite passed. GitHub and GitLab use agent MCP config
+headers; Bitbucket receives its token through the container environment because
+that server requires startup credentials.

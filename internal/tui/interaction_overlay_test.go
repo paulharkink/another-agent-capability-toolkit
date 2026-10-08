@@ -3,235 +3,239 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
-// The route is deliberately driven by keys: a profile belongs to a capability's
-// layer-2 list, and its actions are one layer deeper.
+// openForeignRegistrationInteraction now opens the complete manifest-backed
+// Agents workspace. The selected MCP's endpoint remains a separate Runtime
+// observation, while agent bindings are saved with the capability.
 func openForeignRegistrationInteraction(t *testing.T) (*Model, *profileBackend) {
 	t.Helper()
-	m, b := typedProfileFixture()
-	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ { // details, saved profile, foreign profile
-		press(m, tea.KeyDown, "")
-	}
-	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "Configure agent registrations") {
-		t.Fatalf("profile Enter did not open its action layer:\n%s", m.View().Content)
-	}
-	if item := m.homeMenuItems()[m.home.Modal.Selected]; item.Action != "registrations" {
-		t.Fatalf("first enabled action should configure registrations, got %q", item.Label)
-	}
-	press(m, tea.KeyEnter, "")
-	return m, b
+	m, backend := typedProfileFixture()
+	m.focusPane(ProfilesPane)
+	m.selectPane(ProfilesPane, 1)
+	openCapabilityProfileWorkspace(t, m, backend, "foreign", "Agents")
+	return m, backend
 }
 
-func TestInteractionRegistrationEndpointIsOwnLayerThreeItem(t *testing.T) {
+func TestInteractionCapabilityEndpointAndAgentsAreSeparateSections(t *testing.T) {
 	m, _ := openForeignRegistrationInteraction(t)
+	m.form.SelectSection("Endpoint")
 	view := m.View().Content
-	if strings.Contains(strings.ToLower(view), "simulation") {
-		t.Fatalf("real registration overlay is mislabeled as a simulation:\n%s", view)
-	}
-	for _, want := range []string{"Endpoint URI", "http://127.0.0.1:8765/mcp", "Check connection", "Codex", "Claude"} {
-		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
-			t.Fatalf("registration overlay missing %q:\n%s", want, view)
+	for _, want := range []string{"Endpoint URI", "http://127.0.0.1:8765/mcp"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("declared endpoint fields missing %q:\n%s", want, view)
 		}
 	}
-	press(m, tea.KeyDown, "") // Codex row, with only Codex detail on the right.
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
 	view = m.View().Content
-	if !strings.Contains(view, "Codex") || !strings.Contains(view, "Config file") {
-		t.Fatalf("selecting Codex did not show its agent detail:\n%s", view)
+	for _, want := range []string{"Agents", "Codex", "Claude Code"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("complete binding section missing %q:\n%s", want, view)
+		}
 	}
-	if strings.Contains(view, "Check connection") {
-		t.Fatalf("endpoint check leaked into the selected agent's detail:\n%s", view)
+	if strings.Contains(view, "Check plain connection") {
+		t.Fatal("runtime diagnostics leaked into the agent binding section")
 	}
 }
 
-func TestInteractionRegistrationBackRestoresProfileActions(t *testing.T) {
+func TestInteractionCapabilityBackRestoresSelectedProfile(t *testing.T) {
 	m, b := openForeignRegistrationInteraction(t)
 	press(m, tea.KeyEscape, "")
-	view := m.View().Content
-	if !strings.Contains(view, "Configure agent registrations") || !strings.Contains(view, "View details") {
-		t.Fatalf("Esc did not restore the selected profile action layer:\n%s", view)
+	_, back := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if back != nil {
+		m.Update(back())
 	}
-	if b.request != nil {
-		t.Fatal("Back applied a registration change")
+	if m.workspace == nil || m.workspace.Active || m.form != nil || b.request != nil {
+		t.Fatalf("Back did not restore the originating profile without applying changes:\n%s", m.View().Content)
+	}
+	rows := m.profiles()
+	if m.home.Profiles.Index != 1 || len(rows) < 2 || rows[1].Key.Target != "foreign" {
+		t.Fatalf("Back lost the exact parent profile selection: index=%d rows=%+v", m.home.Profiles.Index, rows)
 	}
 }
 
-func TestInteractionRegistrationEscapeWalksRightThenLeft(t *testing.T) {
+func TestInteractionCapabilityEscapeReturnsFromDetailsToSections(t *testing.T) {
 	m, _ := openForeignRegistrationInteraction(t)
-	press(m, tea.KeyDown, "")
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
 	press(m, tea.KeyRight, "")
-	if m.registration == nil || m.registration.Area != 1 || m.registration.Row != 1 {
-		t.Fatal("agent detail did not receive focus")
+	if m.form.FocusArea() != 1 {
+		t.Fatal("right pane did not receive focus")
 	}
 	press(m, tea.KeyEscape, "")
-	if m.registration == nil || m.registration.Area != 0 || m.registration.Row != 1 {
-		t.Fatal("Esc from detail did not return to its selected agent row")
-	}
-	press(m, tea.KeyEscape, "")
-	if m.registration != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("second Esc did not restore the parent action menu")
+	if m.form.FocusArea() != 0 || m.workspace == nil || !m.workspace.Active {
+		t.Fatal("Escape from details did not return to the workspace section list")
 	}
 }
 
-func TestInteractionRegistrationLongListShowsScrollCues(t *testing.T) {
-	m, _ := openForeignRegistrationInteraction(t)
+func TestInteractionCapabilityAgentListShowsScrollCues(t *testing.T) {
+	m, b := typedProfileFixture()
+	backend := openCapabilityProfileWorkspace(t, m, b, "foreign", "Agents")
+	backend.preview.Key = m.workspace.Key
 	for i := 0; i < 24; i++ {
-		m.registration.Agents = append(m.registration.Agents, "adapter")
+		backend.preview.Destinations = append(backend.preview.Destinations, viewmodel.SetupDestination{ID: "agent-" + string(rune('a'+i)), ConfigPath: "/home/test/agent.json"})
 	}
-	if view := m.View().Content; !strings.Contains(view, "↓ More below") {
-		t.Fatalf("hidden registration rows lack a downward cue:\n%s", view)
+	// Reload so the expanded manifest destination list is rendered by the form.
+	m.openSetupFormWithValues(backend.preview, nil)
+	view := m.View().Content
+	if !strings.Contains(strings.ToLower(view), "↓ more") {
+		t.Fatalf("long destination list lacks a downward scroll cue:\n%s", view)
 	}
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
+	press(m, tea.KeyRight, "")
 	for i := 0; i < 24; i++ {
 		press(m, tea.KeyDown, "")
 	}
-	if view := m.View().Content; !strings.Contains(view, "↑ More above") {
-		t.Fatalf("scrolled registration rows lack an upward cue:\n%s", view)
+	if view = m.View().Content; !strings.Contains(strings.ToLower(view), "↑ more") {
+		t.Fatalf("scrolled destination list lacks an upward cue:\n%s", view)
 	}
 }
 
-func TestInteractionRegistrationMouseWheelBrowsesOverflow(t *testing.T) {
-	m, _ := openForeignRegistrationInteraction(t)
+func TestInteractionCapabilityMouseWheelScrollsDestinationDetail(t *testing.T) {
+	m, b := typedProfileFixture()
+	backend := openCapabilityProfileWorkspace(t, m, b, "foreign", "Agents")
+	backend.preview.Key = m.workspace.Key
 	for i := 0; i < 24; i++ {
-		m.registration.Agents = append(m.registration.Agents, "adapter")
+		backend.preview.Destinations = append(backend.preview.Destinations, viewmodel.SetupDestination{ID: "agent-" + string(rune('a'+i)), ConfigPath: "/home/test/agent.json"})
 	}
-	m.View() // establish the rendered overlay hit area
-	x, y := m.registration.X+4, m.registration.Y+5
-	m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
-	if m.registration.Offset == 0 {
-		t.Fatal("mouse wheel over the registration list did not reveal lower agents")
+	m.openSetupFormWithValues(backend.preview, nil)
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
+	m.View()
+	x, y, width, height, ok := m.setupOverlayBounds()
+	if !ok {
+		t.Fatal("setup workspace has no mouse hit region")
 	}
-	if view := m.View().Content; !strings.Contains(view, "↑ More above") {
-		t.Fatalf("wheel scrolling did not expose the upper continuation cue:\n%s", view)
+	m.Update(tea.MouseWheelMsg{X: x + width - 4, Y: y + height/2, Button: tea.MouseWheelDown})
+	if view := m.View().Content; !strings.Contains(strings.ToLower(view), "↑ more") {
+		t.Fatalf("mouse wheel did not scroll the destination details:\n%s", view)
 	}
 }
 
-func TestInteractionRegistrationMouseOnlyActivatesVisibleDetailControls(t *testing.T) {
-	m, b := openForeignRegistrationInteraction(t)
-	m.View()
-	r := m.registration
-	blankX := r.X + r.W - 2
-	_, cmd := m.Update(tea.MouseClickMsg{X: blankX, Y: r.Y + 6, Button: tea.MouseLeft})
-	if cmd != nil || b.checkedURL != "" {
-		t.Fatal("clicking empty space in the endpoint detail started a connection check")
+func TestInteractionCapabilityKeyboardSaveAppliesCompleteDesiredSet(t *testing.T) {
+	m, _ := openForeignRegistrationInteraction(t)
+	backend := m.backend.(*capabilityProfileBackend)
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
+	press(m, tea.KeyRight, "")
+	press(m, tea.KeySpace, " ") // Add Codex while preserving Claude.
+	if got := m.form.Values()[m.pendingSetupField]; !containsStringFromValue(got, "codex") {
+		t.Fatalf("keyboard did not add Codex to the desired set: %#v", got)
 	}
-	press(m, tea.KeyLeft, "")
-	press(m, tea.KeyDown, "") // Codex
-	m.View()
-	r = m.registration
-	m.Update(tea.MouseClickMsg{X: blankX, Y: r.Y + 7, Button: tea.MouseLeft})
-	if r.Marked["codex"] {
-		t.Fatal("clicking empty space in the agent detail changed registration")
-	}
-	controlX := r.X + r.LeftW + 4
-	m.Update(tea.MouseClickMsg{X: controlX, Y: r.Y + 7, Button: tea.MouseLeft})
-	if !r.Marked["codex"] {
-		t.Fatal("clicking the visible agent registration control did not toggle it")
-	}
-}
-
-func TestInteractionEndpointCheckIsIndependentOfAgentSelection(t *testing.T) {
-	m, b := openForeignRegistrationInteraction(t)
-	press(m, tea.KeyRight, "") // Endpoint detail.
+	press(m, tea.KeyTab, "") // Keyboard focus reaches the visible Save action.
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("Enter on Endpoint URI detail did not start a connection check")
+		t.Fatalf("Enter on the focused Save action did not submit the complete binding:\n%s", m.View().Content)
 	}
-	m.Update(cmd())
-	if b.checkedURL != "http://127.0.0.1:8765/mcp" || b.request != nil {
-		t.Fatalf("endpoint check touched an agent registration or wrong endpoint: url=%q request=%#v", b.checkedURL, b.request)
-	}
-	if view := m.View().Content; !strings.Contains(view, "Last check: reachable") {
-		t.Fatalf("endpoint result missing from its detail:\n%s", view)
-	}
-	press(m, tea.KeyLeft, "")
-	press(m, tea.KeyDown, "")
-	if view := m.View().Content; strings.Contains(view, "Check connection") {
-		t.Fatalf("agent detail still displays the endpoint check:\n%s", view)
+	m.Update(runTeaCmd(t, m, cmd))
+	if backend.setup.installRequest == nil || !containsString(backend.setup.installRequest.DestinationIDs, "codex") || !containsString(backend.setup.installRequest.DestinationIDs, "claude") {
+		t.Fatalf("complete capability save lost selected destinations: %+v", backend.setup.installRequest)
 	}
 }
 
-func TestInteractionRegistrationActionsAreKeyboardReachable(t *testing.T) {
+func TestInteractionRuntimeConnectionCheckIsIndependentOfAgentSelection(t *testing.T) {
 	m, b := openForeignRegistrationInteraction(t)
-	press(m, tea.KeyTab, "")   // Detail.
-	press(m, tea.KeyTab, "")   // Fixed action bar.
-	press(m, tea.KeyEnter, "") // Cancel, the first action.
-	if m.registration != nil || b.request != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("Tab/Enter did not activate Cancel and restore profile actions")
-	}
-}
-
-func TestInteractionProfileDetailsBackRestoresActions(t *testing.T) {
-	m, _ := typedProfileFixture()
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
 	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ {
-		press(m, tea.KeyDown, "")
+	press(m, tea.KeySpace, " ") // This only changes the unsaved destination draft.
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	press(m, tea.KeyRight, "")
+	if m.form.FocusArea() != 1 || !strings.Contains(m.View().Content, "Check plain connection") {
+		t.Fatalf("Runtime child diagnostic is not isolated in its section:\n%s", m.View().Content)
 	}
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnd, "") // Back.
-	press(m, tea.KeyUp, "")  // View details.
-	press(m, tea.KeyEnter, "")
-	if m.home.Modal == nil || m.home.Modal.Kind != "details" {
-		t.Fatalf("profile details did not open:\n%s", m.View().Content)
+	press(m, tea.KeyDown, "")
+	press(m, tea.KeyDown, "")
+	_, action := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if action != nil {
+		_, check := m.Update(action())
+		if check != nil {
+			m.Update(runTeaCmd(t, m, check))
+		}
 	}
-	press(m, tea.KeyEscape, "")
-	if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatalf("Esc from profile details skipped its parent action layer:\n%s", m.View().Content)
+	if b.checkedURL != "http://127.0.0.1:8765/mcp" || b.request != nil {
+		t.Fatalf("connection check touched capability bindings: url=%q legacy request=%+v", b.checkedURL, b.request)
+	}
+	if m.result == nil || !strings.Contains(strings.Join(m.result.Rows, "\n"), "reachable") {
+		t.Fatalf("connection result was not shown as a foreground observation: %+v", m.result)
 	}
 }
 
-func TestInteractionRegistrationKeyboardCanApplySelectedAgent(t *testing.T) {
-	m, b := openForeignRegistrationInteraction(t)
-	press(m, tea.KeyDown, "")  // Codex
-	press(m, tea.KeyRight, "") // Codex's detail controls
-	press(m, tea.KeySpace, " ")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatalf("Ctrl-S did not submit registration changes:\n%s", m.View().Content)
+func TestInteractionCapabilityActionsRemainKeyboardReachable(t *testing.T) {
+	m, _ := openForeignRegistrationInteraction(t)
+	press(m, tea.KeyEscape, "") // Return from details to the section list.
+	_, back := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if back != nil {
+		m.Update(back())
 	}
+	if m.workspace == nil || m.workspace.Active || m.form != nil {
+		t.Fatal("Escape did not return from the capability workspace")
+	}
+}
+
+func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testing.T) {
+	m, _ := typedProfileFixture()
+	profile := &m.backend.(*profileBackend).snapshot.Profiles[1]
+	profile.RuntimeStatus = "conflict"
+	profile.LocalLastAction = "stop"
+	profile.LocalLastActionAt = time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	profile.ObservedAt = time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+	profile.RegistrationDisabledReason = "Multiple runtime endpoints"
+	m.Update(m.load()())
+	base := m.backend.(*profileBackend)
+	m.backend = &registrationWorkspaceBackend{Backend: base, profileBackend: base, setupBackendFixture: &setupBackendFixture{}}
+	m.selectPane(ProfilesPane, 1)
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: profile.Key.Source, PackageID: profile.Key.Package, Environment: profile.Key.Environment, Target: profile.Key.Target}, "Information")
 	m.Update(cmd())
-	if b.request == nil || !containsString(b.request.AgentIDs, "codex") || !containsString(b.request.AgentIDs, "claude") {
-		t.Fatalf("keyboard selection did not apply immediately: %#v", b.request)
+	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	view := m.View().Content
+	for _, want := range []string{"Endpoint URI: http://127.0.0.1:8765/mcp", "Live runtime status: conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("workspace Information omitted %q:\n%s", want, view)
+		}
+	}
+	_, back := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if back == nil {
+		t.Fatal("Escape from workspace Information did not dispatch parent Back")
+	}
+	m.Update(back())
+	if m.workspace == nil || m.workspace.Active || m.workspace.Key != profile.Key || m.form != nil || m.home.Context.ID == "" {
+		t.Fatalf("Back from profile Information did not restore its exact parent selection:\n%s", m.View().Content)
 	}
 }
 
-func TestInteractionUnknownOwnerStillOffersDiagnosisAndLocalRegistration(t *testing.T) {
+func TestInteractionUnknownOwnerOffersDiagnosisAndBindingButNotLifecycleControl(t *testing.T) {
 	m, b := typedProfileFixture()
 	b.snapshot.Profiles[1].Ownership = "unknown"
 	m.Update(m.load()())
-	press(m, tea.KeyRight, "")
-	for i := 0; i < 3; i++ {
-		press(m, tea.KeyDown, "")
+	key := b.snapshot.Profiles[1].Key
+	openCapabilityProfileWorkspace(t, m, b, key.Target, "Overview")
+	if m.workspace == nil || m.workspace.Profile == nil || m.workspace.Profile.Ownership != "unknown" {
+		t.Fatalf("Overview lost the unknown ownership observation: %+v", m.workspace)
 	}
-	press(m, tea.KeyEnter, "")
-	items := m.homeMenuItems()
-	refresh := -1
-	for i, item := range items {
-		if item.Action == "refresh" {
-			refresh = i
-		}
-		if item.Action == "registrations" || item.Action == "check-connection" {
-			if item.Reason != "" {
-				t.Fatalf("unknown runtime owner blocked local diagnosis %q: %s", item.Action, item.Reason)
-			}
+	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Profile: &b.snapshot.Profiles[1], Status: "foreign"}
+	for _, action := range []string{"check-connection"} {
+		if reason := m.profileActionReason(row, action); reason != "" {
+			t.Fatalf("unknown owner blocked local diagnosis %q: %s", action, reason)
 		}
 	}
-	if refresh < 0 {
-		t.Fatalf("unknown-owner actions offer no Refresh observation: %#v", items)
+	startReason := m.profileActionReason(row, "s")
+	if startReason == "" {
+		t.Fatal("unknown owner unexpectedly permits Start")
 	}
-	for m.home.Modal.Selected < refresh {
-		press(m, tea.KeyDown, "")
+	if handled, _ := m.workspaceOverviewAction("g"); !handled || m.form == nil || !m.form.HasSectionID(sectionAgentsID) {
+		t.Fatalf("unknown-owner Overview did not route to complete capability Agents configuration: handled=%t", handled)
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Refresh observation action did not request a new snapshot")
-	}
-	m.Update(cmd())
-	if m.home.Modal != nil {
-		t.Fatal("Refresh left a stale profile action menu covering the observation")
+	m.form.SelectSectionID(sectionOverviewID)
+	if !strings.Contains(m.form.View().Content, "Save and apply") {
+		t.Fatal("unknown-owner workspace did not retain the Save and apply capability action")
 	}
 }
 

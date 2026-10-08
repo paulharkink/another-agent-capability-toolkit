@@ -1,0 +1,42 @@
+[38;5;195m[48;5;17m╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║[1m[38;5;222mEdit package inputs (4/14)[0m[48;5;17m                                                                                                                                              [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║  Local port: 18770[0m[48;5;17m                                                                                                                                                     [1m[38;5;195m║
+║  Host: 127.0.0.1[0m[48;5;17m                                                                                                                                                       [1m[38;5;195m║
+║  Api server *: https://api.cluster.example.test:6443[0m[48;5;17m                                                                                                                     [1m[38;5;195m║
+║[38;5;17m[48;5;195m> Token:[0m[48;5;195m                                                                                                                                                                [1m[38;5;195m[48;5;17m║
+║  Source kubeconfig:[0m[48;5;17m                                                                                                                                                    [1m[38;5;195m║
+║  Read-only database queries (optional): 0 items[0m[48;5;17m                                                                                                                        [1m[38;5;195m║
+║  Ca file: /home/user/sources/sample-skills/environments/sample-env/cluster-inspector/sample-root-ca.pem[0m[48;5;17m                                                                      [1m[38;5;195m║
+║  Ca data:[0m[48;5;17m                                                                                                                                                              [1m[38;5;195m║
+║  Insecure skip tls verify:[0m[48;5;17m                                                                                                                                             [1m[38;5;195m║
+║  Verify x509 strict: false[0m[48;5;17m                                                                                                                                             [1m[38;5;195m║
+║  Tekton default namespace: openshift-pipelines[0m[48;5;17m                                                                                                                         [1m[38;5;195m║
+║  Tekton branch selector key:[0m[48;5;17m                                                                                                                                           [1m[38;5;195m║
+║  Tekton repository selector key:[0m[48;5;17m                                                                                                                                       [1m[38;5;195m║
+║  Tekton repository context hook:[0m[48;5;17m                                                                                                                                       [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║Edit: abZ_c[0m[48;5;17m                                                                                                                                                             [1m[38;5;195m║
+║Enter applies; Ctrl+U clears; Esc cancels edit[0m[48;5;17m                                                                                                                          [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║[0m[48;5;17m                                                                                                                                                                        [1m[38;5;195m║
+║Mutually exclusive with Source kubeconfig; entering a value clears those inputs[0m[48;5;17m                                                                                         [1m[38;5;195m║
+║[ Save ]  [ Cancel ][0m[48;5;17m                                                                                                                                                    [1m[38;5;195m║
+║Tab/↑↓ field · Enter edit · ←→ choice · Space toggle[0m[48;5;17m                                                                                                                    [1m[38;5;195m║
+║Ctrl+S save · Esc cancel[0m[48;5;17m                                                                                                                                                [1m[38;5;195m║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

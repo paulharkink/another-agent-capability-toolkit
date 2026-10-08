@@ -45,7 +45,7 @@ func TestGlobalSkillDestinationInstallsAtSharedAgentSkillsPath(t *testing.T) {
 	if !claudeAvailable {
 		t.Fatalf("named claude agent missing: %v", ids)
 	}
-	if _, err := svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "all", "", "default"); err != nil {
+	if _, err := svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "all", "", "default"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", "demo")); !os.IsNotExist(err) {

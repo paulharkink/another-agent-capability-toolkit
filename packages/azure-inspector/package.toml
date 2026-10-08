@@ -23,14 +23,14 @@ default = "127.0.0.1"
 [[inputs]]
 name = "tenant_id"
 type = "string"
-label = "Tenant id"
+label = "Tenant ID"
 config_key = "azure.tenant_id"
 required = true
 
 [[inputs]]
 name = "subscription_id"
 type = "string"
-label = "Subscription id"
+label = "Subscription ID"
 config_key = "azure.subscription_id"
 required = true
 
@@ -56,3 +56,13 @@ timeout_seconds = 300
 
 [mcp.actions.authenticate.windows]
 command = ["bin/inspector-helper.exe", "azure-inspector", "authenticate"]
+
+[ui]
+[[ui.sections]]
+id = "connection"
+title = "Connection"
+fields = ["host", "local_port"]
+[[ui.sections]]
+id = "azure"
+title = "Azure"
+fields = ["tenant_id", "subscription_id"]

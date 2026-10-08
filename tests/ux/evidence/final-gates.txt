@@ -1,0 +1,81 @@
+Controller fresh final verification
+Git tree: ccc80714bc77be4057ffc894b408c30ccad66fe1
+Immutable archive: /tmp/aact-ux-final3.NNoKTR
+All final named journey/auth capture test changes included. No live installed binary, native chooser, remote or Docker runtime verification.
+
+COMMAND
+PATH=/tmp/aact-ux-go1.27.1/sdk/bin:$PATH GOROOT=/tmp/aact-ux-go1.27.1/sdk GOTOOLCHAIN=local GOPATH=/tmp/aact-ux-go1.27.1/gopath GOCACHE=/tmp/aact-ux-go1.27.1/gocache go test ./... -count=1
+EXIT CODE: 0
+OUTPUT
+?   	github.com/paulharkink/another-agent-capability-toolkit/cmd/aact	[no test files]
+?   	github.com/paulharkink/another-agent-capability-toolkit/cmd/find-session	[no test files]
+ok  	github.com/paulharkink/another-agent-capability-toolkit/cmd/inspector-helper	0.319s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/agents	0.685s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/app	2.713s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/catalog	0.698s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/cli	1.068s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/config	1.742s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/forms	1.194s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/install	3.370s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/mcp	2.913s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/packagehelpers	1.920s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/picker	11.363s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/process	3.039s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/render	1.676s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/sessionsearch	2.782s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/state	3.553s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/tui	4.912s
+?   	github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel	[no test files]
+ok  	github.com/paulharkink/another-agent-capability-toolkit/packages/git-repo-map/generators/repo-map	4.075s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/tests/integration	8.976s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/tests/packages	6.637s
+
+COMMAND
+PATH=/tmp/aact-ux-go1.27.1/sdk/bin:$PATH GOROOT=/tmp/aact-ux-go1.27.1/sdk GOTOOLCHAIN=local GOPATH=/tmp/aact-ux-go1.27.1/gopath GOCACHE=/tmp/aact-ux-go1.27.1/gocache go vet ./...
+EXIT CODE: 0
+OUTPUT
+(no output)
+
+COMMAND
+PATH=/tmp/aact-ux-go1.27.1/sdk/bin:$PATH GOROOT=/tmp/aact-ux-go1.27.1/sdk GOTOOLCHAIN=local GOPATH=/tmp/aact-ux-go1.27.1/gopath GOCACHE=/tmp/aact-ux-go1.27.1/gocache go test -race ./... -count=1
+EXIT CODE: 0
+OUTPUT
+?   	github.com/paulharkink/another-agent-capability-toolkit/cmd/aact	[no test files]
+?   	github.com/paulharkink/another-agent-capability-toolkit/cmd/find-session	[no test files]
+ok  	github.com/paulharkink/another-agent-capability-toolkit/cmd/inspector-helper	4.215s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/agents	4.610s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/app	7.677s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/catalog	4.818s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/cli	7.624s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/config	7.630s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/forms	6.090s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/install	6.574s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/mcp	7.663s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/packagehelpers	5.608s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/picker	11.588s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/process	8.807s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/render	6.317s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/sessionsearch	7.413s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/state	5.079s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/internal/tui	7.737s
+?   	github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel	[no test files]
+ok  	github.com/paulharkink/another-agent-capability-toolkit/packages/git-repo-map/generators/repo-map	7.688s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/tests/integration	14.812s
+ok  	github.com/paulharkink/another-agent-capability-toolkit/tests/packages	3.697s
+
+COMMAND
+set -e
+task_cross=$(mktemp -d /tmp/aact-ux-final-cross.XXXXXX)
+for task_os in linux windows; do
+  PATH=/tmp/aact-ux-go1.27.1/sdk/bin:$PATH GOROOT=/tmp/aact-ux-go1.27.1/sdk GOTOOLCHAIN=local GOPATH=/tmp/aact-ux-go1.27.1/gopath GOCACHE=/tmp/aact-ux-go1.27.1/gocache CGO_ENABLED=0 GOOS="$task_os" GOARCH=amd64 go build ./...
+  for task_package in internal/app internal/forms internal/tui tests/integration tests/packages; do
+    task_name=$(printf '%s' "$task_package" | tr '/' '-')
+    PATH=/tmp/aact-ux-go1.27.1/sdk/bin:$PATH GOROOT=/tmp/aact-ux-go1.27.1/sdk GOTOOLCHAIN=local GOPATH=/tmp/aact-ux-go1.27.1/gopath GOCACHE=/tmp/aact-ux-go1.27.1/gocache CGO_ENABLED=0 GOOS="$task_os" GOARCH=amd64 go test -c -o "$task_cross/$task_os-$task_name.test" "./$task_package"
+  done
+done
+printf 'Cross-target builds and 10 test binaries: %s\n' "$task_cross"
+EXIT CODE: 0
+OUTPUT
+Cross-target builds and 10 test binaries: /tmp/aact-ux-final-cross.yVfl2k
+
+

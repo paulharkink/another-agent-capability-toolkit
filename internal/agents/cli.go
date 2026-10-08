@@ -28,6 +28,13 @@ func (a cliAdapter) env(e Environment) (map[string]string, error) {
 			home = filepath.Dir(e.ConfigPath)
 		}
 		env["CODEX_HOME"] = home
+	} else if e.ConfigPath != "" {
+		// Copilot CLI resolves its MCP database from COPILOT_HOME. Passing the
+		// same directory used by AACT keeps explicit homes and COPILOT_HOME
+		// overrides aligned with the CLI's own source of truth.
+		env["COPILOT_HOME"] = filepath.Dir(e.ConfigPath)
+	} else {
+		env["COPILOT_HOME"] = filepath.Join(e.Home, ".copilot")
 	}
 	return env, nil
 }

@@ -39,6 +39,8 @@ def prepare_auth(request: dict) -> dict:
         check = prepare_token_auth(state, credential, profile.api_server, ca, token, strict)
     elif request.get("action") == "authenticate" and inputs.get("kubeconfig"):
         check = prepare_kubeconfig_auth(state, credential, Path(inputs["kubeconfig"]), profile.api_server)
+    elif request.get("action") == "authenticate":
+        raise ValueError("Enter a Token or select a source kubeconfig before authenticating.")
     else:
         check = load_cached_auth(state, credential, profile.api_server, ca, strict)
     result = {"auth_required": check.status != "valid"}

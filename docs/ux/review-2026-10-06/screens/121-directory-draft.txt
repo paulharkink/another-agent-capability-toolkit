@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠Capabilities                                                                       ╦► Selected capability · Local Git Repository Map                                    ╣
+║› I╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
+║› N║Install · Local Git Repository Map                                                                                                                              ║   ║
+║› N║Environment: No environment file · Target: default · Runtime: New setup                                                                                         ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║── Sections                                           │ ── Inputs                                                                                               ║   ║
+║› N║> Inputs                                              │ > Directories to scan for local Git checkouts: 1 item                                                   ║   ║
+║> N║› Destinations                                        │   > /tmp/ux-draft-only  [Remove]                                                                        ║   ║
+║› N║                                                      │   › + Add directory…                                                                                    ║   ║
+║› N║                                                      │ › Git hosts to include (empty includes all hosts): 0 items                                              ║   ║
+║› N║                                                      │   › + Add item…                                                                                         ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║› N║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║   ║                                                                                                                                                                ║   ║
+║7/1║                                                                                                                                                                ║   ║
+╠═══║Enter choose/edit · a Add · Backspace/Del Remove · m Type path                                                                                                  ║═══╣
+║Loc║Sections · [Details] · Actions                                                                                                                                  ║   ║
+║htt║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                     ║   ║
+╠═══║[ Save ]  [ Cancel ]                                                                                                                                            ║═══╣
+║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                                                                                           ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

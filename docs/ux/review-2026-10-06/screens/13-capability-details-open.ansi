@@ -1,0 +1,42 @@
+[38;5;195m[48;5;17m╔ AACT · Another Agent Capability Toolkit[39m                                                                                                                                [38;5;195m╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments[39m                                                                                  [38;5;195m║
+╠[38;5;222mCapabilities[39m                                                                       [38;5;195m╦[38;5;222m► Selected capability · Cluster Inspector[39m                                           [38;5;195m╣
+║> Partial · Cluster Inspector  skill + MCP[39m                                         [38;5;195m║[38;5;222m── Capability[39m                                                                       [38;5;195m║
+║› Partial · Grafana Inspector  skill + MCP[39m                                         [38;5;195m║› Configure / install Cluster Inspector…[39m                                            [38;5;195m║
+║› Not installed · Azure Inspector  skill + MCP[39m                                     [38;5;195m║[38;5;17m[48;5;195m> View capability details[39m                                                           [38;5;195m[48;5;17m║
+║› Not installed · Forgejo  skill + MCP[39m                                             [38;5;195m║[38;5;222m── Related MCP profiles[39m                                                             [38;5;195m║
+║› Installed · Find Session  skill[39m                                                  [38;5;195m║› MCP · cluster-inspector  never-started[39m                                            [38;5;195m║
+║› Installed · Non Interactive Ready Planning  skill[39m                                [38;5;195m║[38;5;222m── Installation · AACT records: Partial[39m                                             [38;5;195m║
+║› Not installed · Local Git Repository Map  skill[39m                                  [38;5;195m║[38;5;146m· Skill: opencode[39m                                                                   [38;5;195m║
+║› Not installed · skills-source-management  skill[39m                                   [38;5;195m║[38;5;146m· MCP registration: no AACT record[39m                                                  [38;5;195m║
+║› Installed · clean-up  skill[39m                                                      [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kinfer-platform  skill[39m                                           [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kubedock-docker  skill[39m                                           [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · kubedock-nmap  skill[39m                                             [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · local-gitops-triage  skill[39m                                       [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · local-live-cluster-diagnostics  skill[39m                            [38;5;195m║[39m                                                                                    [38;5;195m║
+║› Not installed · vault-backed-trigger-delivery  ski┌[38;5;222m Details[39m                                                      [38;5;195m┐[39m                                                    [38;5;195m║
+║› Not installed · cluster-inspector · local-agent-sk│· Cluster Inspector · View capability details[39m                 [38;5;195m│[39m                                                    [38;5;195m║
+║› Not installed · grafana-inspector · local-agent-sk│· Enter / Esc Back[39m                                            [38;5;195m│[39m                                                    [38;5;195m║
+║[39m                                                    [38;5;195m│ ↑↓ Select · Enter Open · Esc Back[39m                            [38;5;195m│[39m                                                    [38;5;195m║
+║[39m                                                    [38;5;195m└──────────────────────────────────────────────────────────────┘[39m                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║[39m                                                                                   [38;5;195m║[39m                                                                                    [38;5;195m║
+║1/17[39m                                                                               [38;5;195m║2/3[39m                                                                                 [38;5;195m║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║Cluster Inspector · View capability details[39m                                                                                                                             [38;5;195m║
+║Multiple environment targets are available; select the target in sample-env.[39m                                                                                          [38;5;195m║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh[39m                                                                                                        [38;5;195m║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit[39m                                                                                                           [38;5;195m║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

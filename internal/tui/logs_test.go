@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type logProfileBackend struct {
@@ -21,26 +24,58 @@ type logProfileBackend struct {
 
 func openLogAction(t *testing.T, m *Model) tea.Cmd {
 	t.Helper()
-	m.home.Focus = CapabilitiesPane
-	press(m, tea.KeyEnter, "") // L1 to the contextual profile list.
 	profileIndex := m.home.Profiles.Index
-	m.selectContext(profileIndex + 2)
-	press(m, tea.KeyEnter, "") // Open that profile's actions.
-	entries := m.menuEntries()
-	for i, entry := range entries {
-		if strings.HasPrefix(entry, "View logs") {
-			m.home.Modal.Selected = i
-			_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-			return cmd
+	if profileIndex < 0 || profileIndex >= len(m.profiles()) {
+		profileIndex = 0
+	}
+	p := m.profiles()[profileIndex]
+	if p.Profile != nil && p.Profile.Ownership == "local" {
+		p.Profile.RuntimeStatus = "running"
+		p.Status = "running"
+		p.Instance.Ownership = "local"
+		if m.profileSnapshot != nil {
+			for i := range m.profileSnapshot.Profiles {
+				if m.profileSnapshot.Profiles[i].Key == p.Key {
+					m.profileSnapshot.Profiles[i].RuntimeStatus = "running"
+				}
+			}
 		}
 	}
-	t.Fatalf("profile action %q absent: %v", "View logs", entries)
-	return nil
+	base, ok := m.backend.(*logProfileBackend)
+	if !ok {
+		if existing, yes := m.backend.(*profileBackend); yes {
+			base = &logProfileBackend{profileBackend: existing}
+		} else {
+			t.Fatalf("expected profile fixture backend, got %T", m.backend)
+		}
+	}
+	m.backend = &logWorkspaceBackend{logProfileBackend: base, setup: &setupBackendFixture{}}
+	m.selectPane(ProfilesPane, profileIndex)
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Overview")
+	if cmd == nil {
+		t.Fatalf("target workspace did not open for logs target %+v", p.Key)
+	}
+	m.Update(cmd())
+	_, cmd = m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	return cmd
 }
 
-func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, _, environment, target string) (string, error) {
+type logWorkspaceBackend struct {
+	*logProfileBackend
+	setup *setupBackendFixture
+}
+
+func (b *logWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true}, nil
+}
+
+func (b *logWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstall(ctx, request)
+}
+
+func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, profile, _, environment, target string) (string, error) {
 	b.actions = append(b.actions, action)
-	b.key = state.Key{Source: source, Package: packageID, Environment: environment, Target: target}
+	b.key = state.Key{Source: source, Package: packageID, Profile: profile, Environment: environment, Target: target}
 	return b.logs, b.err
 }
 
@@ -77,8 +112,8 @@ func TestOwnedProfileLogsOpenScrollableReadOnlyViewer(t *testing.T) {
 		t.Fatal("mouse wheel did not scroll log lines")
 	}
 	press(m, tea.KeyEscape, "")
-	if m.home.Modal != nil || m.home.Focus != ProfilesPane || len(b.actions) != 1 {
-		t.Fatalf("closing logs changed server or selection: modal=%v actions=%v", m.home.Modal, b.actions)
+	if m.home.Modal != nil || m.workspace == nil || !m.workspace.Active || m.form == nil || m.workspace.Section != "Logs" || len(b.actions) != 1 {
+		t.Fatalf("closing logs did not retain the target workspace or changed the server: modal=%v workspace=%+v form=%v actions=%v", m.home.Modal, m.workspace, m.form != nil, b.actions)
 	}
 }
 
@@ -89,7 +124,7 @@ func TestForeignProfileCannotFetchLogs(t *testing.T) {
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	cmd := openLogAction(t, m)
-	if cmd != nil || len(b.actions) != 0 || !strings.Contains(m.output, "not locally owned") {
+	if cmd != nil || len(b.actions) != 0 || !strings.Contains(m.output, "only for locally owned runtimes") {
 		t.Fatalf("foreign profile exposed local logs: cmd=%v actions=%v output=%q", cmd, b.actions, m.output)
 	}
 }
@@ -160,8 +195,8 @@ func TestLogRefreshFailureShowsCauseAndPauses(t *testing.T) {
 	b.err = errors.New("Docker daemon connection refused")
 	_, poll := m.Update(logPollMsg{session: m.logSession})
 	m.Update(poll())
-	if m.home.Modal == nil || m.home.Modal.Follow || len(m.home.Modal.Rows) == 0 || !strings.Contains(m.home.Modal.Rows[0], "Docker daemon connection refused") || !strings.Contains(m.View().Content, "Docker daemon connection refused") {
-		t.Fatalf("refresh failure hidden or follow continued: %s", m.View().Content)
+	if m.result == nil || !m.result.Failed || !strings.Contains(strings.Join(m.result.Rows, "\n"), "Docker daemon connection refused") || !strings.Contains(m.View().Content, "Docker daemon connection refused") {
+		t.Fatalf("refresh failure was not surfaced as a structured foreground result: %s", m.View().Content)
 	}
 }
 
@@ -211,5 +246,125 @@ func TestLogFollowControlRespondsToMouse(t *testing.T) {
 	m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
 	if m.home.Modal == nil || m.home.Modal.Follow {
 		t.Fatal("mouse click did not pause log following")
+	}
+}
+
+func TestWorkspaceStartAndStopUseRuntimeActions(t *testing.T) {
+	for _, tc := range []struct{ shortcut, want string }{{"s", "start"}, {"x", "stop"}} {
+		t.Run(tc.want, func(t *testing.T) {
+			m, base := typedProfileFixture()
+			m.backend = &logProfileBackend{profileBackend: base}
+			cmd := openLogAction(t, m)
+			_ = cmd
+			workspaceBackend := m.backend.(*logWorkspaceBackend)
+			logsBackend := workspaceBackend.logProfileBackend
+			m.home.Modal = nil
+			m.busy = false
+			m.workspace.Section = "Overview"
+			m.form.SelectSection("Overview")
+			m.workspace.Profile.CanStart = tc.shortcut == "s"
+			m.workspace.Profile.CanStop = tc.shortcut == "x"
+			_, operation := m.workspaceOverviewAction(tc.shortcut)
+			if operation == nil {
+				t.Fatalf("workspace %s did not submit an operation", tc.shortcut)
+			}
+			m.Update(runTeaCmd(t, m, operation))
+			if tc.shortcut == "s" {
+				if workspaceBackend.setup.installRequest != nil {
+					t.Fatal("workspace Start applied capability configuration instead of starting the runtime")
+				}
+				if len(logsBackend.actions) != 1 || logsBackend.actions[0] != tc.want {
+					t.Fatalf("workspace Start did not send the runtime action: %v", logsBackend.actions)
+				}
+				return
+			}
+			if len(logsBackend.actions) != 1 || logsBackend.actions[0] != tc.want {
+				t.Fatalf("workspace %s sent service action %v, want %q", tc.shortcut, logsBackend.actions, tc.want)
+			}
+		})
+	}
+}
+
+type replacementLogsBackend struct {
+	*logProfileBackend
+	setup       *setupBackendFixture
+	mu          sync.Mutex
+	calls       int
+	started     chan int
+	secondReply chan struct{}
+}
+
+func (b *replacementLogsBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: request.PackageID, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "test-runtime"}}}, nil
+}
+
+func (b *replacementLogsBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstall(ctx, request)
+}
+
+func (b *replacementLogsBackend) UIProfileLogs(ctx context.Context, _ state.Key) (string, error) {
+	b.mu.Lock()
+	b.calls++
+	call := b.calls
+	b.mu.Unlock()
+	b.started <- call
+	if call == 1 {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	select {
+	case <-b.secondReply:
+		return "fresh replacement output", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestPauseResumeReplacementIgnoresIntentionalCancellation(t *testing.T) {
+	m, base := typedProfileFixture()
+	base.snapshot.Profiles[0].RuntimeStatus = "running"
+	base.snapshot.Profiles[0].Ownership = "local"
+	m.Update(m.load()())
+	backend := &replacementLogsBackend{
+		logProfileBackend: &logProfileBackend{profileBackend: base},
+		setup:             &setupBackendFixture{},
+		started:           make(chan int, 2),
+		secondReply:       make(chan struct{}),
+	}
+	m.backend = backend
+	key := base.snapshot.Profiles[0].Key
+	m.selectPane(ProfilesPane, 0)
+	setup := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	m.Update(setup())
+	_, firstFetch := m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if firstFetch == nil {
+		t.Fatal("workspace Logs route did not start the first fetch")
+	}
+	firstResult := make(chan tea.Msg, 1)
+	go func() { firstResult <- firstFetch() }()
+	if call := <-backend.started; call != 1 {
+		t.Fatalf("first fetch call = %d, want 1", call)
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})            // Pause.
+	_, secondFetch := m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"}) // Resume and replace.
+	if secondFetch == nil {
+		t.Fatal("resuming Follow did not start a replacement fetch")
+	}
+	secondResult := make(chan tea.Msg, 1)
+	go func() { secondResult <- secondFetch() }()
+	if call := <-backend.started; call != 2 {
+		t.Fatalf("replacement fetch call = %d, want 2", call)
+	}
+	m.Update(<-firstResult)
+	if m.result != nil || m.home.Modal == nil || m.home.Modal.Kind != "logs" {
+		t.Fatalf("intentional cancellation replaced the active viewer with an error: result=%+v modal=%+v", m.result, m.home.Modal)
+	}
+	close(backend.secondReply)
+	m.Update(<-secondResult)
+	if m.result != nil || m.home.Modal == nil || !strings.Contains(strings.Join(m.home.Modal.Rows, "\n"), "fresh replacement output") {
+		t.Fatalf("replacement response was not retained: result=%+v modal=%+v", m.result, m.home.Modal)
+	}
+	if m.workspace == nil || !m.workspace.Active || m.workspace.Section != "Logs" {
+		t.Fatalf("pause/resume changed workspace context: %+v", m.workspace)
 	}
 }

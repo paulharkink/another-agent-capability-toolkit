@@ -47,6 +47,26 @@ func TestSecretEnvNotLogged(t *testing.T) {
 		t.Fatal(progress)
 	}
 }
+
+func TestDockerListReconstructsNamedMCPKeyAndOwnership(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "secondary"
+	spec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	container := dockerInfo{ID: "child-runtime", Name: "/" + containerName(key), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, spec)}, State: dockerState{Running: true, Status: "running"}}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "ps" {
+			return []byte("child-runtime\n"), nil
+		}
+		if args[1] == "inspect" {
+			return json.Marshal([]dockerInfo{container})
+		}
+		return nil, nil
+	}
+	instances, err := r.List(context.Background())
+	if err != nil || len(instances) != 1 || instances[0].Key != key || instances[0].Ownership != "local" {
+		t.Fatalf("named child runtime was not reconstructed: %+v, %v", instances, err)
+	}
+}
 func testRuntime(t *testing.T) (*Runtime, *fakeExec, state.Key) {
 	t.Helper()
 	s, e := state.Open(t.TempDir())
@@ -299,7 +319,7 @@ func TestInventoryIncludesAndDeduplicatesExternalMCPRegistrations(t *testing.T) 
 	f.f = func([]string) ([]byte, error) { return nil, nil }
 	for _, agent := range []string{"claude", "codex"} {
 		for _, endpoint := range []string{"https://one.example.test/mcp", "https://two.example.test/mcp"} {
-			if err := r.Store.Record(state.Installation{Key: k, AgentID: agent, Component: "mcp", Destination: agent + endpoint, URL: endpoint}); err != nil {
+			if err := r.Store.Record(state.Installation{Key: k, AgentID: agent, Component: "mcp", Destination: agent + endpoint, URL: endpoint, ExternalRegistration: true}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -319,7 +339,7 @@ func TestInventoryExternalDedupeRequiresActualContainerAndMatchingURL(t *testing
 	r, f, k := testRuntime(t)
 	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
 	for _, endpoint := range []string{specURL(spec), "https://remote.example.test/mcp"} {
-		if err := r.Store.Record(state.Installation{Key: k, AgentID: "codex", Component: "mcp", Destination: endpoint, URL: endpoint}); err != nil {
+		if err := r.Store.Record(state.Installation{Key: k, AgentID: "codex", Component: "mcp", Destination: endpoint, URL: endpoint, ExternalRegistration: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -335,6 +355,31 @@ func TestInventoryExternalDedupeRequiresActualContainerAndMatchingURL(t *testing
 	}
 	if items[1].Status != "external" || items[1].URL != "https://remote.example.test/mcp" {
 		t.Fatal(items)
+	}
+}
+
+func TestInventoryDoesNotTreatSavedRegistrationAsRuntimeObservation(t *testing.T) {
+	r, f, k := testRuntime(t)
+	f.f = func(args []string) ([]byte, error) {
+		if len(args) > 1 && args[1] == "ps" {
+			return nil, nil
+		}
+		return nil, errors.New("unexpected docker command")
+	}
+	endpoint := "http://127.0.0.1:8765/mcp"
+	if err := r.Store.Record(state.Installation{Key: k, AgentID: "opencode", Component: "mcp", Mode: "registration", URL: endpoint}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := r.List(context.Background())
+	if err != nil || len(items) != 0 {
+		t.Fatalf("saved registration was presented as observed runtime: %+v %v", items, err)
+	}
+	if err := r.Store.Record(state.Installation{Key: k, AgentID: "claude", Component: "mcp", Mode: "registration", URL: "https://attached.example.test/mcp", ExternalRegistration: true}); err != nil {
+		t.Fatal(err)
+	}
+	items, err = r.List(context.Background())
+	if err != nil || len(items) != 1 || items[0].Status != "external" || items[0].Ownership != "unknown" {
+		t.Fatalf("explicit external registration was not preserved: %+v %v", items, err)
 	}
 }
 

@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+╠ Environment                                                              ╦► Configured targets · sample-skills / sample-env · TOML files                                        ╣
+║› No environment file                                                     ║> cluster-inspector / ap                                                                     ║
+║> sample-skills / sample-env · TOML files                                          ║› cluster-inspector / target-a                                                                    ║
+║› sample-skills / sample-env · Saved profiles                                      ║› grafana-inspector / sample                                                                    ║
+║› sample-skills / sample-env · Saved profiles                              ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║                                                                          ║                                                                                             ║
+║ Environment root: /home/user/sources/sample-skills/environments · saved profiles are separate from TOML files                                                         ║
+║ [ Configure / install ]  [ View target ]  [ Environment root ]  [ Close ]                                                                                              ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

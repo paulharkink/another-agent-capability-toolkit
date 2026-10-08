@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ Settings                                                                                                                                                               ║
+║> Environment root: /home/user/sources/sample-skills/environments                                                                                                      ║
+║── Default named agents for new MCP installations                                                                                                                       ║
+║›   [ ] Codex                                                                                                                                                           ║
+║›   [ ] OpenCode                                                                                                                                                        ║
+║›   [ ] Claude Code                                                                                                                                                     ║
+║›   [ ] copilot-cli                                                                                                                                                     ║
+║›   [ ] copilot-intellij                                                                                                                                                ║
+║›   [ ] generic                                                                                                                                                         ║
+║· Skill-only installations default to All — ~/.agents/skills.                                                                                                           ║
+║· These named-agent defaults do not change existing registrations.                                                                                                      ║
+║· Docker backend: [ Select backend — disabled: backend preference service unavailable ]                                                                                 ║
+║· Resolved backend: unavailable from service                                                                                                                            ║
+║· [ Check backend — disabled: backend check service unavailable ]                                                                                                       ║
+║· Source: sample-skills                                                                                                                                                    ║
+║· Checkout: /home/user/sources/sample-skills                                                                                                                           ║
+║· Known checkouts: unavailable from service                                                                                                                             ║
+║· [ View known checkouts… — disabled: checkout listing service unavailable ]                                                                                            ║
+║· State: /home/user/.local/state/skills-source                                                                                                                       ║
+║· Platform: linux / amd64                                                                                                                                               ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║ [ Save ]  [ Cancel ]                                                                                                                                                   ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

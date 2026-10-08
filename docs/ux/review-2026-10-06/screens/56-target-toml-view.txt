@@ -1,0 +1,42 @@
+╔ Environment target · /home/user/sources/sample-skills/environments/sample-env/cluster-inspector/ap.toml                                                                     ╗
+║ Exact file contents · ←→ Horizontal · ↑↓/PgUp/PgDn Scroll · Esc Back                                                                                                   ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║[mcp]                                                                                                                                                                   ║
+║local_host = "localhost"                                                                                                                                                ║
+║local_port = 18771                                                                                                                                                      ║
+║                                                                                                                                                                        ║
+║[cluster]                                                                                                                                                               ║
+║api_server = "https://api.cluster.example.test:6443"                                                                                                                 ║
+║ca_file = "sample-root-ca.pem"                                                                                                                                           ║
+║verify_x509_strict = false                                                                                                                                              ║
+║                                                                                                                                                                        ║
+║[tekton]                                                                                                                                                                ║
+║default_namespace = "openshift-pipelines"                                                                                                                               ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║ Line 1/12 · Esc Back                                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

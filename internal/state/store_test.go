@@ -14,6 +14,22 @@ func sampleKey(source string) Key {
 	return Key{Source: source, Package: "cluster-inspector", Environment: "company", Target: "prod"}
 }
 
+func TestMCPKeyIdentityIsAdditiveAndLegacyCompatible(t *testing.T) {
+	legacy := sampleKey("fixture")
+	withLegacyMCP := legacy
+	withLegacyMCP.MCP = ""
+	if legacy.ID() != withLegacyMCP.ID() {
+		t.Fatal("empty MCP identity changed the legacy key ID")
+	}
+	first := legacy
+	first.MCP = "primary"
+	second := legacy
+	second.MCP = "secondary"
+	if first.ID() == second.ID() || first.ID() == legacy.ID() {
+		t.Fatal("named MCPs must have distinct identities from each other and the legacy key")
+	}
+}
+
 func TestReadOnlyOpenHasNoWrites(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "absent")
 	s, e := OpenReadOnly(root)
@@ -142,6 +158,25 @@ func TestKeyCannotEscapeRoot(t *testing.T) {
 		t.Fatalf("escaped=%s", dir)
 	}
 }
+
+func TestProfileKeyKeepsLegacyIDsAndSeparatesProfiles(t *testing.T) {
+	base := Key{Source: "catalog", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
+	legacyID := base.ID()
+	withGitHub := base
+	withGitHub.Profile = "github"
+	withGitLab := base
+	withGitLab.Profile = "gitlab"
+	if legacyID == "" || withGitHub.ID() == legacyID || withGitLab.ID() == legacyID {
+		t.Fatalf("profile IDs must be distinct from legacy key: legacy=%q github=%q gitlab=%q", legacyID, withGitHub.ID(), withGitLab.ID())
+	}
+	if withGitHub.ID() == withGitLab.ID() {
+		t.Fatalf("provider profiles collided: %q", withGitHub.ID())
+	}
+	if base.ID() != legacyID {
+		t.Fatalf("legacy key ID changed: before=%q after=%q", legacyID, base.ID())
+	}
+}
+
 func TestLockExcludesConcurrentStore(t *testing.T) {
 	root := t.TempDir()
 	one, _ := Open(root)

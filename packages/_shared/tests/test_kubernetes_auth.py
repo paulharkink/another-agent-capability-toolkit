@@ -340,7 +340,7 @@ def test_auth_file_path_must_stay_inside_target_directory(tmp_path):
             prepare_token_auth(tmp_path / "target", tmp_path / "other" / "kubeconfig", "https://cluster.invalid", None, secret)
 
 
-def test_copy_kubeconfig_rejects_symlink_to_default_kubeconfig_without_using_it(tmp_path, monkeypatch):
+def test_copy_kubeconfig_allows_explicit_symlink_to_default_kubeconfig(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     default = fake_home / ".kube" / "config"
     default.parent.mkdir(parents=True)
@@ -348,8 +348,16 @@ def test_copy_kubeconfig_rejects_symlink_to_default_kubeconfig_without_using_it(
     alias = tmp_path / "chosen-config"
     alias.symlink_to(default)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
-    with pytest.raises(ValueError, match="default kubeconfig"):
-        copy_kubeconfig(alias, tmp_path / "state" / "kubeconfig", "https://cluster.invalid")
+    config = {"clusters": [{"name": "c", "cluster": {"server": "https://cluster.invalid"}}], "users": [{"name": "u", "user": {"token": "synthetic"}}], "contexts": [{"name": "x", "context": {"cluster": "c", "user": "u"}}], "current-context": "x"}
+    def run(args, **kwargs):
+        if "view" in args:
+            assert args[args.index("--kubeconfig") + 1] == str(alias)
+            return type("R", (), {"stdout": json.dumps(config)})()
+        return type("R", (), {"stdout": json.dumps({"status": {"userInfo": {"username": "explicit-user"}}})})()
+    destination = tmp_path / "state" / "kubeconfig"
+    with patch("subprocess.run", run):
+        assert copy_kubeconfig(alias, destination, "https://cluster.invalid") == "explicit-user"
+    assert json.loads(destination.read_text()) == config
 
 
 def test_copy_kubeconfig_rejects_unflattened_external_file_references(tmp_path):

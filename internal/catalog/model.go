@@ -2,39 +2,70 @@ package catalog
 
 // Package declares the components and typed inputs of a catalog entry.
 type Package struct {
-	SchemaVersion int        `toml:"schema_version" json:"schema_version"`
-	ID            string     `toml:"id" json:"id"`
-	Name          string     `toml:"name" json:"name"`
-	Dir           string     `toml:"-" json:"dir"`
-	Skill         *Skill     `toml:"skill" json:"skill"`
-	MCP           *MCP       `toml:"mcp" json:"mcp"`
-	Inputs        []Input    `toml:"inputs" json:"inputs"`
-	Templates     []Template `toml:"templates" json:"templates"`
-	Generator     *Command   `toml:"generator" json:"generator"`
+	SchemaVersion int           `toml:"schema_version" json:"schema_version"`
+	ID            string        `toml:"id" json:"id"`
+	Name          string        `toml:"name" json:"name"`
+	Dir           string        `toml:"-" json:"dir"`
+	Skill         *Skill        `toml:"skill" json:"skill"`
+	MCP           *MCP          `toml:"mcp" json:"mcp"`
+	MCPs          []MCP         `toml:"mcps" json:"mcps"`
+	UI            *Presentation `toml:"ui" json:"ui"`
+	Inputs        []Input       `toml:"inputs" json:"inputs"`
+	Templates     []Template    `toml:"templates" json:"templates"`
+	Generator     *Command      `toml:"generator" json:"generator"`
+}
+
+func (p Package) MCPDefinitions() []MCP {
+	return p.MCPProfiles()
+}
+
+func (p Package) HasMCP() bool { return len(p.MCPProfiles()) > 0 }
+
+// MCPProfiles returns every declared MCP in declaration order while retaining
+// compatibility with the original single [mcp] manifest form.
+func (p Package) MCPProfiles() []MCP {
+	profiles := make([]MCP, 0, len(p.MCPs)+1)
+	if p.MCP != nil {
+		profiles = append(profiles, *p.MCP)
+	}
+	profiles = append(profiles, p.MCPs...)
+	return profiles
+}
+
+type Presentation struct {
+	Sections []Section `toml:"sections" json:"sections"`
+}
+type Section struct {
+	ID     string   `toml:"id" json:"id"`
+	Title  string   `toml:"title" json:"title"`
+	Fields []string `toml:"fields" json:"fields"`
 }
 type Skill struct {
 	Name  string   `toml:"name" json:"name"`
 	Files []string `toml:"files" json:"files"`
 }
 type Input struct {
-	Name           string   `toml:"name" json:"name"`
-	ConfigKey      string   `toml:"config_key" json:"config_key"`
-	ExclusiveGroup string   `toml:"exclusive_group" json:"exclusive_group"`
-	Type           string   `toml:"type" json:"type"`
-	Label          string   `toml:"label" json:"label"`
-	Required       bool     `toml:"required" json:"required"`
-	Multiple       bool     `toml:"multiple" json:"multiple"`
-	Default        any      `toml:"default" json:"default"`
-	Min            *float64 `toml:"min" json:"min"`
-	Max            *float64 `toml:"max" json:"max"`
-	MinItems       *int     `toml:"min_items" json:"min_items"`
-	MaxItems       *int     `toml:"max_items" json:"max_items"`
-	Options        []Choice `toml:"options" json:"options"`
-	OptionsFrom    string   `toml:"options_from" json:"options_from"`
+	Name           string         `toml:"name" json:"name"`
+	ConfigKey      string         `toml:"config_key" json:"config_key"`
+	ExclusiveGroup string         `toml:"exclusive_group" json:"exclusive_group"`
+	Type           string         `toml:"type" json:"type"`
+	Label          string         `toml:"label" json:"label"`
+	Hint           string         `toml:"hint" json:"hint"`
+	Required       bool           `toml:"required" json:"required"`
+	Multiple       bool           `toml:"multiple" json:"multiple"`
+	Default        any            `toml:"default" json:"default"`
+	Min            *float64       `toml:"min" json:"min"`
+	Max            *float64       `toml:"max" json:"max"`
+	MinItems       *int           `toml:"min_items" json:"min_items"`
+	MaxItems       *int           `toml:"max_items" json:"max_items"`
+	Options        []Choice       `toml:"options" json:"options"`
+	OptionsFrom    string         `toml:"options_from" json:"options_from"`
+	VisibleWhen    map[string]any `toml:"visible_when" json:"visible_when"`
 }
 type Choice struct {
-	Value string `toml:"value" json:"value"`
-	Label string `toml:"label" json:"label"`
+	Value          string `toml:"value" json:"value"`
+	Label          string `toml:"label" json:"label"`
+	DisabledReason string `toml:"disabled_reason,omitempty" json:"disabled_reason,omitempty"`
 }
 type Template struct {
 	Source      string `toml:"source" json:"source"`
@@ -47,6 +78,18 @@ type Command struct {
 }
 type MCP struct {
 	Name                  string             `toml:"name" json:"name"`
+	EnabledInput          string             `toml:"enabled_input" json:"enabled_input,omitempty"`
+	RegistrationNameInput string             `toml:"registration_name_input" json:"registration_name_input,omitempty"`
+	TokenInput            string             `toml:"token_input" json:"token_input,omitempty"`
+	TokenFileInput        string             `toml:"token_file_input" json:"token_file_input,omitempty"`
+	TokenEnvInput         string             `toml:"token_env_input" json:"token_env_input,omitempty"`
+	TokenHeader           string             `toml:"token_header" json:"token_header,omitempty"`
+	TokenPrefix           string             `toml:"token_prefix" json:"token_prefix,omitempty"`
+	TokenContainerEnv     string             `toml:"token_container_env" json:"token_container_env,omitempty"`
+	Args                  []string           `toml:"args" json:"args,omitempty"`
+	Env                   map[string]string  `toml:"env" json:"env,omitempty"`
+	EnvInputs             map[string]string  `toml:"env_inputs" json:"env_inputs,omitempty"`
+	SecretEnvInputs       map[string]string  `toml:"secret_env_inputs" json:"secret_env_inputs,omitempty"`
 	Runtime               string             `toml:"runtime" json:"runtime"`
 	BuildContext          string             `toml:"build_context" json:"build_context"`
 	Image                 string             `toml:"image" json:"image"`

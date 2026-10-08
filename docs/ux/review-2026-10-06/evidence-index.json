@@ -1,0 +1,268 @@
+[
+  {
+    "journey": "01 \u00b7 A working way into configuration",
+    "current": "12-capability-configure-multiple-targets",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "54-environment-target-list",
+        "caption": "The separate sample-env screen that the status message expects you to discover."
+      }
+    ]
+  },
+  {
+    "journey": "02 \u00b7 Package, target, server, registration",
+    "current": "14-profile-actions",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "15-profile-details",
+        "caption": "Current profile Details: identity and a runtime line, but little explanation."
+      },
+      {
+        "capture": "13-capability-details-open",
+        "caption": "Current capability Details: an almost empty dialog repeating the action label."
+      }
+    ]
+  },
+  {
+    "journey": "03 \u00b7 One task, one editor",
+    "current": "01-existing-input-form",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "22-profile-parameters-form",
+        "caption": "The existing paired editor reached through Edit parameters."
+      },
+      {
+        "capture": "42-no-environment-setup",
+        "caption": "Setup via sample-env takes over the full screen instead."
+      }
+    ]
+  },
+  {
+    "journey": "04 \u00b7 Type where the field is",
+    "current": "04-text-cursor-edit",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "03-token-editor-after-bracketed-paste",
+        "caption": "The editor after a bracketed paste event: still empty."
+      },
+      {
+        "capture": "24-setup-port-editor",
+        "caption": "The same detached editor is used for Local port in the paired configuration form."
+      }
+    ]
+  },
+  {
+    "journey": "05 \u00b7 Authentication must explain the choice",
+    "current": "22-profile-parameters-form",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": []
+  },
+  {
+    "journey": "06 \u00b7 Failure is a screen, not a footnote",
+    "current": "07-after-form-return",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "52-main-menu-visible",
+        "caption": "Cancellation is labelled Failed and shown as internal JSON."
+      },
+      {
+        "capture": "108-isolated-connection-result",
+        "caption": "ISOLATED FIXTURE: connection-refused output clipped inside the result dialog."
+      },
+      {
+        "capture": "99-actual-logs-viewer",
+        "caption": "View logs failure is confined to the footer and drawn through the border."
+      }
+    ]
+  },
+  {
+    "journey": "07 \u00b7 Validation belongs beside the input",
+    "current": "25-port-validation-error",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "31-database-enter",
+        "caption": "Enter on the empty database control only produces footer feedback."
+      }
+    ]
+  },
+  {
+    "journey": "08 \u00b7 Where it is going must be unambiguous",
+    "current": "28-setup-destinations",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "61-opencode-agent-details",
+        "caption": "Agents reports a different OpenCode config path and lists JSON / JSONC priorities."
+      },
+      {
+        "capture": "78-skill-only-setup",
+        "caption": "Skill-only: All is present and enabled by default; keep that policy."
+      },
+      {
+        "capture": "77-skill-only-find-session",
+        "caption": "Skill-only L2 already omits unrelated MCP actions; keep this behaviour."
+      }
+    ]
+  },
+  {
+    "journey": "09 \u00b7 A file picker is still part of the TUI",
+    "current": "36-environments-browser",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "32-source-kubeconfig-picker",
+        "caption": "First picker view: a numbered prompt printed beneath the frozen editor."
+      }
+    ]
+  },
+  {
+    "journey": "10 \u00b7 Directory collections: preserve what works",
+    "current": "84-repo-map-directory-added",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "85-existing-directory-edit",
+        "caption": "Existing-directory edit is available, but uses the bottom Edit strip."
+      },
+      {
+        "capture": "86-directory-removed",
+        "caption": "Backspace removes the directory from the draft list."
+      }
+    ]
+  },
+  {
+    "journey": "11 \u00b7 Attach an agent without owning the server",
+    "current": "106-isolated-registration-form",
+    "label": "Isolated fixture \u00b7 same v0.1.4 binary \u00b7 dummy endpoint, not live health",
+    "supporting": [
+      {
+        "capture": "105-isolated-profile-actions",
+        "caption": "ISOLATED FIXTURE: runtime control disabled, local registration enabled."
+      },
+      {
+        "capture": "111-registration-agent-detail",
+        "caption": "ISOLATED FIXTURE: the agent row correctly supplies agent-specific details."
+      },
+      {
+        "capture": "107-isolated-remove-registration-form",
+        "caption": "ISOLATED FIXTURE: removal includes an unnecessary endpoint/check pane."
+      }
+    ]
+  },
+  {
+    "journey": "12 \u00b7 Runtime and logs need actionable empty states",
+    "current": "99-actual-logs-viewer",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "91-legacy-start-result",
+        "caption": "Legacy Start exposes the old Connections collection in a different editor."
+      }
+    ]
+  },
+  {
+    "journey": "13 \u00b7 Presets and saved installations are different",
+    "current": "54-environment-target-list",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "40-environments-browser",
+        "caption": "Current environment rows combine No environment, TOML files, and saved profiles."
+      },
+      {
+        "capture": "56-target-toml-view",
+        "caption": "Exact target TOML viewing already works."
+      },
+      {
+        "capture": "89-legacy-profile-actions",
+        "caption": "An apparently available old-source Configure action cannot configure anything."
+      }
+    ]
+  },
+  {
+    "journey": "14 \u00b7 Agents: say what was detected and where writes go",
+    "current": "61-opencode-agent-details",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "63-opencode-config-candidates",
+        "caption": "Config candidates can be selected explicitly."
+      },
+      {
+        "capture": "64-opencode-jsonc-viewer",
+        "caption": "Exact JSONC viewing is functional and returns via Escape."
+      },
+      {
+        "capture": "65-agent-location-unavailable",
+        "caption": "Configure config location is offered but service support is pending."
+      }
+    ]
+  },
+  {
+    "journey": "15 \u00b7 Settings and Help must use the same language",
+    "current": "66-settings-screen",
+    "label": "Live release \u00b7 test-wsl WSL",
+    "supporting": [
+      {
+        "capture": "67-environment-root-editor",
+        "caption": "Environment-root editing is incorrectly called Edit package inputs."
+      },
+      {
+        "capture": "69-settings-actions",
+        "caption": "Settings Actions is not specific to the highlighted preference."
+      },
+      {
+        "capture": "70-default-agent-selection",
+        "caption": "Default-agent choices are a separate full-screen raw form."
+      },
+      {
+        "capture": "73-help-index",
+        "caption": "Help\u2019s Enter/F2 description differs from the main screen."
+      }
+    ]
+  },
+  {
+    "journey": "16 \u00b7 One keyboard grammar, visible scroll and return",
+    "current": "117-small-terminal",
+    "label": "Isolated fixture \u00b7 same v0.1.4 binary \u00b7 resize/navigation only",
+    "supporting": [
+      {
+        "capture": "30-setup-actions-focus",
+        "caption": "Actions focus is reachable with the keyboard."
+      },
+      {
+        "capture": "121-directory-draft",
+        "caption": "ISOLATED FIXTURE: a changed directory draft before backing out."
+      },
+      {
+        "capture": "122-discard-question",
+        "caption": "ISOLATED FIXTURE: Back returns to Home without draft-discard feedback."
+      }
+    ]
+  },
+  {
+    "journey": "17 \u00b7 The section names must follow the user\u2019s task",
+    "current": "124-grafana-configuration",
+    "label": "Isolated fixture \u00b7 same v0.1.4 binary \u00b7 forms inspected, nothing saved",
+    "supporting": [
+      {
+        "capture": "125-grafana-inputs",
+        "caption": "ISOLATED FIXTURE: session-cookie credentials are under Inputs, not Authentication."
+      },
+      {
+        "capture": "126-azure-configuration",
+        "caption": "ISOLATED FIXTURE: Azure\u2019s tenant and subscription settings use the generic Inputs section."
+      },
+      {
+        "capture": "128-forgejo-inputs",
+        "caption": "ISOLATED FIXTURE: Forgejo\u2019s address and listen settings are called Inputs."
+      }
+    ]
+  }
+]

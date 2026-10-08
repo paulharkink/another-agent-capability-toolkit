@@ -11,12 +11,17 @@ import (
 )
 
 func Validate(defs []catalog.Input, values map[string]any) error {
+	defs = catalog.VisibleInputs(defs, values)
 	activeGroup := map[string]string{}
+	requiredGroups := map[string]bool{}
 	for _, def := range defs {
 		def = scalarDefinition(def)
+		if def.Required && def.ExclusiveGroup != "" {
+			requiredGroups[def.ExclusiveGroup] = true
+		}
 		value, present := values[def.Name]
 		if !present || value == nil {
-			if def.Required {
+			if def.Required && def.ExclusiveGroup == "" {
 				return required(def.Name)
 			}
 			continue
@@ -27,7 +32,9 @@ func Validate(defs []catalog.Input, values map[string]any) error {
 				return fmt.Errorf("input %s: expected an array", def.Name)
 			}
 			if def.Required && rv.Len() == 0 {
-				return required(def.Name)
+				if def.ExclusiveGroup == "" {
+					return required(def.Name)
+				}
 			}
 			if def.MinItems != nil && rv.Len() < *def.MinItems {
 				return fmt.Errorf("input %s: requires at least %d items", def.Name, *def.MinItems)
@@ -42,7 +49,7 @@ func Validate(defs []catalog.Input, values map[string]any) error {
 			}
 		} else {
 			if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
-				if def.Required {
+				if def.Required && def.ExclusiveGroup == "" {
 					return required(def.Name)
 				}
 				if def.Type == "string" || def.Type == "secret" || def.Type == "file" || def.Type == "directory" || def.Type == "choice" {
@@ -58,6 +65,11 @@ func Validate(defs []catalog.Input, values map[string]any) error {
 				return fmt.Errorf("inputs %s and %s are mutually exclusive", previous, def.Name)
 			}
 			activeGroup[def.ExclusiveGroup] = def.Name
+		}
+	}
+	for group := range requiredGroups {
+		if activeGroup[group] == "" {
+			return fmt.Errorf("one input in exclusive group %s is required; provide one value or use --interactive", group)
 		}
 	}
 	return nil

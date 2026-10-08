@@ -1,0 +1,23 @@
+[38;2;233;245;255;48;2;9;38;111m╔ AACT · Another Agent Capability Toolkit                                                          ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                          ║
+║ Checkout: checkout · Managing: darwin/arm64 · Source: one · Env: none                            ║
+╠[38;2;255;227;138m► Capabilities                                  [38;2;233;245;255;48;2;9;38;111m╦[38;2;255;227;138mSelected capability · Plain                      [38;2;233;245;255;48;2;9;38;111m╣
+║› Not installed · Inspector  MCP                ║[38;2;255;227;138m── Capability                                    [38;2;233;245;255;48;2;9;38;111m║
+║[38;2;8;31;91;48;2;233;242;251m> Not installed · Plain  skill                  [38;2;233;245;255;48;2;9;38;111m║> Set up another target…                         ║
+║› Not installed · Empty  MCP                    ║› View capability details                        ║
+║                                                ║[38;2;255;227;138m── Installation · AACT records: Not installed    [38;2;233;245;255;48;2;9;38;111m║
+║                                                ║[38;2;168;189;219m· Skill: no AACT record                          [38;2;233;245;255;48;2;9;38;111m║
+║                                                ║                                                 ║
+║                                                ║                                                 ║
+║                                                ║                                                 ║
+║                                                ║                                                 ║
+║                                                ║                                                 ║
+║                                                ║                                                 ║
+║2/3                                             ║1/2                                              ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║one · Plain · skill · AACT records: Not installed                                                 ║
+║Selected item was removed; selected the nearest surviving row.                                    ║
+╠══════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh                                  ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                     ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝[m

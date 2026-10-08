@@ -54,6 +54,10 @@ func Run(ctx context.Context, argv []string, cwd string, stdin []byte, env map[s
 		return nil, errors.New("command argv is empty")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	return runCommand(ctx, cmd, cwd, stdin, env, onStderr)
+}
+
+func runCommand(ctx context.Context, cmd *exec.Cmd, cwd string, stdin []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = os.Environ()
@@ -73,7 +77,7 @@ func Run(ctx context.Context, argv []string, cwd string, stdin []byte, env map[s
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("command %s failed: %w", filepath.Base(argv[0]), err)
+		return nil, fmt.Errorf("command %s failed: %w", filepath.Base(cmd.Path), err)
 	}
 	return out.buffer.Bytes(), nil
 }

@@ -9,7 +9,8 @@ import (
 type flags struct {
 	args, agents, homes                                                       []string
 	sets                                                                      map[string][]string
-	config, envroot, state, environment, target, url                          string
+	externalURLs                                                              map[string]string
+	config, envroot, state, environment, target, profile, url, mcp            string
 	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
 }
 
@@ -43,7 +44,7 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--config", "--environment-root", "--state-dir", "--environment", "--target", "--external-url", "--agent", "--agent-home", "--set":
+		case "--config", "--environment-root", "--state-dir", "--environment", "--target", "--profile", "--external-url", "--mcp", "--agent", "--agent-home", "--set":
 			if !has {
 				n++
 				if n == len(args) {
@@ -65,8 +66,28 @@ func parse(args []string) (flags, error) {
 				f.environment = value
 			case "--target":
 				f.target = value
+			case "--profile":
+				f.profile = value
 			case "--external-url":
-				f.url = value
+				if name, endpoint, named := strings.Cut(value, "="); named && name != "" && !strings.Contains(name, "://") {
+					if f.externalURLs == nil {
+						f.externalURLs = map[string]string{}
+					}
+					if _, exists := f.externalURLs[name]; exists {
+						return f, fmt.Errorf("--external-url repeats MCP %q", name)
+					}
+					if endpoint == "" {
+						return f, fmt.Errorf("--external-url %s requires a URL", name)
+					}
+					f.externalURLs[name] = endpoint
+				} else {
+					if f.url != "" {
+						return f, errors.New("--external-url URL may be supplied only once")
+					}
+					f.url = value
+				}
+			case "--mcp":
+				f.mcp = value
 			case "--agent":
 				f.agents = append(f.agents, value)
 			case "--agent-home":
@@ -81,7 +102,7 @@ func parse(args []string) (flags, error) {
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--config" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--external-url" && name != "--agent" && name != "--agent-home" && name != "--set" {
+		if has && name != "--config" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--profile" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}

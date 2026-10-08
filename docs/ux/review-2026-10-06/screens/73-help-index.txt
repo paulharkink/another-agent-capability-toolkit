@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ Help                                                                                                                                                                   ║
+║· Tab / Left / Right: switch two-pane focus                                                                                                                             ║
+║· Up / Down / PageUp / PageDown / Home / End: select and scroll                                                                                                         ║
+║· Enter / F2: selected row Actions; Up / Down also work in menus                                                                                                        ║
+║· F1: Help · F5: Refresh · F9 / m: Main menu · F10: Quit                                                                                                                ║
+║· Mouse click: select row or visible command · wheel: scroll                                                                                                            ║
+║· Running / Stopped: observed Docker state; a stale observation has a timestamp                                                                                         ║
+║· Other installation: running elsewhere; local registration may still be configured                                                                                     ║
+║· Disabled action: its reason is shown in the menu                                                                                                                      ║
+║· default: suggested editable value; environment values may prefill it                                                                                                  ║
+║· source: the package or target file that supplied a value                                                                                                              ║
+║· Esc / Back: return to the previous screen                                                                                                                             ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Actions  F5 Refresh  F9 Main menu  F10 Quit                                                                                                                ║
+║ Esc Back · ↑↓ Select · Enter Actions                                                                                                                                   ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

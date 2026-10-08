@@ -1,0 +1,208 @@
+schema_version = 1
+id = "git-provider"
+name = "Git Provider Inspector"
+
+[skill]
+name = "git-provider"
+
+[[inputs]]
+name = "github_enabled"
+type = "boolean"
+label = "Use GitHub"
+config_key = "gitprovider.github_enabled"
+default = false
+
+[[inputs]]
+name = "github_host"
+type = "string"
+label = "GitHub host"
+config_key = "gitprovider.github_host"
+default = "https://github.com"
+
+[[inputs]]
+name = "github_port"
+type = "integer"
+label = "GitHub MCP listen port"
+config_key = "gitprovider.github_port"
+default = 18770
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "github_registration_name"
+type = "string"
+label = "GitHub MCP registration name"
+config_key = "gitprovider.github_registration_name"
+default = "git-provider-github"
+
+[[inputs]]
+name = "github_token"
+type = "secret"
+label = "GitHub token"
+exclusive_group = "github_token_source"
+
+[[inputs]]
+name = "github_token_file"
+type = "file"
+label = "File containing the GitHub token"
+exclusive_group = "github_token_source"
+
+[[inputs]]
+name = "github_token_env"
+type = "string"
+label = "Environment variable containing the GitHub token"
+config_key = "gitprovider.github_token_env"
+exclusive_group = "github_token_source"
+
+[[inputs]]
+name = "gitlab_enabled"
+type = "boolean"
+label = "Use GitLab"
+config_key = "gitprovider.gitlab_enabled"
+default = false
+
+[[inputs]]
+name = "gitlab_api_url"
+type = "string"
+label = "GitLab API URL"
+config_key = "gitprovider.gitlab_api_url"
+default = "https://gitlab.com/api/v4"
+
+[[inputs]]
+name = "gitlab_port"
+type = "integer"
+label = "GitLab MCP listen port"
+config_key = "gitprovider.gitlab_port"
+default = 18771
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "gitlab_registration_name"
+type = "string"
+label = "GitLab MCP registration name"
+config_key = "gitprovider.gitlab_registration_name"
+default = "git-provider-gitlab"
+
+[[inputs]]
+name = "gitlab_token"
+type = "secret"
+label = "GitLab token"
+exclusive_group = "gitlab_token_source"
+
+[[inputs]]
+name = "gitlab_token_file"
+type = "file"
+label = "File containing the GitLab token"
+exclusive_group = "gitlab_token_source"
+
+[[inputs]]
+name = "gitlab_token_env"
+type = "string"
+label = "Environment variable containing the GitLab token"
+config_key = "gitprovider.gitlab_token_env"
+exclusive_group = "gitlab_token_source"
+
+[[inputs]]
+name = "bitbucket_enabled"
+type = "boolean"
+label = "Use Bitbucket Data Center"
+config_key = "gitprovider.bitbucket_enabled"
+default = false
+
+[[inputs]]
+name = "bitbucket_url"
+type = "string"
+label = "Bitbucket Data Center URL"
+config_key = "gitprovider.bitbucket_url"
+
+[[inputs]]
+name = "bitbucket_port"
+type = "integer"
+label = "Bitbucket MCP listen port"
+config_key = "gitprovider.bitbucket_port"
+default = 18772
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "bitbucket_registration_name"
+type = "string"
+label = "Bitbucket MCP registration name"
+config_key = "gitprovider.bitbucket_registration_name"
+default = "git-provider-bitbucket"
+
+[[inputs]]
+name = "bitbucket_token"
+type = "secret"
+label = "Bitbucket token"
+exclusive_group = "bitbucket_token_source"
+
+[[inputs]]
+name = "bitbucket_token_file"
+type = "file"
+label = "File containing the Bitbucket token"
+exclusive_group = "bitbucket_token_source"
+
+[[inputs]]
+name = "bitbucket_token_env"
+type = "string"
+label = "Environment variable containing the Bitbucket token"
+config_key = "gitprovider.bitbucket_token_env"
+exclusive_group = "bitbucket_token_source"
+
+[[mcps]]
+name = "github"
+enabled_input = "github_enabled"
+registration_name_input = "github_registration_name"
+token_input = "github_token"
+token_file_input = "github_token_file"
+token_env_input = "github_token_env"
+token_header = "Authorization"
+token_prefix = "Bearer "
+runtime = "docker"
+transport = "streamable-http"
+image = "ghcr.io/github/github-mcp-server:v1.10.1"
+args = ["http", "--port", "8082"]
+container_port = 8082
+host_port_input = "github_port"
+endpoint_path = "/"
+env_inputs = { GITHUB_HOST = "github_host" }
+registration_timeout_ms = 30000
+
+[[mcps]]
+name = "gitlab"
+enabled_input = "gitlab_enabled"
+registration_name_input = "gitlab_registration_name"
+token_input = "gitlab_token"
+token_file_input = "gitlab_token_file"
+token_env_input = "gitlab_token_env"
+token_header = "Authorization"
+token_prefix = "Bearer "
+runtime = "docker"
+transport = "streamable-http"
+image = "zereight050/gitlab-mcp:2.1.69"
+container_port = 3002
+host_port_input = "gitlab_port"
+endpoint_path = "/mcp"
+env = { STREAMABLE_HTTP = "true", REMOTE_AUTHORIZATION = "true", HOST = "0.0.0.0", PORT = "3002" }
+env_inputs = { GITLAB_API_URL = "gitlab_api_url" }
+registration_timeout_ms = 30000
+
+[[mcps]]
+name = "bitbucket"
+enabled_input = "bitbucket_enabled"
+registration_name_input = "bitbucket_registration_name"
+token_input = "bitbucket_token"
+token_file_input = "bitbucket_token_file"
+token_env_input = "bitbucket_token_env"
+token_container_env = "BITBUCKET_TOKEN"
+runtime = "docker"
+transport = "streamable-http"
+image = "ghcr.io/n11techhub/mcp-bitbucket@sha256:a2a53b5cbc47789eac4289177d42f63a592a5f3ca21294373a6a90e5d346c4bc"
+container_port = 3001
+host_port_input = "bitbucket_port"
+endpoint_path = "/mcp"
+env = { ENABLE_HTTP_TRANSPORT = "true", MCP_HTTP_PORT = "3001", MCP_HTTP_ENDPOINT = "mcp" }
+env_inputs = { BITBUCKET_URL = "bitbucket_url" }
+registration_timeout_ms = 30000

@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
 type logsMsg struct {
@@ -13,13 +15,40 @@ type logsMsg struct {
 	err            error
 	session        uint64
 }
+type profileLogsBackend interface {
+	UIProfileLogs(context.Context, state.Key) (string, error)
+}
 type logPollMsg struct{ session uint64 }
 
 // openProfileLogs asks the existing service for a bounded, read-only snapshot.
 func (m *Model) openProfileLogs(p ProfileRow) tea.Cmd {
+	m.cancelLogFetch()
 	if reason := m.profileActionReason(p, "l"); reason != "" {
 		m.output = reason
 		return nil
+	}
+	if p.Profile != nil {
+		if p.Profile.ObservationStale {
+			m.logSession++
+			m.home.Modal = &modalState{Kind: "logs", Label: p.Name, Rows: []string{"Runtime observation is stale.", "Refresh the target status before viewing logs."}}
+			return nil
+		}
+		if p.Profile.RuntimeStatus != "running" {
+			label := p.Name
+			if label == "" {
+				label = p.Key.Package + " / " + p.Key.Target
+			}
+			message := "No MCP container has been created for this target. Configure this target, then use Start from its workspace before opening logs."
+			if p.Profile.RuntimeStatus == "missing" || p.Profile.RuntimeStatus == "exited" {
+				message = "No MCP container is currently running for this target. Use Start from its workspace before opening logs."
+			}
+			m.logSession++
+			m.logProfile = p.Key
+			m.logLabel = label
+			m.busy = false
+			m.home.Modal = &modalState{Kind: "logs", Label: label, Rows: strings.Split(message, "\n"), Follow: false}
+			return nil
+		}
 	}
 	key := p.Key
 	label := p.Name
@@ -31,14 +60,27 @@ func (m *Model) openProfileLogs(p ProfileRow) tea.Cmd {
 	m.logLabel = label
 	m.busy = true
 	m.action = "view logs"
-	m.home.Modal = nil
+	m.home.Modal = &modalState{Kind: "logs", Label: label, Rows: []string{"Loading logs…"}, Follow: true}
 	return m.fetchLogs(m.logSession)
 }
 
-func (m *Model) fetchLogs(session uint64) tea.Cmd {
-	backend, ctx, key, label := m.backend, m.ctx, m.logProfile, m.logLabel
+func (m *Model) fetchLogs(_ uint64) tea.Cmd {
+	m.cancelLogFetch()
+	// Each request gets its own session so a canceled, superseded request cannot
+	// be mistaken for the active request's failure after Follow resumes.
+	m.logSession++
+	session := m.logSession
+	backend, key, label := m.backend, m.logProfile, m.logLabel
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.logCancel = cancel
 	return func() tea.Msg {
-		content, err := backend.UIRun(ctx, "logs", key.Source, key.Package, "", key.Environment, key.Target)
+		var content string
+		var err error
+		if logs, ok := backend.(profileLogsBackend); ok {
+			content, err = logs.UIProfileLogs(ctx, key)
+		} else {
+			content, err = backend.UIRun(ctx, "logs", key.Source, key.Package, key.Profile, "", key.Environment, key.Target)
+		}
 		return logsMsg{label: label, content: content, err: err, session: session}
 	}
 }
@@ -51,19 +93,10 @@ func (m *Model) showLogs(msg logsMsg) tea.Cmd {
 	if msg.session != m.logSession {
 		return nil
 	}
+	m.logCancel = nil
 	m.busy = false
 	if msg.err != nil {
-		m.output = m.cleanOutput(msg.err.Error())
-		if m.home.Modal != nil && m.home.Modal.Kind == "logs" {
-			modal := m.home.Modal
-			modal.Follow = false
-			rows := modal.Rows
-			if len(rows) >= 2 && strings.HasPrefix(rows[0], "Failed to refresh logs: ") {
-				rows = rows[2:]
-			}
-			modal.Rows = append([]string{"Failed to refresh logs: " + m.output, ""}, rows...)
-			modal.Offset = 0
-		}
+		m.showOperationResult(operationMsg{origin: m.view, err: msg.err, failed: true, step: "logs", target: setupTargetLabel(m.logProfile)})
 		return nil
 	}
 	if m.home.Modal != nil && m.home.Modal.Kind == "logs" && !m.home.Modal.Follow {
@@ -103,6 +136,7 @@ func (m *Model) logKey(stroke string) tea.Cmd {
 	case "esc", "enter", "q":
 		m.home.Modal = nil
 		m.logSession++
+		m.cancelLogFetch()
 	case "f":
 		modal.Follow = !modal.Follow
 		if modal.Follow {
@@ -135,6 +169,13 @@ func (m *Model) logKey(stroke string) tea.Cmd {
 	return nil
 }
 
+func (m *Model) cancelLogFetch() {
+	if m.logCancel != nil {
+		m.logCancel()
+		m.logCancel = nil
+	}
+}
+
 func (m *Model) logMouse(msg tea.MouseMsg) tea.Cmd {
 	modal := m.home.Modal
 	if modal == nil || modal.Kind != "logs" {
@@ -158,6 +199,7 @@ func (m *Model) logMouse(msg tea.MouseMsg) tea.Cmd {
 			if h.Control == "log-close" && h.contains(mouse.X, mouse.Y) {
 				m.home.Modal = nil
 				m.logSession++
+				m.cancelLogFetch()
 				break
 			}
 		}
@@ -179,7 +221,13 @@ func (m *Model) logsOverlay(lines []string) []string {
 	box := []string{"┌" + fit(" Logs · "+modal.Label+" · latest 200 lines", w-2) + "┐"}
 	for i := 0; i < visible; i++ {
 		row := modal.Rows[modal.Offset+i]
-		box = append(box, "│"+fit(ansi.Cut(row, modal.Column, modal.Column+w-2), w-2)+"│")
+		textWidth := w - 2
+		bar := " "
+		if len(modal.Rows) > visible {
+			textWidth = w - 3
+			bar = scrollbarGlyph(modal.Offset, len(modal.Rows), visible, i)
+		}
+		box = append(box, "│"+fit(ansi.Cut(row, modal.Column, modal.Column+textWidth), textWidth)+bar+"│")
 	}
 	mode := "[F Pause]"
 	if !modal.Follow {

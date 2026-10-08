@@ -65,6 +65,39 @@ func TestCopilotCLIArgs(t *testing.T) {
 		t.Fatalf("%#v", last)
 	}
 }
+
+func TestCopilotCLIUsesCOPILOTHomeAndLeavesJSONConfigAsCLIManaged(t *testing.T) {
+	home := t.TempDir()
+	configRoot := filepath.Join(t.TempDir(), "copilot-home")
+	t.Setenv("COPILOT_HOME", configRoot)
+	e, err := ResolveEnvironment("copilot", "copilot-cli", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err = ApplyNativeConfigOverrides(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.ConfigPath != filepath.Join(configRoot, "mcp-config.json") {
+		t.Fatalf("COPILOT_HOME config path = %q", e.ConfigPath)
+	}
+	runner := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
+	a, err := For("copilot-cli", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range runner.calls {
+		if call.env["COPILOT_HOME"] != configRoot {
+			t.Fatalf("CLI invocation did not use COPILOT_HOME: %#v", call.env)
+		}
+	}
+	if _, err := os.Stat(e.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("adapter bypassed the official CLI and edited its managed config: %v", err)
+	}
+}
 func configFixture(t *testing.T, kind, body string) (Adapter, Environment) {
 	t.Helper()
 	e, err := ResolveEnvironment("agent", kind, t.TempDir())
@@ -113,6 +146,27 @@ func TestOpenCodeUpdatesExistingJSONAndJSONC(t *testing.T) {
 	m := server(t, v, "mcp", "local")
 	if m["url"] != reg.URL || m["type"] != "remote" || m["timeout"] != float64(30000) {
 		t.Fatalf("%v", v)
+	}
+}
+
+func TestHTTPRegistrationIncludesHeadersForOpenCodeClaudeAndGeneric(t *testing.T) {
+	for _, kind := range []string{"opencode", "claude", "generic"} {
+		t.Run(kind, func(t *testing.T) {
+			adapter, _ := For(kind, nil)
+			jsonConfig, ok := adapter.(jsonAdapter)
+			if !ok {
+				t.Fatalf("%s adapter is not JSON-backed", kind)
+			}
+			registration := Registration{
+				Name: "git-provider-github", URL: "http://127.0.0.1:8080/mcp", Transport: "http",
+				Headers: map[string]string{"Authorization": "Bearer test-token"},
+			}
+			value := jsonConfig.value(registration)
+			headers, ok := value["headers"].(map[string]string)
+			if !ok || headers["Authorization"] != "Bearer test-token" {
+				t.Fatalf("registration headers were not serialized: %#v", value)
+			}
+		})
 	}
 }
 
@@ -237,14 +291,66 @@ func TestMalformedConfigRemainsUnchanged(t *testing.T) {
 		}
 	}
 }
-func TestIntellijAIAssistantWrongJSONAdapterIsUnavailable(t *testing.T) {
+func TestIntellijAIAssistantJSONAdapterPreservesOtherServers(t *testing.T) {
 	for _, kind := range []string{"intellij", "intellij-ai-assistant"} {
-		if _, err := For(kind, nil); err == nil || !strings.Contains(err.Error(), "XML") {
-			t.Fatalf("%s still advertises an unverified JSON writer: %v", kind, err)
+		a, e := configFixture(t, kind, "{\"theme\":\"dark\",\"mcpServers\":{\"other\":{\"url\":\"http://other\"}}}")
+		reg := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "http"}
+		if err := a.Register(context.Background(), e, reg); err != nil {
+			t.Fatalf("%s register: %v", kind, err)
+		}
+		v := readJSON(t, e.ConfigPath)
+		if v["theme"] != "dark" || server(t, v, "mcpServers", "local")["url"] != reg.URL || server(t, v, "mcpServers", "other")["url"] != "http://other" {
+			t.Fatalf("%s changed unrelated config: %+v", kind, v)
+		}
+		e.Owned = map[string]Registration{"local": reg}
+		if err := a.Unregister(context.Background(), e, "local"); err != nil {
+			t.Fatalf("%s unregister: %v", kind, err)
+		}
+		v = readJSON(t, e.ConfigPath)
+		if v["theme"] != "dark" || v["mcpServers"].(map[string]any)["local"] != nil || server(t, v, "mcpServers", "other")["url"] != "http://other" {
+			t.Fatalf("%s removed unrelated configuration: %+v", kind, v)
 		}
 	}
 }
+
+func TestJetBrainsAIAssistantCreatesDefaultMCPJSONWhenMissing(t *testing.T) {
+	a, e := configFixture(t, "intellij", "")
+	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := server(t, readJSON(t, e.ConfigPath), "mcpServers", "local")["url"]; got != "http://localhost:1/mcp" {
+		t.Fatalf("new JetBrains configuration URL = %v", got)
+	}
+}
+
+func TestJetBrainsAIAssistantHonorsExplicitConfigPath(t *testing.T) {
+	a, e := configFixture(t, "intellij", "{\"mcpServers\":{}}")
+	other := filepath.Join(t.TempDir(), "registry-selected", "mcp.json")
+	e.ConfigPath = other
+	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := server(t, readJSON(t, other), "mcpServers", "local")["url"]; got != "http://localhost:1/mcp" {
+		t.Fatalf("explicit JetBrains config path not used: %v", got)
+	}
+	if readJSON(t, filepath.Join(e.Home, ".ai", "mcp", "mcp.json"))["mcpServers"].(map[string]any)["local"] != nil {
+		t.Fatal("adapter wrote default path when explicit path was selected")
+	}
+}
+
+func TestResolveJetBrainsAIAssistantDefaultMCPPath(t *testing.T) {
+	home := t.TempDir()
+	e, err := ResolveEnvironment("intellij", "intellij", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".ai", "mcp", "mcp.json")
+	if e.ConfigPath != want {
+		t.Fatalf("JetBrains AI Assistant path = %q, want %q", e.ConfigPath, want)
+	}
+}
 func TestCopilotIntellijUsesServers(t *testing.T) {
+	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-existing"))
 	a, e := configFixture(t, "copilot-intellij", `{}`)
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
 		t.Fatal(err)
@@ -252,9 +358,31 @@ func TestCopilotIntellijUsesServers(t *testing.T) {
 	if readJSON(t, e.ConfigPath)["servers"] == nil {
 		t.Fatal("wrong config shape")
 	}
+	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-missing"))
 	a, e = configFixture(t, "copilot-intellij", "")
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err == nil || !strings.Contains(err.Error(), "Add MCP Tools") {
-		t.Fatalf("missing prerequisite: %v", err)
+	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
+		t.Fatalf("registration should initialize a missing MCP config: %v", err)
+	}
+	if got := readJSON(t, e.ConfigPath)["servers"].(map[string]any)["local"].(map[string]any)["url"]; got != "http://localhost:1" {
+		t.Fatalf("new Copilot in JetBrains config has wrong server URL: %v", got)
+	}
+}
+
+func TestResolveWindowsCopilotJetBrainsConfigUsesRoamingAppData(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(name string) string {
+		if name == "APPDATA" {
+			return filepath.Join(home, "Roaming")
+		}
+		return ""
+	}
+	e, err := resolveEnvironment("copilot-intellij", "copilot-intellij", home, "windows", getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "Roaming", "github-copilot", "intellij", "mcp.json")
+	if e.ConfigPath != want {
+		t.Fatalf("Windows Copilot for JetBrains config = %q, want %q", e.ConfigPath, want)
 	}
 }
 

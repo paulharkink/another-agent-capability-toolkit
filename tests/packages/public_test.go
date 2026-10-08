@@ -74,7 +74,7 @@ func TestClusterInspectorRejectsBothCredentialMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := map[string]any{"api_server": "https://cluster.example", "token": "private", "kubeconfig": "/tmp/config"}
+	values := map[string]any{"registration_name": "cluster-inspector-test", "api_server": "https://cluster.example", "token": "private", "kubeconfig": "/tmp/config"}
 	if err := forms.Validate(p.Inputs, values); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("public package accepted incompatible credentials: %v", err)
 	}
@@ -178,6 +178,57 @@ func TestFindSessionReleaseResources(t *testing.T) {
 			t.Fatalf("missing native launcher documentation %s", binary)
 		}
 	}
+}
+
+func TestGitProviderInspectorDeclaresOptionalProviderServers(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "git-provider"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ID != "git-provider" || p.Name != "Git Provider Inspector" || p.Skill.Name != "git-provider" {
+		t.Fatalf("unexpected package identity: id=%q name=%q skill=%q", p.ID, p.Name, p.Skill.Name)
+	}
+	profiles := p.MCPProfiles()
+	if len(profiles) != 3 {
+		t.Fatalf("want three provider MCP profiles, got %d", len(profiles))
+	}
+	want := []string{"github", "gitlab", "bitbucket"}
+	for i, profile := range profiles {
+		if profile.Name != want[i] {
+			t.Fatalf("profile %d = %q, want %q", i, profile.Name, want[i])
+		}
+		if profile.EnabledInput == "" || profile.RegistrationNameInput == "" {
+			t.Fatalf("%s must be independently optional and have an editable registration name: %+v", profile.Name, profile)
+		}
+		if profile.Runtime != "docker" {
+			t.Fatalf("%s should launch as a local Docker MCP server, got runtime %q", profile.Name, profile.Runtime)
+		}
+		if profile.TokenInput == "" || profile.TokenFileInput == "" || profile.TokenEnvInput == "" {
+			t.Fatalf("%s must accept a raw token, token file, or environment variable", profile.Name)
+		}
+		for _, inputName := range []string{profile.TokenInput, profile.TokenFileInput, profile.TokenEnvInput} {
+			input, ok := findInput(p.Inputs, inputName)
+			if !ok {
+				t.Fatalf("%s refers to missing token input %q", profile.Name, inputName)
+			}
+			if input.Default != nil && input.Default != "" {
+				t.Fatalf("%s token input %q must not contain a default secret", profile.Name, inputName)
+			}
+		}
+	}
+	bitbucketURL, ok := findInput(p.Inputs, "bitbucket_url")
+	if !ok || bitbucketURL.Default != nil && bitbucketURL.Default != "" {
+		t.Fatalf("Bitbucket URL must be configurable without a package-wide default: %+v", bitbucketURL)
+	}
+}
+
+func findInput(inputs []catalog.Input, name string) (catalog.Input, bool) {
+	for _, input := range inputs {
+		if input.Name == name {
+			return input, true
+		}
+	}
+	return catalog.Input{}, false
 }
 
 func TestAuthenticationInputsAreSecret(t *testing.T) {

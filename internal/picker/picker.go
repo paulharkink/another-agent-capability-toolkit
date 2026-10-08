@@ -12,6 +12,7 @@ import (
 
 var ErrCancelled = errors.New("selection cancelled")
 var ErrUnavailable = errors.New("native picker unavailable")
+var ErrNotSubmitted = errors.New("picker has not been submitted")
 
 type NativeDialog func(context.Context, string, string) (string, error)
 type Picker struct {
@@ -21,6 +22,37 @@ type Picker struct {
 }
 
 var dialogSlot = make(chan struct{}, 1)
+
+// TryNative opens only the operating-system dialog. It never starts a terminal UI.
+func TryNative(ctx context.Context, kind, initial string) (string, error) {
+	return tryNative(ctx, kind, initial, Native)
+}
+
+func tryNative(ctx context.Context, kind, initial string, native NativeDialog) (string, error) {
+	if kind != "file" && kind != "directory" {
+		return "", fmt.Errorf("unsupported picker kind %q", kind)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	select {
+	case dialogSlot <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-dialogSlot }()
+	path, err := native(ctx, kind, initial)
+	if errors.Is(err, ErrCancelled) {
+		return "", ErrCancelled
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		return "", err
+	}
+	return selectedPath(path, kind, initial)
+}
 
 func Select(ctx context.Context, kind, initial string) (string, error) {
 	return (Picker{Native: Native, Reader: os.Stdin, Writer: os.Stdout}).Select(ctx, kind, initial)

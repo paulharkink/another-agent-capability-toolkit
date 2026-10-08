@@ -37,6 +37,12 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	return New(src, s, Options{}), env, s
 }
 
+func isolateUXUserHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 type fakeRuntime struct{ starts int }
 
 type failingRuntime struct{ fakeRuntime }
@@ -97,9 +103,212 @@ func TestExternalURLDoesNotStartDocker(t *testing.T) {
 	if rows[1].Component != "mcp" || rows[1].TimeoutMS != 60000 {
 		t.Fatalf("MCP registration timeout: %+v", rows)
 	}
+	if !rows[1].ExternalRegistration {
+		t.Fatalf("explicit ExternalURL registration lost its provenance: %+v", rows[1])
+	}
 	_, e = svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestInstallBindsEveryNamedMCPToItsOwnExternalEndpoint(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{
+		{Name: "primary", Transport: "streamable-http"},
+		{Name: "secondary", Transport: "streamable-http"},
+	}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	result, err := svc.Install(context.Background(), InstallRequest{
+		Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{
+			"primary": "http://primary.invalid/mcp", "secondary": "http://secondary.invalid/mcp",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, row := range rows {
+		if row.Component == "mcp" {
+			seen[row.Key.MCP] = row.URL
+		}
+	}
+	if seen["primary"] != "http://primary.invalid/mcp" || seen["secondary"] != "http://secondary.invalid/mcp" || len(result.Errors) != 0 {
+		t.Fatalf("MCP endpoints were not independently bound: result=%+v rows=%+v", result, rows)
+	}
+}
+
+func TestMultiMCPPartialFailureReportsOnlySuccessfulChildRows(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http"}, {Name: "beta", Transport: "streamable-http"}}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	staleBeta := state.Installation{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "beta"}, AgentID: agent.ID, AgentHome: agent.Home, AgentKind: agent.Kind, Component: "mcp", Destination: agent.ConfigPath, RegistrationName: "demo-beta", URL: "http://stale.invalid/mcp"}
+	if err := store.Record(staleBeta); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.RecordInstallation = func(row state.Installation) error {
+		if row.Key.MCP == "beta" {
+			return errors.New("beta ledger failure")
+		}
+		return store.Record(row)
+	}
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://alpha.invalid/mcp", "beta": "http://beta.invalid/mcp"}})
+	if err == nil {
+		t.Fatal("expected second child registration to fail")
+	}
+	if !strings.Contains(err.Error(), "MCP beta") || !strings.Contains(result.Target, "MCP beta") || result.Step != "register" {
+		t.Fatalf("child failure lost target/step detail: target=%q step=%q err=%v", result.Target, result.Step, err)
+	}
+	var changed []string
+	for _, row := range result.Changes {
+		if row.Component == "mcp" {
+			changed = append(changed, row.Key.MCP)
+		}
+	}
+	if len(changed) != 1 || changed[0] != "alpha" {
+		t.Fatalf("partial result included unsuccessful/stale sibling: changed=%v result=%+v", changed, result)
+	}
+}
+
+func TestMultiMCPChangesExcludeStaleRowsFromOtherConfigPath(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http"}}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "current.json")
+	stale := state.Installation{Key: state.Key{Source: "fixture", Package: "demo", Target: "default", MCP: "alpha"}, AgentID: agent.ID, AgentHome: agent.Home, AgentKind: agent.Kind, Component: "mcp", Destination: filepath.Join(agent.Home, "old.json"), RegistrationName: "demo-alpha", URL: "http://old.invalid/mcp"}
+	if err := store.Record(stale); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURLs: map[string]string{"alpha": "http://new.invalid/mcp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range result.Changes {
+		if row.Component == "mcp" && row.Destination != agent.ConfigPath {
+			t.Fatalf("untouched old config path reported as applied: %+v", result.Changes)
+		}
+	}
+}
+
+type keyedMCPRuntime struct {
+	starts []state.Key
+	stops  []state.Key
+}
+
+func (r *keyedMCPRuntime) Start(_ context.Context, key state.Key, _ mcp.RunSpec) (mcp.Instance, error) {
+	r.starts = append(r.starts, key)
+	return mcp.Instance{Key: key, URL: "http://local-" + key.MCP + ".example/mcp"}, nil
+}
+func (r *keyedMCPRuntime) Stop(_ context.Context, key state.Key) error {
+	r.stops = append(r.stops, key)
+	return nil
+}
+func (*keyedMCPRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (*keyedMCPRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func TestInstallCanAttachOneMCPExternallyAndStartItsLocalSibling(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{
+		{Name: "external", Transport: "streamable-http"},
+		{Name: "local", Transport: "streamable-http"},
+	}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	runtime := &keyedMCPRuntime{}
+	svc.Options.Runtime = runtime
+	_, err := svc.Install(context.Background(), InstallRequest{
+		Package: "demo", Agents: []agents.Environment{agent},
+		ExternalURLs: map[string]string{"external": "http://foreign.example/mcp"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoints := map[string]string{}
+	for _, row := range rows {
+		if row.Component == "mcp" {
+			endpoints[row.Key.MCP] = row.URL
+			if row.ExternalRegistration != (row.Key.MCP == "external") {
+				t.Errorf("external provenance for %s = %v", row.Key.MCP, row.ExternalRegistration)
+			}
+		}
+	}
+	if endpoints["external"] != "http://foreign.example/mcp" || endpoints["local"] != "http://local-local.example/mcp" || len(runtime.starts) != 1 || runtime.starts[0].MCP != "local" {
+		t.Fatalf("mixed endpoints were not kept child-specific: endpoints=%v starts=%+v", endpoints, runtime.starts)
+	}
+}
+
+func TestSingleListMCPStartAndStopUseNamedChildIdentity(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "primary", Transport: "streamable-http"}}
+	runtime := &keyedMCPRuntime{}
+	svc.Options.Runtime = runtime
+	if _, err := svc.MCP(context.Background(), MCPRequest{Action: "start", Package: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.starts) != 1 || runtime.starts[0].MCP != "primary" {
+		t.Fatalf("single list MCP start used wrong key: %+v", runtime.starts)
+	}
+	if _, err := svc.MCP(context.Background(), MCPRequest{Action: "stop", Package: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.stops) != 1 || runtime.stops[0].MCP != "primary" {
+		t.Fatalf("single list MCP stop used wrong key: %+v", runtime.stops)
+	}
+}
+
+func TestInstallDoesNotRequireHiddenConditionalInput(t *testing.T) {
+	svc, agent, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "mode", Type: "string", Default: "basic"},
+		{Name: "secret", Type: "string", Required: true, VisibleWhen: map[string]any{"mode": "advanced"}},
+	}
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}}); err != nil {
+		t.Fatalf("hidden required input blocked install: %v", err)
+	}
+}
+
+func TestExternalCapabilityAttachDoesNotRunLocalMCPAuthOrRuntime(t *testing.T) {
+	svc, agent, _ := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}}}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret", Required: false, ConfigKey: "service.token"}}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	executor := &countingPrepareExecutor{}
+	svc.Options.Runner = executor
+	runtime := &changedRuntime{}
+	svc.Options.Runtime = runtime
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err != nil {
+		t.Fatalf("external attach failed: %v", err)
+	}
+	if executor.calls != 0 || runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("external attach ran local MCP setup: auth=%d starts=%d stops=%d", executor.calls, runtime.starts, runtime.stops)
+	}
+}
+
+func TestExternalCapabilityAttachStillRequiresDeclaredSkillInputs(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "skill_output", Type: "string", Required: true, ConfigKey: "skill.output"}}
+	agent.Kind = "generic"
+	agent.ConfigPath = filepath.Join(agent.Home, "mcp.json")
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{agent}, ExternalURL: "http://foreign.example/mcp"}); err == nil || !strings.Contains(err.Error(), "skill_output") {
+		t.Fatalf("required manifest input was skipped for external attach: %v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("failed validation caused capability effects: %+v, %v", rows, err)
 	}
 }
 
@@ -299,16 +508,16 @@ func TestSourceRegistryFailureStillReportsAppliedRegistration(t *testing.T) {
 	}
 }
 
-func TestInstallRejectsUnsupportedMCPAdapterBeforeRuntimeStart(t *testing.T) {
+func TestInstallRejectsUnsupportedHermesMCPAdapterBeforeRuntimeStart(t *testing.T) {
 	svc, env, store := fixture(t)
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	env.Kind = "intellij"
+	env.Kind = "hermes"
 	_, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
-	if err == nil || !strings.Contains(err.Error(), "JetBrains") {
-		t.Fatalf("unsupported adapter accepted: %v", err)
+	if err == nil || !strings.Contains(err.Error(), `unsupported MCP agent kind "hermes"`) {
+		t.Fatalf("unsupported Hermes MCP adapter accepted or misreported: %v", err)
 	}
 	if runtime.starts != 0 {
 		t.Fatalf("unsupported destination started Docker %d time(s)", runtime.starts)
@@ -353,11 +562,72 @@ func TestUninstallMCPPreservesOtherHome(t *testing.T) {
 		t.Fatal(rows)
 	}
 }
-func TestRegistrationNamesAreUnambiguous(t *testing.T) {
+func TestLegacyRegistrationNameIsReadable(t *testing.T) {
 	a := state.Key{Source: "same", Package: "foo", Environment: "dev-west", Target: "prod"}
-	b := state.Key{Source: "same", Package: "foo-dev", Environment: "west", Target: "prod"}
-	if registrationName(a) == registrationName(b) {
-		t.Fatal(registrationName(a))
+	if got := registrationName(a); got != "foo-dev-west-prod" {
+		t.Fatalf("legacy registration name = %q", got)
+	}
+}
+
+func TestDeclaredRegistrationNameUsesInputVerbatim(t *testing.T) {
+	definition := catalog.MCP{Name: "inspector", RegistrationNameInput: "registration"}
+	got, err := declaredRegistrationName(definition, state.Key{Package: "ignored"}, map[string]any{"registration": "cluster-inspector-target-a"})
+	if err != nil || got != "cluster-inspector-target-a" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := declaredRegistrationName(definition, state.Key{}, map[string]any{"registration": "-bad"}); err == nil {
+		t.Fatal("invalid MCP CLI name accepted")
+	}
+}
+
+func TestRegistrationRenameFailureRemovesOldOwnedNameAndReportsPartialState(t *testing.T) {
+	svc, _, store := fixture(t)
+	home := filepath.Join(t.TempDir(), "opencode-home")
+	env, err := agents.ResolveEnvironment("opencode", "opencode", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.ConfigPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.ConfigPath, []byte(`{"mcp":{"old-name":{"type":"remote","url":"https://old.invalid/mcp","enabled":true,"oauth":false,"timeout":30000}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Inputs = []catalog.Input{{Name: "registration", Type: "string", Default: "new-name"}}
+	pkg.MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationNameInput: "registration"}
+	key := state.Key{Source: svc.Source.ID, Package: pkg.ID, Target: "default"}
+	old := state.Installation{Key: key, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, RegistrationName: "old-name", URL: "https://old.invalid/mcp", Transport: "streamable-http", TimeoutMS: 30000}
+	if err := store.Record(old); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.RecordInstallation = func(state.Installation) error { return errors.New("ledger write failed") }
+	result, err := svc.Install(context.Background(), InstallRequest{Package: pkg.ID, Agents: []agents.Environment{env}, ExternalURL: "https://new.invalid/mcp"})
+	if err == nil || !strings.Contains(err.Error(), "ledger write failed") {
+		t.Fatalf("expected truthful new-name failure, got result=%+v err=%v", result, err)
+	}
+	content, readErr := os.ReadFile(env.ConfigPath)
+	if readErr != nil || strings.Contains(string(content), "old-name") || strings.Contains(string(content), "new-name") {
+		t.Fatalf("old name should be removed and failed new write restored: %s, %v", content, readErr)
+	}
+	rows, readErr := store.Installations()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, row := range rows {
+		if row.Component == "mcp" && row.RegistrationName == "old-name" {
+			t.Fatalf("old ledger row survived confirmed removal: %+v", row)
+		}
+		if row.Component == "mcp" && row.RegistrationName == "new-name" {
+			t.Fatalf("failed new registration was recorded: %+v", row)
+		}
+	}
+	foundRemoval := false
+	for _, change := range result.Changes {
+		foundRemoval = foundRemoval || change.Component == "mcp" && change.RegistrationName == "old-name"
+	}
+	if !foundRemoval {
+		t.Fatalf("result should report the confirmed old-name removal: %+v", result.Changes)
 	}
 }
 
@@ -371,7 +641,7 @@ func TestUIUninstallUsesPersistedCustomAgentHome(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "generic:work", "", "default")
+	_, e = svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "generic:work", "", "default")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -425,7 +695,7 @@ func TestUISetDefaultAgentsRejectsUnsupportedMCPDestinationsWithoutChangingSetti
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(path)
-	for _, ids := range [][]string{{"all"}, {"intellij"}, {"codex", "no-such-agent"}} {
+	for _, ids := range [][]string{{"all"}, {"generic"}, {"hermes"}, {"codex", "no-such-agent"}} {
 		if err := svc.UISetDefaultAgents(context.Background(), ids); err == nil {
 			t.Fatalf("accepted %#v", ids)
 		}
@@ -436,19 +706,21 @@ func TestUISetDefaultAgentsRejectsUnsupportedMCPDestinationsWithoutChangingSetti
 	}
 }
 
-func TestUIAgentDefaultOptionsExcludesAllAndUnsupportedAdapters(t *testing.T) {
+func TestUIAgentDefaultOptionsExcludesAllAndManualOrUnsupportedAdapters(t *testing.T) {
 	svc, _, _ := fixture(t)
 	ids, err := svc.UIAgentDefaultOptions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"codex", "claude", "opencode"} {
+	for _, want := range []string{"codex", "claude", "opencode", "intellij"} {
 		if !slices.Contains(ids, want) {
 			t.Fatalf("missing %s: %#v", want, ids)
 		}
 	}
-	if slices.Contains(ids, "all") || slices.Contains(ids, "intellij") {
-		t.Fatalf("unsupported default option exposed: %#v", ids)
+	for _, excluded := range []string{"all", "generic", "hermes"} {
+		if slices.Contains(ids, excluded) {
+			t.Fatalf("manual or unsupported default option %q exposed: %#v", excluded, ids)
+		}
 	}
 }
 

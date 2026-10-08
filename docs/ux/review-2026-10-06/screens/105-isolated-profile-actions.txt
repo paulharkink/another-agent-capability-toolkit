@@ -1,0 +1,42 @@
+╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
+╠Capabilities                                                                       ╦► Selected capability · Cluster Inspector                                           ╣
+║> Installed · Cluster Inspector  skill + MCP                                       ║── Capability                                                                       ║
+║› Not installed · Grafana Inspector  skill + MCP                                   ║› Configure / install Cluster Inspector…                                            ║
+║› Not installed · Azure Inspector  skill + MCP                                     ║› View capability details                                                           ║
+║› Not installed · Forgejo  skill + MCP                                             ║── Related MCP profiles                                                             ║
+║› Not installed · Find Session  skill                                              ║> MCP · cluster-inspector  external                                                 ║
+║› Not installed · Non Interactive Ready Planning  skill                            ║── Installation · AACT records: Installed                                           ║
+║› Not installed · Local Git Repository Map  skill                                  ║· Skill: opencode                                                                   ║
+║› Not installed · skills-source-management  skill                                   ║· MCP registration: opencode                                                        ║
+║› Not installed · clean-up  skill                                                  ║                                                                                    ║
+║› Not installed · kinfer-platform  skill            ┌ Cluster Inspector · cluster-inspector                        ┐                                                    ║
+║› Not installed · kubedock-docker  skill            │× Start… — disabled: Runtime owner is unknown                 │                                                    ║
+║› Not installed · kubedock-nmap  skill              │× Stop… — disabled: Runtime owner is unknown                  │                                                    ║
+║› Not installed · local-gitops-triage  skill        │× Authenticate… — disabled: Runtime action unavailable: this …│                                                    ║
+║› Not installed · local-live-cluster-diagnostics  sk│× Edit parameters… — disabled: runtime belongs to another ins…│                                                    ║
+║› Not installed · vault-backed-trigger-delivery  ski│> Configure agent registrations…                              │                                                    ║
+║› Not installed · cluster-inspector · local-agent-sk│› Remove agent registrations…                                 │                                                    ║
+║› Not installed · grafana-inspector · local-agent-sk│› Check connection                                            │                                                    ║
+║                                                    │› Refresh observation                                         │                                                    ║
+║                                                    │× View logs — disabled: Runtime action unavailable: this prof…│                                                    ║
+║                                                    │› View details                                                │                                                    ║
+║                                                    │› Back                                                        │                                                    ║
+║                                                    │ ↑↓ Select · Enter Open · Esc Back                            │                                                    ║
+║                                                    └──────────────────────────────────────────────────────────────┘                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║                                                                                   ║                                                                                    ║
+║1/17                                                                               ║3/3                                                                                 ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║sample-skills / cluster-inspector / sample-env / target-a · cluster-inspector · http://127.0.0.1:1/mcp · owner: unknown                                                               ║
+║                                                                                                                                                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh                                                                                                        ║
+║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                                                                                           ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

@@ -16,24 +16,32 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 36})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
-		PackageName: "Cluster Inspector",
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
+		PackageName:    "Cluster Inspector",
+		MCP:            true,
+		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},
+		HasManifestUI:  true,
+		Sections: []catalog.Section{
+			{ID: "connection", Title: "Connection", Fields: []string{"host", "local_port", "api_server"}},
+			{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}},
+			{ID: "databases", Title: "Databases", Fields: []string{"connections"}},
+		},
 		Inputs: []viewmodel.SetupInput{
-			{Definition: catalog.Input{Name: "host", Label: "Host", Type: "string"}, Value: "127.0.0.1", HasValue: true, Editable: true},
-			{Definition: catalog.Input{Name: "local_port", Label: "Local port", Type: "integer"}, Value: int64(8765), HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "host", Label: "Listen address", Type: "string"}, Value: "127.0.0.1", HasValue: true, Editable: true},
+			{Definition: catalog.Input{Name: "local_port", Label: "Listen port", Type: "integer"}, Value: int64(8765), HasValue: true, Editable: true},
 			{Definition: catalog.Input{Name: "api_server", Label: "API server", Type: "string"}, Value: "https://cluster.test", HasValue: true, Editable: true},
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Value: "saved-token", HasValue: true, Provenance: "saved", Editable: true},
-			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
+			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Hint: "Import source; not a live path · AACT uses managed credential material at runtime", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
 			{Definition: catalog.Input{Name: "connections", Label: "Read-only database queries", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}}}, Editable: true},
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	})
 
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Setup sections") {
-		t.Fatalf("section navigation heading should match the mock:\n%s", view)
+	if strings.Contains(view, "L3") || strings.Contains(view, "L4") || strings.Contains(view, "FOCUSED") || !strings.Contains(view, "Sections") {
+		t.Fatalf("section navigation heading should use its configured title:\n%s", view)
 	}
-	sections := []string{"Connection", "Authentication", "Databases", "Destinations"}
+	sections := []string{"Connection", "Authentication", "Databases", "Agents"}
 	leftItems := []string{}
 	for _, line := range strings.Split(view, "\n") {
 		left, _, found := strings.Cut(line, "│")
@@ -50,22 +58,24 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	if strings.Join(leftItems, ",") != strings.Join(sections, ",") {
 		t.Fatalf("setup section list order should be %v, got %v:\n%s", sections, leftItems, view)
 	}
-	if !strings.Contains(view, "> Authentication") {
-		t.Fatalf("Cluster Inspector setup should initially select Authentication:\n%s", view)
+	if !strings.Contains(view, "> Connection") {
+		t.Fatalf("Cluster Inspector setup should initially select the first declared section:\n%s", view)
 	}
-	setupKey(m, tea.KeyUp, "")
+	setupKey(m, tea.KeyRight, "") // Open the first declared Connection section.
 	view = m.View().Content
 	for _, label := range []string{"Listen address", "Listen port"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("Connection detail missing mock label %q:\n%s", label, view)
 		}
 	}
+	setupKey(m, tea.KeyLeft, "")
 	setupKey(m, tea.KeyDown, "")
+	setupKey(m, tea.KeyRight, "") // Authentication.
 	view = m.View().Content
 	if strings.Contains(view, "Inputs") {
 		t.Fatalf("Cluster Inspector mock layout should not expose a generic Inputs section:\n%s", view)
 	}
-	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a path to switch to kubeconfig") {
+	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a value to switch to Source kubeconfig") || !strings.Contains(view, "Import source; not a live path") {
 		t.Fatalf("authentication details should identify the active method and how to switch methods:\n%s", view)
 	}
 }
@@ -93,14 +103,18 @@ func TestClusterAuthWithNoValueDoesNotClaimASelectedMethod(t *testing.T) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "cluster-inspector"},
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector"},
+		MCP:            true,
+		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Editable: true},
-			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
+			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Hint: "Import source; not a live path · AACT uses managed credential material at runtime", Type: "file", ExclusiveGroup: "auth"}, Editable: true},
 		},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 	})
 	view := m.View().Content
-	if strings.Contains(view, "switch to Token") || strings.Contains(view, "switch to kubeconfig") || !strings.Contains(view, "Enter a Token") || !strings.Contains(view, "Enter a source kubeconfig path") {
+	if strings.Contains(view, "switch to Token") || strings.Contains(view, "switch to Source kubeconfig") || !strings.Contains(view, "Enter a value for Token") || !strings.Contains(view, "Enter a value for Source kubeconfig") || !strings.Contains(view, "Import source") {
 		t.Fatalf("empty authentication methods should invite a choice, not imply one is active:\n%s", view)
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -108,7 +122,7 @@ func TestClusterAuthWithNoValueDoesNotClaimASelectedMethod(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: 't', Text: "test-token"})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view = m.View().Content
-	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a path to switch to kubeconfig") {
+	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a value to switch to Source kubeconfig") {
 		t.Fatalf("authentication cues did not react to typing a token:\n%s", view)
 	}
 }
@@ -118,14 +132,18 @@ func TestEmptySavedKubeconfigDoesNotLookConfigured(t *testing.T) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key: state.Key{Source: "team-source", Package: "cluster-inspector"},
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector"},
+		MCP:            true,
+		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},
 		Inputs: []viewmodel.SetupInput{
 			{Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "auth"}, Editable: true},
-			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "auth"}, HasValue: true, Value: "", Provenance: "saved", Editable: true},
+			{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Hint: "Import source; not a live path · AACT uses managed credential material at runtime", Type: "file", ExclusiveGroup: "auth"}, HasValue: true, Value: "", Provenance: "saved", Editable: true},
 		},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token", "kubeconfig"}}},
 	})
 	view := ansi.Strip(m.View().Content)
-	if strings.Contains(view, "Source kubeconfig [saved]") || !strings.Contains(view, "Enter a source kubeconfig path") {
+	if strings.Contains(view, "Source kubeconfig [saved]") || !strings.Contains(view, "Enter a value for Source kubeconfig") || !strings.Contains(view, "Import source") {
 		t.Fatalf("blank saved kubeconfig should appear as an empty method:\n%s", view)
 	}
 }

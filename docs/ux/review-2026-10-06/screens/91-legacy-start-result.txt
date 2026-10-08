@@ -1,0 +1,42 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║Edit package inputs (1/14)                                                                                                                                              ║
+║                                                                                                                                                                        ║
+║> Local port: 18770                                                                                                                                                     ║
+║  Host: 127.0.0.1                                                                                                                                                       ║
+║  Api server *: https://api.cluster.example.test:6443                                                                                                                     ║
+║  Token:                                                                                                                                                                ║
+║  Source kubeconfig:                                                                                                                                                    ║
+║  Connections: 0 items                                                                                                                                                  ║
+║  Ca file: /home/user/sources/sample-env/sample-env/cluster-inspector/sample-root-ca.pem                                                                                 ║
+║  Ca data:                                                                                                                                                              ║
+║  Insecure skip tls verify:                                                                                                                                             ║
+║  Verify x509 strict: false                                                                                                                                             ║
+║  Tekton default namespace: openshift-pipelines                                                                                                                         ║
+║  Tekton branch selector key:                                                                                                                                           ║
+║  Tekton repository selector key:                                                                                                                                       ║
+║  Tekton repository context hook:                                                                                                                                       ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║                                                                                                                                                                        ║
+║[ Save ]  [ Cancel ]                                                                                                                                                    ║
+║Tab/↑↓ field · Enter edit · ←→ choice · Space toggle                                                                                                                    ║
+║Ctrl+S save · Esc cancel                                                                                                                                                ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
