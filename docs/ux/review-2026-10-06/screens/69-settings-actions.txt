@@ -1,9 +1,9 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ║ Settings                                                                                                                                                               ║
-║> Environment root: /home/pharkink/sources/dso-skills/environments                                                                                                      ║
+║> Environment root: /home/user/sources/sample-skills/environments                                                                                                      ║
 ║── Default named agents for new MCP installations                                                                                                                       ║
 ║›   [ ] Codex                                                                                                                                                           ║
 ║›   [ ] OpenCode                                                                                                                                                        ║
@@ -16,11 +16,11 @@
 ║· Docker backend: [ Select backend — disabled: backend preference service unavailable ]                                                                                 ║
 ║· Resolved backend: unavailable from service                                                                                                                            ║
 ║· [ Check backend — disabled: backend check se┌ Actions                                                                 ┐                                               ║
-║· Source: dso-skills                          │> Edit environment root                                                  │                                               ║
-║· Checkout: /home/pharkink/sources/dso-skills │› Default named agents                                                   │                                               ║
+║· Source: sample-skills                          │> Edit environment root                                                  │                                               ║
+║· Checkout: /home/user/sources/sample-skills │› Default named agents                                                   │                                               ║
 ║· Known checkouts: unavailable from service   │› Docker backend — disabled: service support pending			 │                                               ║
 ║· [ View known checkouts… — disabled: checkout│› Back                                                                   │                                               ║
-║· State: /home/pharkink/.local/state/agent-ski│ ↑↓ Select · Enter Open · Esc Back                                       │                                               ║
+║· State: /home/user/.local/state/agent-ski│ ↑↓ Select · Enter Open · Esc Back                                       │                                               ║
 ║· Platform: linux / amd64                     └─────────────────────────────────────────────────────────────────────────┘                                               ║
 ║                                                                                                                                                                        ║
 ║                                                                                                                                                                        ║

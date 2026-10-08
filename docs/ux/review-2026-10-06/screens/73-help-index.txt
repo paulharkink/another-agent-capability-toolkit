@@ -1,6 +1,6 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ║ Help                                                                                                                                                                   ║
 ║· Tab / Left / Right: switch two-pane focus                                                                                                                             ║

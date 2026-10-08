@@ -16,13 +16,13 @@
 ║   ║                                                                                                                                                                ║   ║
 ║1/1║                                                                                                                                                                ║   ║
 ╠═══║                                                                                                                                                                ║═══╣
-║dso║Sections · [Details] · Actions                                                                                                                                  ║   ║
+║sample║Sections · [Details] · Actions                                                                                                                                  ║   ║
 ║Fai║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                     ║   ║
 ╠═══║[ Save ]  [ Cancel ]                                                                                                                                            ║═══╣
 ║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   ║
 ║ Tab/←→ Panes · Enter Open / Focus · m Main menu · F10/q Quit                                                                                                           ║
 
-Select file in /home/pharkink/sources/dso-skills
+Select file in /home/user/sources/sample-skills
 1 .git/
 2 .gitignore
 3 README.md
@@ -30,9 +30,9 @@ Select file in /home/pharkink/sources/dso-skills
 5 environments/
 6 skills/
 Path or row number; cd <directory>, up, . to select directory, cancel: ^[^[m^[[B
-stat /home/pharkink/sources/dso-skills/: no such file or directory
+stat /home/user/sources/sample-skills/: no such file or directory
 
-Select file in /home/pharkink/sources/dso-skills
+Select file in /home/user/sources/sample-skills
 1 .git/
 2 .gitignore
 3 README.md

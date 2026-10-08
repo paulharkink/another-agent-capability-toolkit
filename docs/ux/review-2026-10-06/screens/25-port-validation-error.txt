@@ -1,19 +1,19 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Cluster Inspector                                           ╣
 ║> P╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
-║› P║Install · Cluster Inspector · hopp / ota                                                                                                                        ║   ║
-║› N║Environment: hopp · Target: ota · Runtime: never-started                                                                                                        ║   ║
+║› P║Install · Cluster Inspector · sample-env / target-a                                                                                                                        ║   ║
+║› N║Environment: sample-env · Target: target-a · Runtime: never-started                                                                                                        ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› I║── Setup sections                                     │ ── Connection                                                                                           ║   ║
 ║› I║> Connection                                          │ > Listen port [saved]: 18770                                                                            ║   ║
 ║› N║› Authentication                                      │     · Saved override · editable                                                                         ║   ║
 ║› N║› Databases                                           │ › Listen address [saved]: 127.0.0.1                                                                     ║   ║
 ║› I║› Destinations                                        │     · Saved override · editable                                                                         ║   ║
-║› N║                                                      │ › Api server [saved]: https://api.ocp-ot.donna.ns.nl:6443                                               ║   ║
+║› N║                                                      │ › Api server [saved]: https://api.cluster.example.test:6443                                               ║   ║
 ║› N║                                                      │     · Saved override · editable                                                                         ║   ║
-║› N║                                                      │ › Ca file [saved]: /home/pharkink/sources/dso-skills/environments/hopp/cluster-inspector/donna-root-ca.p║   ║
+║› N║                                                      │ › Ca file [saved]: /home/user/sources/sample-skills/environments/sample-env/cluster-inspector/sample-root-ca.p║   ║
 ║› N║                                                      │     · Saved override · editable                                                                         ║   ║
 ║› N║                                                      │ › Ca data:                                                                                              ║   ║
 ║› N║                                                      │ › Insecure skip tls verify:                                                                             ║   ║
@@ -34,7 +34,7 @@
 ║   ║input local_port: must be at least 1024                                                                                                                         ║   ║
 ║1/1║Edit: 1_                                                                                                                                                        ║   ║
 ╠═══║Enter applies; Ctrl+U clears; Esc cancels edit                                                                                                                  ║═══╣
-║dso║Sections · [Details] · Actions                                                                                                                                  ║   ║
+║sample║Sections · [Details] · Actions                                                                                                                                  ║   ║
 ║Fai║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                     ║   ║
 ╠═══║[ Save ]  [ Cancel ]                                                                                                                                            ║═══╣
 ║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   ║

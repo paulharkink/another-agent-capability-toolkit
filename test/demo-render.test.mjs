@@ -16,7 +16,7 @@ test('home renders the Mac scope and separates profile observations', () => {
   assert.match(html, /data-select="homeDetail" data-index="0"/);
   assert.match(html, /Configure \/ install/);
   assert.match(html, /data-select="homeDetail" data-index="2"/);
-  assert.match(html, /home \/ pms15/);
+  assert.match(html, /home \/ target-a/);
   assert.match(html, /Runtime: Not observed/);
   assert.match(html, /Owner: Unknown/);
   assert.match(html, /Connection: Unreachable/);

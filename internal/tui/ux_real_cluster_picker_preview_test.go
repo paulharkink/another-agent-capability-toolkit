@@ -31,7 +31,7 @@ func TestRealClusterInspectorPreviewExposesKubeconfigPicker(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := app.New(source, store, app.Options{})
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: source.ID, PackageID: "cluster-inspector", Environment: "home", Target: "pms15"})
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: source.ID, PackageID: "cluster-inspector", Environment: "sample-env", Target: "target-a"})
 	if err != nil {
 		t.Fatal(err)
 	}

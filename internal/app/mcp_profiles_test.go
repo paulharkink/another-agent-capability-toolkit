@@ -48,7 +48,7 @@ func TestPackageMCPProfilesHonorsOptionalProviderInputs(t *testing.T) {
 }
 
 func TestMCPProfileKeysSeparateProfilesAndPreserveLegacyKeys(t *testing.T) {
-	base := state.Key{Source: "source", Package: "git-provider", Environment: "home", Target: "pms15"}
+	base := state.Key{Source: "source", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
 	legacy := catalog.Package{MCPs: []catalog.MCP{{Name: "inspector"}}}
 	if got := mcpProfileKey(base, legacy, legacy.MCPs[0]); got.MCP != "inspector" || got.Profile != "" {
 		t.Fatalf("legacy MCP child key changed: %#v", got)
@@ -99,7 +99,7 @@ func TestStartProfileAppliesContainerArgsEnvironmentAndSecret(t *testing.T) {
 		Args: []string{"--http"}, Env: map[string]string{"STREAMABLE_HTTP": "true"},
 		EnvInputs: map[string]string{"API_URL": "api_url"}, SecretEnvInputs: map[string]string{"TOKEN": "token"},
 	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "work", Target: "hopp", Profile: "bitbucket"}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "work", Target: "sample-env", Profile: "bitbucket"}
 	_, err := svc.startProfile(context.Background(), svc.Source.Catalog[0], profile, config.Target{}, key, map[string]any{
 		"port": int64(18821), "api_url": "https://bitbucket.example/api", "token": "secret-token",
 	}, false)

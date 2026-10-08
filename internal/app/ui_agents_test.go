@@ -73,7 +73,7 @@ func TestUIEnvironmentRestoresCustomHomeFromNamedMCPChildren(t *testing.T) {
 	isolateUXUserHome(t, home)
 	t.Setenv("CODEX_HOME", "")
 	svc, _, store := fixture(t)
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "sample-env", Target: "target-a"}
 	customHome := filepath.Join(home, "custom-agent-home")
 	configPath := filepath.Join(customHome, ".codex", "config.toml")
 	for _, name := range []string{"inspector", "metrics"} {

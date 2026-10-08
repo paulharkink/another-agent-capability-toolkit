@@ -3,11 +3,11 @@
 ║                                                                                                                                                                        ║
 ║  Local port: 18770                                                                                                                                                     ║
 ║  Host: 127.0.0.1                                                                                                                                                       ║
-║  Api server *: https://api.ocp-ot.donna.ns.nl:6443                                                                                                                     ║
+║  Api server *: https://api.cluster.example.test:6443                                                                                                                     ║
 ║> Token:                                                                                                                                                                ║
 ║  Source kubeconfig:                                                                                                                                                    ║
 ║  Read-only database queries (optional): 0 items                                                                                                                        ║
-║  Ca file: /home/pharkink/sources/dso-skills/environments/hopp/cluster-inspector/donna-root-ca.pem                                                                      ║
+║  Ca file: /home/user/sources/sample-skills/environments/sample-env/cluster-inspector/sample-root-ca.pem                                                                      ║
 ║  Ca data:                                                                                                                                                              ║
 ║  Insecure skip tls verify:                                                                                                                                             ║
 ║  Verify x509 strict: false                                                                                                                                             ║

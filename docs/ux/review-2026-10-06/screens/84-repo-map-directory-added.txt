@@ -1,6 +1,6 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Local Git Repository Map                                    ╣
 ║› P╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
 ║› P║Install · Local Git Repository Map                                                                                                                              ║   ║
@@ -8,7 +8,7 @@
 ║› N║                                                                                                                                                                ║   ║
 ║› I║── Sections                                           │ ── Inputs                                                                                               ║   ║
 ║› I║> Inputs                                              │ > Directories to scan for local Git checkouts: 1 item                                                   ║   ║
-║> N║› Destinations                                        │   > /home/pharkink/sources  [Remove]                                                                    ║   ║
+║> N║› Destinations                                        │   > /home/user/sources  [Remove]                                                                    ║   ║
 ║› N║                                                      │   › + Add directory…                                                                                    ║   ║
 ║› I║                                                      │ › Git hosts to include (empty includes all hosts): 0 items                                              ║   ║
 ║› N║                                                      │   › + Add item…                                                                                         ║   ║

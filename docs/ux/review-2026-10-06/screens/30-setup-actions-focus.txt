@@ -1,18 +1,18 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Cluster Inspector                                           ╣
 ║> P╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
-║› P║Install · Cluster Inspector · hopp / ota                                                                                                                        ║   ║
-║› N║Environment: hopp · Target: ota · Runtime: never-started                                                                                                        ║   ║
+║› P║Install · Cluster Inspector · sample-env / target-a                                                                                                                        ║   ║
+║› N║Environment: sample-env · Target: target-a · Runtime: never-started                                                                                                        ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› I║── Setup sections                                     │ ── Destinations                                                                                         ║   ║
 ║› I║› Connection                                          │ › Destinations:                                                                                         ║   ║
-║› N║› Authentication                                      │ › [ ] Codex — /home/pharkink/.codex/config.toml                                                         ║   ║
-║› N║› Databases                                           │ › [ ] OpenCode — /home/pharkink/.local/share/aact/wsl-opencode-home/.config/opencode/opencode.json      ║   ║
-║› I║> Destinations                                        │ › [ ] Claude Code — /home/pharkink/.claude.json                                                         ║   ║
-║› N║                                                      │ › [ ] copilot-cli — /home/pharkink/.copilot/mcp-config.json                                             ║   ║
-║› N║                                                      │ › [ ] copilot-intellij — /home/pharkink/.config/github-copilot/intellij/mcp.json                        ║   ║
+║› N║› Authentication                                      │ › [ ] Codex — /home/user/.codex/config.toml                                                         ║   ║
+║› N║› Databases                                           │ › [ ] OpenCode — /home/user/.local/share/aact/wsl-opencode-home/.config/opencode/opencode.json      ║   ║
+║› I║> Destinations                                        │ › [ ] Claude Code — /home/user/.claude.json                                                         ║   ║
+║› N║                                                      │ › [ ] copilot-cli — /home/user/.copilot/mcp-config.json                                             ║   ║
+║› N║                                                      │ › [ ] copilot-intellij — /home/user/.config/github-copilot/intellij/mcp.json                        ║   ║
 ║› N║                                                      │ › [ ] generic —                                                                                         ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› N║                                                                                                                                                                ║   ║
@@ -34,7 +34,7 @@
 ║   ║                                                                                                                                                                ║   ║
 ║1/1║                                                                                                                                                                ║   ║
 ╠═══║                                                                                                                                                                ║═══╣
-║dso║Sections · Details · [Actions]                                                                                                                                  ║   ║
+║sample║Sections · Details · [Actions]                                                                                                                                  ║   ║
 ║Fai║↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · Esc Back                                                                                                     ║   ║
 ╠═══║> [ Save ]  [ Cancel ]                                                                                                                                          ║═══╣
 ║ F1╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   ║

@@ -1,6 +1,6 @@
 [38;5;195m[48;5;17m╔ AACT · Another Agent Capability Toolkit[39m                                                                                                                                [38;5;195m╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments[39m                                                                                  [38;5;195m║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments[39m                                                                                  [38;5;195m║
 ╠[38;5;222mCapabilities[39m                                                                       [38;5;195m╦[38;5;222m► Selected capability · Local Git Repository Map    [39m                                [38;5;195m╣
 ║› P[38;5;222m[48;5;24m╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   [38;5;195m[48;5;17m║
 ║› P[38;5;222m║[38;5;195m[48;5;24mInstall · Local Git Repository Map[39m                                                                                                                              [38;5;222m║[39m[48;5;195m   [38;5;195m[48;5;17m║

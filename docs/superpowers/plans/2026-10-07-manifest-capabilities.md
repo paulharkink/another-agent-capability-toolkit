@@ -84,7 +84,7 @@
 #### Final MCP preset route verification (2026-10-07)
 
 - After restoring the MCP primary setup route, root reran `go test ./... -count=1` (PASS; `/tmp/aact-manifest-full-final3.log`), `go test -race ./internal/forms ./internal/tui -count=1` (PASS; `/tmp/aact-manifest-race-routes-final.log`), and `go vet ./...` (PASS; final4 log). Native macOS plus Linux amd64 and Windows amd64 builds exited 0.
-- Manual native TUI walkthrough used the existing `codex/aact:0.0` process and real `/Users/pharkink/sources/agent-skills/aact.toml`: “Set up another target” opened a chooser with `home/pms15` and “Without an environment preset”; selecting `home/pms15` opened “Configure · Cluster Inspector · home / pms15” with saved port `18766`.
+- Manual native TUI walkthrough used the existing `codex/aact:0.0` process and real `/Users/user/sources/agent-skills/aact.toml`: “Set up another target” opened a chooser with `sample-env/target-a` and “Without an environment preset”; selecting `sample-env/target-a` opened “Configure · Cluster Inspector · sample-env / target-a” with saved port `18766`.
 - Evidence is ANSI terminal capture, not an operating-system screenshot: `/tmp/aact-manifest-runtime-probe/evidence/final-real-mcp-preset-chooser.ansi` and `/tmp/aact-manifest-runtime-probe/evidence/final-real-named-workspace.ansi`.
 
 #### Fixture migration note (2026-10-07)

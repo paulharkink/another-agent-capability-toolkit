@@ -5,8 +5,8 @@
         ║ Checkout: none · Managing: darwin/arm64 · Source:  · Env: none               ║
         ╠► Capabilities                        ╦Selected capability · cluster-inspector╣
         ║> N╔══════════════════════════════════════════════════════════════════════╗   ║
-        ║   ║Install · Cluster Inspector · home / pms15                            ║   ║
-        ║   ║Environment: home · Target: pms15 · Runtime: New setup                ║   ║
+        ║   ║Install · Cluster Inspector · sample-env / target-a                            ║   ║
+        ║   ║Environment: sample-env · Target: target-a · Runtime: New setup                ║   ║
         ║   ║                                                                      ║   ║
         ║1/1║↑ more                  │ ↑ more                                      ║   ║
         ╠═══║> Authentication        │ › Token [saved]: old-token                  ║═══╣
@@ -22,8 +22,8 @@
         ║ Checkout: none · Managing: darwin/arm64 · Source:  · Env: none               ║
         ╠► Capabilities                        ╦Selected capability · cluster-inspector╣
         ║> N╔══════════════════════════════════════════════════════════════════════╗   ║
-        ║   ║Install · Cluster Inspector · home / pms15                            ║   ║
-        ║   ║Environment: home · Target: pms15 · Runtime: New setup                ║   ║
+        ║   ║Install · Cluster Inspector · sample-env / target-a                            ║   ║
+        ║   ║Environment: sample-env · Target: target-a · Runtime: New setup                ║   ║
         ║   ║                                                                      ║   ║
         ║1/1║↑ more                  │ ↑ more                                      ║   ║
         ╠═══║> Authentication        │ › Token [saved]: old-token                  ║═══╣
@@ -35,8 +35,8 @@
         ╚══════════════════════════════════════════════════════════════════════════════╝
     ux_journeys_test.go:109: active workspace below minimum does not explain resize recovery:
         ╔═════════════════════════════════════════════════════════════════════════════╗
-        ║Install · Cluster Inspector · home / pms15                                   ║
-        ║Environment: home · Target: pms15 · Runtime: New setup                       ║
+        ║Install · Cluster Inspector · sample-env / target-a                                   ║
+        ║Environment: sample-env · Target: target-a · Runtime: New setup                       ║
         ║                                                                             ║
         ║── Setup sections         │ ── Authentication                                ║
         ║> Authentication          │ › Token [saved]: old-token                       ║

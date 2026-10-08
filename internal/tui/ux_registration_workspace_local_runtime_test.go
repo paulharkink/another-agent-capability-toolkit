@@ -93,7 +93,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "cluster-source", Package: pkg.ID, Environment: "home", Target: "pms15"}
+	key := state.Key{Source: "cluster-source", Package: pkg.ID, Environment: "sample-env", Target: "target-a"}
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: pkg.Name}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	}
 
 	environmentRoot := filepath.Join(root, "environments")
-	targetPath := filepath.Join(environmentRoot, "home", pkg.ID, "pms15.toml")
+	targetPath := filepath.Join(environmentRoot, "sample-env", pkg.ID, "target-a.toml")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	source := config.Source{
 		ID: "cluster-source", Root: repoRoot, ManifestPath: filepath.Join(repoRoot, "aact.toml"),
 		EnvironmentRoot: environmentRoot, Catalog: []catalog.Package{pkg},
-		PackageDefaults: map[string]map[string]any{pkg.ID: {"registration_name": "cluster-inspector-pms15"}},
+		PackageDefaults: map[string]map[string]any{pkg.ID: {"registration_name": "cluster-inspector-target-a"}},
 	}
 	probe, err := agents.DefaultDiscoveryProbe()
 	if err != nil {

@@ -292,7 +292,7 @@ func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Target: "pms15"},
+		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Target: "target-a"},
 		HasManifestUI: true,
 		Sections:      []catalog.Section{{ID: "database", Title: "Databases", Fields: []string{"connections"}}},
 		Inputs: []viewmodel.SetupInput{{
@@ -389,7 +389,7 @@ func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
 	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{Targets: []viewmodel.EnvironmentTarget{
-		{SourceID: "team-source", Environment: "home", PackageID: "plain", Name: "pms15", Path: "/environments/home/plain/pms15.toml"},
+		{SourceID: "team-source", Environment: "sample-env", PackageID: "plain", Name: "target-a", Path: "/environments/sample-env/plain/target-a.toml"},
 	}}
 	m.reconcileHome()
 	m.homeOperation("choose-preset")
@@ -401,7 +401,7 @@ func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
 		t.Fatal("choosing the available preset did not start setup")
 	}
 	m.Update(cmd())
-	want := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "home", Target: "pms15"}
+	want := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "sample-env", Target: "target-a"}
 	if b.previewRequest != want {
 		t.Fatalf("capability setup discarded local target: got %+v, want %+v", b.previewRequest, want)
 	}
@@ -411,7 +411,7 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(setupPreviewMsg{preview: viewmodel.SetupPreview{
-		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
+		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
 		PackageName:   "Cluster Inspector",
 		HasManifestUI: true,
 		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
@@ -424,7 +424,7 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 			t.Fatalf("setup form does not show %q:\n%s", want, view)
 		}
 	}
-	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "home" || m.pendingSetup.Key.Target != "pms15" {
+	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "sample-env" || m.pendingSetup.Key.Target != "target-a" {
 		t.Fatalf("setup preview lost the selected environment target: %+v", m.pendingSetup)
 	}
 }
@@ -475,11 +475,11 @@ func TestNoEnvironmentSetupTitleHasNoBlankSegment(t *testing.T) {
 }
 
 func TestSetupFormRendersCurrentMCPRegistrationName(t *testing.T) {
-	const activeName = "grafana-inspector-home-pms15-a7a19beabe523073"
+	const activeName = "grafana-inspector-home-target-a-a7a19beabe523073"
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:            state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "pms15"},
+		Key:            state.Key{Source: "team", Package: "grafana-inspector", Environment: "sample-env", Target: "target-a"},
 		PackageName:    "Grafana Inspector",
 		MCP:            true,
 		MCPDefinitions: []catalog.MCP{{Name: "grafana-inspector", RegistrationNameInput: "registration_name"}},

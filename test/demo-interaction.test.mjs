@@ -58,7 +58,7 @@ test("Enter moves from layer 1 into layer 2, then opens the selected profile act
   key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
   key(root.querySelector('[data-select="homeDetail"].selected'), "Enter");
   assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3");
-  assert.match(root.querySelector(".dialog-title").textContent, /home \/ pms15/);
+  assert.match(root.querySelector(".dialog-title").textContent, /home \/ target-a/);
 });
 
 test("Escape walks back from a contextual overlay through layer 2 to layer 1", () => {

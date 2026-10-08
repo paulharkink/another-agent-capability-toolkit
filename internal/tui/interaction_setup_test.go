@@ -18,7 +18,7 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
 		PackageName:    "Cluster Inspector",
 		MCP:            true,
 		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},

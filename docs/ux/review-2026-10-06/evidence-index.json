@@ -2,18 +2,18 @@
   {
     "journey": "01 \u00b7 A working way into configuration",
     "current": "12-capability-configure-multiple-targets",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "54-environment-target-list",
-        "caption": "The separate Environments screen that the status message expects you to discover."
+        "caption": "The separate sample-env screen that the status message expects you to discover."
       }
     ]
   },
   {
     "journey": "02 \u00b7 Package, target, server, registration",
     "current": "14-profile-actions",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "15-profile-details",
@@ -28,7 +28,7 @@
   {
     "journey": "03 \u00b7 One task, one editor",
     "current": "01-existing-input-form",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "22-profile-parameters-form",
@@ -36,14 +36,14 @@
       },
       {
         "capture": "42-no-environment-setup",
-        "caption": "Setup via Environments takes over the full screen instead."
+        "caption": "Setup via sample-env takes over the full screen instead."
       }
     ]
   },
   {
     "journey": "04 \u00b7 Type where the field is",
     "current": "04-text-cursor-edit",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "03-token-editor-after-bracketed-paste",
@@ -58,13 +58,13 @@
   {
     "journey": "05 \u00b7 Authentication must explain the choice",
     "current": "22-profile-parameters-form",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": []
   },
   {
     "journey": "06 \u00b7 Failure is a screen, not a footnote",
     "current": "07-after-form-return",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "52-main-menu-visible",
@@ -83,7 +83,7 @@
   {
     "journey": "07 \u00b7 Validation belongs beside the input",
     "current": "25-port-validation-error",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "31-database-enter",
@@ -94,7 +94,7 @@
   {
     "journey": "08 \u00b7 Where it is going must be unambiguous",
     "current": "28-setup-destinations",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "61-opencode-agent-details",
@@ -113,7 +113,7 @@
   {
     "journey": "09 \u00b7 A file picker is still part of the TUI",
     "current": "36-environments-browser",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "32-source-kubeconfig-picker",
@@ -124,7 +124,7 @@
   {
     "journey": "10 \u00b7 Directory collections: preserve what works",
     "current": "84-repo-map-directory-added",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "85-existing-directory-edit",
@@ -158,7 +158,7 @@
   {
     "journey": "12 \u00b7 Runtime and logs need actionable empty states",
     "current": "99-actual-logs-viewer",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "91-legacy-start-result",
@@ -169,7 +169,7 @@
   {
     "journey": "13 \u00b7 Presets and saved installations are different",
     "current": "54-environment-target-list",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "40-environments-browser",
@@ -188,7 +188,7 @@
   {
     "journey": "14 \u00b7 Agents: say what was detected and where writes go",
     "current": "61-opencode-agent-details",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "63-opencode-config-candidates",
@@ -207,7 +207,7 @@
   {
     "journey": "15 \u00b7 Settings and Help must use the same language",
     "current": "66-settings-screen",
-    "label": "Live release \u00b7 dsowks132 WSL",
+    "label": "Live release \u00b7 test-wsl WSL",
     "supporting": [
       {
         "capture": "67-environment-root-editor",

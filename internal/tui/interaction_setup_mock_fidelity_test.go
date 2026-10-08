@@ -16,7 +16,7 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 36})
 	m.openSetupForm(viewmodel.SetupPreview{
-		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "home", Target: "pms15"},
+		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
 		PackageName:    "Cluster Inspector",
 		MCP:            true,
 		MCPDefinitions: []catalog.MCP{{Name: "cluster-inspector"}},

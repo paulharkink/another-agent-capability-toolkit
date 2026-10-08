@@ -571,8 +571,8 @@ func TestLegacyRegistrationNameIsReadable(t *testing.T) {
 
 func TestDeclaredRegistrationNameUsesInputVerbatim(t *testing.T) {
 	definition := catalog.MCP{Name: "inspector", RegistrationNameInput: "registration"}
-	got, err := declaredRegistrationName(definition, state.Key{Package: "ignored"}, map[string]any{"registration": "cluster-inspector-pms15"})
-	if err != nil || got != "cluster-inspector-pms15" {
+	got, err := declaredRegistrationName(definition, state.Key{Package: "ignored"}, map[string]any{"registration": "cluster-inspector-target-a"})
+	if err != nil || got != "cluster-inspector-target-a" {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	if _, err := declaredRegistrationName(definition, state.Key{}, map[string]any{"registration": "-bad"}); err == nil {

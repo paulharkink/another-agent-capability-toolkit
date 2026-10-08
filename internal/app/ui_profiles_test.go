@@ -30,7 +30,7 @@ func TestUIProfileSnapshotDoesNotTreatSavedRegistrationAsObservedRuntime(t *test
 		t.Run(map[bool]string{false: "saved registration only", true: "missing local runtime"}[withRuntimeRecord], func(t *testing.T) {
 			svc, _, store := fixture(t)
 			svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-			key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
+			key := state.Key{Source: "fixture", Package: "demo", Environment: "sample-env", Target: "target-a"}
 			if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
 				t.Fatal(err)
 			}
@@ -39,7 +39,7 @@ func TestUIProfileSnapshotDoesNotTreatSavedRegistrationAsObservedRuntime(t *test
 				t.Fatal(err)
 			}
 			if withRuntimeRecord {
-				if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-pms15", SourcePath: "missing-container", URL: endpoint}); err != nil {
+				if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-target-a", SourcePath: "missing-container", URL: endpoint}); err != nil {
 					t.Fatal(err)
 				}
 			}

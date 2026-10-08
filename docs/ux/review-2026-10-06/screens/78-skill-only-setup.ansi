@@ -1,6 +1,6 @@
 [38;5;195m[48;5;17m╔ AACT · Another Agent Capability Toolkit[39m                                                                                                                                [38;5;195m╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments[39m                                                                                  [38;5;195m║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus[39m                                                                                                [38;5;195m║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments[39m                                                                                  [38;5;195m║
 ╠[38;5;222mCapabilities[39m                                                                       [38;5;195m╦[38;5;222m► Selected capability · Find Session     [39m                                           [38;5;195m╣
 ║› P[38;5;222m[48;5;24m╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   [38;5;195m[48;5;17m║
 ║› P[38;5;222m║[38;5;195m[48;5;24mInstall · Find Session[39m                                                                                                                                          [38;5;222m║[39m[48;5;195m   [38;5;195m[48;5;17m║
@@ -8,14 +8,14 @@
 ║› N[48;5;17m║[39m[48;5;24m                                                                                                                                                                [38;5;222m║   [38;5;195m[48;5;17m║
 ║> I[38;5;222m║[38;5;195m[48;5;24m── Sections[39m                                           [38;5;195m│ ── Destinations[39m                                                                                         [38;5;222m║[38;5;146m   [38;5;195m[48;5;17m║
 ║› I[38;5;222m║[38;5;195m[48;5;24m> Destinations[39m                                        [38;5;195m│ › Destinations:[39m                                                                                         [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [x] All — /home/pharkink/.agents/skills[39m                                                               [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] Codex — /home/pharkink/.agents/skills[39m                                                             [38;5;222m║   ║
-║› I║[39m                                                      [38;5;195m│ › [ ] OpenCode — /home/pharkink/.config/opencode/skills[39m                                                 [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] Claude Code — /home/pharkink/.claude/skills[39m                                                       [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] copilot-cli — /home/pharkink/.copilot/skills[39m                                                      [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] intellij — /home/pharkink/.ai/skills[39m                                                              [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] copilot-intellij — /home/pharkink/.copilot/skills[39m                                                 [38;5;222m║   ║
-║› N║[39m                                                      [38;5;195m│ › [ ] generic — /home/pharkink/.agents/skills[39m                                                           [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [x] All — /home/user/.agents/skills[39m                                                               [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] Codex — /home/user/.agents/skills[39m                                                             [38;5;222m║   ║
+║› I║[39m                                                      [38;5;195m│ › [ ] OpenCode — /home/user/.config/opencode/skills[39m                                                 [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] Claude Code — /home/user/.claude/skills[39m                                                       [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] copilot-cli — /home/user/.copilot/skills[39m                                                      [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] intellij — /home/user/.ai/skills[39m                                                              [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] copilot-intellij — /home/user/.copilot/skills[39m                                                 [38;5;222m║   ║
+║› N║[39m                                                      [38;5;195m│ › [ ] generic — /home/user/.agents/skills[39m                                                           [38;5;222m║   ║
 ║› N║[39m                                                                                                                                                                [38;5;222m║   ║
 ║› N║[39m                                                                                                                                                                [38;5;222m║   ║
 ║› N║[39m                                                                                                                                                                [38;5;222m║   ║

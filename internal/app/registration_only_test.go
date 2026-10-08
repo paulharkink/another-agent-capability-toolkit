@@ -152,8 +152,8 @@ func TestConfigureRegistrationsPreservesLocalRuntimeIntent(t *testing.T) {
 	svc, agent, store := fixture(t)
 	agent.Kind = "generic"
 	agent.ConfigPath = filepath.Join(t.TempDir(), "mcp.json")
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "home", Target: "pms15"}
-	if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-pms15", SourcePath: "missing-container"}); err != nil {
+	key := state.Key{Source: "fixture", Package: "demo", Environment: "sample-env", Target: "target-a"}
+	if err := store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-target-a", SourcePath: "missing-container"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{

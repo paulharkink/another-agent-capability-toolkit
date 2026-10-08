@@ -5,7 +5,7 @@
 The native macOS arm64 development release is unpacked at:
 
 ```
-/Users/pharkink/sources/another-agent-capability-toolkit/dist/native/bin/aact
+/Users/user/sources/another-agent-capability-toolkit/dist/native/bin/aact
 ```
 
 Run it inside the prepared consumer checkout to browse all 15 selected public
@@ -13,7 +13,7 @@ and repository-specific skills/packages:
 
 ```sh
 cd /tmp/codex/aact-consumer/agent-skills
-/Users/pharkink/sources/another-agent-capability-toolkit/dist/native/bin/aact
+/Users/user/sources/another-agent-capability-toolkit/dist/native/bin/aact
 ```
 
 Add `--state-dir /tmp/aact-review-state` for an isolated review. Opening the

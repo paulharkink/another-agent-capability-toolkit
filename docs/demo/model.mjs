@@ -11,16 +11,16 @@ export const capabilities = [
   { id: 'clean-up', name: 'clean-up', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'kinfer-platform', name: 'kinfer-platform', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'kubedock-docker', name: 'kubedock-docker', kind: 'skill', mcp: false, installation: 'Not installed' },
-  { id: 'gitops-triage', name: 'pms15-gitops-triage', kind: 'skill', mcp: false, installation: 'Not installed' },
-  { id: 'live-cluster-diagnostics', name: 'pms15-live-cluster-diagnostics', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'gitops-triage', name: 'target-a-gitops-triage', kind: 'skill', mcp: false, installation: 'Not installed' },
+  { id: 'live-cluster-diagnostics', name: 'target-a-live-cluster-diagnostics', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'cluster-inspector-skill', name: 'cluster-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
   { id: 'grafana-inspector-skill', name: 'grafana-inspector', kind: 'skill', mcp: false, installation: 'Not installed' },
 ];
 
 export const profiles = [
   {
-    id: 'cluster-home-pms15', capabilityId: 'cluster-inspector', name: 'home / pms15',
-    environment: 'home', target: 'pms15', runtime: 'Not observed', owner: 'Unknown',
+    id: 'cluster-home-target-a', capabilityId: 'cluster-inspector', name: 'sample-env / target-a',
+    environment: "sample-env", target: 'target-a', runtime: 'Not observed', owner: 'Unknown',
     connection: 'Unreachable', endpoint: 'http://127.0.0.1:18766/mcp',
     observation: 'Sample: no matching container observed',
     connectionError: 'Sample: connect: connection refused',
@@ -28,7 +28,7 @@ export const profiles = [
   },
   {
     id: 'grafana-home', capabilityId: 'grafana-inspector', name: 'home / default',
-    environment: 'home', target: 'default', runtime: 'Stopped', owner: 'This AACT',
+    environment: "sample-env", target: 'default', runtime: 'Stopped', owner: 'This AACT',
     connection: 'Not checked', endpoint: 'http://127.0.0.1:18767/mcp',
     observation: 'Sample: stopped', connectionError: '', ownerEvidence: 'Local start record',
   },
@@ -81,7 +81,7 @@ export const helpSections = ['Navigation', 'Status labels', 'Forms and values'];
 
 export function createInitialState() {
   return {
-    scope: { checkout: 'agent-skills', platform: 'macOS / arm64', source: 'pms15-agent-skills' },
+    scope: { checkout: 'agent-skills', platform: 'macOS / arm64', source: 'sample-skills' },
     view: 'home', focus: 'capabilities', capabilityIndex: 0, homeDetailIndex: 0,
     agentIndex: 0, environmentIndex: 0, targetIndex: 0, settingsIndex: 0, helpIndex: 0,
     menuIndex: 0, overlay: null, toast: 'Interactive design sample — no files or containers are changed.',

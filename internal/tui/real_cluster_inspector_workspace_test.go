@@ -36,7 +36,7 @@ func (*isolatedClusterRuntime) Logs(context.Context, state.Key) (io.ReadCloser, 
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-// This opt-in integration test follows the real source manifest and pms15
+// This opt-in integration test follows the real source manifest and target-a
 // target read-only. Its state, HOME, agent config, and docker command are all
 // isolated under t.TempDir; the docker shim exercises the packaged native
 // helper without talking to a daemon or cluster.
@@ -49,8 +49,8 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 		t.Skip("set AACT_INTEGRATION_SOURCE_ROOT to the read-only personal source checkout")
 	}
 	manifest := filepath.Join(sourceRoot, "aact.toml")
-	if _, err := os.Stat(filepath.Join(sourceRoot, "environments", "home", "cluster-inspector", "pms15.toml")); err != nil {
-		t.Skip("the supplied pms15 target is not present")
+	if _, err := os.Stat(filepath.Join(sourceRoot, "environments", "home", "cluster-inspector", "target-a.toml")); err != nil {
+		t.Skip("the supplied target-a target is not present")
 	}
 	_, testFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
@@ -94,15 +94,15 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	m := NewContext(t.Context(), svc)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m.Update(m.Init()())
-	key := state.Key{Source: source.ID, Package: "cluster-inspector", Environment: "home", Target: "pms15"}
+	key := state.Key{Source: source.ID, Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"}
 	request := viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}
 	cmd := m.openTargetWorkspace(request, "Overview")
 	if cmd == nil {
 		t.Fatal("actual source did not open the target workspace")
 	}
 	m.Update(cmd())
-	if m.pendingSetup == nil || m.pendingSetup.Key != key || m.pendingSetup.TargetPath != filepath.Join(sourceRoot, "environments", "home", "cluster-inspector", "pms15.toml") {
-		t.Fatalf("workspace did not load the exact read-only pms15 target: %+v", m.pendingSetup)
+	if m.pendingSetup == nil || m.pendingSetup.Key != key || m.pendingSetup.TargetPath != filepath.Join(sourceRoot, "environments", "home", "cluster-inspector", "target-a.toml") {
+		t.Fatalf("workspace did not load the exact read-only target-a target: %+v", m.pendingSetup)
 	}
 	if m.workspace.Profile != nil {
 		t.Fatalf("fresh environment target unexpectedly acquired runtime ownership: %+v", m.workspace.Profile)

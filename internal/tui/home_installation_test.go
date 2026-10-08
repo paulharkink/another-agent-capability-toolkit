@@ -14,7 +14,7 @@ func TestHomeShowsRecordedInstallationStatusWithoutBatchControls(t *testing.T) {
 	m, msg := homeFixture()
 	msg.catalog[0].Skill = &catalog.Skill{Name: "inspect"}
 	msg.inventory = []state.Installation{
-		{Key: state.Key{Source: "one", Package: "inspect", Environment: "home", Target: "prod"}, AgentID: "codex", Component: "skill"},
+		{Key: state.Key{Source: "one", Package: "inspect", Environment: "sample-env", Target: "prod"}, AgentID: "codex", Component: "skill"},
 		{Key: state.Key{Source: "one", Package: "plain"}, AgentID: "all", Component: "skill"},
 		{Key: state.Key{Source: "other", Package: "empty"}, Component: "mcp"},
 		{Key: state.Key{Source: "one", Package: "empty"}, Component: "runtime"},

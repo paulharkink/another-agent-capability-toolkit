@@ -58,7 +58,7 @@ func TestUXChooserSelectionReplacesChooserWithExactWorkspace(t *testing.T) {
 }
 
 func TestUXDeclaredCredentialHintAndSourcePathStaySeparate(t *testing.T) {
-	key := state.Key{Source: "fixture", Package: "cluster-inspector", Environment: "home", Target: "local"}
+	key := state.Key{Source: "fixture", Package: "cluster-inspector", Environment: "sample-env", Target: "local"}
 	for _, credentialState := range []string{"missing", "present"} {
 		t.Run(credentialState, func(t *testing.T) {
 			m := NewContext(t.Context(), &setupBackendFixture{})

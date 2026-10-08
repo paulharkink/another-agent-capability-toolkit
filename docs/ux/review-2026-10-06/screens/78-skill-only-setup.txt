@@ -1,6 +1,6 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Find Session                                                ╣
 ║› P╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
 ║› P║Install · Find Session                                                                                                                                          ║   ║
@@ -8,14 +8,14 @@
 ║› N║                                                                                                                                                                ║   ║
 ║> I║── Sections                                           │ ── Destinations                                                                                         ║   ║
 ║› I║> Destinations                                        │ › Destinations:                                                                                         ║   ║
-║› N║                                                      │ › [x] All — /home/pharkink/.agents/skills                                                               ║   ║
-║› N║                                                      │ › [ ] Codex — /home/pharkink/.agents/skills                                                             ║   ║
-║› I║                                                      │ › [ ] OpenCode — /home/pharkink/.config/opencode/skills                                                 ║   ║
-║› N║                                                      │ › [ ] Claude Code — /home/pharkink/.claude/skills                                                       ║   ║
-║› N║                                                      │ › [ ] copilot-cli — /home/pharkink/.copilot/skills                                                      ║   ║
-║› N║                                                      │ › [ ] intellij — /home/pharkink/.ai/skills                                                              ║   ║
-║› N║                                                      │ › [ ] copilot-intellij — /home/pharkink/.copilot/skills                                                 ║   ║
-║› N║                                                      │ › [ ] generic — /home/pharkink/.agents/skills                                                           ║   ║
+║› N║                                                      │ › [x] All — /home/user/.agents/skills                                                               ║   ║
+║› N║                                                      │ › [ ] Codex — /home/user/.agents/skills                                                             ║   ║
+║› I║                                                      │ › [ ] OpenCode — /home/user/.config/opencode/skills                                                 ║   ║
+║› N║                                                      │ › [ ] Claude Code — /home/user/.claude/skills                                                       ║   ║
+║› N║                                                      │ › [ ] copilot-cli — /home/user/.copilot/skills                                                      ║   ║
+║› N║                                                      │ › [ ] intellij — /home/user/.ai/skills                                                              ║   ║
+║› N║                                                      │ › [ ] copilot-intellij — /home/user/.copilot/skills                                                 ║   ║
+║› N║                                                      │ › [ ] generic — /home/user/.agents/skills                                                           ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› N║                                                                                                                                                                ║   ║

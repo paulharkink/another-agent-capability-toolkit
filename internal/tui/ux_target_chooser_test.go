@@ -52,7 +52,7 @@ func TestMCPConfigureUsesPresetChooserWhenTargetsAreAvailable(t *testing.T) {
 			m, _ := homeFixture()
 			m.backend = chooserSetupBackend{}
 			m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{
-				{SourceID: "one", Environment: "home", PackageID: "inspect", Name: "pms15", Path: "/environments/home/inspect/pms15.toml"},
+				{SourceID: "one", Environment: "sample-env", PackageID: "inspect", Name: "target-a", Path: "/environments/sample-env/inspect/target-a.toml"},
 			}}
 			m.home.Modal = &modalState{Kind: "actions"}
 			for _, item := range m.homeMenuItems() {
@@ -68,7 +68,7 @@ func TestMCPConfigureUsesPresetChooserWhenTargetsAreAvailable(t *testing.T) {
 				t.Fatalf("MCP Configure did not open preset chooser: modal=%+v output=%q", m.home.Modal, m.output)
 			}
 			view := ansi.Strip(m.View().Content)
-			if !strings.Contains(view, "home / pms15") || !strings.Contains(view, "Without an environment preset") {
+			if !strings.Contains(view, "sample-env / target-a") || !strings.Contains(view, "Without an environment preset") {
 				t.Fatalf("preset chooser omitted the named target or explicit no-preset choice:\n%s", view)
 			}
 			cmd := m.chooseTarget(0)
@@ -76,11 +76,11 @@ func TestMCPConfigureUsesPresetChooserWhenTargetsAreAvailable(t *testing.T) {
 				t.Fatal("selecting the named preset did not start setup")
 			}
 			m.Update(cmd())
-			want := state.Key{Source: "one", Package: "inspect", Environment: "home", Target: "pms15"}
+			want := state.Key{Source: "one", Package: "inspect", Environment: "sample-env", Target: "target-a"}
 			if m.pendingSetup == nil || m.pendingSetup.Key != want {
 				t.Fatalf("named target was not retained through setup: %+v want %+v", m.pendingSetup, want)
 			}
-			if !strings.Contains(ansi.Strip(m.View().Content), "Inspector · home / pms15") {
+			if !strings.Contains(ansi.Strip(m.View().Content), "Inspector · sample-env / target-a") {
 				t.Fatalf("workspace title omitted selected MCP target identity:\n%s", ansi.Strip(m.View().Content))
 			}
 		})

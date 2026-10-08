@@ -51,8 +51,8 @@ func TestRemoveProfileClearsOnlyThatProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	github := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "hopp", Target: "work", Profile: "github"}}
-	bitbucket := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "hopp", Target: "work", Profile: "bitbucket"}}
+	github := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", Profile: "github"}}
+	bitbucket := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", Profile: "bitbucket"}}
 	if err := store.RecordProfile(github); err != nil {
 		t.Fatal(err)
 	}

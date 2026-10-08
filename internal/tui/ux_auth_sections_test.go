@@ -16,7 +16,7 @@ func TestUXGrafanaSessionCookieInputsAllInAuthenticationAndIrrelevantCredentials
 	m.catalog = []catalog.Package{{ID: "grafana-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 38})
 	preview := viewmodel.SetupPreview{
-		Key:           state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "production"},
+		Key:           state.Key{Source: "team", Package: "grafana-inspector", Environment: "sample-env", Target: "production"},
 		PackageName:   "Grafana Inspector",
 		HasManifestUI: true,
 		Sections: []catalog.Section{

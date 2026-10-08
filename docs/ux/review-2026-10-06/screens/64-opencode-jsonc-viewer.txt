@@ -1,4 +1,4 @@
-╔ Agent configuration · /home/pharkink/.config/opencode/opencode.jsonc                                                                                                   ╗
+╔ Agent configuration · /home/user/.config/opencode/opencode.jsonc                                                                                                   ╗
 ║ Exact file contents · ←→ Horizontal · ↑↓/PgUp/PgDn Scroll · Esc Back                                                                                                   ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ║{                                                                                                                                                                       ║

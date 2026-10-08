@@ -1,23 +1,23 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Grafana Inspector                                           ╣
 ║› I╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗   ║
-║> N║Install · Grafana Inspector · hopp / dso                                                                                                                        ║   ║
-║› N║Environment: hopp · Target: dso · Runtime: never-started                                                                                                        ║   ║
+║> N║Install · Grafana Inspector · sample-env / sample                                                                                                                        ║   ║
+║› N║Environment: sample-env · Target: sample · Runtime: never-started                                                                                                        ║   ║
 ║› N║                                                                                                                                                                ║   ║
 ║› N║── Sections                                           │ ── Inputs                                                                                               ║   ║
 ║› N║› Authentication                                      │ › Local port [saved]: 18769                                                                             ║   ║
 ║› N║> Inputs                                              │     · Saved override · editable                                                                         ║   ║
 ║› N║› Destinations                                        │ › Host [saved]: 127.0.0.1                                                                               ║   ║
 ║› N║                                                      │     · Saved override · editable                                                                         ║   ║
-║› N║                                                      │ › Url [saved]: https://grafana-route-dso-grafana.apps.ocp-ot.donna.ns.nl                                ║   ║
+║› N║                                                      │ › Url [saved]: https://grafana.example.test                                ║   ║
 ║› N║                                                      │     · Saved override · editable                                                                         ║   ║
 ║› N║                                                      │ › Datasource uid:                                                                                       ║   ║
 ║› N║                                                      │ › Grafana session:                                                                                      ║   ║
 ║› N║                                                      │ › Session expiry:                                                                                       ║   ║
 ║› N║                                                      │ › Refresh cookie name:                                                                                  ║   ║
-║› N║                                                      │ › Ca file [saved]: /home/pharkink/sources/dso-skills/environments/hopp/grafana-inspector/donna-root-ca.p║   ║
+║› N║                                                      │ › Ca file [saved]: /home/user/sources/sample-skills/environments/sample-env/grafana-inspector/sample-root-ca.p║   ║
 ║› N║                                                      │     · Saved override · editable                                                                         ║   ║
 ║   ║                                                      │ › Verify x509 strict [saved]: false                                                                     ║   ║
 ║   ║                                                      │     · Saved override · editable                                                                         ║   ║

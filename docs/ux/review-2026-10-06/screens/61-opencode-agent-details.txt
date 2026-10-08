@@ -1,16 +1,16 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ╠ Detected agents                                                          ╦ OpenCode CLI                                                                                ╣
 ║› Codex (codex)                                                           ║Status: installed                                                                            ║
-║> OpenCode CLI (opencode)                                                 ║Config: /home/pharkink/.config/opencode/opencode.json                                        ║
+║> OpenCode CLI (opencode)                                                 ║Config: /home/user/.config/opencode/opencode.json                                        ║
 ║› Claude Code (claude)                                                    ║AACT MCPs: 0                                                                                 ║
 ║› GitHub Copilot CLI (copilot-cli)                                        ║                                                                                             ║
-║› JetBrains AI Assistant (intellij)                                       ║Evidence: CLI executable: /home/pharkink/.opencode/bin/opencode                              ║
+║› JetBrains AI Assistant (intellij)                                       ║Evidence: CLI executable: /home/user/.opencode/bin/opencode                              ║
 ║› GitHub Copilot in JetBrains (copilot-intellij)                          ║Config candidates: 2                                                                         ║
-║› generic (generic)                                                       ║/home/pharkink/.config/opencode/opencode.json · exists · user · lower                        ║
-║› Claude Desktop (claude-desktop)                                         ║/home/pharkink/.config/opencode/opencode.jsonc · exists · user · higher                      ║
+║› generic (generic)                                                       ║/home/user/.config/opencode/opencode.json · exists · user · lower                        ║
+║› Claude Desktop (claude-desktop)                                         ║/home/user/.config/opencode/opencode.jsonc · exists · user · higher                      ║
 ║› OpenCode Desktop (opencode-desktop)                                     ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
 ║                                                                          ║                                                                                             ║

@@ -160,7 +160,7 @@ func TestKeyCannotEscapeRoot(t *testing.T) {
 }
 
 func TestProfileKeyKeepsLegacyIDsAndSeparatesProfiles(t *testing.T) {
-	base := Key{Source: "catalog", Package: "git-provider", Environment: "home", Target: "pms15"}
+	base := Key{Source: "catalog", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
 	legacyID := base.ID()
 	withGitHub := base
 	withGitHub.Profile = "github"

@@ -1,6 +1,6 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Cluster Inspector                                           ╣
 ║> Installed · Cluster Inspector  skill + MCP                                       ║── Capability                                                                       ║
 ║› Not installed · Grafana Inspector  skill + MCP                                   ║› Configure / install Cluster Inspector…                                            ║
@@ -9,13 +9,13 @@
 ║› Not installed · Find Session  skill                                              ║> MCP · cluster-inspector  external                                                 ║
 ║› Not installed · Non Interactive Ready Planning  skill                            ║── Installation · AACT records: Installed                                           ║
 ║› Not installed · Local Git Repository Map  skill                                  ║· Skill: opencode                                                                   ║
-║› Not installed · agent-skills-management  skill                                   ║· MCP registration: opencode                                                        ║
+║› Not installed · skills-source-management  skill                                   ║· MCP registration: opencode                                                        ║
 ║› Not installed · clean-up  skill ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐                                  ║
 ║› Not installed · kinfer-platform │ Configure agent registrations                                                                    │                                  ║
 ║› Not installed · kubedock-docker ├─────────────────────────────────┬────────────────────────────────────────────────────────────────┤                                  ║
 ║› Not installed · kubedock-nmap  s│ ► Endpoint and agents           │ Endpoint                                                       │                                  ║
-║› Not installed · pms15-gitops-tri│> Endpoint URI                   │  Endpoint URI                                                  │                                  ║
-║› Not installed · pms15-live-clust│› [ ] Codex                      │  http://127.0.0.1:1/mcp                                        │                                  ║
+║› Not installed · local-gitops-tri│> Endpoint URI                   │  Endpoint URI                                                  │                                  ║
+║› Not installed · local-live-clust│› [ ] Codex                      │  http://127.0.0.1:1/mcp                                        │                                  ║
 ║› Not installed · vault-backed-tri│› [x] OpenCode CLI               │  Check connection                                              │                                  ║
 ║› Not installed · cluster-inspecto│› [ ] Claude Code                │  Last check: Not checked in this session                       │                                  ║
 ║› Not installed · grafana-inspecto│› [ ] GitHub Copilot CLI         │                                                                │                                  ║
@@ -34,7 +34,7 @@
 ║                                                                                   ║                                                                                    ║
 ║1/17                                                                               ║3/3                                                                                 ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-║dso-skills / cluster-inspector / hopp / ota · cluster-inspector · http://127.0.0.1:1/mcp · owner: unknown                                                               ║
+║sample-skills / cluster-inspector / sample-env / target-a · cluster-inspector · http://127.0.0.1:1/mcp · owner: unknown                                                               ║
 ║                                                                                                                                                                        ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ║ F1 Help  F2 Open / Focus  F3 Details  F4 Parameters  F5 Refresh                                                                                                        ║

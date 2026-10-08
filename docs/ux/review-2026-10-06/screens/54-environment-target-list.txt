@@ -1,12 +1,12 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Actions                                                                                                     ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Actions                                                                                                     ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-╠ Environment                                                              ╦► Configured targets · dso-skills / hopp · TOML files                                        ╣
+╠ Environment                                                              ╦► Configured targets · sample-skills / sample-env · TOML files                                        ╣
 ║› No environment file                                                     ║> cluster-inspector / ap                                                                     ║
-║> dso-skills / hopp · TOML files                                          ║› cluster-inspector / ota                                                                    ║
-║› dso-skills / hopp · Saved profiles                                      ║› grafana-inspector / dso                                                                    ║
-║› pms15-agent-skills / hopp · Saved profiles                              ║                                                                                             ║
+║> sample-skills / sample-env · TOML files                                          ║› cluster-inspector / target-a                                                                    ║
+║› sample-skills / sample-env · Saved profiles                                      ║› grafana-inspector / sample                                                                    ║
+║› sample-skills / sample-env · Saved profiles                              ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
@@ -32,7 +32,7 @@
 ║                                                                          ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
 ║                                                                          ║                                                                                             ║
-║ Environment root: /home/pharkink/sources/dso-skills/environments · saved profiles are separate from TOML files                                                         ║
+║ Environment root: /home/user/sources/sample-skills/environments · saved profiles are separate from TOML files                                                         ║
 ║ [ Configure / install ]  [ View target ]  [ Environment root ]  [ Close ]                                                                                              ║
 ╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
 ║                                                                                                                                                                        ║

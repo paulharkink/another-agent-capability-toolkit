@@ -18,7 +18,7 @@ func TestUXCapabilityAndTargetDetailsContainRealInformation(t *testing.T) {
 	m := NewContext(t.Context(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.pendingSetup = &viewmodel.SetupPreview{
-		Key:         state.Key{Source: "team-source", Package: "grafana-inspector", Environment: "home", Target: "production"},
+		Key:         state.Key{Source: "team-source", Package: "grafana-inspector", Environment: "sample-env", Target: "production"},
 		MCP:         true,
 		PackageName: "Grafana Inspector", SourceRoot: "/sources/team", TargetPath: "/envs/home/production.toml",
 		TargetTOML: "[grafana]\nurl = \"https://grafana.example.test\"\n",
@@ -313,7 +313,7 @@ func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
 }
 
 func TestUXWorkspaceDraftCacheRetainsDraftAndParentSelection(t *testing.T) {
-	key := state.Key{Source: "team", Package: "grafana-inspector", Environment: "home", Target: "prod"}
+	key := state.Key{Source: "team", Package: "grafana-inspector", Environment: "sample-env", Target: "prod"}
 	workspace := workspaceState{Key: key, Section: "Authentication", InvokingView: "Environments", InvokingSelection: 3}
 	workspace.cacheDraft(map[string]any{"token": "draft-secret", "rows": []string{"one"}})
 	draft := workspace.cachedDraft()

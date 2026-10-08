@@ -1,6 +1,6 @@
 ╔ AACT · Another Agent Capability Toolkit                                                                                                                                ╗
-║ F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus                                                                                                ║
-║ Checkout: dso-skills · Managing: linux/amd64 · Source: dso-skills · Env: environments                                                                                  ║
+║ F9 Main menu: Agents | sample-env | Settings | Help   F2 Open / Focus                                                                                                ║
+║ Checkout: sample-skills · Managing: linux/amd64 · Source: sample-skills · Env: environments                                                                                  ║
 ╠Capabilities                                                                       ╦► Selected capability · Local Git Repository Map                                    ╣
 ║› Installed · Cluster Inspector  skill + MCP                                       ║── Capability                                                                       ║
 ║› Not installed · Grafana Inspector  skill + MCP                                   ║> Configure / install Local Git Repository Map…                                     ║
@@ -9,16 +9,16 @@
 ║› Not installed · Find Session  skill                                              ║· Skill: no AACT record                                                             ║
 ║› Not installed · Non Interactive Ready Planning  skill                            ║                                                                                    ║
 ║> Not installed · Local Git Repository Map  skill                                  ║                                                                                    ║
-║› Not installed · agent-skills-management  skill                                   ║                                                                                    ║
+║› Not installed · skills-source-management  skill                                   ║                                                                                    ║
 ║› Not installed · clean-up  skill                                                  ║                                                                                    ║
 ║› Not installed · kinfer-platform  skill                                           ║                                                                                    ║
 ║› Not installed · kubedock-docker  skill                                           ║                                                                                    ║
 ║› Not installed · kubedock-nmap  skill                                             ║                                                                                    ║
-║› Not installed · pms15-gitops-triage  skill                                       ║                                                                                    ║
-║› Not installed · pms15-live-cluster-diagnostics  skill                            ║                                                                                    ║
+║› Not installed · local-gitops-triage  skill                                       ║                                                                                    ║
+║› Not installed · local-live-cluster-diagnostics  skill                            ║                                                                                    ║
 ║› Not installed · vault-backed-trigger-delivery  skill                             ║                                                                                    ║
-║› Not installed · cluster-inspector · pms15-agent-skills  MCP                      ║                                                                                    ║
-║› Not installed · grafana-inspector · pms15-agent-skills  MCP                      ║                                                                                    ║
+║› Not installed · cluster-inspector · sample-skills  MCP                      ║                                                                                    ║
+║› Not installed · grafana-inspector · sample-skills  MCP                      ║                                                                                    ║
 ║                                                                                   ║                                                                                    ║
 ║                                                                                   ║                                                                                    ║
 ║                                                                                   ║                                                                                    ║

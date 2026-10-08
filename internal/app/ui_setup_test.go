@@ -206,7 +206,7 @@ func TestUISetupPreviewListsDatabaseChoicesFromTarget(t *testing.T) {
 		Name: "connections", Type: "multichoice", Label: "Read-only database queries (optional)", OptionsFrom: "dbms.*.tenants.*",
 	}}
 	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "home", "demo", "pms15.toml")
+	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "sample-env", "demo", "target-a.toml")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestUISetupPreviewListsDatabaseChoicesFromTarget(t *testing.T) {
 	if err := os.WriteFile(targetPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "home", Target: "pms15"})
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "sample-env", Target: "target-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
