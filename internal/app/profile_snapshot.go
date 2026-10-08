@@ -43,7 +43,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 		instances, runtimeErr = s.Options.Runtime.List(ctx)
 		s.observationMu.Lock()
 		if runtimeErr != nil {
-			instances = append([]mcp.Instance(nil), s.lastInstances...)
+			instances = nil
 			snapshot.ObservedAt = s.lastObservedAt
 			snapshot.Errors = append(snapshot.Errors, runtimeErr.Error())
 		} else {
@@ -214,6 +214,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 				runtime.URL = matches[0].URL
 			} else if runtimeErr != nil {
 				runtime.Status = "unavailable"
+				runtime.Ownership = "unknown"
 				runtime.Error = runtimeErr.Error()
 			} else if registeredURL != "" && runtime.Ownership == "external" {
 				runtime.Status = "unobserved"

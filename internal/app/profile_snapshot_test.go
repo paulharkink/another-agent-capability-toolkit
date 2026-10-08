@@ -96,7 +96,7 @@ func TestObservedProfileRuntimeOwnershipConflictAndStale(t *testing.T) {
 	}
 	r.err = errors.New("Docker socket unavailable")
 	snap, err = s.ProfileSnapshot(context.Background(), "demo")
-	if err != nil || !snap.Profiles[0].MCPs[0].Stale || len(snap.Errors) == 0 {
+	if err != nil || !snap.Profiles[0].MCPs[0].Stale || snap.Profiles[0].MCPs[0].Status != "unavailable" || snap.Profiles[0].MCPs[0].Ownership != "unknown" || len(snap.Errors) == 0 {
 		t.Fatalf("%+v %v", snap, err)
 	}
 	r.err = nil
