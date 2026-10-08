@@ -450,6 +450,33 @@ func effectiveActiveInputGroups(defs []catalog.Input, values, fixed map[string]a
 	return out
 }
 
+// validateProfileValuesForActiveGroups keeps type and ordinary input checks
+// for every value, while applying exclusive-group validation only to the
+// selected member. Inactive methods may retain older populated values so a
+// method switch does not erase saved answers or let stale defaults block it.
+func validateProfileValuesForActiveGroups(defs []catalog.Input, values map[string]any, active map[string]string) error {
+	selected := append([]catalog.Input(nil), defs...)
+	groupRequired := map[string]bool{}
+	for _, def := range defs {
+		if def.ExclusiveGroup != "" && def.Required {
+			groupRequired[def.ExclusiveGroup] = true
+		}
+	}
+	for i := range selected {
+		group := selected[i].ExclusiveGroup
+		if group == "" || active[group] == "" {
+			continue
+		}
+		if selected[i].Name != active[group] {
+			selected[i].ExclusiveGroup = ""
+			selected[i].Required = false
+			continue
+		}
+		selected[i].Required = selected[i].Required || groupRequired[group]
+	}
+	return forms.Validate(selected, values)
+}
+
 func formsValueFilled(value any) bool {
 	switch v := value.(type) {
 	case string:
@@ -810,6 +837,11 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if err != nil {
 		return out, invalid(err)
 	}
+	previousGroups, err := s.Store.ActiveInputGroups(key)
+	if err != nil {
+		return out, err
+	}
+	activeGroups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
 	if q.Interactive {
 		if s.Options.Editor == nil {
 			return out, invalid(errors.New("interactive editor is unavailable"))
@@ -828,7 +860,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			return out, err
 		}
 		if len(prepare) > 0 {
-			if err = forms.Validate(seedInputs, values); err != nil {
+			if err = validateProfileValuesForActiveGroups(seedInputs, values, activeGroups); err != nil {
 				return out, invalid(err)
 			}
 			choices := map[string][]catalog.Choice{}
@@ -849,13 +881,13 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if err = editProfileInputs(ctx, s.Options.Editor, choiceInputs, values, fixed); err != nil {
 					return out, err
 				}
-				if err = forms.Validate(choiceInputs, values); err != nil {
+				if err = validateProfileValuesForActiveGroups(choiceInputs, values, activeGroups); err != nil {
 					return out, invalid(err)
 				}
 			}
 		}
 	}
-	if err = forms.Validate(p.Inputs, values); err != nil {
+	if err = validateProfileValuesForActiveGroups(p.Inputs, values, activeGroups); err != nil {
 		return out, invalid(err)
 	}
 	items, selected, err = componentSelection(p, values, ids, q.SkillsOnly)
@@ -956,14 +988,9 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if err != nil {
 		return out, err
 	}
-	previousGroups, err := s.Store.ActiveInputGroups(key)
-	if err != nil {
-		return out, err
-	}
 	if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
 		return out, invalid(err)
 	}
-	activeGroups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
 	err = func() error {
 		if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 			return e
