@@ -187,3 +187,10 @@ capability packages, and the pull request process.
 
 AACT is MIT licensed. Bundled third-party notices are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Capability Packs
+
+A Capability Pack supplies a catalog and read-only configuration profiles.
+See [Creating and using Capability Packs](docs/capability-packs.md) and the
+[offline example](examples/capability-pack/aact.toml). Select a capability to
+see all its profiles, or create a local profile without changing pack files.

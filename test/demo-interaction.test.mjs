@@ -44,8 +44,6 @@ test.after(() => {
 
 function selectProfileAndOpenActions(root, key) {
   key(root.querySelector('[data-select="capability"].selected'), "Enter");
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
   key(root.querySelector('[data-select="homeDetail"].selected'), "Enter");
 }
 
@@ -54,20 +52,16 @@ test("Enter moves from layer 1 into layer 2, then opens the selected profile act
   key(root.querySelector('[data-select="capability"].selected'), "Enter");
   assert.equal(root.querySelector(".base-panes .pane:last-child").classList.contains("focused"), true);
   assert.ok(root.querySelector('[data-select="homeDetail"].selected'));
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
   key(root.querySelector('[data-select="homeDetail"].selected'), "Enter");
-  assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3");
-  assert.match(root.querySelector(".dialog-title").textContent, /home \/ target-a/);
+  assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3-4");
+  assert.match(root.querySelector(".dialog-title").textContent, /Cluster Inspector/);
 });
 
 test("Escape walks back from a contextual overlay through layer 2 to layer 1", () => {
   const { root, key } = createDemo();
   key(root.querySelector('[data-select="capability"].selected'), "Enter");
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
-  key(root.querySelector('[data-select="homeDetail"].selected'), "ArrowDown");
   key(root.querySelector('[data-select="homeDetail"].selected'), "Enter");
-  assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3");
+  assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3-4");
   key(root, "Escape");
   assert.equal(root.querySelector(".dialog"), null);
   assert.ok(root.querySelector('[data-select="homeDetail"].selected'));
@@ -75,31 +69,14 @@ test("Escape walks back from a contextual overlay through layer 2 to layer 1", (
   assert.ok(root.querySelector('[data-select="capability"].selected'));
 });
 
-test("keyboard opens registration and endpoint has an independent connection check", async () => {
-  const { root, key } = await createDemo();
-  selectProfileAndOpenActions(root, key);
-  for (let attempts = 0; attempts < 10 && !root.querySelector('[data-action="registrations"]').classList.contains("active"); attempts++) {
-    key(root.querySelector(".menu-item.active"), "ArrowDown");
-  }
-  const registrationAction = root.querySelector('[data-action="registrations"]');
-  assert.equal(registrationAction.classList.contains("active"), true, "registration action is keyboard reachable");
-  key(registrationAction, "Enter");
-  assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3-4");
-  const rows = [...root.querySelectorAll('[data-select="registrationItem"]')];
-  assert.match(rows[0].textContent, /Endpoint URI/);
-  assert.match(root.querySelector('[data-pane="registration-detail"]').textContent, /Check connection/);
-  assert.equal(root.querySelector('[data-toggle-registration="codex"]'), null);
-  key(rows[0], "ArrowDown");
-  assert.ok(root.querySelector('[data-toggle-registration="codex"]'));
-  assert.equal(root.querySelector('[data-pane="registration-detail"]').textContent.includes("Check connection"), false);
-});
+test("capability agent choices and endpoint checks have separate detail sections",()=>{const {root,key,click}=createDemo();selectProfileAndOpenActions(root,key);click(root.querySelector('[data-section="Agents"]'));assert.ok(root.querySelector('[data-toggle-destination="codex"]'));assert.equal(root.querySelector('[data-action="check"]'),null);click(root.querySelector('[data-section="Runtime"]'));assert.ok(root.querySelector('[data-action="check"]'));assert.equal(root.querySelector('[data-toggle-destination="codex"]'),null);});
 
 test("setup supports Tab pane navigation", () => {
   const { root, key } = createDemo();
   key(root, "F4");
   key(root, "F4");
   assert.equal(root.querySelector(".dialog").getAttribute("data-layer"), "3-4");
-  assert.match(root.querySelector(".dialog-title").textContent, /Install/);
+  assert.match(root.querySelector(".dialog-title").textContent, /Configure/);
   key(root.ownerDocument.activeElement, "Tab");
   assert.equal(root.ownerDocument.activeElement.closest(".overlay-panes .pane").dataset.pane, "setup-detail");
   key(root.ownerDocument.activeElement, "Tab");
@@ -125,7 +102,7 @@ test("home shows installation status without capability checkboxes or batch acti
   const home = root.querySelector('.base-panes');
   assert.match(home.textContent, /Installed|Partial|Not installed/);
   assert.doesNotMatch(home.textContent, /Apply marked|Marked capabilities|\[ \]|\[x\]/);
-  assert.match(home.textContent, /AACT records/);
+  assert.match(home.textContent, /registered 0\/1/);
   const selected = root.querySelector('[data-select="capability"].selected');
   const before = selected.textContent;
   key(selected, ' ');
