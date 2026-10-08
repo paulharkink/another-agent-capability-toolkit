@@ -562,8 +562,8 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 			}
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
 				chunks := []string{"Credential note:", "Managed credential", "is missing at", "kubeconfig."}
+				visible := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				visible := ""
 				for i := 0; i < 16; i++ {
 					page := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
 					visible += page
@@ -581,12 +581,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 				}
 				for _, chunk := range chunks {
 					if !strings.Contains(visible, chunk) {
-						start := strings.Index(visible, "Credential note:")
-						if start < 0 {
-							start = 0
-						}
-						end := min(len(visible), start+500)
-						t.Fatalf("Information does not show credential provenance chunk %q; visible excerpt: %q", chunk, visible[start:end])
+						t.Fatalf("Information does not show credential provenance chunk %q", chunk)
 					}
 				}
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
