@@ -13,7 +13,7 @@ import (
 // This exercises the actual removal overlay and submitted backend request.
 func TestUXExactRegistrationRemovalRequestIsPathScoped(t *testing.T) {
 	m, backend := typedProfileFixture()
-	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	key := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	pathA := "/tmp/aact-home-a/.claude.json"
 	pathB := "/tmp/aact-home-b/.claude.json"
 	m.inventory = []state.Installation{
@@ -56,6 +56,9 @@ func TestUXExactRegistrationRemovalRequestIsPathScoped(t *testing.T) {
 	if err := json.Unmarshal(body, &request); err != nil {
 		t.Fatal(err)
 	}
+	if ref, ok := request["Ref"].(map[string]any); !ok || ref["pack_id"] != "team-source" || ref["capability_id"] != "plain" || ref["name"] != "foreign" {
+		t.Fatalf("registration removal did not preserve profile reference: %s", body)
+	}
 	identities, ok := request["RemoveRegistrations"].([]any)
 	if !ok || len(identities) != 1 {
 		t.Fatalf("UI request did not identify exactly one recorded registration: %s", body)
@@ -68,7 +71,7 @@ func TestUXExactRegistrationRemovalRequestIsPathScoped(t *testing.T) {
 
 func TestUXMouseRemovalSelectsExactRegistrationPath(t *testing.T) {
 	m, backend := typedProfileFixture()
-	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	key := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	pathA := "/tmp/aact-home-a/.claude.json"
 	pathB := "/tmp/aact-home-b/.claude.json"
 	m.inventory = []state.Installation{
@@ -131,7 +134,7 @@ func TestUXMouseRemovalSelectsExactRegistrationPath(t *testing.T) {
 func TestUXRemovalShowsLongSelectedConfigPathAtMinimumSupportedSize(t *testing.T) {
 	m, backend := typedProfileFixture()
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
-	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	key := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	longPath := "/tmp/aact-home-" + strings.Repeat("nested-config-directory-", 3) + "settings/.claude.json"
 	m.inventory = []state.Installation{{
 		Key: key, AgentID: "claude", AgentHome: "/tmp/aact-home", AgentKind: "claude", Component: "mcp", Destination: longPath,

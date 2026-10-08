@@ -48,6 +48,7 @@ func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing
 	t.Setenv("CODEX_HOME", "")
 	svc, _, _ := fixture(t)
 	path := filepath.Join(home, ".codex", "config.toml")
+	svc.Options.AgentScopes = map[string]agents.Scope{"codex": {ID: "codex", Home: home, ConfigPathOverride: path, ExplicitHome: true}}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -75,23 +76,37 @@ func TestUIAgentManagementShowsConfigExistenceSeparatelyFromDetection(t *testing
 
 func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 	home := t.TempDir()
+
+	svc, _, _ := fixture(t)
 	isolateUXUserHome(t, home)
 	t.Setenv("USERPROFILE", home)
 	codexRoot := filepath.Join(home, "alternate-codex")
 	xdgRoot := filepath.Join(home, "alternate-xdg")
 	t.Setenv("CODEX_HOME", codexRoot)
 	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
-	svc, _, _ := fixture(t)
-	for _, tc := range []struct{ id, want string }{
-		{"codex", filepath.Join(codexRoot, "config.toml")},
-		{"opencode", filepath.Join(xdgRoot, "opencode", "opencode.jsonc")},
-	} {
-		env, err := svc.uiEnvironment(tc.id, state.Key{Source: "fixture", Package: "demo", Target: "default"})
-		if err != nil || env.ConfigPath != tc.want {
-			t.Fatalf("%s writes %q rather than active config %q: %v", tc.id, env.ConfigPath, tc.want, err)
+	rows, err := svc.UIAgentManagement(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]string{
+		"codex":    filepath.Join(codexRoot, "config.toml"),
+		"opencode": filepath.Join(xdgRoot, "opencode", "opencode.jsonc"),
+	}
+	for id, want := range wants {
+		found := false
+		for _, row := range rows {
+			if row.ID == id {
+				found = true
+				if row.EffectiveConfigPath != want || row.WriteConfigPath != want {
+					t.Fatalf("%s management paths effective=%q write=%q, want native override %q", id, row.EffectiveConfigPath, row.WriteConfigPath, want)
+				}
+				if id == "opencode" && !strings.Contains(row.Home, home) {
+					t.Fatalf("OpenCode management row lost isolated home: %q", row.Home)
+				}
+			}
 		}
-		if tc.id == "opencode" && env.SkillsDir != filepath.Join(xdgRoot, "opencode", "skills") {
-			t.Fatalf("OpenCode skills use inactive config root: %q", env.SkillsDir)
+		if !found {
+			t.Fatalf("%s management row missing", id)
 		}
 	}
 }
@@ -126,6 +141,7 @@ func TestUIAgentConfigShowsExactContentsAndRejectsUndiscoveredPaths(t *testing.T
 	t.Setenv("CODEX_HOME", "")
 	svc, _, _ := fixture(t)
 	path := filepath.Join(home, ".codex", "config.toml")
+	svc.Options.AgentScopes = map[string]agents.Scope{"codex": {ID: "codex", Home: home, ConfigPathOverride: path, ExplicitHome: true}}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}

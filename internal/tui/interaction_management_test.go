@@ -39,7 +39,7 @@ func TestSettingsCategoryFocusKeepsControlsInRelatedPane(t *testing.T) {
 }
 
 func TestInteractionF9RoutesToAllManagementDestinations(t *testing.T) {
-	for _, destination := range []string{"Agents", "Environments", "Settings", "Help"} {
+	for _, destination := range []string{"Agents", "Settings", "Help"} {
 		t.Run(destination, func(t *testing.T) {
 			m, _ := homeFixture()
 			press(m, tea.KeyF9, "")
@@ -61,7 +61,7 @@ func TestInteractionF9RoutesToAllManagementDestinations(t *testing.T) {
 }
 
 func managementDestinationIndex(destination string) int {
-	for i, name := range []string{"Agents", "Environments", "Settings", "Help"} {
+	for i, name := range []string{"Agents", "Settings", "Help"} {
 		if name == destination {
 			return i
 		}

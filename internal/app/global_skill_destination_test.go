@@ -22,7 +22,7 @@ func TestGlobalSkillDestinationInstallsAtSharedAgentSkillsPath(t *testing.T) {
 	if global.ID != "all" || global.SkillsDir != filepath.Join(home, ".agents", "skills") || global.ConfigPath != "" {
 		t.Fatalf("unexpected global environment: %+v", global)
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")); err != nil {
@@ -45,7 +45,8 @@ func TestGlobalSkillDestinationInstallsAtSharedAgentSkillsPath(t *testing.T) {
 	if !claudeAvailable {
 		t.Fatalf("named claude agent missing: %v", ids)
 	}
-	if _, err := svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "", "all", "", "default"); err != nil {
+	ensureProfileForTest(svc, profileRefFromTestKey("fixture", "demo", "default"))
+	if _, err := svc.UIRun(context.Background(), "uninstall", "fixture", "demo", "default", "all", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", "demo")); !os.IsNotExist(err) {
@@ -63,7 +64,7 @@ func TestGlobalDestinationRejectsMCPWithoutStartingRuntime(t *testing.T) {
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Image: "fixture", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err == nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err == nil {
 		t.Fatal("global destination accepted an MCP package")
 	}
 	if runtime.starts != 0 {
@@ -88,20 +89,20 @@ func TestGlobalAndCodexCanShareSkillDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global, codex}}); err != nil {
+	if _, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global, codex}}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.Installations()
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("shared destinations lack separate ownership: %+v, %v", rows, err)
 	}
-	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err != nil {
+	if _, err := svc.removeProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{global}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")); err != nil {
 		t.Fatalf("removing all broke codex reference: %v", err)
 	}
-	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{codex}}); err != nil {
+	if _, err := svc.removeProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{codex}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", "demo")); !os.IsNotExist(err) {

@@ -10,7 +10,6 @@ import (
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
@@ -90,23 +89,33 @@ func TestResolveProviderTokenFromRawFileOrEnvironment(t *testing.T) {
 	}
 }
 
-func TestStartProfileAppliesContainerArgsEnvironmentAndSecret(t *testing.T) {
+func TestRunProfileMCPStartAppliesContainerArgsEnvironmentAndSecret(t *testing.T) {
 	svc, _, _ := fixture(t)
 	runtime := &providerTestRuntime{}
 	svc.Options.Runtime = runtime
-	profile := catalog.MCP{
+	mcpProfile := catalog.MCP{
 		Name: "bitbucket", Image: "example/bitbucket:1", Transport: "streamable-http", ContainerPort: 8080, HostPortInput: "port",
 		Args: []string{"--http"}, Env: map[string]string{"STREAMABLE_HTTP": "true"},
 		EnvInputs: map[string]string{"API_URL": "api_url"}, SecretEnvInputs: map[string]string{"TOKEN": "token"},
 	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "work", Target: "sample-env", Profile: "bitbucket"}
-	_, err := svc.startProfile(context.Background(), svc.Source.Catalog[0], profile, config.Target{}, key, map[string]any{
-		"port": int64(18821), "api_url": "https://bitbucket.example/api", "token": "secret-token",
-	}, false)
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Skills = nil
+	pkg.MCP = nil
+	pkg.MCPs = []catalog.MCP{mcpProfile}
+	pkg.Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}, {Name: "api_url", Type: "string", Required: true}, {Name: "token", Type: "secret", Required: true}}
+	ref := writeProfileForTest(t, svc, pkg.ID, "runtime", "")
+	key, err := svc.Store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.specs) != 1 || runtime.keys[0] != key || runtime.specs[0].HostPort != 18821 || !reflect.DeepEqual(runtime.specs[0].Args, []string{"--http"}) || runtime.specs[0].Env["API_URL"] != "https://bitbucket.example/api" || runtime.specs[0].SecretEnv["TOKEN"] != "secret-token" {
+	_, err = svc.RunProfileMCP(context.Background(), "start", ProfileRequest{Ref: ref, Inputs: map[string]any{
+		"port": int64(18821), "api_url": "https://bitbucket.example/api", "token": "secret-token",
+	}}, "bitbucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.specs) != 1 || runtime.keys[0] != mcpProfileKey(key, *pkg, mcpProfile) || runtime.specs[0].HostPort != 18821 || !reflect.DeepEqual(runtime.specs[0].Args, []string{"--http"}) || runtime.specs[0].Env["API_URL"] != "https://bitbucket.example/api" || runtime.specs[0].SecretEnv["TOKEN"] != "secret-token" {
 		t.Fatalf("profile runtime launch was incomplete: keys=%#v specs=%#v", runtime.keys, runtime.specs)
 	}
 }
@@ -114,7 +123,7 @@ func TestStartProfileAppliesContainerArgsEnvironmentAndSecret(t *testing.T) {
 func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	svc, env, store := fixture(t)
 	env.ID = "generic:temporary"
-	env.Kind = "generic"
+	env.Kind = "opencode"
 	env.ConfigPath = filepath.Join(t.TempDir(), "agent.json")
 	env.SkillsDir = filepath.Join(t.TempDir(), "skills")
 	profiles := []catalog.MCP{
@@ -130,7 +139,7 @@ func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	}
 	runtime := &providerTestRuntime{}
 	svc.Options.Runtime = runtime
-	result, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
+	result, err := svc.applyProfileFixture(context.Background(), InstallRequest{Package: "demo", Agents: []agents.Environment{env}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +162,13 @@ func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(configured) != 2 || configured[0].Key.Profile == configured[1].Key.Profile {
-		t.Fatalf("configured MCP profiles = %#v", configured)
+	var configuredMCPs []state.ProfileRecord
+	for _, record := range configured {
+		if record.Key.Profile != "" {
+			configuredMCPs = append(configuredMCPs, record)
+		}
+	}
+	if len(configuredMCPs) != 2 || configuredMCPs[0].Key.Profile == configuredMCPs[1].Key.Profile {
+		t.Fatalf("configured MCP profiles = %#v (all profile records: %#v)", configuredMCPs, configured)
 	}
 }

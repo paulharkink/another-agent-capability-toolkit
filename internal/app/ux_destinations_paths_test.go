@@ -38,9 +38,8 @@ func uxField(v any, name string) string {
 
 func TestUXMCPDestinationsExcludeAllAndGeneric(t *testing.T) {
 	svc, _, _ := fixture(t)
-	svc.Source.Catalog[0].Skill = &catalog.Skill{}
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,7 @@ func TestUXMCPDestinationsExcludeAllAndGeneric(t *testing.T) {
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
 	for _, id := range []string{"all", "generic"} {
-		_, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		_, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 			SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{id},
 		})
 		if err == nil || runtime.starts != 0 {
@@ -77,14 +76,21 @@ func TestUXSkillOnlyDefaultsAll(t *testing.T) {
 	svc, _, _ := fixture(t)
 	home := t.TempDir()
 	isolateUXNativeConfigs(t, home)
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Destinations) == 0 || preview.Destinations[0].ID != "all" || !preview.Destinations[0].Selected {
+	var generic *viewmodel.SetupDestination
+	for i := range preview.Destinations {
+		if preview.Destinations[i].ID == "generic" {
+			generic = &preview.Destinations[i]
+			break
+		}
+	}
+	if generic == nil || !generic.Selected {
 		t.Fatalf("All not selected by default: %+v", preview.Destinations)
 	}
-	if got, want := preview.Destinations[0].Path, filepath.Join(home, ".agents", "skills"); got != want {
+	if got, want := generic.SkillsPath, filepath.Join(home, ".agents", "skills"); got != want {
 		t.Fatalf("All path = %q, want %q", got, want)
 	}
 	for _, d := range preview.Destinations {
@@ -110,7 +116,7 @@ func TestUXOpenCodePreviewMatchesActualJSONCWrite(t *testing.T) {
 	if err := os.WriteFile(jsoncPath, []byte(`{"theme":"jsonc","mcp":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +130,8 @@ func TestUXOpenCodePreviewMatchesActualJSONCWrite(t *testing.T) {
 	if destination == nil {
 		t.Fatal("OpenCode destination missing")
 	}
-	if destination.Path != jsoncPath {
-		t.Fatalf("preview path %q, want actual adapter path %q", destination.Path, jsoncPath)
+	if destination.ConfigPath != jsoncPath {
+		t.Fatalf("preview path %q, want actual adapter path %q", destination.ConfigPath, jsoncPath)
 	}
 	env, err := agents.ResolveEnvironment("opencode", "opencode", home)
 	if err != nil {
@@ -164,7 +170,7 @@ func TestUXUIInstallRecordsTheOpenCodeConfigFileItWrites(t *testing.T) {
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	svc.Options.Runtime = &fakeRuntime{}
 
-	_, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	_, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"opencode"},
 	})
 	if err != nil {
@@ -194,13 +200,18 @@ func TestUXProfileOverrideIsExplained(t *testing.T) {
 	svc, _, store := fixture(t)
 	nativeHome, customHome := t.TempDir(), t.TempDir()
 	isolateUXNativeConfigs(t, nativeHome)
-	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	customPath := filepath.Join(customHome, ".config", "opencode", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: customHome, Component: "mcp", Destination: customPath}); err != nil {
 		t.Fatal(err)
 	}
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +222,7 @@ func TestUXProfileOverrideIsExplained(t *testing.T) {
 			break
 		}
 	}
-	if dest == nil || dest.Path != strings.TrimSuffix(customPath, ".json")+".jsonc" || uxField(dest, "Home") != customHome || uxField(dest, "Note") == "" {
+	if dest == nil || dest.ConfigPath != strings.TrimSuffix(customPath, ".json")+".jsonc" || uxField(dest, "Home") != customHome || uxField(dest, "Note") == "" {
 		t.Fatalf("custom profile destination not explained: %+v", dest)
 	}
 	rows, err := svc.UIAgentManagement(context.Background())
@@ -242,13 +253,18 @@ func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
 	svc, _, store := fixture(t)
 	nativeHome := t.TempDir()
 	isolateUXNativeConfigs(t, nativeHome)
-	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	recordedPath := filepath.Join(nativeHome, "profile-config", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: nativeHome, Component: "mcp", Destination: recordedPath}); err != nil {
 		t.Fatal(err)
 	}
-	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +276,7 @@ func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
 			break
 		}
 	}
-	if dest == nil || dest.Path != strings.TrimSuffix(recordedPath, ".json")+".jsonc" {
+	if dest == nil || dest.ConfigPath != strings.TrimSuffix(recordedPath, ".json")+".jsonc" {
 		t.Fatalf("recorded profile path not retained: %+v", dest)
 	}
 	if !strings.Contains(strings.ToLower(dest.Note), "record") || !strings.Contains(dest.Note, recordedPath) || !strings.Contains(dest.Note, nativePath) {

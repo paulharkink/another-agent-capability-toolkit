@@ -22,11 +22,11 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	if m.form == nil {
 		t.Fatal("setup form did not open")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
-	m.Update(tea.KeyPressMsg{Code: 'x', Text: "/repos/edited"})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.form.SelectSectionID("inputs")
+	m.form.FocusSection()
+	if !m.form.ReconcileDraftField("repo", "/repos/edited") {
+		t.Fatal("could not edit the saved profile input draft")
+	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("setup Save did not submit")
@@ -39,7 +39,7 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 		t.Fatal("failed setup result does not offer Edit answers")
 	}
 	m.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
-	if m.result != nil || m.form == nil || !strings.Contains(m.View().Content, "/repos/edited") {
+	if m.result != nil || m.form == nil || m.form.Values()["repo"] != "/repos/edited" {
 		t.Fatal("Edit answers did not restore the submitted draft")
 	}
 }

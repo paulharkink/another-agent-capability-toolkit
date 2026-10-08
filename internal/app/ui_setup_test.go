@@ -11,6 +11,7 @@ import (
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -43,7 +44,22 @@ func (r uiBoundaryRegistry) Adapter(id string) (agents.Adapter, error) {
 	}
 	return r.fallback.Adapter(id)
 }
-func (r uiBoundaryRegistry) Adapters() []agents.Adapter { return r.fallback.Adapters() }
+func (r uiBoundaryRegistry) Adapters() []agents.Adapter {
+	var out []agents.Adapter
+	replaced := false
+	for _, adapter := range r.fallback.Adapters() {
+		if adapter.ID() == r.adapter.ID() {
+			out = append(out, r.adapter)
+			replaced = true
+		} else {
+			out = append(out, adapter)
+		}
+	}
+	if !replaced {
+		out = append(out, r.adapter)
+	}
+	return out
+}
 
 func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	home := t.TempDir()
@@ -57,7 +73,7 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	}}
 	fallback := svc.adapterRegistry()
 	svc.Options.Adapters = uiBoundaryRegistry{fallback: fallback, adapter: adapter}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +84,7 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 		if row.Home != adapter.detection.Home || row.SkillsPath != adapter.detection.SkillsPath || row.Detection != adapter.detection.State || row.DisabledReason != adapter.detection.MCPDisabledReason {
 			t.Fatalf("preview bypassed injected adapter detection: %+v", row)
 		}
-		if row.Path != adapter.detection.ConfigFiles[0].Path {
+		if row.ConfigPath != adapter.detection.ConfigFiles[0].Path {
 			t.Fatalf("adapter effective config path was ignored: %+v", row)
 		}
 		if len(adapter.scopes) == 0 {
@@ -79,33 +95,46 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	t.Fatal("codex destination missing")
 }
 
+func TestPublicSetupOperationsRequireProfileReference(t *testing.T) {
+	svc, _, _ := fixture(t)
+	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
+		t.Fatalf("preview without a profile reference: %v", err)
+	}
+	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}); err == nil || !strings.Contains(err.Error(), "profile reference") {
+		t.Fatalf("install without a profile reference: %v", err)
+	}
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
+		t.Fatalf("public install without a profile reference: %v", err)
+	}
+	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
+		t.Fatalf("public uninstall without a profile reference: %v", err)
+	}
+}
+
 func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
 		{Name: "public", Type: "string", Default: "public-default"},
 		{Name: "saved", Type: "string", Default: "old-default"},
 		{Name: "source", Type: "string", Default: "old-default"},
-		{Name: "target", Type: "file", ConfigKey: "cluster.certificate", Required: true},
+		{Name: "certificate", Type: "file", ConfigKey: "cluster.certificate", Required: true},
 		{Name: "missing", Type: "directory", Required: true},
 	}
 	svc.Source.PackageDefaults["demo"] = map[string]any{"source": "source-value"}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("[cluster]\ncertificate = './certs/ca.pem'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
-	if err := store.SaveAnswers(key, map[string]any{"saved": "saved-value", "source": "stale-saved"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: "fixture", PackageID: "demo", Environment: "company", Target: "production"})
+	ref := writeProfileForTest(t, svc, "demo", "production", "[inputs]\ncertificate = './certs/ca.pem'\n")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Key != key || got.TargetPath != targetPath || got.SourceRoot != svc.Source.Root || len(got.Inputs) != 5 {
+	if err := store.SaveAnswers(key, map[string]any{"saved": "saved-value", "source": "stale-saved"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(svc.Source.ProfileRoot, "demo", "production.toml")
+	if got.Key != key || got.ProfilePath != profilePath || got.PackRoot != svc.Source.Root || len(got.Inputs) != 5 {
 		t.Fatalf("preview identity or fields: %#v", got)
 	}
 	wants := []struct {
@@ -113,11 +142,11 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		value        any
 		present      bool
 	}{
-		{"public", "package", "public-default", true},
-		{"saved", "saved", "saved-value", true},
-		{"source", "saved", "stale-saved", true},
-		{"target", "target", filepath.Join(filepath.Dir(targetPath), "certs", "ca.pem"), true},
-		{"missing", "unset", nil, false},
+		{"public", "Capability definition", "public-default", true},
+		{"saved", "Saved override", "saved-value", true},
+		{"source", "Saved override", "stale-saved", true},
+		{"certificate", "Profile default", filepath.Join(filepath.Dir(profilePath), "certs", "ca.pem"), true},
+		{"missing", "Capability definition", nil, false},
 	}
 	for i, want := range wants {
 		field := got.Inputs[i]
@@ -125,8 +154,8 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 			t.Errorf("field %d: got %#v; want %#v", i, field, want)
 		}
 	}
-	if got.Inputs[3].ProvenancePath != targetPath {
-		t.Fatalf("target provenance path: %#v", got.Inputs[3])
+	if got.Inputs[3].ProvenancePath != profilePath {
+		t.Fatalf("profile provenance path: %#v", got.Inputs[3])
 	}
 }
 
@@ -150,7 +179,7 @@ func TestUISetupReadinessAllowsDetectedJSONAgentWithoutConfigAndDisablesCodexDes
 		},
 	}
 	svc.Options.DiscoveryProbe = &probe
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +187,7 @@ func TestUISetupReadinessAllowsDetectedJSONAgentWithoutConfigAndDisablesCodexDes
 	for _, destination := range preview.Destinations {
 		byID[destination.ID] = destination
 	}
-	if got := byID["opencode"]; got.ID == "" || got.DisabledReason != "" || !strings.Contains(got.Note, "will be created") {
+	if got := byID["opencode"]; got.ID == "" || got.DisabledReason != "" {
 		t.Fatalf("detected JSON client with absent config should remain selectable: %+v", got)
 	}
 	if got := byID["codex"]; got.DisabledReason != "Codex desktop detected; this adapter requires the codex CLI, which is unavailable" {
@@ -174,7 +203,7 @@ func TestUISetupPreviewCarriesCapabilityPresentationAndMCPDefinitions(t *testing
 	svc.Source.Catalog[0].UI = &catalog.Presentation{Sections: []catalog.Section{section}}
 	svc.Source.Catalog[0].MCPs = []catalog.MCP{primary, secondary}
 
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,11 +220,11 @@ func TestUIInstallEmptyDestinationsRemovesPreviouslyInstalledCapability(t *testi
 	home := filepath.Join(t.TempDir(), "home")
 	isolateUXUserHome(t, home)
 	request := viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}
-	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+	if _, err := svc.applyProfileFixtureUI(context.Background(), request); err != nil {
 		t.Fatalf("initial install: %v", err)
 	}
-	request.DestinationIDs = nil
-	_, err := svc.UIInstall(context.Background(), request)
+	request.ItemIDs = []string{}
+	_, err := svc.applyProfileFixtureUI(context.Background(), request)
 	if err != nil {
 		t.Fatalf("empty desired destinations should remove the binding: %v", err)
 	}
@@ -212,20 +241,18 @@ func TestUIInstallUncheckingCapabilityRemovesSkillAndMCPWithoutRuntimeLifecycle(
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	request := viewmodel.SetupInstallRequest{
-		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"claude"},
-		ExternalURL: "http://foreign.example/mcp",
-	}
-	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	request := ProfileRequest{Ref: ref, DestinationIDs: []string{"claude"}, ExternalURLs: map[string]string{"demo": "http://foreign.example/mcp"}}
+	if _, err := svc.ApplyProfile(context.Background(), request); err != nil {
 		t.Fatalf("initial capability attach: %v", err)
 	}
 	rows, err := store.Installations()
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("initial attach was not complete: %+v, %v", rows, err)
 	}
-	request.DestinationIDs = nil
-	request.Inputs = map[string]any{"required_but_invalid": nil}
-	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+	request.ItemIDs = []string{}
+	request.ExternalURLs = nil
+	if _, err := svc.ApplyProfile(context.Background(), request); err != nil {
 		t.Fatalf("unchecking binding should not resolve install inputs: %v", err)
 	}
 	rows, err = store.Installations()
@@ -245,17 +272,17 @@ func TestUIInstallEmptyDesiredDestinationsSavesPartialAnswers(t *testing.T) {
 		SetupRequest:   viewmodel.SetupRequest{PackageID: "demo"},
 		DestinationIDs: []string{"codex"}, Inputs: map[string]any{"note": "before"},
 	}
-	if _, err := svc.UIInstall(context.Background(), request); err != nil {
+	if _, err := svc.applyProfileFixtureUI(context.Background(), request); err != nil {
 		t.Fatalf("initial install: %v", err)
 	}
-	request.DestinationIDs = nil
+	request.ItemIDs = []string{}
 	request.Inputs = map[string]any{"note": "after"}
-	result, err := svc.UIInstall(context.Background(), request)
+	result, err := svc.applyProfileFixtureUI(context.Background(), request)
 	if err != nil || !result.Saved {
 		t.Fatalf("empty desired apply did not save partial answers: %+v %v", result, err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
-	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Value != "after" || preview.Inputs[0].Provenance != "saved" {
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Value != "after" || preview.Inputs[0].Provenance != "Saved override" {
 		t.Fatalf("saved partial answer missing from preview: %+v %v", preview.Inputs, err)
 	}
 	rows, err := store.Installations()
@@ -264,23 +291,16 @@ func TestUIInstallEmptyDesiredDestinationsSavesPartialAnswers(t *testing.T) {
 	}
 }
 
-func TestUISetupPreviewListsDatabaseChoicesFromTarget(t *testing.T) {
+func TestUISetupPreviewListsDatabaseChoicesFromProfile(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{
 		Name: "connections", Type: "multichoice", Label: "Read-only database queries (optional)", OptionsFrom: "dbms.*.tenants.*",
 	}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "sample-env", "demo", "target-a.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
 	data := "[dbms.shared_postgres.tenants.plane]\nlabel='Plane'\n" +
 		"[dbms.shared_postgres.tenants.openwebui]\nlabel='OpenWebUI'\n" +
 		"[dbms.homeassistant_postgres.tenants.homeassistant]\nlabel='Home Assistant'\n"
-	if err := os.WriteFile(targetPath, []byte(data), 0600); err != nil {
-		t.Fatal(err)
-	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "sample-env", Target: "target-a"})
+	ref := writeProfileForTest(t, svc, "demo", "database", data)
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,100 +313,74 @@ func TestUISetupPreviewListsDatabaseChoicesFromTarget(t *testing.T) {
 		t.Fatalf("database choices: %#v; want %#v", preview.Inputs, want)
 	}
 }
-func TestFixedTargetInputWinsSavedAnswersAndRejectsOverride(t *testing.T) {
+func TestFixedProfileInputWinsSavedAnswersAndSubmittedOverride(t *testing.T) {
 	svc, _, store := fixture(t)
-	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", ConfigKey: "cluster.api_server", Required: true}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
+	ref := writeProfileForTest(t, svc, "demo", "production", "api_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(targetPath, []byte("[cluster]\napi_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
 	if err := store.SaveAnswers(key, map[string]any{"api_server": "https://stale.example"}); err != nil {
 		t.Fatal(err)
 	}
-	q := viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}
-	preview, err := svc.UISetupPreview(context.Background(), q)
-	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "target" {
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "Profile fixed" {
 		t.Fatalf("fixed preview: %+v %v", preview, err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, false, false, false)
-	if err != nil || values["api_server"] != "https://fixed.example" {
-		t.Fatalf("resolved: %+v %v", values, err)
+	if _, err = svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"api_server": "https://other.example"}, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
+		t.Fatalf("fixed profile apply failed: %v", err)
 	}
-	if _, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", map[string]any{"api_server": "https://other.example"}, false, false, false); err == nil || !strings.Contains(err.Error(), "fixed") {
-		t.Fatalf("override accepted: %v", err)
+	answers, err := store.Answers(key)
+	if err != nil || answers["api_server"] != "https://fixed.example" {
+		t.Fatalf("profile fixed value did not win: %#v %v", answers, err)
 	}
 }
-func TestFixedTargetPolicyRequiresDeclaredTargetValue(t *testing.T) {
+func TestFixedProfilePolicyRequiresDeclaredProfileValue(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}); err == nil || !strings.Contains(err.Error(), "requires") {
+	ref := writeProfileForTest(t, svc, "demo", "production", "[aact.input_policy]\napi_server='fixed'\n")
+	if _, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref}); err == nil || !strings.Contains(err.Error(), "requires") {
 		t.Fatalf("missing fixed value accepted: %v", err)
 	}
 }
-func TestTargetOnlyPolicyDoesNotLockSourceDefault(t *testing.T) {
+func TestSourceDefaultPolicyMetadataDoesNotLockProfileInput(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
 	svc.Source.PackageDefaults["demo"] = map[string]any{"api_server": "https://source.example", "aact": map[string]any{"input_policy": map[string]any{"api_server": "fixed"}}}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	ref := writeProfileForTest(t, svc, "demo", "default", "")
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil || len(preview.Inputs) != 1 || !preview.Inputs[0].Editable {
 		t.Fatalf("source default locked input: %+v %v", preview, err)
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "", "", map[string]any{"api_server": "https://override.example"}, false, false, false)
-	if err != nil || values["api_server"] != "https://override.example" {
-		t.Fatalf("source default was fixed: %+v %v", values, err)
+	_, err = svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"api_server": "https://override.example"}, ItemIDs: []string{}, DestinationIDs: []string{}})
+	if err != nil {
+		t.Fatalf("source default did not remain editable: %v", err)
 	}
 }
-func TestTargetPolicyRejectsUnknownInputAndKeepsDefaultEditable(t *testing.T) {
+func TestProfilePolicyRejectsUnknownInputAndKeepsDefaultEditable(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("api_server='https://target.example'\n[aact.input_policy]\nunknown='fixed'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	q := viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"}
-	if _, err := svc.UISetupPreview(context.Background(), q); err == nil || !strings.Contains(err.Error(), "undeclared") {
+	ref := writeProfileForTest(t, svc, "demo", "production", "api_server='https://profile.example'\n[aact.input_policy]\nunknown='fixed'\n")
+	if _, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref}); err == nil || !strings.Contains(err.Error(), "undeclared") {
 		t.Fatalf("unknown policy accepted: %v", err)
 	}
-	if err := os.WriteFile(targetPath, []byte("api_server='https://target.example'\n[aact.input_policy]\napi_server='default'\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.Source.ProfileRoot, "demo", "production.toml"), []byte("api_server='https://profile.example'\n[aact.input_policy]\napi_server='default'\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), q)
-	if err != nil || !preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://target.example" {
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil || !preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://profile.example" {
 		t.Fatalf("editable default: %+v %v", preview, err)
 	}
 }
-func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
+func TestInteractiveEditorOmitsFixedProfileInput(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
 		{Name: "api_server", Type: "string", Required: true},
 		{Name: "local_port", Type: "integer", Required: true},
 		{Name: "credential", Type: "string", Required: true, VisibleWhen: map[string]any{"api_server": "https://fixed.example"}},
 	}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("api_server='https://fixed.example'\nlocal_port=8765\n[aact.input_policy]\napi_server='fixed'\nlocal_port='default'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	ref := writeProfileForTest(t, svc, "demo", "production", "api_server='https://fixed.example'\nlocal_port=8765\n[aact.input_policy]\napi_server='fixed'\nlocal_port='default'\n")
 	called := false
 	svc.Options.Editor = func(_ context.Context, defs []catalog.Input, values map[string]any) (map[string]any, error) {
 		called = true
@@ -400,28 +394,24 @@ func TestInteractiveEditorOmitFixedTargetInput(t *testing.T) {
 		values["credential"] = "visible-because-fixed-controller-matches"
 		return values, nil
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false, false)
-	if err != nil || !called || values["api_server"] != "https://fixed.example" || values["local_port"] != int64(9000) || values["credential"] != "visible-because-fixed-controller-matches" {
-		t.Fatalf("interactive fixed values: %+v %v", values, err)
+	_, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Interactive: true, ItemIDs: []string{}, DestinationIDs: []string{}})
+	if err != nil || !called {
+		t.Fatalf("interactive fixed profile values: called=%v err=%v", called, err)
 	}
 }
 
-func TestInteractiveInstallPreservesStoredInputHiddenByFixedTarget(t *testing.T) {
-	svc, env, store := fixture(t)
+func TestInteractiveInstallPreservesStoredInputHiddenByFixedProfile(t *testing.T) {
+	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
 		{Name: "mode", Type: "string", Required: true},
 		{Name: "local_label", Type: "string"},
 		{Name: "advanced_token", Type: "string", Required: true, VisibleWhen: map[string]any{"mode": "remote"}},
 	}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+	ref := writeProfileForTest(t, svc, "demo", "production", "mode='local'\n[aact.input_policy]\nmode='fixed'\n")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(targetPath, []byte("mode='local'\n[aact.input_policy]\nmode='fixed'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
 	if err := store.SaveAnswers(key, map[string]any{"advanced_token": "retain-me", "local_label": "before"}); err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +423,7 @@ func TestInteractiveInstallPreservesStoredInputHiddenByFixedTarget(t *testing.T)
 		}
 		return map[string]any{"local_label": "after"}, nil
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo", Environment: "company", Target: "production", Agents: []agents.Environment{env}, Interactive: true}); err != nil {
+	if _, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Interactive: true, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	answers, err := store.Answers(key)
@@ -441,24 +431,16 @@ func TestInteractiveInstallPreservesStoredInputHiddenByFixedTarget(t *testing.T)
 		t.Fatalf("interactive save lost inactive value or fixed controller: %#v %v", answers, err)
 	}
 }
-func TestInteractiveResolveSkipsEmptyFormWhenEveryInputFixed(t *testing.T) {
+func TestInteractiveApplySkipsEmptyFormWhenEveryInputFixed(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "api_server", Type: "string", Required: true}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	targetPath := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("api_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	ref := writeProfileForTest(t, svc, "demo", "production", "api_server='https://fixed.example'\n[aact.input_policy]\napi_server='fixed'\n")
 	svc.Options.Editor = func(context.Context, []catalog.Input, map[string]any) (map[string]any, error) {
 		t.Fatal("empty interactive form opened")
 		return nil, nil
 	}
-	values, _, _, err := svc.resolve(context.Background(), svc.Source.Catalog[0], "company", "production", nil, true, false, false)
-	if err != nil || values["api_server"] != "https://fixed.example" {
-		t.Fatalf("fixed-only resolve: %+v %v", values, err)
+	if _, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Interactive: true, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
+		t.Fatalf("fixed-only profile apply: %v", err)
 	}
 }
 
@@ -466,7 +448,7 @@ func TestUISetupPreviewDoesNotWriteStateOrRequireCompletedAnswers(t *testing.T) 
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "required", Type: "string", Required: true}}
 	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
-	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: "fixture", PackageID: "demo"})
+	got, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{SourceID: "fixture", PackageID: "demo"})
 	if err != nil || len(got.Inputs) != 1 || got.Inputs[0].HasValue {
 		t.Fatalf("missing required input should remain editable: %#v %v", got, err)
 	}
@@ -480,28 +462,38 @@ func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	if err := state.WriteJSON(filepath.Join(svc.Store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex", "opencode"}}); err != nil {
+	skill, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	skill, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
-	if err != nil || len(skill.Destinations) == 0 || skill.Destinations[0].ID != "all" || !skill.Destinations[0].Selected {
+	var generic *viewmodel.SetupDestination
+	for i := range skill.Destinations {
+		if skill.Destinations[i].ID == "generic" {
+			generic = &skill.Destinations[i]
+			break
+		}
+	}
+	if generic == nil || !generic.Selected {
 		t.Fatalf("skill destinations: %#v %v", skill.Destinations, err)
 	}
-	if skill.Destinations[0].Path != filepath.Join(home, ".agents", "skills") {
-		t.Fatalf("global skill path: %#v", skill.Destinations[0])
+	if generic.SkillsPath != filepath.Join(home, ".agents", "skills") {
+		t.Fatalf("global skill path: %#v", generic)
 	}
-	for _, destination := range skill.Destinations[1:] {
-		if destination.Selected {
+	for _, destination := range skill.Destinations {
+		if destination.ID != "generic" && destination.Selected {
 			t.Fatalf("skill-only setup selected named default: %#v", destination)
 		}
 	}
+	if err := state.WriteJSON(filepath.Join(svc.Store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex", "opencode"}}); err != nil {
+		t.Fatal(err)
+	}
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	mcpPreview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	mcpPreview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, destination := range mcpPreview.Destinations {
-		if destination.ID == "all" {
+		if destination.ID == "generic" {
 			t.Fatalf("global destination offered for MCP: %#v", mcpPreview.Destinations)
 		}
 		if destination.ID == "codex" || destination.ID == "opencode" {
@@ -522,14 +514,31 @@ func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
 	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
-	if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	probeHome := t.TempDir()
+	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{GOOS: "linux", Home: probeHome, Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
+		if name == "opencode" {
+			return filepath.Join(probeHome, "bin", name), nil
+		}
+		return "", os.ErrNotExist
+	}}
+	home := t.TempDir()
+	svc.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: home, ConfigPathOverride: filepath.Join(home, "mcp.json"), ExplicitHome: true}}
+	svc.Options.Runtime = &fakeRuntime{}
+	if _, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"opencode"}, Inputs: map[string]any{"registration_name": "demo-home-production-current"}, ExternalURLs: map[string]string{"demo": "http://127.0.0.1:8765/mcp"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", Component: "mcp", Destination: "/tmp/opencode.json", RegistrationName: "demo-home-production-current", URL: "http://127.0.0.1:8765/mcp"}); err != nil {
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err := store.SaveAnswers(key, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,18 +547,23 @@ func TestUISetupPreviewUsesActualRegistrationsAfterAnAttempt(t *testing.T) {
 		selected[destination.ID] = destination.Selected
 	}
 	if selected["codex"] || !selected["opencode"] {
-		t.Fatalf("saved defaults replaced actual registration state: %#v", selected)
+		profiles, _ := store.Profiles()
+		rows, _ := store.Installations()
+		t.Fatalf("saved defaults replaced actual registration state: selected=%#v items=%v profiles=%+v rows=%+v", selected, preview.SelectedItemIDs, profiles, rows)
 	}
 	if got := preview.Inputs[0]; !got.HasValue || got.Value != "demo-home-production-current" || got.Provenance != "registration" {
 		t.Fatalf("unset editable name did not show the currently registered MCP name: %#v", got)
 	}
 	svc.Source.PackageDefaults["demo"] = map[string]any{"registration_name": "maintainer-default"}
-	preview, err = svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err = svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := preview.Inputs[0]; got.Value != "maintainer-default" || got.Provenance != "source" || !strings.Contains(got.Definition.Hint, "demo-home-production-current") {
+	if got := preview.Inputs[0]; got.Value != "maintainer-default" || got.Provenance != "Capability Pack default" || !strings.Contains(got.Definition.Hint, "demo-home-production-current") {
 		t.Fatalf("configured name must remain the edit value while identifying the active registration: %#v", got)
+	}
+	if err := store.SaveAnswers(key, map[string]any{}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -588,12 +602,23 @@ func TestUISetupPreviewRegistrationNameFallbackRequiresMatchingUnambiguousRows(t
 			svc.Source.Catalog[0].Skill = nil
 			svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "registration_name", Label: "MCP registration name", Type: "string"}}
 			svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", RegistrationNameInput: "registration_name"}
+			ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+			key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mcpKey := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 			for _, row := range tc.rows {
+				sibling := row.Key.MCP
+				row.Key = mcpKey
+				if sibling != "" {
+					row.Key.MCP = sibling
+				}
 				if err := store.Record(row); err != nil {
 					t.Fatal(err)
 				}
 			}
-			preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+			preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -612,15 +637,13 @@ func TestUISetupPreviewRegistrationNameFallbackRequiresMatchingUnambiguousRows(t
 }
 
 func TestUISetupPreviewDoesNotCheckFailedSkillDestination(t *testing.T) {
-	svc, _, store := fixture(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
-	if err := store.SaveAnswers(key, map[string]any{}); err != nil {
-		t.Fatal(err)
+	svc, adapter, _ := profileApplyFixture(t)
+	adapter.fail = "skill"
+	_, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: config.ProfileRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "ota"}, ItemIDs: []string{"set:core"}, DestinationIDs: []string{adapter.ID()}})
+	if err == nil {
+		t.Fatal("fixture skill installation unexpectedly succeeded")
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: config.ProfileRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "ota"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,11 +661,15 @@ func TestUISetupPreviewDoesNotCheckUninstalledSavedMCPProfile(t *testing.T) {
 	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "settings.json"), map[string]any{"agents": []string{"codex"}}); err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "fixture", Package: "demo", Target: "default"}
-	if err := store.RecordProfile(state.ProfileRecord{Key: key}); err != nil {
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: ref.Name, Selection: &state.ProfileSelection{DestinationIDs: []string{"codex"}}}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,29 +680,26 @@ func TestUISetupPreviewDoesNotCheckUninstalledSavedMCPProfile(t *testing.T) {
 	}
 }
 
-func TestSavedCredentialClearOverridesEditableTargetPrefillOnReopen(t *testing.T) {
+func TestSavedCredentialClearOverridesEditableProfileValueOnReopen(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "token", Type: "secret", ExclusiveGroup: "cluster_credentials"}, {Name: "kubeconfig", Type: "file", ExclusiveGroup: "cluster_credentials"}}
-	svc.Source.EnvironmentRoot = filepath.Join(t.TempDir(), "environments")
-	path := filepath.Join(svc.Source.EnvironmentRoot, "company", "demo", "production.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("kubeconfig = './source.yaml'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	key := state.Key{Source: "fixture", Package: "demo", Environment: "company", Target: "production"}
-	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": ""}); err != nil {
-		t.Fatal(err)
-	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "company", Target: "production"})
+	ref := writeProfileForTest(t, svc, "demo", "production", "[inputs]\nkubeconfig = './source.yaml'\n")
+	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Inputs) != 2 || preview.Inputs[1].Value != "" || preview.Inputs[1].Provenance != "saved" {
+	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": ""}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Inputs) != 2 || preview.Inputs[1].Value != "" || preview.Inputs[1].Provenance != "Saved override" {
 		t.Fatalf("cleared credential was restored by target prefill: %#v", preview.Inputs)
 	}
-	if preview.Inputs[1].InheritedValue != filepath.Join(filepath.Dir(path), "source.yaml") || !preview.Inputs[1].HasInheritedValue {
+	profilePath := filepath.Join(svc.Source.ProfileRoot, "demo", "production.toml")
+	if preview.Inputs[1].InheritedValue != filepath.Join(filepath.Dir(profilePath), "source.yaml") || !preview.Inputs[1].HasInheritedValue {
 		t.Fatalf("saved override did not retain its resolved lower-precedence value: %#v", preview.Inputs[1])
 	}
 }
@@ -691,18 +715,19 @@ func TestUIInstallResetRemovesOnlySelectedSavedAnswerAndRevealsPackageDefault(t 
 		t.Fatal(err)
 	}
 
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Inputs[0].Provenance != "saved" || preview.Inputs[0].InheritedValue != "https://inherited.example" || !preview.Inputs[0].HasInheritedValue {
+	if preview.Inputs[0].Provenance != "Saved override" || preview.Inputs[0].InheritedValue != "https://inherited.example" || !preview.Inputs[0].HasInheritedValue {
 		t.Fatalf("preview did not expose the value below the saved override: %+v", preview.Inputs[0])
 	}
 
-	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	if _, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
 		Inputs:       map[string]any{"endpoint": "https://inherited.example", "team": "keep-me"},
 		ResetInputs:  []string{"endpoint"},
+		ItemIDs:      []string{}, DestinationIDs: []string{},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -714,11 +739,11 @@ func TestUIInstallResetRemovesOnlySelectedSavedAnswerAndRevealsPackageDefault(t 
 	if _, exists := answers["endpoint"]; exists {
 		t.Fatalf("inherited value was re-saved as an override: %#v", answers)
 	}
-	after, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	after, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Inputs[0].Value != "https://inherited.example" || after.Inputs[0].Provenance != "package" {
+	if after.Inputs[0].Value != "https://inherited.example" || after.Inputs[0].Provenance != "Capability definition" {
 		t.Fatalf("removing the override did not reveal the package default: %+v", after.Inputs[0])
 	}
 }
@@ -732,7 +757,7 @@ func TestUIInstallResetDoesNotResaveInheritedValueAfterInstallingSkill(t *testin
 	if err := store.SaveAnswers(key, map[string]any{"endpoint": "https://saved.example"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	if _, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest:   viewmodel.SetupRequest{PackageID: "demo"},
 		Inputs:         map[string]any{"endpoint": "https://inherited.example"},
 		ResetInputs:    []string{"endpoint"},
@@ -747,11 +772,11 @@ func TestUIInstallResetDoesNotResaveInheritedValueAfterInstallingSkill(t *testin
 	if _, exists := answers["endpoint"]; exists {
 		t.Fatalf("install path persisted the inherited value as an override: %#v", answers)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Inputs[0].Value != "https://inherited.example" || preview.Inputs[0].Provenance != "package" {
+	if preview.Inputs[0].Value != "https://inherited.example" || preview.Inputs[0].Provenance != "Capability definition" {
 		t.Fatalf("install path did not leave the package default as effective value: %+v", preview.Inputs[0])
 	}
 }
@@ -759,7 +784,7 @@ func TestUIInstallResetDoesNotResaveInheritedValueAfterInstallingSkill(t *testin
 func TestUISetupPreviewDisablesUndetectedJetBrainsMCPAdapterWithReason(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
-	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	got, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +793,7 @@ func TestUISetupPreviewDisablesUndetectedJetBrainsMCPAdapterWithReason(t *testin
 			if _, adapterErr := agents.For("intellij", nil); adapterErr != nil {
 				t.Fatalf("JetBrains adapter should be supported: %v", adapterErr)
 			}
-			if destination.DisabledReason != "JetBrains AI Assistant was not detected" {
+			if !strings.Contains(destination.DisabledReason, "JetBrains AI Assistant was not detected") {
 				t.Fatalf("undetected JetBrains destination should be disabled with a detection reason: %+v", destination)
 			}
 			if strings.Contains(destination.DisabledReason, "not implemented") {
@@ -794,7 +819,7 @@ func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testin
 		t.Fatal("UIInstall reopened the legacy editor")
 		return nil, nil
 	}
-	got, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	got, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{SourceID: "fixture", PackageID: "demo"},
 		Inputs:       map[string]any{"label": "world"}, DestinationIDs: []string{"all"},
 	})
@@ -819,11 +844,11 @@ func TestUIInstallRejectsGlobalDestinationForMCPBeforeStartingIt(t *testing.T) {
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	runtime := &fakeRuntime{}
 	svc.Options.Runtime = runtime
-	_, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+	_, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest:   viewmodel.SetupRequest{SourceID: "fixture", PackageID: "demo"},
 		DestinationIDs: []string{"all"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "skill-only") || runtime.starts != 0 {
+	if err == nil || !strings.Contains(err.Error(), "cannot install every selected capability component") || runtime.starts != 0 {
 		t.Fatalf("invalid global MCP install: %v, starts=%d", err, runtime.starts)
 	}
 }

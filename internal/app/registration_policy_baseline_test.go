@@ -23,10 +23,10 @@ func TestRegistrationPolicyBaselineRejectsNonNamedDestinations(t *testing.T) {
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
 	}))
 	defer server.Close()
-	key := state.Key{Source: "baseline-source", Package: "baseline-package", Target: "baseline-target"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
 	for _, agentID := range []string{"all", "generic", "generic:work", "generic-mcp:work"} {
 		t.Run(agentID, func(t *testing.T) {
-			_, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
+			_, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 				Key: key, URL: server.URL, Transport: "streamable-http", AgentIDs: []string{agentID},
 			})
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "named") {

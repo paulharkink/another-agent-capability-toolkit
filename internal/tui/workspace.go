@@ -291,7 +291,6 @@ func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
 				}
 			}
 		}
-		return nil
 	}
 	key := m.workspace.Key
 	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {

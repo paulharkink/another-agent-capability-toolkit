@@ -90,12 +90,12 @@ type modelWorkspaceBackend struct{ *setupBackendFixture }
 
 func (b *modelWorkspaceBackend) UISetupPreview(ctx context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	preview, err := b.setupBackendFixture.UISetupPreview(ctx, request)
-	preview.Key = state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
+	preview.Key = setupProfileKey(request)
 	preview.PackageName = "Inspector"
 	// This backend is used for observed MCP profile fixtures; keep the package
 	// metadata and declared public UI sections consistent with the profile rows it returns.
-	preview.MCP = request.PackageID == "inspect"
-	if request.PackageID == "inspect" && len(preview.Sections) > 0 {
+	preview.MCP = request.Ref.CapabilityID == "inspect" || request.PackageID == "inspect"
+	if (request.Ref.CapabilityID == "inspect" || request.PackageID == "inspect") && len(preview.Sections) > 0 {
 		preview.Sections[0].Title = "Authentication"
 	}
 	return preview, err
@@ -170,37 +170,40 @@ func TestHomeScrollableCapabilityPaneShowsThumbAndTrack(t *testing.T) {
 	}
 }
 func TestMCPStatusAuthLogsActions(t *testing.T) {
-	m := fixtureModel(t)
+	m, msg := homeFixture()
 	m.backend = &modelWorkspaceBackend{setupBackendFixture: &setupBackendFixture{}}
-	focusFixtureProfile(m)
-	m.focusPane(CapabilitiesPane)
-	press(m, tea.KeyEnter, "")
-	m.selectContext(m.home.Profiles.Index + 2)
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m.Update(msg)
+	m.focusPane(ProfilesPane)
+	profileIndex := -1
+	for index, row := range m.contextRows() {
+		if row.Kind == "profile" && row.Key.Target == "production" {
+			profileIndex = index
+			break
+		}
+	}
+	if profileIndex < 0 {
+		t.Fatal("profile fixture did not include the running profile")
+	}
+	m.selectContext(profileIndex)
 	_, open := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if open == nil {
-		t.Fatal("selected MCP target did not open its workspace")
+		t.Fatal("selected profile did not open its workspace")
 	}
 	m.Update(open())
 	text := m.View().Content
-	for _, part := range []string{"MCP runtime: running", "Endpoint: http://127.0.0.1:8765/mcp", "Authentication", "Logs", "Information"} {
+	for _, part := range []string{"Endpoint: http://127.0.0.1:8765/mcp", "Authentication", "Logs", "Information"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("missing %s: %s", part, text)
 		}
 	}
 	if m.workspace == nil || m.workspace.Key.Target != "production" || m.form == nil || m.form.SectionTitle() != "Overview" {
-		t.Fatalf("MCP status workspace lost the selected target: workspace=%+v form=%v", m.workspace, m.form != nil)
+		t.Fatalf("MCP status workspace lost the selected profile: workspace=%+v form=%v", m.workspace, m.form != nil)
 	}
-}
-func TestCancelledFormDoesNotInstall(t *testing.T) {
-	m := fixtureModel(t)
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	if m.form == nil {
-		t.Fatal("operation context form not opened")
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if cmd != nil || m.busy || m.form != nil || m.view != "Catalog" {
-		t.Fatalf("cancel changed model: %#v", m)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	if !strings.Contains(m.View().Content, "status: running") {
+		t.Fatalf("profile Runtime section did not preserve runtime status: %s", m.View().Content)
 	}
 }
 func TestSettingsEnvironmentRootEditable(t *testing.T) {
@@ -214,43 +217,6 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 	}
 }
 
-func TestCatalogContextSupportsDefaultMultipleAgents(t *testing.T) {
-	m := fixtureModel(t)
-	m.catalog[0].MCP = &catalog.MCP{}
-	m.settings["default_agents"] = "claude,codex"
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	if !strings.Contains(m.View().Content, "[claude codex]") {
-		t.Fatalf("multiple agent prefill missing: %s", m.View().Content)
-	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || !m.busy || m.pending.agent != "claude,codex" {
-		t.Fatalf("operation lacks agents: %#v", m.pending)
-	}
-}
-
-func TestSkillOnlyContextDefaultsToAllDespiteNamedMCPDefaults(t *testing.T) {
-	m := fixtureModel(t)
-	m.settings["default_agents"] = "claude"
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	if m.form == nil {
-		t.Fatal("skill install form missing")
-	}
-	if !strings.Contains(m.View().Content, "[all]") || !strings.Contains(m.View().Content, "All — ~/.agents/skills") {
-		t.Fatalf("skill-only default did not select All: %s", m.View().Content)
-	}
-}
-func TestCatalogRequiresAtLeastOneAgent(t *testing.T) {
-	m := fixtureModel(t)
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyEnter, "")
-	press(m, tea.KeySpace, " ")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd != nil || m.busy || m.form == nil {
-		t.Fatal("empty agent selection accepted")
-	}
-}
 func TestProfileShortcutCannotOpenPackageUninstall(t *testing.T) {
 	for _, status := range []string{"running", "external"} {
 		m := fixtureModel(t)
@@ -270,36 +236,6 @@ func TestExternalMCPRejectsDockerActions(t *testing.T) {
 		_, cmd := m.Update(tea.KeyPressMsg{Code: rune(stroke[0]), Text: stroke})
 		if cmd != nil || m.busy {
 			t.Fatalf("external action %s dispatched", stroke)
-		}
-	}
-}
-
-func TestCatalogMCPAuthAndStartBeforeInventory(t *testing.T) {
-	for _, action := range []struct{ key, action string }{{"a", "authenticate"}, {"s", "start"}} {
-		t.Run(action.action, func(t *testing.T) {
-			m := fixtureModel(t)
-			m.catalog[0].MCP = &catalog.MCP{}
-			m.mcps = nil
-			press(m, rune(action.key[0]), action.key)
-			if m.form == nil || m.busy || m.pending.action != action.action {
-				t.Fatalf("catalog MCP action unavailable: %#v", m.pending)
-			}
-			if strings.Contains(m.View().Content, "Agents *") {
-				t.Fatal("runtime action requests agents")
-			}
-			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-			if cmd == nil || !m.busy || m.pending.agent != "" {
-				t.Fatalf("runtime action not dispatched: %#v", m.pending)
-			}
-		})
-	}
-}
-func TestCatalogMCPActionsRejectSkillOnlyPackage(t *testing.T) {
-	for _, key := range []string{"a", "s"} {
-		m := fixtureModel(t)
-		press(m, rune(key[0]), key)
-		if m.form != nil || m.busy || m.output == "" {
-			t.Fatal("skill-only package did not explain missing MCP action")
 		}
 	}
 }

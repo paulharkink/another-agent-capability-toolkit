@@ -38,8 +38,8 @@ func TestUXCapabilityAndTargetDetailsContainRealInformation(t *testing.T) {
 
 func TestUXProfileBackedConfiguredTargetEnterOpensItsExactWorkspace(t *testing.T) {
 	m, _ := homeFixture()
-	m.backend = chooserSetupBackend{}
-	key := state.Key{Source: "one", Package: "inspect", Environment: "prod", Target: "live"}
+	m.backend = &workspaceRouteBackend{}
+	key := state.Key{Source: "one", Package: "inspect", Target: "live"}
 	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: key, Name: "Live runtime", RuntimeStatus: "running", Ownership: "local", URL: "http://localhost:8765/mcp"}}}
 	m.reconcileHome()
 	rows := m.contextRows()
@@ -72,7 +72,7 @@ type workspaceRouteBackend struct{ setupBackendFixture }
 func (b *workspaceRouteBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
 	return viewmodel.SetupPreview{
-		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		Key:         setupProfileKey(request),
 		PackageName: "Inspector", Configured: true, MCP: true,
 		HasManifestUI: true, Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
 		MCPDefinitions: []catalog.MCP{{Name: "inspector"}},
@@ -89,7 +89,7 @@ type workspaceApplyBackend struct {
 func (b *workspaceApplyBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
 	return viewmodel.SetupPreview{
-		Key:         state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target},
+		Key:         setupProfileKey(request),
 		PackageName: "Inspector", Configured: true, MCP: b.withMCP,
 		MCPDefinitions: func() []catalog.MCP {
 			if b.withMCP {
@@ -132,7 +132,7 @@ func TestUXProfileConfigurationOpensSharedGenericWorkspace(t *testing.T) {
 	if m.form != nil {
 		section = m.form.SectionTitle()
 	}
-	if setup.previewRequest.Target != "foreign" || section != "Overview" || m.workspace == nil || m.workspace.SectionID != sectionOverviewID {
+	if setup.previewRequest.Ref.Name != "foreign" || setup.previewRequest.Ref.PackID != "team-source" || section != "Overview" || m.workspace == nil || m.workspace.SectionID != sectionOverviewID {
 		t.Fatalf("profile configuration did not open the generic workspace on the exact target: request=%+v section=%q form=%v workspace=%+v", setup.previewRequest, section, m.form != nil, m.workspace)
 	}
 }
@@ -142,7 +142,7 @@ func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 	setup := &workspaceRouteBackend{}
 	m.backend = profileWorkspaceBackend{profileBackend: m.backend.(*profileBackend), workspaceRouteBackend: setup}
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 	m.Update(cmd())
 	if m.form == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "Configure agent destinations") {
 		t.Fatalf("Overview does not offer the shared Agents action:\n%s", ansi.Strip(m.View().Content))
@@ -162,43 +162,16 @@ func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 	}
 }
 
-func TestUXEnvironmentTargetUsesSharedInsetEditorAndBackRestoresParent(t *testing.T) {
+func TestUXEnvironmentTargetRequiresProfileReference(t *testing.T) {
 	backend := &workspaceRouteBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
-	m.view = "Environments"
-	m.management.TargetIndex = 2
 	request := viewmodel.SetupRequest{SourceID: "team", PackageID: "inspect", Environment: "prod", Target: "live"}
-	cmd := m.openTargetWorkspace(request, "Overview")
-	if cmd == nil {
-		t.Fatal("Environment target did not request the shared setup preview")
+	if cmd := m.openTargetWorkspace(request, "Overview"); cmd != nil {
+		t.Fatal("environment-shaped request reached profile setup")
 	}
-	m.Update(cmd())
-	if m.form == nil || m.workspace == nil || m.workspace.InvokingView != "Environments" || m.workspace.InvokingSelection != 2 {
-		t.Fatalf("Environment target did not open the shared workspace with parent selection: workspace=%+v form=%v", m.workspace, m.form != nil)
-	}
-	if m.form.SectionTitle() != "Overview" || !strings.Contains(ansi.Strip(m.View().Content), "Configure · Inspector") {
-		t.Fatalf("Environment target did not use the shared inset editor: section=%q\n%s", m.form.SectionTitle(), ansi.Strip(m.View().Content))
-	}
-	_, back := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if back == nil {
-		t.Fatal("Escape at Overview did not produce a parent Back message")
-	}
-	m.Update(back())
-	if m.form != nil || m.view != "Environments" || m.workspace == nil || m.workspace.Active || m.management.TargetIndex != 2 {
-		t.Fatalf("Back did not restore Environment parent selection: view=%s index=%d form=%v workspace=%+v", m.view, m.management.TargetIndex, m.form != nil, m.workspace)
-	}
-	if len(m.workspace.cachedDraft()) == 0 {
-		t.Fatal("Back did not cache the current target draft")
-	}
-	cmd = m.openTargetWorkspace(request, "Overview")
-	m.Update(cmd())
-	if m.form == nil || m.form.SectionTitle() != "Overview" {
-		t.Fatal("reopening the exact Environment target did not restore its shared workspace")
-	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}) // Explicit Cancel discards the workspace.
-	if m.form != nil || m.workspace != nil {
-		t.Fatal("explicit Cancel did not discard the target workspace")
+	if m.form != nil || m.workspace != nil || !strings.Contains(strings.ToLower(m.output), "profile") {
+		t.Fatalf("missing ProfileRef was not rejected with a clear message: workspace=%+v form=%v output=%q", m.workspace, m.form != nil, m.output)
 	}
 }
 
@@ -232,7 +205,7 @@ func TestUXOverviewHasNoApplyActionAndBottomSaveSubmitsCurrentConfiguration(t *t
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 	m.Update(cmd())
 	view := ansi.Strip(m.form.View().Content)
 	if strings.Contains(view, "Save and apply · configure agents") || strings.Contains(strings.ToLower(view), "build, start, register") || !strings.Contains(view, "Save and apply") {
@@ -249,7 +222,7 @@ func TestUXOverviewHasNoApplyActionAndBottomSaveSubmitsCurrentConfiguration(t *t
 	if setup.installRequest == nil {
 		t.Fatal("bottom Save and apply bypassed the unified setup service")
 	}
-	if setup.installRequest.SetupRequest.Target != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
+	if setup.installRequest.SetupRequest.Ref.Name != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
 		t.Fatalf("bottom Save and apply did not submit the current target draft: %+v", setup.installRequest)
 	}
 }
@@ -259,13 +232,13 @@ func TestUXOverviewApplyCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 	m.Update(cmd())
 
 	activate := func(dismiss bool) {
 		t.Helper()
 		if m.form == nil {
-			cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+			cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 			if cmd == nil {
 				t.Fatal("workspace could not be reopened after the previous successful result")
 			}
@@ -299,7 +272,7 @@ func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "skill-only", Environment: "dev", Target: "default"}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Overview")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
 	m.Update(cmd())
 	view := ansi.Strip(m.form.View().Content)
 	for _, forbidden := range []string{"MCP runtime", "Build and start MCP", "Stop MCP", "build, start, register"} {

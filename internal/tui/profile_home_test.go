@@ -74,6 +74,26 @@ func TestPackWorkspaceDoesNotTreatConfigSummaryAsRuntime(t *testing.T) {
 		t.Fatalf("legacy empty scope shown: %s", detail)
 	}
 }
+
+func TestPackWorkspaceMergesOnlyExactSavedRegistrationFacts(t *testing.T) {
+	m, _ := profileHomeFixture(t)
+	first := state.Key{Source: "one", Package: "inspect", Target: "ota"}
+	other := state.Key{Source: "one", Package: "inspect", Target: "prod"}
+	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+		{Key: first, Name: "ota", RuntimeStatus: "never-started", Ownership: "local", URL: "http://127.0.0.1:8765/ota", RegisteredAgents: []string{"codex"}, CanStart: true},
+		{Key: other, Name: "prod", RuntimeStatus: "never-started", Ownership: "local", URL: "http://127.0.0.1:8765/prod", RegisteredAgents: []string{"claude"}},
+	}}
+	got := m.profileForWorkspace(first)
+	if got == nil || got.URL != "http://127.0.0.1:8765/ota" || strings.Join(got.RegisteredAgents, ",") != "codex" {
+		t.Fatalf("exact saved registration facts were lost: %+v", got)
+	}
+	if got.RuntimeStatus != "never-started" || got.Ownership != "local" || !got.CanStart {
+		t.Fatalf("saved registration was mistaken for a live runtime: %+v", got)
+	}
+	if strings.Contains(strings.Join(got.RegisteredAgents, ","), "claude") || strings.Contains(got.URL, "/prod") {
+		t.Fatalf("another profile's registration was attributed to this one: %+v", got)
+	}
+}
 func TestProfileHomeSkillOnlyAndNoSyntheticProfile(t *testing.T) {
 	m, _ := profileHomeFixture(t)
 	m.home.Capabilities.Index = 1

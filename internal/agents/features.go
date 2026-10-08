@@ -52,6 +52,12 @@ type Adapter interface {
 	Detect(context.Context, Scope) (Detection, error)
 	Observe(context.Context, Scope, ObservationRequest) (Observation, error)
 }
+
+// ConfigPathProvider reports the exact file the adapter will mutate for a
+// scope, including native format precedence and an explicit owned override.
+type ConfigPathProvider interface {
+	PlannedConfigPath(context.Context, Scope) (string, error)
+}
 type SkillRequest struct {
 	Key       state.Key
 	Package   catalog.Package
@@ -63,9 +69,19 @@ type MCPRequest struct {
 	Registration Registration
 }
 type PluginRequest struct {
-	Key       state.Key
-	Plugin    catalog.Plugin
-	StagedDir string
+	Key                   state.Key
+	Plugin                catalog.Plugin
+	StagedDir             string
+	MarketplaceConfigured bool
+	Existing              *state.Installation
+}
+
+// PluginInstallResult reports the installed plugin separately from any
+// marketplace effect that survived a later installation failure.
+type PluginInstallResult struct {
+	Installation state.Installation
+	Effects      []state.Installation
+	Removed      []state.Installation
 }
 type SkillManager interface {
 	InstallSkill(context.Context, Scope, SkillRequest) (state.Installation, error)
@@ -76,6 +92,6 @@ type MCPManager interface {
 	Unregister(context.Context, Scope, state.Installation) error
 }
 type PluginManager interface {
-	InstallPlugin(context.Context, Scope, PluginRequest) (state.Installation, error)
+	InstallPlugin(context.Context, Scope, PluginRequest) (PluginInstallResult, error)
 	RemovePlugin(context.Context, Scope, state.Installation) error
 }

@@ -489,7 +489,7 @@ func TestUXWorkspaceConnectionFailureActionsStayInForegroundOverActiveForm(t *te
 	backend := &unreachableConnectionBackend{registrationWorkspaceBackend: base}
 	m.backend = backend
 	key := profile.snapshot.Profiles[1].Key
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}, "Connection")
+	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Connection")
 	m.Update(cmd())
 	if m.form == nil {
 		t.Fatal("workspace form did not open")

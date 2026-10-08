@@ -20,20 +20,35 @@ func ordinaryCancellation(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, picker.ErrCancelled) || errors.Is(err, context.Canceled) {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !ordinaryCancellation(cause) {
+				return false
+			}
+		}
 		return true
 	}
-	return false
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return ordinaryCancellation(wrapped.Unwrap())
+	}
+	return errors.Is(err, picker.ErrCancelled) || errors.Is(err, context.Canceled)
 }
 
-func cancellationResult(result Result, err error) (Result, error) {
-	if !ordinaryCancellation(err) {
-		return result, err
+func cancellationError(resultErrors []string, err error) error {
+	if !errors.Is(err, picker.ErrCancelled) && !errors.Is(err, context.Canceled) {
+		return err
 	}
-	if len(result.Errors) == 0 {
-		return result, picker.ErrCancelled
+	if ordinaryCancellation(err) && len(resultErrors) == 0 {
+		return picker.ErrCancelled
 	}
-	return result, errors.Join(errors.New(strings.Join(result.Errors, "; ")), picker.ErrCancelled)
+	if ordinaryCancellation(err) {
+		return errors.Join(errors.New(strings.Join(resultErrors, "; ")), picker.ErrCancelled)
+	}
+	return errors.Join(err, picker.ErrCancelled)
 }
 
 // credentialObservation reports the presence of package-managed material only.

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 func TestHomeShowsRecordedInstallationStatusWithoutBatchControls(t *testing.T) {
@@ -54,7 +55,7 @@ func TestHomeShowsUnavailableWhenInventoryCannotBeRead(t *testing.T) {
 
 func TestMultiMCPInstallationDetailsRequireEveryDeclaredChild(t *testing.T) {
 	m, msg := homeFixture()
-	msg.inventory = []state.Installation{{Key: state.Key{Source: "one", Package: "inspect", MCP: "alpha"}, AgentID: "codex", Component: "mcp"}}
+	msg.inventory = []state.Installation{{Key: state.Key{Source: "one", Package: "inspect", Target: "production", MCP: "alpha"}, AgentID: "codex", Component: "mcp"}}
 	m.Update(msg)
 	status, details := m.installationDetails(CapabilityRow{Source: "one", Package: "inspect", MCP: true, MCPNames: []string{"alpha", "beta"}})
 	if status != "Partial" || len(details) != 2 || !strings.Contains(details[0], "alpha") || !strings.Contains(details[1], "beta MCP registration: no AACT record") {
@@ -65,10 +66,16 @@ func TestMultiMCPInstallationDetailsRequireEveryDeclaredChild(t *testing.T) {
 func TestInstallationStatusRequiresOneCompleteTargetAndDestinationBinding(t *testing.T) {
 	m, msg := homeFixture()
 	c := CapabilityRow{Source: "one", Package: "inspect", Skill: true, MCP: true, MCPNames: []string{"alpha", "beta"}}
+	partialProfile := state.Key{Source: "one", Package: "inspect", Target: "prod"}
+	completeProfile := state.Key{Source: "one", Package: "inspect", Target: "local"}
+	msg.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+		{Key: partialProfile, Name: "prod", RuntimeStatus: "never-started", Ownership: "local"},
+		{Key: completeProfile, Name: "local", RuntimeStatus: "never-started", Ownership: "local"},
+	}}
 	msg.inventory = []state.Installation{
-		{Key: state.Key{Source: "one", Package: "inspect", Environment: "dev", Target: "prod"}, AgentID: "codex", Component: "skill"},
-		{Key: state.Key{Source: "one", Package: "inspect", Environment: "dev", Target: "prod", MCP: "alpha"}, AgentID: "claude", Component: "mcp"},
-		{Key: state.Key{Source: "one", Package: "inspect", Environment: "dev", Target: "prod", MCP: "beta"}, AgentID: "claude", Component: "mcp"},
+		{Key: partialProfile, AgentID: "codex", Component: "skill"},
+		{Key: state.Key{Source: partialProfile.Source, Package: partialProfile.Package, Target: partialProfile.Target, MCP: "alpha"}, AgentID: "claude", Component: "mcp"},
+		{Key: state.Key{Source: partialProfile.Source, Package: partialProfile.Package, Target: partialProfile.Target, MCP: "beta"}, AgentID: "claude", Component: "mcp"},
 	}
 	m.Update(msg)
 	if status, _ := m.installationDetails(c); status != "Partial" {
@@ -76,9 +83,9 @@ func TestInstallationStatusRequiresOneCompleteTargetAndDestinationBinding(t *tes
 	}
 
 	msg.inventory = append(msg.inventory,
-		state.Installation{Key: state.Key{Source: "one", Package: "inspect", Environment: "test", Target: "local"}, AgentID: "codex", AgentHome: "/home/codex", Component: "skill"},
-		state.Installation{Key: state.Key{Source: "one", Package: "inspect", Environment: "test", Target: "local", MCP: "alpha"}, AgentID: "codex", AgentHome: "/home/codex", Component: "mcp"},
-		state.Installation{Key: state.Key{Source: "one", Package: "inspect", Environment: "test", Target: "local", MCP: "beta"}, AgentID: "codex", AgentHome: "/home/codex", Component: "mcp"},
+		state.Installation{Key: completeProfile, AgentID: "codex", AgentHome: "/home/codex", Component: "skill"},
+		state.Installation{Key: state.Key{Source: completeProfile.Source, Package: completeProfile.Package, Target: completeProfile.Target, MCP: "alpha"}, AgentID: "codex", AgentHome: "/home/codex", Component: "mcp"},
+		state.Installation{Key: state.Key{Source: completeProfile.Source, Package: completeProfile.Package, Target: completeProfile.Target, MCP: "beta"}, AgentID: "codex", AgentHome: "/home/codex", Component: "mcp"},
 	)
 	m.Update(msg)
 	if status, _ := m.installationDetails(c); status != "Installed" {

@@ -16,7 +16,7 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	backend := &registrationWorkspaceBackend{Backend: profileBackend, profileBackend: profileBackend, setupBackendFixture: &setupBackendFixture{}}
 	m.backend = backend
 	m.focusPane(ProfilesPane)
-	foreign := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	foreign := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	for index, row := range m.contextRows() {
 		if row.Kind == "profile" && row.Key == foreign {
 			m.selectContext(index)
@@ -49,7 +49,7 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 		t.Fatalf("Agents Save did not invoke setup install: %s", m.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, save))
-	if backend.installRequest == nil || backend.installRequest.SetupRequest.Target != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
+	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.Name != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
 		t.Fatalf("Agents Save did not bind destinations on selected target: %+v", backend.installRequest)
 	}
 }
@@ -71,7 +71,7 @@ func (b *registrationWorkspaceBackend) CheckConnection(ctx context.Context, url,
 }
 func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
-	return viewmodel.SetupPreview{Key: state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}, PackageName: "Plain", MCP: true, HasManifestUI: true,
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: "Plain", MCP: true, HasManifestUI: true,
 		Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
 		Inputs:   []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string"}, Value: "http://127.0.0.1:8765/mcp", HasValue: true, Editable: true}}, MCPDefinitions: []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex/skills", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"}, {ID: "claude", Path: "/home/test/.claude/skills", ConfigPath: "/home/test/.claude.json", Detection: "installed"}}}, nil
@@ -86,7 +86,7 @@ func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBa
 	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}}
 	m.backend = backend
 	m.focusPane(ProfilesPane)
-	foreign := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
+	foreign := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	for i, row := range m.contextRows() {
 		if row.Kind == "profile" && row.Key == foreign {
 			m.selectContext(i)

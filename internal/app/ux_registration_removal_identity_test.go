@@ -19,13 +19,13 @@ func TestUXRegistrationRemovalRejectsAmbiguousAgentOnlyIdentity(t *testing.T) {
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	homeA := filepath.Join(base, "home-a")
 	homeB := filepath.Join(base, "home-b")
 	pathA := filepath.Join(homeA, ".claude.json")
 	pathB := filepath.Join(homeB, ".claude.json")
 	endpoint := "http://127.0.0.1:8765/mcp"
-	_, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	_, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: endpoint, Transport: "streamable-http", Agents: []agents.Environment{
 			{ID: "claude", Kind: "claude", Home: homeA, ConfigPath: pathA},
 			{ID: "claude", Kind: "claude", Home: homeB, ConfigPath: pathB},
@@ -39,11 +39,11 @@ func TestUXRegistrationRemovalRejectsAmbiguousAgentOnlyIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
+	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Key: key, RemoveAgentIDs: []string{"claude"},
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
-		t.Fatalf("unavailable source should require locating the package: result=%+v err=%v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ambiguous removal") {
+		t.Fatalf("profile-scoped ambiguous removal should require an exact config destination: result=%+v err=%v", result, err)
 	}
 	for _, path := range []string{pathA, pathB} {
 		contents, readErr := os.ReadFile(path)
@@ -81,13 +81,13 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	homeA := filepath.Join(base, "home-a")
 	homeB := filepath.Join(base, "home-b")
 	pathA := filepath.Join(homeA, ".claude.json")
 	pathB := filepath.Join(homeB, ".claude.json")
 	endpoint := "http://127.0.0.1:8765/mcp"
-	_, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	_, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: endpoint, Transport: "streamable-http", Agents: []agents.Environment{
 			{ID: "claude", Kind: "claude", Home: homeA, ConfigPath: pathA},
 			{ID: "claude", Kind: "claude", Home: homeB, ConfigPath: pathB},
@@ -110,16 +110,16 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		t.Fatal(err)
 	}
-	result, err := svc.UIConfigureRegistrations(context.Background(), request)
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
-		t.Fatalf("unavailable source did not require locating the package: result=%+v err=%v", result, err)
+	result, err := configureUIRegistrationsTest(context.Background(), svc, request)
+	if err != nil || len(result.Changes) != 1 || result.Changes[0].Destination != pathA {
+		t.Fatalf("exact profile-scoped removal did not remove only the selected registration: result=%+v err=%v", result, err)
 	}
 	if !result.Connection.CheckedAt.IsZero() {
 		t.Fatalf("exact removal unexpectedly checked the endpoint: %+v", result.Connection)
 	}
 	contentsA, errA := os.ReadFile(pathA)
-	if errA != nil || !strings.Contains(string(contentsA), endpoint) {
-		t.Fatalf("unavailable source changed selected config: content=%s err=%v", contentsA, errA)
+	if errA == nil && strings.Contains(string(contentsA), endpoint) {
+		t.Fatalf("selected config still contains removed endpoint: content=%s", contentsA)
 	}
 	contentsB, errB := os.ReadFile(pathB)
 	if errB != nil || !strings.Contains(string(contentsB), endpoint) {
@@ -141,8 +141,8 @@ func TestUXExactRegistrationRemovalKeepsUnselectedDestinationAndSkill(t *testing
 			remainingSkill++
 		}
 	}
-	if remainingMCP != 2 || remainingSkill != 1 {
-		t.Fatalf("unavailable source changed registration ledger: rows=%+v", rows)
+	if remainingMCP != 1 || remainingSkill != 1 {
+		t.Fatalf("exact profile removal changed unrelated registration or skill state: rows=%+v", rows)
 	}
 	if runtime.starts != 0 || runtime.stops != 0 {
 		t.Fatalf("registration removal changed runtime: starts=%d stops=%d", runtime.starts, runtime.stops)
@@ -153,13 +153,13 @@ func TestUXMixedExactAndAmbiguousLegacyRemovalRejectsBeforeMutation(t *testing.T
 	base := t.TempDir()
 	isolateUXUserHome(t, base)
 	svc, _, store := fixture(t)
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	homeA := filepath.Join(base, "home-a")
 	homeB := filepath.Join(base, "home-b")
 	pathA := filepath.Join(homeA, ".claude.json")
 	pathB := filepath.Join(homeB, ".claude.json")
 	endpoint := "http://127.0.0.1:8765/mcp"
-	_, err := svc.ConfigureRegistrations(context.Background(), RegistrationRequest{
+	_, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
 		Key: key, URL: endpoint, Transport: "streamable-http", Agents: []agents.Environment{
 			{ID: "claude", Kind: "claude", Home: homeA, ConfigPath: pathA},
 			{ID: "claude", Kind: "claude", Home: homeB, ConfigPath: pathB},
@@ -182,7 +182,7 @@ func TestUXMixedExactAndAmbiguousLegacyRemovalRejectsBeforeMutation(t *testing.T
 	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		t.Fatal(err)
 	}
-	result, err := svc.UIConfigureRegistrations(context.Background(), request)
+	result, err := configureUIRegistrationsTest(context.Background(), svc, request)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "mix") {
 		t.Fatalf("mixed exact and ambiguous legacy removal should be rejected, result=%+v err=%v", result, err)
 	}

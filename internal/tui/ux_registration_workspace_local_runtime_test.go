@@ -65,7 +65,7 @@ func (b *localInstallCapture) UIRun(context.Context, string, string, string, str
 }
 
 // TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply drives the
-// real target preview and workspace with the checked-in Cluster Inspector
+// real profile preview and workspace with the checked-in Cluster Inspector
 // catalog entry. Only Docker observation and UIInstall's final side effect are
 // replaced; the persisted state and HOME are isolated under t.TempDir.
 func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.T) {
@@ -93,7 +93,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := state.Key{Source: "cluster-source", Package: pkg.ID, Environment: "sample-env", Target: "target-a"}
+	key := state.Key{Source: "cluster-source", Package: pkg.ID, Target: "target-a"}
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: pkg.Name}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,18 +106,11 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatal(err)
 	}
 
-	environmentRoot := filepath.Join(root, "environments")
-	targetPath := filepath.Join(environmentRoot, "sample-env", pkg.ID, "target-a.toml")
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, []byte("[cluster]\napi_server = \"https://initial.example.test\"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	profileRoot := filepath.Join(root, "profiles")
 	source := config.Source{
 		ID: "cluster-source", Root: repoRoot, ManifestPath: filepath.Join(repoRoot, "aact.toml"),
-		EnvironmentRoot: environmentRoot, Catalog: []catalog.Package{pkg},
-		PackageDefaults: map[string]map[string]any{pkg.ID: {"registration_name": "cluster-inspector-target-a"}},
+		ProfileRoot: profileRoot, Catalog: []catalog.Package{pkg},
+		PackageDefaults: map[string]map[string]any{pkg.ID: {"registration_name": "cluster-inspector-target-a", "api_server": "https://initial.example.test"}},
 	}
 	probe, err := agents.DefaultDiscoveryProbe()
 	if err != nil {
@@ -130,6 +123,9 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		return "", os.ErrNotExist
 	}
 	service := app.New(source, store, app.Options{DiscoveryProbe: &probe})
+	if err := service.CreateProfile(t.Context(), config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}); err != nil {
+		t.Fatal(err)
+	}
 	docker := &emptyDockerPS{}
 	realRuntime := mcp.NewDockerRuntime(store)
 	realRuntime.Executor = docker
@@ -149,7 +145,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		}
 	}
 
-	request := viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}
+	request := m.packProfileRequest(key)
 	cmd := m.openTargetWorkspace(request, "Overview")
 	if cmd == nil {
 		t.Fatal("actual package target did not open a setup workspace")

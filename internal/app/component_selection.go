@@ -2,8 +2,9 @@ package app
 
 import (
 	"fmt"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"slices"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 )
 
 func componentSelection(p catalog.Package, values map[string]any, ids []string, skillsOnly bool) ([]catalog.InstallationItem, []string, error) {
@@ -59,6 +60,9 @@ func componentSelection(p catalog.Package, values map[string]any, ids []string, 
 	}
 	for id := range chosen {
 		return nil, nil, fmt.Errorf("unknown installation item %q; linked components must be selected as their set", id)
+	}
+	if skillsOnly && len(result) == 0 {
+		return nil, nil, fmt.Errorf("no skill components are available to install")
 	}
 	return result, normalized, nil
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type isolatedClusterRuntime struct {
@@ -95,7 +94,7 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m.Update(m.Init()())
 	key := state.Key{Source: source.ID, Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"}
-	request := viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}
+	request := m.packProfileRequest(key)
 	cmd := m.openTargetWorkspace(request, "Overview")
 	if cmd == nil {
 		t.Fatal("actual source did not open the target workspace")

@@ -19,8 +19,8 @@ func TestUIConfigureRegistrationsTargetsCurrentEnvironmentOnly(t *testing.T) {
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
 	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
-	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
-		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
+	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
+		Ref: profileRefFromTestKey("foreign-windows", "demo", "cluster"), Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") || result.Connection.CheckedAt.IsZero() {
 		t.Fatalf("unavailable source did not request locating the package: %+v, %v", result, err)
@@ -39,8 +39,8 @@ func TestUIConfigureRegistrationsRequiresSourceForCompleteCapability(t *testing.
 	svc, _, store := fixture(t)
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
-	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
-		Key: state.Key{Source: "missing-source", Package: "demo", Target: "cluster"},
+	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
+		Ref: profileRefFromTestKey("missing-source", "demo", "cluster"), Key: state.Key{Source: "missing-source", Package: "demo", Target: "cluster"},
 		URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
@@ -59,10 +59,10 @@ func TestUIConfigureRegistrationsAttachesKnownCapabilityWithSkill(t *testing.T) 
 	runtime := &changedRuntime{}
 	svc.Options.Runtime = runtime
 	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
-	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
+	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err != nil || len(result.Changes) != 2 {
+	if err != nil || len(result.Changes) != 1 {
 		t.Fatalf("complete capability attach failed: %+v %v", result, err)
 	}
 	rows, err := store.Installations()
@@ -73,8 +73,8 @@ func TestUIConfigureRegistrationsAttachesKnownCapabilityWithSkill(t *testing.T) 
 	for _, row := range rows {
 		components[row.Component] = true
 	}
-	if !components["skill"] || !components["mcp"] || runtime.starts != 0 || runtime.stops != 0 {
-		t.Fatalf("external capability attach did not install skill+registration only: rows=%+v starts=%d stops=%d", rows, runtime.starts, runtime.stops)
+	if components["skill"] || !components["mcp"] || runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("registration attach changed profile skill/runtime state: rows=%+v starts=%d stops=%d", rows, runtime.starts, runtime.stops)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestUIConfigureRegistrationsMapsSingleManifestMCPToNamedEndpoint(t *testing
 	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].MCPs = []catalog.MCP{{Name: "primary", Transport: "streamable-http"}}
-	_, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
+	_, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Key: state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"},
 		URL: "http://foreign.example/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
@@ -97,8 +97,8 @@ func TestUIConfigureRegistrationsMapsSingleManifestMCPToNamedEndpoint(t *testing
 	for _, row := range rows {
 		if row.Component == "mcp" {
 			found = true
-			if row.Key.MCP != "primary" || row.URL != "http://foreign.example/mcp" {
-				t.Fatalf("single list MCP identity was not mapped: %+v", row)
+			if row.Key.Package != "demo" || row.URL != "http://foreign.example/mcp" || row.RegistrationName == "" {
+				t.Fatalf("single list MCP registration was not attached to the selected profile: %+v", row)
 			}
 		}
 	}
@@ -114,7 +114,7 @@ func TestUIConfigureRegistrationsReportsUnreachableEndpointWithoutClaimingRuntim
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := server.URL + "/mcp"
 	server.Close()
-	result, err := svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{
+	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Key: state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"},
 		URL: url, Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
@@ -137,7 +137,7 @@ func TestUIConfigureRegistrationsRejectsAmbiguousAgentConfigPaths(t *testing.T) 
 	if err != nil || len(before) != 2 {
 		t.Fatalf("fixture lost one config path: %+v, %v", before, err)
 	}
-	_, err = svc.UIConfigureRegistrations(context.Background(), viewmodel.RegistrationRequest{Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"}})
+	_, err = configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{Ref: profileRefFromTestKey(key.Source, key.Package, key.Target), Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"}})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
 		t.Fatalf("unavailable source did not request locating the package: %v", err)
 	}

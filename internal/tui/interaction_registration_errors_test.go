@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -16,7 +17,8 @@ func openAgentMetadataWorkspace(t *testing.T, setup *setupBackendFixture, previe
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	backend := &capabilityProfileBackend{Backend: profile, profile: profile, setup: setup, preview: preview}
 	m.backend = backend
-	request := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "dev", Target: "foreign"}
+	m.Update(m.load()())
+	request := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "foreign"}}
 	cmd := m.openTargetWorkspace(request, "Agents")
 	if cmd == nil {
 		t.Fatal("could not open manifest-backed complete-binding workspace")
@@ -36,17 +38,17 @@ func TestAchievedDestinationsRequireSkillAndExactParentKey(t *testing.T) {
 	m.sourceLabels = map[string]string{}
 	m.settings["source"] = "team-source"
 	draft := &setupRetryDraft{
-		preview: viewmodel.SetupPreview{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "plain"}}},
+		preview: viewmodel.SetupPreview{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, MCP: true, MCPDefinitions: []catalog.MCP{{Name: "plain"}}},
 		values:  map[string]any{"__aact_destinations": []string{"codex"}}, destinationField: "__aact_destinations",
 	}
 	result := &viewmodel.OperationResult{Changes: []state.Installation{
-		{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
+		{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
 	}}
 	if got := m.achievedDestinationIDs(draft, result); len(got) != 0 {
 		t.Fatalf("MCP-only effect falsely completed skill+MCP binding: %v", got)
 	}
 	result.Changes = append(result.Changes,
-		state.Installation{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "other", MCP: ""}, AgentID: "codex", Component: "skill"},
+		state.Installation{Key: state.Key{Source: "team-source", Package: "plain", Target: "other", MCP: ""}, AgentID: "codex", Component: "skill"},
 	)
 	if got := m.achievedDestinationIDs(draft, result); len(got) != 0 {
 		t.Fatalf("unrelated target effect falsely completed binding: %v", got)
@@ -82,8 +84,8 @@ func TestInteractionPartialCompleteBindingReportsStructuredAchievementsAndErrors
 	setup := &setupBackendFixture{installResult: &viewmodel.OperationResult{
 		Saved: true,
 		Changes: []state.Installation{
-			{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}, AgentID: "codex", Component: "skill"},
-			{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
+			{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, AgentID: "codex", Component: "skill"},
+			{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
 		},
 		Errors: []string{`claude: refusing foreign MCP registration "plain-dev"`},
 	}}
@@ -124,8 +126,8 @@ func TestInteractionPartialCompleteBindingReportsStructuredAchievementsAndErrors
 func TestUnsavedExitApplyFailureReconcilesDestinationSelection(t *testing.T) {
 	setup := &setupBackendFixture{installResult: &viewmodel.OperationResult{
 		Changes: []state.Installation{
-			{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}, AgentID: "codex", Component: "skill"},
-			{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
+			{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, AgentID: "codex", Component: "skill"},
+			{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign", MCP: "plain"}, AgentID: "codex", Component: "mcp"},
 		},
 		Errors: []string{"claude endpoint rejected"},
 	}}

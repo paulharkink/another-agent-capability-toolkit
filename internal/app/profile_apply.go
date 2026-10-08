@@ -34,6 +34,50 @@ type ProfileRequest struct {
 	ExternalURLs                         map[string]string
 }
 
+func isDynamicChoice(input catalog.Input) bool {
+	switch input.Type {
+	case "choice", "multichoice", "multiple-choice":
+		return len(input.Options) == 0
+	default:
+		return false
+	}
+}
+
+func selectedPrepareMCPs(p catalog.Package, values map[string]any, items []catalog.InstallationItem) []catalog.MCP {
+	selected := map[string]bool{}
+	for _, item := range items {
+		for _, name := range item.MCPs {
+			selected[name] = true
+		}
+	}
+	result := []catalog.MCP{}
+	for _, definition := range packageMCPProfiles(p, values) {
+		if selected[definition.Name] && definition.Actions["prepare"].Argv != nil {
+			result = append(result, definition)
+		}
+	}
+	return result
+}
+
+func editProfileInputs(ctx context.Context, editor Editor, defs []catalog.Input, values, fixed map[string]any) error {
+	visible, editable := editableWithFixedContext(defs, values, fixed)
+	if len(visible) == 0 {
+		return nil
+	}
+	edited, err := editor(ctx, visible, editable)
+	if err != nil {
+		return err
+	}
+	merged := withFixed(mergeEditedValues(values, edited), fixed)
+	for name := range values {
+		delete(values, name)
+	}
+	for name, value := range merged {
+		values[name] = value
+	}
+	return nil
+}
+
 func (s *Service) adapterRegistry() AdapterProvider {
 	if s.Options.Adapters != nil {
 		return s.Options.Adapters
@@ -226,7 +270,11 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		return viewmodel.SetupPreview{}, err
 	}
 	values, inherited, err := s.profileValues(p, pr, key, q)
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions()}
+	credentialState, credentialNote := s.credentialObservation(p, key)
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
+	if err != nil {
+		return preview, err
+	}
 	if p.UI != nil {
 		preview.Sections = p.UI.Sections
 		preview.HasManifestUI = len(p.UI.Sections) > 0
@@ -239,8 +287,19 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		preview.ProfileTOML = string(b)
 	}
+	installations, err := s.Store.Installations()
 	if err != nil {
-		preview.ValidationIssues = append(preview.ValidationIssues, err.Error())
+		return preview, err
+	}
+	currentRegistration := activeRegistrationName(p, installations, key)
+	registrationInput := ""
+	if definitions := p.MCPDefinitions(); len(definitions) == 1 {
+		registrationInput = definitions[0].RegistrationNameInput
+	}
+	if currentRegistration != "" && registrationInput != "" {
+		if _, hasValue := values[registrationInput]; !hasValue {
+			values[registrationInput] = currentRegistration
+		}
 	}
 	if e := forms.Validate(p.Inputs, values); e == nil {
 		preview.Configured = true
@@ -272,6 +331,20 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		if !editable {
 			provenance = "Profile fixed"
+		} else if def.Name == registrationInput && currentRegistration != "" {
+			if _, configured := inherited[def.Name]; !configured {
+				if _, savedValue := saved[def.Name]; !savedValue {
+					provenance = "registration"
+				}
+			}
+		}
+		if def.Name == registrationInput && currentRegistration != "" {
+			current := "Currently registered as: " + currentRegistration
+			if def.Hint == "" {
+				def.Hint = current
+			} else {
+				def.Hint += " " + current
+			}
 		}
 		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path})
 	}
@@ -314,16 +387,24 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 			destinationIDs = []string{"generic"}
 		}
 	}
-	achievedRows, e := s.Store.Installations()
-	if e != nil {
-		return preview, e
-	}
+	achievedRows := installations
 	for _, a := range s.adapterRegistry().Adapters() {
 		features := a.Features()
 		if p.HasMCP() && !features.MCPs {
 			continue
 		}
-		d, e := a.Detect(ctx, s.agentScope(a.ID()))
+		nativeScope := s.agentScope(a.ID())
+		nativeScope.ID = a.ID()
+		scope := nativeScope
+		recorded, hasRecorded := profileRegistrationConfig(achievedRows, key, a.ID())
+		if hasRecorded {
+			scope.ConfigPathOverride = recorded.Destination
+			if recorded.AgentHome != "" {
+				scope.Home = recorded.AgentHome
+				scope.ExplicitHome = true
+			}
+		}
+		d, e := a.Detect(ctx, scope)
 		row := viewmodel.SetupDestination{Name: a.Name(), ID: a.ID(), Kind: a.ID(), Home: d.Home, SkillsPath: d.SkillsPath, Detection: d.State, Note: d.Reason, Features: features, Selected: slices.Contains(destinationIDs, a.ID())}
 		if e != nil {
 			row.DisabledReason = e.Error()
@@ -332,10 +413,27 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		} else if !d.Installed {
 			row.DisabledReason = "Agent is not detected: " + d.Reason
 		}
-		for _, f := range d.ConfigFiles {
-			if f.Precedence == "effective" || row.ConfigPath == "" {
-				row.ConfigPath = f.Path
+		row.ConfigPath = d.ConfigPath
+		if row.ConfigPath == "" {
+			for _, file := range d.ConfigFiles {
+				if file.Precedence == "effective" {
+					row.ConfigPath = file.Path
+					break
+				}
 			}
+		}
+		if hasRecorded && recorded.Destination != "" {
+			defaultPath := ""
+			if defaultDetection, detectErr := a.Detect(ctx, nativeScope); detectErr == nil {
+				defaultPath = defaultDetection.ConfigPath
+			}
+			if recorded.AgentHome != "" {
+				row.Home = recorded.AgentHome
+			}
+			if row.Note != "" {
+				row.Note += "; "
+			}
+			row.Note += "Using recorded profile MCP config " + recorded.Destination + " (adapter write path " + row.ConfigPath + "; native path " + defaultPath + ")"
 		}
 		for _, id := range destinationIDs {
 			selectedAdapter, e := s.adapterRegistry().Adapter(id)
@@ -351,6 +449,22 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		preview.Destinations = append(preview.Destinations, row)
 	}
+	for index := range preview.Destinations {
+		current := &preview.Destinations[index]
+		if current.SkillsPath == "" {
+			continue
+		}
+		for otherIndex := range preview.Destinations {
+			other := preview.Destinations[otherIndex]
+			if other.ID != current.ID && other.SkillsPath == current.SkillsPath {
+				if current.Note != "" {
+					current.Note += "; "
+				}
+				current.Note += "Shares skill directory with " + other.Name + ": " + current.SkillsPath
+				break
+			}
+		}
+	}
 	return preview, nil
 }
 func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
@@ -363,16 +477,16 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			out, err = s.ApplyProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
 			return err
 		})
-		if err != nil && len(out.Errors) == 0 {
+		if err != nil && len(out.Errors) == 0 && !ordinaryCancellation(err) {
 			out.Errors = append(out.Errors, err.Error())
 		}
-		return out, err
+		return out, cancellationError(out.Errors, err)
 	}
 	out.SavedApplicable = true
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
 	defer func() {
-		if err != nil {
+		if err != nil && !ordinaryCancellation(err) {
 			out.Errors = append(out.Errors, err.Error())
 		}
 	}()
@@ -384,20 +498,6 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	values, _, err := s.profileValues(p, pr, key, q)
 	if err != nil {
 		return out, err
-	}
-	if q.Interactive && s.Options.Editor != nil {
-		values, err = s.Options.Editor(ctx, p.Inputs, values)
-		if err != nil {
-			return out, err
-		}
-		fixed, e := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
-		if e != nil {
-			return out, e
-		}
-		values = withFixed(values, fixed)
-	}
-	if err = forms.Validate(p.Inputs, values); err != nil {
-		return out, invalid(err)
 	}
 	records, err := s.Store.Profiles()
 	if err != nil {
@@ -417,6 +517,62 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		}
 	}
 	items, selected, err := componentSelection(p, values, ids, q.SkillsOnly)
+	if err != nil {
+		return out, invalid(err)
+	}
+	fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
+	if err != nil {
+		return out, invalid(err)
+	}
+	if q.Interactive {
+		if s.Options.Editor == nil {
+			return out, invalid(errors.New("interactive editor is unavailable"))
+		}
+		prepare := selectedPrepareMCPs(p, values, items)
+		seedInputs := append([]catalog.Input(nil), p.Inputs...)
+		if len(prepare) > 0 {
+			for i := range seedInputs {
+				if isDynamicChoice(seedInputs[i]) {
+					seedInputs[i].Required = false
+					seedInputs[i].MinItems = nil
+				}
+			}
+		}
+		if err = editProfileInputs(ctx, s.Options.Editor, seedInputs, values, fixed); err != nil {
+			return out, err
+		}
+		if len(prepare) > 0 {
+			if err = forms.Validate(seedInputs, values); err != nil {
+				return out, invalid(err)
+			}
+			choices := map[string][]catalog.Choice{}
+			for _, definition := range prepare {
+				cp := p
+				cp.MCP = &definition
+				cp.MCPs = nil
+				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpProfileKey(key, p, definition)), Interactive: false})
+				if runErr != nil {
+					return out, runErr
+				}
+				for name, options := range result.Choices {
+					choices[name] = append(choices[name], options...)
+				}
+			}
+			if len(choices) > 0 {
+				choiceInputs := withChoices(p.Inputs, choices)
+				if err = editProfileInputs(ctx, s.Options.Editor, choiceInputs, values, fixed); err != nil {
+					return out, err
+				}
+				if err = forms.Validate(choiceInputs, values); err != nil {
+					return out, invalid(err)
+				}
+			}
+		}
+	}
+	if err = forms.Validate(p.Inputs, values); err != nil {
+		return out, invalid(err)
+	}
+	items, selected, err = componentSelection(p, values, ids, q.SkillsOnly)
 	if err != nil {
 		return out, invalid(err)
 	}
@@ -588,6 +744,17 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if err != nil {
 		return out, err
 	}
+	// Marketplace ownership outlives an individual plugin. Remove installed
+	// plugin rows first, then remove an otherwise-empty owned marketplace.
+	slices.SortStableFunc(old, func(a, b state.Installation) int {
+		if a.Component == "plugin-marketplace" && b.Component != "plugin-marketplace" {
+			return 1
+		}
+		if b.Component == "plugin-marketplace" && a.Component != "plugin-marketplace" {
+			return -1
+		}
+		return 0
+	})
 	for _, row := range old {
 		if !sameCapabilityKey(row.Key, key) || row.Component == "runtime" {
 			continue
@@ -608,6 +775,14 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			found := false
 			for _, d := range p.Plugins {
 				if plugins[d.Name] && strings.HasPrefix(row.ReleaseID, d.Name+"@") {
+					found = true
+				}
+			}
+			want = want && found
+		case "plugin-marketplace":
+			found := false
+			for _, d := range p.Plugins {
+				if plugins[d.Name] && row.ReleaseID == "aact-"+key.ID()[:12]+"-"+d.Name {
 					found = true
 				}
 			}
@@ -678,11 +853,34 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			}
 			out.Step = "plugin"
 			reportOperationStep(ctx, out.Step)
-			row, e := a.(agents.PluginManager).InstallPlugin(ctx, scope, agents.PluginRequest{Key: key, Plugin: plugin, StagedDir: pluginStages[plugin.Name]})
+			marketplaceConfigured := false
+			var existingPlugin *state.Installation
+			for _, existing := range old {
+				if existing.Key == key && existing.AgentID == id && existing.Component == "plugin-marketplace" && existing.ReleaseID == "aact-"+key.ID()[:12]+"-"+plugin.Name {
+					marketplaceConfigured = true
+				}
+				if existing.Key == key && existing.AgentID == id && existing.Component == "plugin" && strings.HasPrefix(existing.ReleaseID, plugin.Name+"@") {
+					copy := existing
+					existingPlugin = &copy
+					marketplaceConfigured = true
+				}
+			}
+			pluginResult, e := a.(agents.PluginManager).InstallPlugin(ctx, scope, agents.PluginRequest{Key: key, Plugin: plugin, StagedDir: pluginStages[plugin.Name], MarketplaceConfigured: marketplaceConfigured, Existing: existingPlugin})
+			for _, removed := range pluginResult.Removed {
+				out.Changes = append(out.Changes, removed)
+				if removeErr := s.removeRegistration(removed); removeErr != nil {
+					return out, removeErr
+				}
+			}
+			for _, effect := range pluginResult.Effects {
+				if recordErr := record(effect); recordErr != nil {
+					return out, recordErr
+				}
+			}
 			if e != nil {
 				return out, e
 			}
-			if e = record(row); e != nil {
+			if e = record(pluginResult.Installation); e != nil {
 				return out, e
 			}
 		}
@@ -707,10 +905,22 @@ func (s *Service) removeProfileBinding(ctx context.Context, row state.Installati
 	case "mcp":
 		manager, ok := a.(agents.MCPManager)
 		if !ok {
-			return errors.New("adapter cannot remove MCP")
+			if row.Mode != "manual" {
+				return errors.New("adapter cannot remove MCP")
+			}
+			legacy, legacyErr := agents.For(row.AgentKind, s.Options.Runner)
+			if legacyErr != nil {
+				return legacyErr
+			}
+			env := agents.Environment{ID: row.AgentID, Kind: row.AgentKind, Home: row.AgentHome, ConfigPath: row.Destination, Owned: map[string]agents.Registration{
+				row.RegistrationName: {Name: row.RegistrationName, URL: row.URL, Transport: row.Transport, TimeoutMS: row.TimeoutMS},
+			}}
+			err = legacy.Unregister(ctx, env, row.RegistrationName)
+			break
 		}
 		err = manager.Unregister(ctx, scope, row)
 	case "plugin":
+	case "plugin-marketplace":
 		scope.ConfigPathOverride = ""
 		manager, ok := a.(agents.PluginManager)
 		if !ok {

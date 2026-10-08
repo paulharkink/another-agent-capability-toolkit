@@ -4,13 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 func rememberedSkillSource(t *testing.T, svc *Service) (string, string) {
@@ -23,10 +22,14 @@ func rememberedSkillSource(t *testing.T, svc *Service) (string, string) {
 	if err := os.WriteFile(filepath.Join(pkg, "SKILL.md"), []byte("---\nname: demo\ndescription: demo\n---\nRemembered"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "aact.toml"), []byte("schema_version = 1\nsource_id = 'remembered'\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "aact.toml"), []byte("schema_version = 1\npack_id = 'remembered'\n[[catalog]]\nid = 'demo'\nsource = './demo'\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	ref := sourceRef{ID: "remembered", Root: root, EnvironmentRoot: filepath.Join(root, "env"), PackageDirs: []string{pkg}}
+	packageManifest := "schema_version = 1\nid = 'demo'\nname = 'Remembered Demo'\n[skill]\nname = 'demo'\nsource = './'\n"
+	if err := os.WriteFile(filepath.Join(pkg, "package.toml"), []byte(packageManifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ref := sourceRef{ID: "remembered", Root: root, ManifestPath: filepath.Join(root, "aact.toml"), EnvironmentRoot: filepath.Join(root, "environments")}
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(svc.Store.Root(), "manager", "sources.json")), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -39,18 +42,20 @@ func rememberedSkillSource(t *testing.T, svc *Service) (string, string) {
 func TestUXRememberedSourcePreviewAndInstallIgnoreCurrentCheckout(t *testing.T) {
 	svc, _, store := fixture(t)
 	root, _ := rememberedSkillSource(t, svc)
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: "remembered", PackageID: "demo"})
+	remembered, err := svc.forSource("remembered")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Key.Source != "remembered" || preview.SourceRoot != root {
-		t.Fatalf("preview used current checkout identity: key=%#v root=%q", preview.Key, preview.SourceRoot)
+	ref := writeProfileForTest(t, remembered, "demo", "default", "")
+	preview, err := remembered.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Key.Source != "remembered" || preview.PackRoot != root {
+		t.Fatalf("preview used current checkout identity: key=%#v root=%q", preview.Key, preview.PackRoot)
 	}
 	isolateUXUserHome(t, t.TempDir())
-	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
-		SetupRequest:   viewmodel.SetupRequest{SourceID: "remembered", PackageID: "demo"},
-		DestinationIDs: []string{"all"}, Inputs: map[string]any{},
-	})
+	result, err := remembered.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"all"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,29 +71,30 @@ func TestUXRememberedSourcePreviewAndInstallIgnoreCurrentCheckout(t *testing.T) 
 	}
 }
 
-func TestUXTargetInformationShowsRawAndResolvedPath(t *testing.T) {
+func TestUXProfileInformationShowsRawAndResolvedPath(t *testing.T) {
 	svc, _, _ := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "repository", Label: "Repository", Type: "directory"}}
-	root := filepath.Join(t.TempDir(), "env")
-	svc.Source.EnvironmentRoot = root
-	path := filepath.Join(root, "company", "demo", "prod.toml")
+	root := filepath.Join(t.TempDir(), "profiles")
+	svc.Source.ProfileRoot = root
+	path := filepath.Join(root, "demo", "production.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("[inputs]\nrepository = '../src'\n"), 0600); err != nil {
+	contents := "[inputs]\nrepository = '../src'\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{SourceID: svc.Source.ID, PackageID: "demo", Environment: "company", Target: "prod"})
+	ref := config.ProfileRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "production"}
+	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	field := reflect.ValueOf(preview).FieldByName("TargetTOML")
-	if !field.IsValid() || field.String() != "[inputs]\nrepository = '../src'\n" || preview.TargetPath != path {
-		t.Fatalf("target information lacks exact TOML/path: field=%v path=%q", field, preview.TargetPath)
+	if preview.ProfileTOML != contents || preview.ProfilePath != path {
+		t.Fatalf("profile information lacks exact TOML/path: TOML=%q path=%q", preview.ProfileTOML, preview.ProfilePath)
 	}
 	foundResolved := false
 	for _, input := range preview.Inputs {
-		if input.Definition.Name == "repository" && input.Value == filepath.Join(root, "company", "src") && input.ProvenancePath == path {
+		if input.Definition.Name == "repository" && input.Value == filepath.Join(root, "src") && input.ProvenancePath == path {
 			foundResolved = true
 		}
 	}

@@ -70,7 +70,6 @@ type homeState struct {
 	ContextDisplayOffset            int
 	Focus                           Pane
 	Modal                           *modalState
-	TargetChooser                   *targetChooserState
 	Hits                            []hitRegion
 }
 
@@ -108,15 +107,11 @@ func (m *Model) contextRows() []contextRow {
 		return rows
 	}
 	rows := []contextRow{
-		{ID: "configure", Label: capabilitySetupLabel(m, c), Kind: "configure"},
+		{ID: "configure", Label: capabilitySetupLabel(), Kind: "configure"},
 		{ID: "details", Label: "View capability details", Kind: "details"},
 	}
 	for i, p := range m.profiles() {
-		target := p.Key.Target
-		if target == "" {
-			target = "default"
-		}
-		label := p.Key.Environment + " / " + target + " · " + p.Name + " · " + p.Status
+		label := p.Name + " · " + p.Status
 		rows = append(rows, contextRow{ID: p.ID, Label: label, Kind: "profile", ProfileIndex: i, Key: p.Key})
 	}
 	seen := map[state.Key]bool{}
@@ -562,12 +557,9 @@ func (m *Model) openContextRow() tea.Cmd {
 				return nil
 			}
 		}
-		if m.profileMode() {
-			return m.openTargetWorkspace(m.packProfileRequest(row.Key), "Overview")
-		}
-		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
+		return m.openTargetWorkspace(m.packProfileRequest(row.Key), "Overview")
 	case "target":
-		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
+		return m.openTargetWorkspace(m.packProfileRequest(row.Key), "Overview")
 	}
 	return nil
 }
@@ -637,33 +629,15 @@ func (m *Model) selectedCapabilitySource() string {
 	c, _ := m.selectedCapability()
 	return c.Source
 }
-func (m *Model) hasNamedPreset(capability CapabilityRow) bool {
-	if m.environmentSnapshot == nil {
-		return false
-	}
-	for _, target := range m.environmentSnapshot.Targets {
-		if target.SourceID == capability.Source && target.PackageID == capability.Package && target.Error == "" && strings.TrimSpace(target.Environment) != "" && strings.TrimSpace(target.Name) != "" {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *Model) homeMenuItems() []homeMenuItem {
 	if m.home.Modal == nil {
 		return nil
 	}
 	if m.home.Modal.Kind == "main" {
-		if m.profileMode() {
-			return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
-		}
-		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
+		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.profileMode() {
 		return []homeMenuItem{{"Open selected profile", "parameters", ""}, {"Create another profile…", "create-profile", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
-	}
-	if m.home.Modal.Kind == "target-chooser" {
-		return m.targetChooserItems()
 	}
 	if m.home.Focus == ProfilesPane {
 		p, isProfile := m.selectedContextProfile()
@@ -695,18 +669,12 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 	if c.CatalogIndex < 0 {
 		return []homeMenuItem{{"Locate Capability Pack…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Back", "back", ""}}
 	}
-	items := []homeMenuItem{{capabilitySetupLabel(m, c), "parameters", installReason}}
-	if m.hasNamedPreset(c) && !c.MCP {
-		items = append(items, homeMenuItem{"Choose environment preset…", "choose-preset", installReason})
-	}
+	items := []homeMenuItem{{capabilitySetupLabel(), "parameters", installReason}}
 	items = append(items, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
 	return items
 }
 
-func capabilitySetupLabel(m *Model, capability CapabilityRow) string {
-	if capability.MCP && m.hasNamedPreset(capability) {
-		return "Set up another target…"
-	}
+func capabilitySetupLabel() string {
 	return "Configure now…"
 }
 func (m *Model) menuEntries() []string {
@@ -782,16 +750,6 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 		item := items[index]
 		if item.Reason != "" {
 			m.output = item.Reason
-			return nil
-		}
-		if m.home.Modal.Kind == "target-chooser" {
-			if item.Action == "target:none" {
-				return m.chooseTarget(-1)
-			}
-			var selected int
-			if _, err := fmt.Sscanf(item.Action, "target:%d", &selected); err == nil {
-				return m.chooseTarget(selected)
-			}
 			return nil
 		}
 		if m.home.Modal.Kind == "actions" && item.Action == "locate-source" {
@@ -884,7 +842,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 					m.openObservedProfileWorkspace(p)
 					return nil
 				}
-				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Agents")
+				return m.openTargetWorkspace(m.packProfileRequest(p.Key), "Agents")
 			}
 			if action == "check-connection" {
 				return m.checkProfileConnection(p)
@@ -894,7 +852,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 					m.openObservedProfileWorkspace(p)
 					return nil
 				}
-				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Agents")
+				return m.openTargetWorkspace(m.packProfileRequest(p.Key), "Agents")
 			}
 			if action == "l" {
 				return m.openProfileLogs(p)
@@ -908,7 +866,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 					m.output = reason
 					return nil
 				}
-				return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: p.Key.Source, PackageID: p.Key.Package, Environment: p.Key.Environment, Target: p.Key.Target}, "Overview")
+				return m.openTargetWorkspace(m.packProfileRequest(p.Key), "Overview")
 			}
 
 			actions := map[string]string{"s": "start", "x": "stop", "l": "logs"}
@@ -930,23 +888,16 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		return nil
 	}
 	m.selected = c.CatalogIndex
-	if action == "choose-preset" {
-		m.openTargetChooser(c)
-		return nil
-	}
 	if action == "parameters" || action == "i" {
 		if _, ok := m.backend.(setupBackend); ok {
-			if c.MCP && m.hasNamedPreset(c) {
-				m.openTargetChooser(c)
-				return nil
-			}
-			return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: c.Source, PackageID: c.Package}, "")
+			m.openProfileCreation(c)
+			return nil
 		}
 	}
-	if action == "parameters" {
-		action = "i"
+	if action != "details" {
+		m.output = "Choose a Capability Pack profile before starting or changing installed components."
 	}
-	return m.handleAction(action)
+	return nil
 }
 func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 	mouse := msg.Mouse()
@@ -1354,8 +1305,6 @@ func (m *Model) overlay(lines []string) []string {
 		} else if capability, ok := m.selectedCapability(); ok {
 			title = capability.Name + " · Actions"
 		}
-	} else if m.home.Modal.Kind == "target-chooser" {
-		title = "Choose target · " + m.home.TargetChooser.PackageID
 	}
 	entries := []string{}
 	menuItems := []homeMenuItem{}

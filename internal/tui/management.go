@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -767,7 +768,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				return m.beginSetup(capability.Source, capability.Package, "", "")
 			}
 			target := selected.TargetDefs[m.management.TargetIndex]
-			return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: target.SourceID, PackageID: target.PackageID, Environment: target.Environment, Target: target.Name}, "Overview")
+			return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: target.SourceID, CapabilityID: target.PackageID, Name: target.Name}}, "Overview")
 		}
 		if entries[i] == "Environment directory" || entries[i] == "Edit environment directory" {
 			m.management.Modal = ""

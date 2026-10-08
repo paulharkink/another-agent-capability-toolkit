@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -23,6 +24,10 @@ type setupBackendFixture struct {
 	extraInputs    []viewmodel.SetupInput
 	installResult  *viewmodel.OperationResult
 	installErr     error
+}
+
+func setupProfileKey(request viewmodel.SetupRequest) state.Key {
+	return state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
 }
 
 func TestSetupFailureBeforeLaterCancellationRemainsForeground(t *testing.T) {
@@ -136,8 +141,9 @@ func setupSection(m *Model, down int) {
 
 func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = q
+	key := setupProfileKey(q)
 	preview := viewmodel.SetupPreview{
-		Key:           state.Key{Source: "team-source", Package: "plain", Target: "default"},
+		Key:           key,
 		PackageName:   "Plain",
 		HasManifestUI: true,
 		Sections:      []catalog.Section{{ID: "inputs", Title: "Inputs", Fields: []string{"repo", "mode"}}},
@@ -149,21 +155,6 @@ func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.Setu
 	}
 	preview.Inputs = append(preview.Inputs, b.extraInputs...)
 	return preview, nil
-}
-
-func TestInstallShortcutUsesUnifiedSetupForm(t *testing.T) {
-	b := &setupBackendFixture{}
-	m := NewContext(context.Background(), b)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	m.Update(m.Init()())
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
-	if cmd == nil || m.form != nil || !m.busy {
-		t.Fatal("skill-only Install shortcut did not start setup immediately")
-	}
-	m.Update(cmd())
-	if m.form == nil || m.home.Modal != nil {
-		t.Fatal("skill-only Install shortcut did not open its typed setup form")
-	}
 }
 
 func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
@@ -238,7 +229,7 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 			}
 			m.Update(runTeaCmd(t, m, save))
 			request := capabilityBackend.setup.installRequest
-			if request == nil || request.SetupRequest.Target != foreignKey.Target || request.ExternalURL != "http://127.0.0.1:8765/mcp" || !containsString(request.DestinationIDs, "codex") {
+			if request == nil || request.SetupRequest.Ref.PackID != foreignKey.Source || request.SetupRequest.Ref.CapabilityID != foreignKey.Package || request.SetupRequest.Ref.Name != foreignKey.Target || request.ExternalURL != "http://127.0.0.1:8765/mcp" || !containsString(request.DestinationIDs, "codex") {
 				t.Fatalf("Save did not forward the selected foreign endpoint and destinations: %+v", request)
 			}
 		})
@@ -250,12 +241,11 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
-	cmd := m.homeOperation("parameters")
-	if cmd == nil || !m.busy || m.form != nil {
+	startHomeSetup(m)
+	if m.busy || m.form == nil || m.pendingSetup == nil {
 		t.Fatalf("skill-only setup did not immediately request preview: busy=%v form=%v", m.busy, m.form)
 	}
-	m.Update(cmd())
-	if m.form == nil || m.busy || b.previewRequest.PackageID != "plain" || b.previewRequest.SourceID != "team-source" {
+	if m.form == nil || m.busy || b.previewRequest.Ref.PackID != "team-source" || b.previewRequest.Ref.CapabilityID != "plain" || b.previewRequest.Ref.Name != "test-profile" {
 		t.Fatalf("typed setup preview did not open: %+v, %v", b.previewRequest, m.form)
 	}
 	view := m.View().Content
@@ -264,18 +254,19 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 			t.Fatalf("single setup form missing %q:\n%s", want, view)
 		}
 	}
-	setupSection(m, 0) // Inputs is the first section when no Authentication exists.
+	setupSection(m, 1) // Inputs follows the workspace Overview section.
 	view = m.View().Content
 	for _, want := range []string{"Repository", "Mode", "aact.toml"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup Inputs section missing %q:\n%s", want, view)
 		}
 	}
-	setupSection(m, 1) // Destinations.
-	if !strings.Contains(m.View().Content, "Destinations") || !strings.Contains(m.View().Content, "[x] All") {
-		t.Fatalf("setup Destinations section missing:\n%s", m.View().Content)
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
+	if !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "All") {
+		t.Fatalf("setup Agents section missing:\n%s", m.View().Content)
 	}
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil || !m.busy || m.form != nil {
 		t.Fatal("Save did not apply the typed setup once")
 	}
@@ -373,7 +364,7 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 		t.Fatal("Edit parameters did not request the shared workspace")
 	}
 	m.Update(cmd())
-	if b.previewRequest != (viewmodel.SetupRequest{SourceID: key.Source, PackageID: key.Package, Environment: key.Environment, Target: key.Target}) || m.form == nil || m.form.SectionTitle() != "Overview" {
+	if b.previewRequest != (m.packProfileRequest(key)) || m.form == nil || m.form.SectionTitle() != "Overview" {
 		t.Fatalf("wrong profile target or missing shared editor: %+v section=%q form=%v", b.previewRequest, func() string {
 			if m.form == nil {
 				return ""
@@ -383,27 +374,19 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 	}
 }
 
-func TestCapabilitySetupUsesItsOnlyEnvironmentTarget(t *testing.T) {
+func TestCapabilitySetupUsesExplicitPackProfile(t *testing.T) {
 	b := &setupBackendFixture{}
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{Targets: []viewmodel.EnvironmentTarget{
-		{SourceID: "team-source", Environment: "sample-env", PackageID: "plain", Name: "target-a", Path: "/environments/sample-env/plain/target-a.toml"},
-	}}
-	m.reconcileHome()
-	m.homeOperation("choose-preset")
-	if m.home.Modal == nil || m.home.Modal.Kind != "target-chooser" {
-		t.Fatal("explicit preset action did not open the target chooser")
-	}
-	cmd := m.chooseTarget(0)
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}, "Overview")
 	if cmd == nil {
-		t.Fatal("choosing the available preset did not start setup")
+		t.Fatal("opening an explicit pack profile did not start setup")
 	}
 	m.Update(cmd())
-	want := viewmodel.SetupRequest{SourceID: "team-source", PackageID: "plain", Environment: "sample-env", Target: "target-a"}
+	want := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}
 	if b.previewRequest != want {
-		t.Fatalf("capability setup discarded local target: got %+v, want %+v", b.previewRequest, want)
+		t.Fatalf("capability setup did not pass selected ProfileRef: got %+v, want %+v", b.previewRequest, want)
 	}
 }
 
@@ -411,7 +394,7 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(setupPreviewMsg{preview: viewmodel.SetupPreview{
-		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
+		Key:           state.Key{Source: "team-source", Package: "cluster-inspector", Target: "target-a"},
 		PackageName:   "Cluster Inspector",
 		HasManifestUI: true,
 		Sections:      []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
@@ -424,8 +407,8 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 			t.Fatalf("setup form does not show %q:\n%s", want, view)
 		}
 	}
-	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "sample-env" || m.pendingSetup.Key.Target != "target-a" {
-		t.Fatalf("setup preview lost the selected environment target: %+v", m.pendingSetup)
+	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "" || m.pendingSetup.Key.Target != "target-a" {
+		t.Fatalf("setup preview did not retain the profile identity: %+v", m.pendingSetup)
 	}
 }
 
@@ -595,3 +578,7 @@ func TestFixedTargetCredentialDisablesOtherMethod(t *testing.T) {
 		t.Fatalf("fixed target credential was submitted: %+v", b.installRequest.Inputs)
 	}
 }
+
+// chooserSetupBackend remains a fixture alias for old workspace-route tests;
+// it models setup behavior but offers no environment-target chooser API.
+type chooserSetupBackend = setupBackendFixture

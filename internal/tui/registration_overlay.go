@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
@@ -333,7 +334,10 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 		r.Message = "Select an MCP transport before applying registrations."
 		return nil
 	}
-	request := viewmodel.RegistrationRequest{Key: r.Profile.Key, URL: r.Profile.URL, Transport: r.Transport}
+	request := viewmodel.RegistrationRequest{Ref: config.ProfileRef{PackID: r.Profile.Key.Source, CapabilityID: r.Profile.Key.Package, Name: r.Profile.Key.Target}, Key: r.Profile.Key, URL: r.Profile.URL, Transport: r.Transport}
+	if r.Profile.Configuration != nil {
+		request.Ref = r.Profile.Configuration.Ref
+	}
 	if r.Remove {
 		exact := []viewmodel.RegistrationIdentity{}
 		legacy := []string{}
