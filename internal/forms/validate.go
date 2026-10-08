@@ -6,12 +6,32 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"math"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
 func Validate(defs []catalog.Input, values map[string]any) error {
+	if err := ValidateProvided(defs, values); err != nil {
+		return err
+	}
 	defs = catalog.VisibleInputs(defs, values)
+	return validateValues(defs, values)
+}
+
+// ValidateProvided checks supplied values independently of form completeness
+// and visibility. Requiredness and exclusive groups belong to Validate.
+func ValidateProvided(defs []catalog.Input, values map[string]any) error {
+	partial := append([]catalog.Input(nil), defs...)
+	for i := range partial {
+		partial[i].Required = false
+		partial[i].ExclusiveGroup = ""
+		partial[i].VisibleWhen = nil
+	}
+	return validateValues(partial, values)
+}
+
+func validateValues(defs []catalog.Input, values map[string]any) error {
 	activeGroup := map[string]string{}
 	requiredGroups := map[string]bool{}
 	for _, def := range defs {
@@ -101,6 +121,19 @@ func validateScalar(def catalog.Input, value any) error {
 	v, e := normalizeScalar(def.Type, value)
 	if e != nil {
 		return e
+	}
+	if def.Regex != "" {
+		pattern, err := regexp.Compile(def.Regex)
+		if err != nil {
+			return fmt.Errorf("invalid regex %q: %w", def.Regex, err)
+		}
+		if !pattern.MatchString(fmt.Sprint(v)) {
+			shown := fmt.Sprintf("%q", fmt.Sprint(v))
+			if def.Type == "secret" {
+				shown = "[redacted]"
+			}
+			return fmt.Errorf("value %s does not match regex %q", shown, def.Regex)
+		}
 	}
 	if def.Type == "integer" || def.Type == "number" || def.Type == "float" {
 		var n float64

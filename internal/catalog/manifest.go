@@ -160,6 +160,11 @@ func Validate(p Package) error {
 		if !identifier.MatchString(in.Name) {
 			return fmt.Errorf("invalid input name %q", in.Name)
 		}
+		if in.Regex != "" {
+			if _, err := regexp.Compile(in.Regex); err != nil {
+				return fmt.Errorf("input %s regex %q: %w", in.Name, in.Regex, err)
+			}
+		}
 		if seen[in.Name] {
 			return fmt.Errorf("duplicate input %q", in.Name)
 		}

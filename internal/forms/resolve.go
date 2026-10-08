@@ -77,6 +77,9 @@ func ResolvePartial(defs []catalog.Input, layers ...map[string]any) (map[string]
 			}
 		}
 	}
+	if err := ValidateProvided(defs, result); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 func lookup(values map[string]any, key string) (any, bool) {
