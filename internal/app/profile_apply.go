@@ -838,10 +838,22 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 					}
 				}
 			}
-			row, e := a.(agents.MCPManager).Register(ctx, scope, agents.MCPRequest{Key: child, Registration: agents.Registration{Name: name, URL: urls[d.Name], Transport: d.Transport, TimeoutMS: registrationTimeoutMS(&d), Headers: headers}})
+			registrationResult, e := a.(agents.MCPManager).Register(ctx, scope, agents.MCPRequest{Key: child, Registration: agents.Registration{Name: name, URL: urls[d.Name], Transport: d.Transport, TimeoutMS: registrationTimeoutMS(&d), Headers: headers}})
+			for _, removed := range registrationResult.Removed {
+				out.Changes = append(out.Changes, removed)
+				if removeErr := s.removeRegistration(removed); removeErr != nil {
+					return out, removeErr
+				}
+			}
+			for _, effect := range registrationResult.Effects {
+				if recordErr := record(effect); recordErr != nil {
+					return out, recordErr
+				}
+			}
 			if e != nil {
 				return out, e
 			}
+			row := registrationResult.Installation
 			row.ExternalRegistration = q.ExternalURLs[d.Name] != ""
 			if e = record(row); e != nil {
 				return out, e

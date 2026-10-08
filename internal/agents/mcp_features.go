@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/pelletier/go-toml/v2"
@@ -67,27 +68,48 @@ func (a *mcpAdapter) registrationScope(scope Scope, key state.Key) (Environment,
 	}
 	return e, nil
 }
-func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPRequest) (state.Installation, error) {
+func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPRequest) (MCPRegistrationResult, error) {
 	d, err := a.Detect(ctx, scope)
 	if err != nil {
-		return state.Installation{}, err
+		return MCPRegistrationResult{}, err
 	}
 	if d.MCPDisabledReason != "" {
-		return state.Installation{}, fmt.Errorf("%s", d.MCPDisabledReason)
+		return MCPRegistrationResult{}, fmt.Errorf("%s", d.MCPDisabledReason)
 	}
 	if !d.Installed {
-		return state.Installation{}, fmt.Errorf("agent %s is not installed: %s", a.Name(), d.Reason)
+		return MCPRegistrationResult{}, fmt.Errorf("agent %s is not installed: %s", a.Name(), d.Reason)
 	}
 	e, err := a.registrationScope(scope, request.Key)
 	if err != nil {
-		return state.Installation{}, err
+		return MCPRegistrationResult{}, err
 	}
 	legacy, err := For(a.kind, a.deps.Runner)
 	if err != nil {
-		return state.Installation{}, err
+		return MCPRegistrationResult{}, err
+	}
+	var ownedRows []state.Installation
+	if a.deps.Store != nil {
+		rows, readErr := a.deps.Store.Installations()
+		if readErr != nil {
+			return MCPRegistrationResult{}, readErr
+		}
+		for _, row := range rows {
+			if row.Component == "mcp" && row.Key == request.Key && row.AgentID == e.ID && row.Destination == e.ConfigPath {
+				ownedRows = append(ownedRows, row)
+			}
+		}
 	}
 	if err := legacy.Register(ctx, e, request.Registration); err != nil {
-		return state.Installation{}, err
+		result := MCPRegistrationResult{}
+		var partial *partialCLIRegistrationError
+		if errors.As(err, &partial) {
+			for _, row := range ownedRows {
+				if row.RegistrationName == partial.registration.Name && row.URL == partial.registration.URL {
+					result.Removed = append(result.Removed, row)
+				}
+			}
+		}
+		return result, err
 	}
 	reg := request.Registration
 	row := state.Installation{Key: request.Key, AgentID: e.ID, AgentHome: e.Home, AgentKind: e.Kind, Component: "mcp", Destination: e.ConfigPath, RegistrationName: reg.Name, URL: reg.URL, Transport: reg.Transport, TimeoutMS: reg.TimeoutMS, Mode: "registration"}
@@ -96,7 +118,7 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 			row.Digest = nativeEntryDigest(entry)
 		}
 	}
-	return row, nil
+	return MCPRegistrationResult{Installation: row}, nil
 }
 func (a *mcpAdapter) Unregister(ctx context.Context, scope Scope, row state.Installation) error {
 	e, err := a.registrationScope(scope, row.Key)

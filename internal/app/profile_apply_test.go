@@ -9,6 +9,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,10 @@ type profileAdapter struct {
 	pluginRequests []agents.PluginRequest
 	inspect        func()
 	home           string
+	registerResult *agents.MCPRegistrationResult
+	registerErr    error
+	registerEffect func()
+	observe        func(agents.ObservationRequest) agents.Observation
 }
 
 func (a *profileAdapter) ID() string   { return "test-agent" }
@@ -34,7 +39,10 @@ func (a *profileAdapter) Features() agents.FeatureSet {
 func (a *profileAdapter) Detect(context.Context, agents.Scope) (agents.Detection, error) {
 	return agents.Detection{Installed: true, State: "installed"}, nil
 }
-func (a *profileAdapter) Observe(context.Context, agents.Scope, agents.ObservationRequest) (agents.Observation, error) {
+func (a *profileAdapter) Observe(_ context.Context, _ agents.Scope, request agents.ObservationRequest) (agents.Observation, error) {
+	if a.observe != nil {
+		return a.observe(request), nil
+	}
 	return agents.Observation{}, nil
 }
 func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installation, error) {
@@ -50,8 +58,15 @@ func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installat
 func (a *profileAdapter) InstallSkill(_ context.Context, _ agents.Scope, q agents.SkillRequest) (state.Installation, error) {
 	return a.effect(q.Key, "skill", q.Skill.Name)
 }
-func (a *profileAdapter) Register(_ context.Context, _ agents.Scope, q agents.MCPRequest) (state.Installation, error) {
-	return a.effect(q.Key, "mcp", q.Registration.Name)
+func (a *profileAdapter) Register(_ context.Context, _ agents.Scope, q agents.MCPRequest) (agents.MCPRegistrationResult, error) {
+	if a.registerResult != nil {
+		if a.registerEffect != nil {
+			a.registerEffect()
+		}
+		return *a.registerResult, a.registerErr
+	}
+	row, err := a.effect(q.Key, "mcp", q.Registration.Name)
+	return agents.MCPRegistrationResult{Installation: row}, err
 }
 func (a *profileAdapter) InstallPlugin(_ context.Context, _ agents.Scope, q agents.PluginRequest) (agents.PluginInstallResult, error) {
 	a.pluginRequests = append(a.pluginRequests, q)
@@ -94,6 +109,109 @@ func profileApplyFixture(t *testing.T) (*Service, *profileAdapter, ProfileReques
 	s.Options.Runtime = &fakeRuntime{}
 	return s, a, ProfileRequest{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: "demo", Name: "ota"}, DestinationIDs: []string{a.ID()}, ItemIDs: []string{"set:core"}, Inputs: map[string]any{"label": "invalid123"}}
 }
+func TestApplyProfileReportsRemovedMCPAfterFailedReplacementAndRetries(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	q.Inputs = nil
+	s.Source.Catalog[0].Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.ExternalURLs = map[string]string{"alpha": "http://replacement.example/mcp"}
+	key, err := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
+	old := state.Installation{Key: child, AgentID: a.ID(), AgentKind: a.ID(), Component: "mcp", Destination: filepath.Join(a.home, "codex", "config.toml"), RegistrationName: registrationName(child), URL: "http://original.example/mcp", Mode: "registration"}
+	if err := s.Store.Record(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(old.Destination), 0700); err != nil {
+		t.Fatal(err)
+	}
+	registration := registrationName(child)
+	unrelated := []byte("model = 'untouched'\n\n[mcp_servers." + registration + "]\nurl = 'http://original.example/mcp'\n\n[mcp_servers.unrelated]\nurl = 'http://unrelated.example/mcp'\n")
+	if err := os.WriteFile(old.Destination, unrelated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.observe = func(agents.ObservationRequest) agents.Observation {
+		contents, _ := os.ReadFile(old.Destination)
+		status := "absent"
+		if strings.Contains(string(contents), "[mcp_servers."+registration+"]") {
+			status = "installed"
+		}
+		return agents.Observation{Components: []agents.ComponentObservation{{Kind: "mcp", Name: registration, RegistrationName: registration, Status: status}}}
+	}
+	a.registerEffect = func() {
+		_ = os.WriteFile(old.Destination, []byte("model = 'untouched'\n\n[mcp_servers.unrelated]\nurl = 'http://unrelated.example/mcp'\n"), 0600)
+	}
+	a.registerResult = &agents.MCPRegistrationResult{Removed: []state.Installation{old}}
+	a.registerErr = errors.New("fixture codex add failed: command diagnostic: fixture stderr")
+	out, err := s.ApplyProfile(context.Background(), q)
+	if err == nil || !strings.Contains(err.Error(), "fixture stderr") {
+		t.Fatalf("exact CLI error missing: %+v %v", out, err)
+	}
+	if len(out.Changes) != 1 || out.Changes[0] != old {
+		t.Fatalf("achieved removal not reported: %+v", out.Changes)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Component == "mcp" {
+			t.Fatalf("stale MCP row remained after removal: %+v", rows)
+		}
+	}
+	got, err := os.ReadFile(old.Destination)
+	if err != nil || !strings.Contains(string(got), "untouched") || !strings.Contains(string(got), "unrelated") || strings.Contains(string(got), "[mcp_servers."+registration+"]") {
+		t.Fatalf("unrelated config changed or removed MCP remains: %q err=%v", got, err)
+	}
+	preview, err := s.PreviewProfile(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range preview.Destinations {
+		if destination.ID == a.ID() && destination.Selected {
+			t.Fatalf("removed MCP remained checked: %+v", destination)
+		}
+	}
+
+	newRow := old
+	newRow.URL = q.ExternalURLs["alpha"]
+	a.registerEffect = func() {
+		_ = os.WriteFile(old.Destination, []byte("model = 'untouched'\n\n[mcp_servers."+registration+"]\nurl = '"+newRow.URL+"'\n\n[mcp_servers.unrelated]\nurl = 'http://unrelated.example/mcp'\n"), 0600)
+	}
+	a.registerResult = &agents.MCPRegistrationResult{Installation: newRow}
+	a.registerErr = nil
+	out, err = s.ApplyProfile(context.Background(), q)
+	if err != nil || len(out.Changes) != 1 || out.Changes[0].URL != newRow.URL || !out.Changes[0].ExternalRegistration {
+		t.Fatalf("retry did not report replacement: %+v %v", out, err)
+	}
+	rows, err = s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].URL != newRow.URL {
+		t.Fatalf("successful retry state = %+v", rows)
+	}
+	preview, err = s.PreviewProfile(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := false
+	for _, destination := range preview.Destinations {
+		if destination.ID == a.ID() {
+			selected = destination.Selected
+		}
+	}
+	if !selected {
+		t.Fatalf("successful replacement remained unchecked: %+v", preview.Destinations)
+	}
+	got, err = os.ReadFile(old.Destination)
+	if err != nil || !strings.Contains(string(got), "unrelated") || !strings.Contains(string(got), "untouched") {
+		t.Fatalf("retry damaged unrelated config: %q err=%v", got, err)
+	}
+}
+
 func TestApplyProfileWholeLinkedCapability(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	out, err := s.ApplyProfile(context.Background(), q)
