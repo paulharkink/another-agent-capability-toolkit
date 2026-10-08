@@ -354,7 +354,12 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
+	resolvedRegistrationName, nameErr := declaredRegistrationName(*p.MCP, k, values)
+	if nameErr != nil {
+		return mcp.Instance{}, invalid(nameErr)
+	}
 	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	spec.RegistrationName = resolvedRegistrationName
 	applyDeclaredRuntimeHosts := func() {
 		if p.MCP.BindIPInput != "" {
 			spec.BindIP, _ = values[p.MCP.BindIPInput].(string)
@@ -424,6 +429,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
+		spec.RegistrationName = resolvedRegistrationName
 		applyDeclaredRuntimeHosts()
 	}
 	instance, err := s.Options.Runtime.Start(ctx, k, spec)
