@@ -102,3 +102,23 @@ func verifyOwned(ctx context.Context, i state.Installation) error {
 	}
 	return nil
 }
+
+// VerifyInstalled checks actual content as well as the owned destination.
+// Callers separately report absent paths rather than inferring presence here.
+func VerifyInstalled(ctx context.Context, row state.Installation) error {
+	if err := verifyOwned(ctx, row); err != nil {
+		return err
+	}
+	source, err := filepath.EvalSymlinks(row.Destination)
+	if err != nil {
+		return err
+	}
+	digest, err := treeDigest(ctx, source)
+	if err != nil {
+		return err
+	}
+	if row.Digest != "" && digest != row.Digest {
+		return fmt.Errorf("managed skill content changed at %s", row.Destination)
+	}
+	return nil
+}

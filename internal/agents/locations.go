@@ -106,10 +106,13 @@ func jetBrainsAISettingsFiles(home, goos string, getenv func(string) string) []s
 // process's default agent home. Callers with an explicit custom agent home keep
 // the paths returned by ResolveEnvironment instead.
 func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
+	return applyNativeConfigOverrides(env, os.Getenv)
+}
+func applyNativeConfigOverrides(env Environment, getenv func(string) string) (Environment, error) {
 	var root string
 	switch env.Kind {
 	case "codex":
-		root = os.Getenv("CODEX_HOME")
+		root = getenv("CODEX_HOME")
 		if root != "" {
 			absolute, err := filepath.Abs(root)
 			if err != nil {
@@ -118,7 +121,7 @@ func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
 			env.ConfigPath = filepath.Join(absolute, "config.toml")
 		}
 	case "opencode":
-		root = os.Getenv("XDG_CONFIG_HOME")
+		root = getenv("XDG_CONFIG_HOME")
 		if root != "" {
 			absolute, err := filepath.Abs(root)
 			if err != nil {
@@ -129,7 +132,7 @@ func ApplyNativeConfigOverrides(env Environment) (Environment, error) {
 			env.SkillsDir = filepath.Join(base, "skills")
 		}
 	case "copilot", "copilot-cli":
-		root = os.Getenv("COPILOT_HOME")
+		root = getenv("COPILOT_HOME")
 		if root != "" {
 			absolute, err := filepath.Abs(root)
 			if err != nil {
