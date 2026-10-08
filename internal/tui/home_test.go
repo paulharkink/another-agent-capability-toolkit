@@ -90,7 +90,7 @@ func TestHomeShowsCapabilityPackAndEnvironmentDirectory(t *testing.T) {
 	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capability Pack: one", "Environment directory: environments"} {
+	for _, want := range []string{"Capability Pack: one", "Profiles: environments"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home does not reveal %q:\n%s", want, view)
 		}
@@ -413,7 +413,7 @@ func TestHomeTopControlsAndContextPaneFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Environments | Settings | Help", "F2 Open / Focus"} {
+	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Settings | Help", "F2 Open / Focus"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home missing %q:\n%s", want, view)
 		}

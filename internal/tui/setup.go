@@ -63,13 +63,16 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 		return nil
 	}
 	key := state.Key{Source: request.SourceID, Package: request.PackageID, Environment: request.Environment, Target: request.Target}
+	if request.Ref.CapabilityID != "" {
+		key = state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
+	}
 	priorDraft := map[string]any(nil)
 	if m.workspace != nil && m.workspace.Key == key {
 		priorDraft = m.workspace.cachedDraft()
 	}
 	m.retryOperation = func() tea.Cmd { return m.openTargetWorkspace(request, selectedSection) }
 	workspace := &workspaceState{
-		Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
+		Reference: request.Ref, Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
 		InvokingSelection: m.workspaceInvokingSelection(), Draft: priorDraft,
 		Profile: m.profileForWorkspace(key), ProfileSnapshot: copyProfileSnapshot(m.profileSnapshot),
 	}
@@ -557,6 +560,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 			input.ProvenancePath = input.InheritedPath
 		}
 	}
+
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		for _, definition := range preview.MCPDefinitions {
 			profile := m.profileForMCPName(definition.Name)
@@ -593,6 +597,9 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{SourceID: preview.Key.Source, PackageID: preview.Key.Package, Environment: preview.Key.Environment, Target: preview.Key.Target},
 		Inputs:       inputs, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
+	}
+	if m.profileMode() {
+		request.SetupRequest = m.packProfileRequest(preview.Key)
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		var profiles []viewmodel.Profile

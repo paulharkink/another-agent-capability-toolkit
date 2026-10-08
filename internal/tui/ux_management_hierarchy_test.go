@@ -195,7 +195,7 @@ func TestUXSettingsActionRequiresHighlightedControl(t *testing.T) {
 	}
 	press(m, tea.KeyEnd, "")
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Change environment directory") || !strings.Contains(view, "More above") {
+	if !strings.Contains(view, "Change profile directory") || !strings.Contains(view, "More above") {
 		t.Fatalf("focused Settings action is not visible with its scroll cue:\n%s", view)
 	}
 	if cmd := m.managementKey("enter"); cmd != nil {

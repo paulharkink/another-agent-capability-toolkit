@@ -209,7 +209,7 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
-	if m.form == nil || !strings.Contains(m.View().Content, "Environment directory") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Profile configuration directory") {
 		t.Fatalf("%s", m.View().Content)
 	}
 }

@@ -785,8 +785,8 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
 	m.management.FormOverlay = true
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Environment directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
-	m.form.SetTitle("Capability Pack · Choose environment directory")
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Profile configuration directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
+	m.form.SetTitle("Capability Pack · Choose profile configuration directory")
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
@@ -859,7 +859,7 @@ func (m *Model) managementSettingsRows() []string {
 func (m *Model) managementSettingsDetails() []string {
 	switch m.selected {
 	case 0:
-		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Environment directory: " + nonempty(m.environmentRoot(), "not configured"), "Environment TOML files usually live in <Capability Pack>/environments (for example, ota or prod); choose an external directory to keep them elsewhere.", "[ Change environment directory… ]"}
+		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not configured"), "Profiles usually live in <Capability Pack>/environments/<capability>/<profile>.toml; choose an external directory to keep them elsewhere.", "[ Change profile directory… ]"}
 	case 1:
 		lines := []string{"Agent defaults", "Default named agents affect future MCP installations only.", "Existing registrations are unchanged.", "Skill-only installations use All — ~/.agents/skills."}
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
@@ -869,7 +869,7 @@ func (m *Model) managementSettingsDetails() []string {
 	case 2:
 		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
 	default:
-		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Environment directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	}
 }
 
@@ -907,8 +907,8 @@ func (m *Model) managementView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
-	scope := " Capability Pack: " + m.settings["source"] + " · Environment directory: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
+	scope := " Capability Pack: " + m.settings["source"] + " · Profiles: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"
@@ -1290,7 +1290,7 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
-	root := " Environment directory: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
+	root := " Profile configuration directory: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
 	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
 		root = " Invalid TOML: " + selected.Errors[m.management.TargetIndex]
 	}

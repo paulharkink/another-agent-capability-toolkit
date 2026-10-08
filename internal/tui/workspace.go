@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -53,6 +54,7 @@ const (
 // the invoking layer and profile observation beside the target draft so later
 // route handling can restore Back without losing the parent selection.
 type workspaceState struct {
+	Reference         config.ProfileRef
 	Key               state.Key
 	Section           string
 	SectionID         string
@@ -132,12 +134,19 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	if preview.CredentialNote != "" {
 		lines = append(lines, splitDisplayLine("Credential note: "+preview.CredentialNote, inner)...)
 	}
-	if preview.TargetPath != "" {
+	if preview.ProfilePath != "" {
+		lines = append(lines, "Profile: "+preview.Key.Target, "Pack profile TOML (read-only): "+preview.ProfilePath)
+	} else if preview.TargetPath != "" {
 		lines = append(lines, "Environment: "+preview.Key.Environment+" · Target: "+preview.Key.Target, "Exact TOML: "+preview.TargetPath)
 	} else if preview.Key.Environment != "" && preview.Key.Target != "" && preview.Key.Target != "default" {
 		lines = append(lines, "Selected preset: "+preview.Key.Environment+" / "+preview.Key.Target)
 	}
-	if preview.TargetTOML != "" {
+	if preview.ProfileTOML != "" {
+		lines = append(lines, "Read-only profile TOML")
+		for _, line := range strings.Split(strings.TrimSuffix(preview.ProfileTOML, "\n"), "\n") {
+			lines = append(lines, splitDisplayLine(line, inner)...)
+		}
+	} else if preview.TargetTOML != "" {
 		lines = append(lines, "Raw TOML")
 		for _, rawLine := range strings.Split(strings.TrimSuffix(preview.TargetTOML, "\n"), "\n") {
 			lines = append(lines, splitDisplayLine(rawLine, inner)...)
@@ -269,6 +278,19 @@ func nonempty(value, fallback string) string {
 
 func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
 	if m.workspace == nil {
+		return nil
+	}
+	if m.workspace.Reference.CapabilityID != "" {
+		for _, p := range m.capabilityProfiles[m.workspace.Key.Package].Profiles {
+			if p.Key != m.workspace.Key {
+				continue
+			}
+			for _, r := range p.MCPs {
+				if r.MCPID == name {
+					return configurationRuntimeProfile(p, r, m.workspace.Preview)
+				}
+			}
+		}
 		return nil
 	}
 	key := m.workspace.Key
