@@ -21,6 +21,12 @@ label = "Host"
 default = "127.0.0.1"
 
 [[inputs]]
+name = "advertised_host"
+type = "string"
+label = "Client address host"
+default = "localhost"
+
+[[inputs]]
 name = "tenant_id"
 type = "string"
 label = "Tenant ID"
@@ -41,6 +47,8 @@ transport = "sse"
 container_port = 8084
 endpoint_path = "/sse"
 host_port_input = "local_port"
+bind_ip_input = "host"
+advertised_host_input = "advertised_host"
 build_context = "./mcp"
 
 [mcp.actions.prepare]
@@ -61,7 +69,7 @@ command = ["bin/inspector-helper.exe", "azure-inspector", "authenticate"]
 [[ui.sections]]
 id = "connection"
 title = "Connection"
-fields = ["host", "local_port"]
+fields = ["host", "advertised_host", "local_port"]
 [[ui.sections]]
 id = "azure"
 title = "Azure"

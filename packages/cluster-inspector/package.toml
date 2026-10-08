@@ -26,6 +26,12 @@ label = "Listen address"
 default = "127.0.0.1"
 
 [[inputs]]
+name = "advertised_host"
+type = "string"
+label = "Client address host"
+default = "localhost"
+
+[[inputs]]
 name = "registration_name"
 type = "string"
 label = "MCP registration name"
@@ -116,6 +122,8 @@ transport = "streamable-http"
 container_port = 8765
 endpoint_path = "/mcp"
 host_port_input = "local_port"
+bind_ip_input = "host"
+advertised_host_input = "advertised_host"
 registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
@@ -138,7 +146,7 @@ command = ["bin/inspector-helper.exe", "cluster-inspector", "authenticate"]
 [[ui.sections]]
 id = "connection"
 title = "Connection"
-fields = ["host", "local_port", "registration_name", "api_server"]
+fields = ["host", "advertised_host", "local_port", "registration_name", "api_server"]
 [[ui.sections]]
 id = "authentication"
 title = "Authentication"

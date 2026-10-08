@@ -213,6 +213,8 @@ func Validate(p Package) error {
 			}
 		}
 		for _, ref := range []struct{ field, name, wantType string }{
+			{"bind_ip_input", mcp.BindIPInput, "string"},
+			{"advertised_host_input", mcp.AdvertisedHostInput, "string"},
 			{"token_input", mcp.TokenInput, "secret"},
 			{"token_file_input", mcp.TokenFileInput, "file"},
 			{"token_env_input", mcp.TokenEnvInput, "string"},

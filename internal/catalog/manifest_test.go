@@ -85,8 +85,37 @@ func TestLoadBundle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if p.MCP == nil || p.MCP.Name != "plain" || p.Inputs[0].Default != int64(8765) || p.Generator.TimeoutSeconds != 300 {
+	if p.MCP == nil || p.MCP.Name != "plain" || p.MCP.BindIPInput != "" || p.MCP.AdvertisedHostInput != "" || p.Inputs[0].Default != int64(8765) || p.Generator.TimeoutSeconds != 300 {
 		t.Fatalf("bad bundle: %#v", p)
+	}
+}
+
+func TestBundledDockerManifestsDeclareSeparateRuntimeHosts(t *testing.T) {
+	for _, name := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector"} {
+		t.Run(name, func(t *testing.T) {
+			pkg, err := Load(filepath.Join("..", "..", "packages", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			definitions := pkg.MCPDefinitions()
+			if len(definitions) != 1 {
+				t.Fatalf("expected one Docker MCP definition, got %d", len(definitions))
+			}
+			definition := definitions[0]
+			if definition.BindIPInput == "" || definition.AdvertisedHostInput == "" {
+				t.Fatalf("bundled runtime host inputs are not independently declared: %+v", definition)
+			}
+			inputs := map[string]Input{}
+			for _, input := range pkg.Inputs {
+				inputs[input.Name] = input
+			}
+			if inputs[definition.BindIPInput].Type != "string" || inputs[definition.BindIPInput].Default != "127.0.0.1" {
+				t.Fatalf("bind input is not numeric loopback by default: %+v", inputs[definition.BindIPInput])
+			}
+			if inputs[definition.AdvertisedHostInput].Type != "string" || inputs[definition.AdvertisedHostInput].Default != "localhost" {
+				t.Fatalf("advertised-host input does not default to localhost: %+v", inputs[definition.AdvertisedHostInput])
+			}
+		})
 	}
 }
 
@@ -152,6 +181,50 @@ enabled_input = "enable_bitbucket"
 	}
 	if len(p.MCPs) != 2 || p.MCPs[0].Name != "github" || p.MCPs[1].Name != "bitbucket" {
 		t.Fatalf("MCP profiles not loaded in manifest order: %#v", p.MCPs)
+	}
+}
+
+func TestMCPRuntimeHostBindingsUseDeclaredInputNames(t *testing.T) {
+	manifest := plainManifest + `[[inputs]]
+name = "docker_interface"
+type = "string"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "client_dns_name"
+type = "string"
+default = "localhost"
+
+[mcp]
+name = "plain"
+bind_ip_input = "docker_interface"
+advertised_host_input = "client_dns_name"
+`
+	p, err := Load(writeManifest(t, manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MCP.BindIPInput != "docker_interface" || p.MCP.AdvertisedHostInput != "client_dns_name" {
+		t.Fatalf("runtime host bindings were not loaded: %#v", p.MCP)
+	}
+}
+
+func TestMCPRuntimeHostBindingsRequireDeclaredStringInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    string
+		declared string
+	}{
+		{name: "missing bind input", input: `bind_ip_input = "missing"`},
+		{name: "missing advertised input", input: `advertised_host_input = "missing"`},
+		{name: "non-string input", input: `bind_ip_input = "port"`, declared: "[[inputs]]\nname = \"port\"\ntype = \"integer\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := plainManifest + tc.declared + "[mcp]\nname = \"plain\"\n" + tc.input + "\n"
+			if _, err := Load(writeManifest(t, manifest)); err == nil {
+				t.Fatal("invalid runtime host input reference accepted")
+			}
+		})
 	}
 }
 

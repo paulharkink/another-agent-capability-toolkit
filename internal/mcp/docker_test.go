@@ -166,6 +166,102 @@ func TestDockerBuildRunAndMountArguments(t *testing.T) {
 		t.Fatal("secret appears in Docker argv")
 	}
 }
+
+func TestDockerBindIPAndAdvertisedHostAreIndependent(t *testing.T) {
+	r, f, k := testRuntime(t)
+	f.f = absent
+	instance, err := r.Start(context.Background(), k, RunSpec{
+		Image: "fixture", BindIP: "127.0.0.2", AdvertisedHost: "mcp.example.test",
+		HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.URL != "http://mcp.example.test:8765/mcp" {
+		t.Fatalf("registered endpoint used bind address instead of advertised host: %q", instance.URL)
+	}
+	joined, _ := json.Marshal(f.calls)
+	if !strings.Contains(string(joined), "127.0.0.2:8765:80") || strings.Contains(string(joined), "mcp.example.test:8765:80") {
+		t.Fatalf("Docker publish did not use bind IP independently: %s", joined)
+	}
+}
+
+func TestDockerEndpointDefaultsToLocalhostAndBindDefaultsToLoopback(t *testing.T) {
+	r, f, k := testRuntime(t)
+	f.f = absent
+	instance, err := r.Start(context.Background(), k, RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.URL != "http://localhost:8765/mcp" {
+		t.Fatalf("default advertised endpoint = %q, want localhost", instance.URL)
+	}
+	joined, _ := json.Marshal(f.calls)
+	if !strings.Contains(string(joined), "127.0.0.1:8765:80") {
+		t.Fatalf("default Docker bind IP is not loopback: %s", joined)
+	}
+}
+
+func TestLegacyHostLocalhostAdvertisesLocalhostButBindsNumericLoopback(t *testing.T) {
+	r, f, k := testRuntime(t)
+	f.f = absent
+	var legacySpec RunSpec
+	if err := json.Unmarshal([]byte(`{"image":"fixture","host":"localhost","host_port":8765,"container_port":80,"endpoint_path":"/mcp"}`), &legacySpec); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := r.Start(context.Background(), k, legacySpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.URL != "http://localhost:8765/mcp" {
+		t.Fatalf("legacy host endpoint = %q", instance.URL)
+	}
+	joined, _ := json.Marshal(f.calls)
+	if !strings.Contains(string(joined), "127.0.0.1:8765:80") || strings.Contains(string(joined), "localhost:8765:80") {
+		t.Fatalf("legacy hostname leaked into Docker publish argument: %s", joined)
+	}
+}
+
+func TestAdvertisedHostRejectsUnsafeURLComponents(t *testing.T) {
+	for _, host := range []string{"bad host", "example.test/path", "example.test?x=1", "user@example.test", "example.test:8765", "bad..example", "bad_name"} {
+		t.Run(host, func(t *testing.T) {
+			r, f, k := testRuntime(t)
+			_, err := r.Start(context.Background(), k, RunSpec{Image: "fixture", AdvertisedHost: host, HostPort: 8765, ContainerPort: 80})
+			if err == nil {
+				t.Fatalf("unsafe advertised host %q accepted", host)
+			}
+			if len(f.calls) != 0 {
+				t.Fatalf("unsafe advertised host reached Docker: %v", f.calls)
+			}
+		})
+	}
+}
+
+func TestDockerBindIPRequiresNumericLoopbackBeforeDockerAccess(t *testing.T) {
+	for _, bindIP := range []string{"localhost", "0.0.0.0", "192.0.2.10"} {
+		t.Run(bindIP, func(t *testing.T) {
+			r, f, k := testRuntime(t)
+			_, err := r.Start(context.Background(), k, RunSpec{Image: "fixture", BindIP: bindIP, HostPort: 8765, ContainerPort: 80})
+			if err == nil {
+				t.Fatalf("non-loopback or non-numeric bind IP %q accepted", bindIP)
+			}
+			if len(f.calls) != 0 {
+				t.Fatalf("invalid bind IP reached Docker: %v", f.calls)
+			}
+		})
+	}
+}
+
+func TestAdvertisedIPv6HostBuildsBracketedURL(t *testing.T) {
+	spec := RunSpec{AdvertisedHost: "::1", HostPort: 8765, EndpointPath: "/mcp"}
+	if got := specURL(spec); got != "http://[::1]:8765/mcp" {
+		t.Fatalf("IPv6 endpoint URL = %q", got)
+	}
+	spec.AdvertisedHost = "[::1]"
+	if got := specURL(spec); got != "http://[::1]:8765/mcp" {
+		t.Fatalf("bracketed IPv6 endpoint URL = %q", got)
+	}
+}
 func TestNoUnlabelledContainerRemoval(t *testing.T) {
 	r, f, k := testRuntime(t)
 	f.f = func([]string) ([]byte, error) {
@@ -226,7 +322,7 @@ func TestInventoryIncludesMissingOwnedRuntime(t *testing.T) {
 }
 func TestOnlyLoopbackPublication(t *testing.T) {
 	r, _, k := testRuntime(t)
-	_, e := r.Start(context.Background(), k, RunSpec{Image: "x", Host: "0.0.0.0", HostPort: 1, ContainerPort: 1})
+	_, e := r.Start(context.Background(), k, RunSpec{Image: "x", BindIP: "0.0.0.0", HostPort: 1, ContainerPort: 1})
 	if e == nil {
 		t.Fatal("public listener allowed")
 	}

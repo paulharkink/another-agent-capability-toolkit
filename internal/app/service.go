@@ -339,7 +339,16 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
-	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), Host: "127.0.0.1", ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	applyDeclaredRuntimeHosts := func() {
+		if p.MCP.BindIPInput != "" {
+			spec.BindIP, _ = values[p.MCP.BindIPInput].(string)
+		}
+		if p.MCP.AdvertisedHostInput != "" {
+			spec.AdvertisedHost, _ = values[p.MCP.AdvertisedHostInput].(string)
+		}
+	}
+	applyDeclaredRuntimeHosts()
 	for name, value := range p.MCP.Env {
 		if spec.Env == nil {
 			spec.Env = map[string]string{}
@@ -384,9 +393,6 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	case int:
 		spec.HostPort = port
 	}
-	if h, ok := values["host"].(string); ok && h != "" {
-		spec.Host = h
-	}
 	if _, ok := p.MCP.Actions["prepare"]; ok {
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
 		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
@@ -403,6 +409,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
+		applyDeclaredRuntimeHosts()
 	}
 	instance, err := s.Options.Runtime.Start(ctx, k, spec)
 	if errors.Is(err, mcp.ErrRunningWithDifferentSettings) {
