@@ -98,7 +98,7 @@ func TestCopilotCLIUsesCOPILOTHomeAndLeavesJSONConfigAsCLIManaged(t *testing.T) 
 		t.Fatalf("adapter bypassed the official CLI and edited its managed config: %v", err)
 	}
 }
-func configFixture(t *testing.T, kind, body string) (Adapter, Environment) {
+func configFixture(t *testing.T, kind, body string) (LegacyMCPAdapter, Environment) {
 	t.Helper()
 	e, err := ResolveEnvironment("agent", kind, t.TempDir())
 	if err != nil {

@@ -61,7 +61,7 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 	if probe.Getenv == nil {
 		probe.Getenv = os.Getenv
 	}
-	if probe.GOOS != "darwin" && id != "codex" && id != "claude" && id != "opencode" && id != "copilot-cli" && id != "copilot" && id != "intellij" && id != "intellij-ai-assistant" && id != "copilot-intellij" {
+	if probe.GOOS != "darwin" && id != "codex" && id != "claude" && id != "opencode" && id != "copilot-cli" && id != "copilot" && id != "intellij" && id != "intellij-ai-assistant" && id != "copilot-intellij" && id != "hermes" {
 		r.Detection = "unverified"
 		r.Note = "Desktop or IDE plugin installation cannot be confirmed on this platform"
 		return r
@@ -95,6 +95,9 @@ func DiscoverAgent(ctx context.Context, id string, probe DiscoveryProbe) AgentDi
 		return false
 	}
 	switch id {
+	case "hermes":
+		cli("hermes")
+		addConfig(filepath.Join(probe.Home, ".hermes", "config.yaml"), "user", "effective", "Hermes config")
 	case "codex":
 		cli("codex")
 		if probe.GOOS == "darwin" && app("Codex.app") {

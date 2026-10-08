@@ -9,12 +9,12 @@ import (
 	"strings"
 )
 
-type Adapter interface {
+type LegacyMCPAdapter interface {
 	Register(context.Context, Environment, Registration) error
 	Unregister(context.Context, Environment, string) error
 }
 
-func For(kind string, runner process.Executor) (Adapter, error) {
+func For(kind string, runner process.Executor) (LegacyMCPAdapter, error) {
 	if runner == nil {
 		runner = process.OSExecutor{}
 	}
