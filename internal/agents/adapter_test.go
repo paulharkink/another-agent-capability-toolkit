@@ -16,24 +16,76 @@ type call struct {
 	env  map[string]string
 }
 type captureRunner struct {
-	calls  []call
-	get    []byte
-	getErr error
-	stderr []byte
+	calls         []call
+	get           []byte
+	getErr        error
+	stderr        []byte
+	commandErr    map[string]error
+	commandStderr map[string][]byte
 }
 
 func (r *captureRunner) Run(_ context.Context, args []string, _ string, _ []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
 	r.calls = append(r.calls, call{args, env})
-	if onStderr != nil && len(r.stderr) > 0 {
-		onStderr(r.stderr)
+	key := strings.Join(args, " ")
+	stderr := r.stderr
+	if configured, ok := r.commandStderr[key]; ok {
+		stderr = configured
+	}
+	if onStderr != nil && len(stderr) > 0 {
+		onStderr(stderr)
 	}
 	for _, a := range args {
 		if a == "get" {
 			return r.get, r.getErr
 		}
 	}
-	return nil, nil
+	return nil, r.commandErr[key]
 }
+func TestCodexFailedReplacementDoesNotRestoreRemovedRegistration(t *testing.T) {
+	home := t.TempDir()
+	e, err := ResolveEnvironment("codex", "codex", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := Registration{Name: "local", URL: "http://replacement/mcp"}
+	old := Registration{Name: "local", URL: "http://original/mcp"}
+	e.Owned = map[string]Registration{"local": old}
+	if err := os.MkdirAll(filepath.Dir(e.ConfigPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := []byte("model = 'unrelated-setting'\n")
+	if err := os.WriteFile(e.ConfigPath, unrelated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	addArgs := []string{"codex", "mcp", "add", reg.Name, "--url", reg.URL}
+	runner := &captureRunner{
+		get:           []byte(`{"transport":{"type":"streamable_http","url":"http://original/mcp"}}`),
+		commandErr:    map[string]error{strings.Join(addArgs, " "): errors.New("exit status 1")},
+		commandStderr: map[string][]byte{strings.Join(addArgs, " "): []byte("fixture add failed")},
+	}
+	a, err := For("codex", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = a.Register(context.Background(), e, reg)
+	if err == nil || !strings.Contains(err.Error(), "fixture add failed") {
+		t.Fatalf("actual add stderr missing: %v", err)
+	}
+	want := [][]string{{"codex", "mcp", "get", "local", "--json"}, {"codex", "mcp", "remove", "local"}, addArgs}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("unexpected command sequence (automatic restore likely): %#v", runner.calls)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(runner.calls[i].args, want[i]) {
+			t.Fatalf("call %d = %#v, want %#v", i, runner.calls[i].args, want[i])
+		}
+	}
+	got, err := os.ReadFile(e.ConfigPath)
+	if err != nil || string(got) != string(unrelated) {
+		t.Fatalf("unrelated config changed: %q err=%v", got, err)
+	}
+}
+
 func TestCodexRegisterCreatesMissingConfigDirectoryBeforeProbeAndPreservesContents(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".codex")
@@ -66,6 +118,58 @@ func TestCodexRegisterCreatesMissingConfigDirectoryBeforeProbeAndPreservesConten
 	got, err := os.ReadFile(e.ConfigPath)
 	if err != nil || string(got) != string(config) {
 		t.Fatalf("existing config changed: %q err=%v", got, err)
+	}
+}
+
+func TestCodexRegisterTreatsMissingEntriesAsAbsentWithExistingHomeStates(t *testing.T) {
+	for _, config := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "no config"},
+		{name: "empty config", body: []byte{}},
+	} {
+		t.Run(config.name, func(t *testing.T) {
+			home := t.TempDir()
+			configDir := filepath.Join(home, ".codex")
+			if err := os.Mkdir(configDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			e, err := ResolveEnvironment("codex", "codex", home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.body != nil {
+				if err := os.WriteFile(e.ConfigPath, config.body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner := &captureRunner{getErr: errors.New("Error: No MCP server named 'local' found.")}
+			a, err := For("codex", runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.calls) != 2 || runner.calls[1].args[1] != "mcp" || runner.calls[1].args[2] != "add" {
+				t.Fatalf("missing registration did not proceed to add: %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestCodexCurrentDoesNotExposeStdoutFromFailedProbe(t *testing.T) {
+	const sentinel = "Bearer registration-secret-sentinel"
+	runner := &captureRunner{get: []byte(`{"http_headers":{"Authorization":"` + sentinel + `"}}`), getErr: errors.New("exit status 1"), stderr: []byte("Error: failed to load bootstrap configuration")}
+	a, _ := For("codex", runner)
+	e, _ := ResolveEnvironment("codex", "codex", t.TempDir())
+	_, err := a.(cliAdapter).current(context.Background(), e, "local")
+	if err == nil || !strings.Contains(err.Error(), string(runner.stderr)) {
+		t.Fatalf("stderr diagnostic missing: %v", err)
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("failed probe stdout leaked into error: %v", err)
 	}
 }
 

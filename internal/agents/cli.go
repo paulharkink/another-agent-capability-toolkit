@@ -75,7 +75,7 @@ func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*R
 		if knownMissingRegistration(name, string(diagnostic)+"\n"+string(output)+"\n"+err.Error()) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("cannot verify existing %s registration %q: %w%s", a.program(), name, err, diagnosticSuffix(diagnostic, output))
+		return nil, fmt.Errorf("cannot verify existing %s registration %q: %w%s", a.program(), name, err, diagnosticSuffix(diagnostic))
 	}
 	var value map[string]any
 	if err = json.Unmarshal(output, &value); err != nil {
@@ -152,8 +152,8 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 			return nil
 		}
 	}
-	// CLI replaces only a positively verified owned name; the coordinator retains
-	// its previous ledger entry until registration and record both succeed.
+	// CLI replaces only a positively verified owned name. A failure after remove
+	// is reported as a partial effect; the adapter does not automatically restore it.
 	if current != nil {
 		var diagnostic []byte
 		if _, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, collectDiagnostic(&diagnostic)); err != nil {
@@ -166,15 +166,6 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	}
 	var diagnostic []byte
 	_, err = a.runner.Run(ctx, args, e.Home, nil, env, collectDiagnostic(&diagnostic))
-	if err != nil && current != nil {
-		restore := e.Owned[r.Name]
-		rollback := []string{"codex", "mcp", "add", restore.Name, "--url", restore.URL}
-		if a.kind != "codex" {
-			rollback = []string{"copilot", "mcp", "add", "--transport", "http", "--timeout", strconv.Itoa(restore.TimeoutMS), restore.Name, restore.URL}
-		}
-		_, restoreErr := a.runner.Run(ctx, rollback, e.Home, nil, env, nil)
-		return errors.Join(fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic)), restoreErr)
-	}
 	if err != nil {
 		return fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
 	}
