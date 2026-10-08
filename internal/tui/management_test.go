@@ -108,7 +108,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Environment directory:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Profiles:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -155,11 +155,11 @@ func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
 	delete(m.settings, "environment_root")
 	m.settings["environment-root"] = "/actual/environments"
 	m.navigate("Environments")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
 		t.Fatalf("Environments omitted canonical root: %s", view)
 	}
 	m.navigate("Settings")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Environment directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
 		t.Fatalf("Settings omitted canonical root: %s", view)
 	}
 	m.editEnvironmentRoot()
@@ -549,7 +549,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatal("Environment directory editor did not open as a management overlay")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose environment directory") {
+	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose profile configuration directory") {
 		t.Fatalf("editor replaced its management origin or lost its task title:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc cancel") || strings.Contains(view, "Esc back") {
@@ -559,7 +559,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatalf("overlay changed terminal height: %d", got)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
-	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose environment directory") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose profile configuration directory") {
 		t.Fatal("resize discarded the management editor overlay")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})

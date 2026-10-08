@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
@@ -39,6 +40,8 @@ type profileRunBackend interface {
 	UIProfileRun(context.Context, string, state.Key) (string, error)
 }
 type Model struct {
+	capabilityProfiles         map[string]viewmodel.CapabilityProfileSnapshot
+	creatingProfile            *config.ProfileRef
 	home                       homeState
 	backend                    Backend
 	ctx                        context.Context
@@ -93,6 +96,7 @@ type Model struct {
 }
 type operation struct{ action, source, packageID, agent, environment, target, mcp, profile string }
 type loadedMsg struct {
+	capabilityProfiles  map[string]viewmodel.CapabilityProfileSnapshot
 	catalog             []catalog.Package
 	inventory           []state.Installation
 	inventoryError      error
@@ -156,7 +160,15 @@ func (m *Model) load() tea.Cmd {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if profileBackend, ok := backend.(profileSnapshotBackend); ok {
+		if profiles, ok := backend.(capabilityProfilesBackend); ok {
+			msg.capabilityProfiles, e = profiles.UICapabilityProfiles(ctx)
+			if legacy, ok := backend.(profileSnapshotBackend); ok {
+				snapshot, err := legacy.UIProfileSnapshot(ctx)
+				if err == nil {
+					msg.profileSnapshot = &snapshot
+				}
+			}
+		} else if profileBackend, ok := backend.(profileSnapshotBackend); ok {
 			snapshot, err := profileBackend.UIProfileSnapshot(ctx)
 			e = err
 			msg.profileError = err
@@ -179,7 +191,7 @@ func (m *Model) load() tea.Cmd {
 				errs = append(errs, e)
 			}
 		}
-		if environmentBackend, ok := backend.(environmentBrowserBackend); ok {
+		if environmentBackend, ok := backend.(environmentBrowserBackend); ok && !m.profileMode() {
 			snapshot, err := environmentBackend.UIEnvironmentSnapshot(ctx)
 			msg.environmentError = err
 			if err == nil {
@@ -188,7 +200,18 @@ func (m *Model) load() tea.Cmd {
 				errs = append(errs, err)
 			}
 		}
-		msg.settings, e = backend.UISettings(ctx)
+		if pack, ok := backend.(packSettingsBackend); ok {
+			msg.settings, e = pack.PackSettings(ctx)
+			if msg.settings == nil {
+				msg.settings = map[string]string{}
+			}
+			msg.settings["source"] = msg.settings["capability-pack"]
+			msg.settings["checkout"] = msg.settings["pack-directory"]
+			msg.settings["environment-root"] = msg.settings["profile-directory"]
+			msg.settings["state-dir"] = msg.settings["state-directory"]
+		} else {
+			msg.settings, e = backend.UISettings(ctx)
+		}
 		if e != nil {
 			errs = append(errs, e)
 		}
@@ -602,6 +625,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
 			m.pendingDefaultAgents = false
+			m.creatingProfile = nil
 			m.workspace = nil
 			m.output = "Cancelled"
 			return m, nil
@@ -611,6 +635,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.unsavedExitIntent = nil
 			m.output = e.Error()
 			return m, nil
+		}
+		if m.creatingProfile != nil {
+			ref := *m.creatingProfile
+			ref.Name, _ = values["name"].(string)
+			m.creatingProfile = nil
+			m.action = "create profile"
+			return m, func() tea.Msg {
+				return profileCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
+			}
 		}
 		if m.pendingRegistration != nil {
 			request := *m.pendingRegistration
@@ -684,6 +717,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
 			return m, m.fetchLogs(msg.session)
 		}
+	case profileCreatedMsg:
+		if msg.err != nil {
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create profile"})
+			return m, nil
+		}
+		return m, m.openTargetWorkspace(viewmodel.SetupRequest{Ref: msg.ref}, "Overview")
 	case setupPreviewMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -695,6 +734,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.retryOperation = nil
+		if m.workspace != nil && m.workspace.Reference.CapabilityID != "" {
+			m.workspace.Key = msg.preview.Key
+		}
 		m.openSetupForm(msg.preview)
 		name := msg.preview.PackageName
 		if name == "" {
@@ -704,7 +746,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
 			title = "Configure · " + name
 		}
-		if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
+		if m.profileMode() {
+			title += " · Profile " + msg.preview.Key.Target
+		} else if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
 		}
 		m.form.SetTitle(title + " · F3 Information")
@@ -796,6 +840,7 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 	if m.action == "load" {
 		m.busy = false
 	}
+	m.capabilityProfiles = msg.capabilityProfiles
 	m.catalog = msg.catalog
 	m.inventory = msg.inventory
 	m.inventoryError = msg.inventoryError
@@ -1189,7 +1234,9 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if op.mcp != "" || op.profile != "" {
+		if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.profileMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.ProfileRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
+		} else if op.mcp != "" || op.profile != "" {
 			profileBackend, ok := backend.(profileRunBackend)
 			if !ok {
 				return operationMsg{origin: origin, err: errors.New("backend does not support MCP-specific runtime actions"), target: op.target}

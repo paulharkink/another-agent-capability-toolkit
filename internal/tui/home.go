@@ -29,6 +29,7 @@ type ProfileRow struct {
 	Key               state.Key
 	Name, Status, URL string
 	Instance          mcp.Instance
+	Configuration     *viewmodel.CapabilityProfile
 	Profile           *viewmodel.Profile
 }
 type Pane uint8
@@ -83,6 +84,14 @@ func (m *Model) contextRows() []contextRow {
 	c, ok := m.selectedCapability()
 	if !ok {
 		return nil
+	}
+	if m.profileMode() && c.CatalogIndex >= 0 {
+		rows := []contextRow{}
+		for i, p := range m.profiles() {
+			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
+		}
+		rows = append(rows, contextRow{ID: "create-profile", Label: "Create another profile…", Kind: "create-profile"}, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
+		return rows
 	}
 	if c.CatalogIndex < 0 {
 		rows := []contextRow{
@@ -257,7 +266,7 @@ func (m *Model) capabilities() []CapabilityRow {
 				mcpNames = append(mcpNames, definition.Name)
 			}
 		}
-		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.Skill != nil, MCP: p.HasMCP(), MCPNames: mcpNames, CatalogIndex: i})
+		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.HasSkill(), MCP: p.HasMCP(), MCPNames: mcpNames, CatalogIndex: i})
 	}
 	if m.profileSnapshot != nil {
 		seen := map[string]bool{}
@@ -286,7 +295,19 @@ func (m *Model) selectedCapability() (CapabilityRow, bool) {
 }
 func (m *Model) profiles() []ProfileRow {
 	c, ok := m.selectedCapability()
-	if !ok || !c.MCP {
+	if !ok {
+		return nil
+	}
+	if m.profileMode() && c.CatalogIndex >= 0 {
+		rows := []ProfileRow{}
+		snapshot := m.capabilityProfiles[c.Package]
+		for _, profile := range snapshot.Profiles {
+			copy := profile
+			rows = append(rows, ProfileRow{ID: profile.Key.ID(), Key: profile.Key, Name: profile.Ref.Name, Status: profileStatusSummary(profile), Configuration: &copy})
+		}
+		return rows
+	}
+	if !c.MCP {
 		return nil
 	}
 	rows := []ProfileRow{}
@@ -520,6 +541,10 @@ func (m *Model) openContextRow() tea.Cmd {
 		return nil
 	}
 	switch row.Kind {
+	case "create-profile":
+		if c, ok := m.selectedCapability(); ok {
+			m.openProfileCreation(c)
+		}
 	case "configure":
 		return m.homeOperation("parameters")
 	case "locate-source":
@@ -536,6 +561,9 @@ func (m *Model) openContextRow() tea.Cmd {
 				m.openObservedProfileWorkspace(profile)
 				return nil
 			}
+		}
+		if m.profileMode() {
+			return m.openTargetWorkspace(m.packProfileRequest(row.Key), "Overview")
 		}
 		return m.openTargetWorkspace(viewmodel.SetupRequest{SourceID: row.Key.Source, PackageID: row.Key.Package, Environment: row.Key.Environment, Target: row.Key.Target}, "Overview")
 	case "target":
@@ -626,7 +654,13 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		return nil
 	}
 	if m.home.Modal.Kind == "main" {
+		if m.profileMode() {
+			return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
+		}
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
+	}
+	if m.profileMode() {
+		return []homeMenuItem{{"Open selected profile", "parameters", ""}, {"Create another profile…", "create-profile", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 	}
 	if m.home.Modal.Kind == "target-chooser" {
 		return m.targetChooserItems()
@@ -800,6 +834,42 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 	return nil
 }
 func (m *Model) homeOperation(action string) tea.Cmd {
+	if m.profileMode() {
+		if action == "create-profile" {
+			if c, ok := m.selectedCapability(); ok {
+				m.openProfileCreation(c)
+			}
+			return nil
+		}
+		if action == "details" {
+			m.home.Modal = &modalState{Kind: "details"}
+			return nil
+		}
+		if m.home.Focus == CapabilitiesPane {
+			m.focusPane(ProfilesPane)
+			return nil
+		}
+		if row, ok := m.selectedContextRow(); ok {
+			if row.Kind == "create-profile" {
+				if c, ok := m.selectedCapability(); ok {
+					m.openProfileCreation(c)
+				}
+				return nil
+			}
+			if row.Kind == "profile" {
+				section := "Overview"
+				if action == "agents" {
+					section = "Agents"
+				}
+				if action == "s" || action == "x" || action == "l" {
+					section = "Runtime"
+				}
+				return m.openTargetWorkspace(m.packProfileRequest(row.Key), section)
+			}
+		}
+		return nil
+	}
+
 	c, ok := m.selectedCapability()
 	if !ok {
 		return nil
@@ -1019,57 +1089,76 @@ func (m *Model) homeView() tea.View {
 	}
 	contextDisplay := []displayRow{{text: "Capability", contextIndex: -1, kind: "heading"}}
 	contextRows := m.contextRows()
-	if c.CatalogIndex < 0 {
-		contextDisplay = append(contextDisplay, displayRow{text: "Capability Pack unavailable · " + c.Package, contextIndex: -1, kind: "heading"})
-		for i := 0; i < min(3, len(contextRows)); i++ {
-			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+	if m.profileMode() {
+		contextDisplay = []displayRow{{text: "Configuration profiles", contextIndex: -1, kind: "heading"}}
+		for i, row := range contextRows {
+			contextDisplay = append(contextDisplay, displayRow{text: row.Label, contextIndex: i, kind: "action"})
+			if row.Kind == "profile" {
+				profile := ps[row.ProfileIndex].Configuration
+				if profile.ConfigError != "" {
+					contextDisplay = append(contextDisplay, displayRow{text: profile.ConfigError, contextIndex: -1, kind: "empty"})
+				}
+				for _, component := range profile.Components {
+					contextDisplay = append(contextDisplay, displayRow{text: component.AgentID + " · " + component.Kind + " · " + component.Name + " · " + component.Status, contextIndex: -1, kind: "empty"})
+				}
+			}
 		}
-		if len(contextRows) > 3 {
+		for _, message := range m.capabilityProfiles[c.Package].Errors {
+			contextDisplay = append(contextDisplay, displayRow{text: "Observation: " + message, contextIndex: -1, kind: "empty"})
+		}
+	} else {
+		if c.CatalogIndex < 0 {
+			contextDisplay = append(contextDisplay, displayRow{text: "Capability Pack unavailable · " + c.Package, contextIndex: -1, kind: "heading"})
+			for i := 0; i < min(3, len(contextRows)); i++ {
+				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+			}
+			if len(contextRows) > 3 {
+				heading := "Saved targets"
+				if c.Skill && !c.MCP {
+					heading = "Saved configuration"
+				}
+				contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
+				for i := 3; i < len(contextRows); i++ {
+					contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+				}
+			}
+		} else {
+			for i := 0; i < min(2, len(contextRows)); i++ {
+				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+			}
+		}
+		if c.MCP && c.CatalogIndex >= 0 {
+			contextDisplay = append(contextDisplay, displayRow{text: "Related MCP profiles", contextIndex: -1, kind: "heading"})
+			if len(ps) == 0 {
+				contextDisplay = append(contextDisplay, displayRow{text: "No profiles yet — configure/install to create one", contextIndex: -1, kind: "empty"})
+			} else {
+				for i, p := range ps {
+					environment, target := p.Key.Environment, p.Key.Target
+					if environment == "" {
+						environment = "No preset"
+					}
+					if target == "" {
+						target = "default"
+					}
+					contextDisplay = append(contextDisplay, displayRow{text: environment + " / " + target + " · MCP · " + p.Name + " · " + p.Status, contextIndex: i + 2, kind: "action"})
+				}
+			}
+		}
+		if len(contextRows) > 2+len(m.profiles()) {
 			heading := "Saved targets"
 			if c.Skill && !c.MCP {
 				heading = "Saved configuration"
 			}
 			contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
-			for i := 3; i < len(contextRows); i++ {
+			for i := 2 + len(m.profiles()); i < len(contextRows); i++ {
 				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
 			}
 		}
-	} else {
-		for i := 0; i < min(2, len(contextRows)); i++ {
-			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+		installStatus, installDetails := m.installationDetails(c)
+		contextDisplay = append(contextDisplay, displayRow{text: "Installation · AACT records: " + installStatus, contextIndex: -1, kind: "heading"})
+		for _, detail := range installDetails {
+			contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
 		}
-	}
-	if c.MCP && c.CatalogIndex >= 0 {
-		contextDisplay = append(contextDisplay, displayRow{text: "Related MCP profiles", contextIndex: -1, kind: "heading"})
-		if len(ps) == 0 {
-			contextDisplay = append(contextDisplay, displayRow{text: "No profiles yet — configure/install to create one", contextIndex: -1, kind: "empty"})
-		} else {
-			for i, p := range ps {
-				environment, target := p.Key.Environment, p.Key.Target
-				if environment == "" {
-					environment = "No preset"
-				}
-				if target == "" {
-					target = "default"
-				}
-				contextDisplay = append(contextDisplay, displayRow{text: environment + " / " + target + " · MCP · " + p.Name + " · " + p.Status, contextIndex: i + 2, kind: "action"})
-			}
-		}
-	}
-	if len(contextRows) > 2+len(m.profiles()) {
-		heading := "Saved targets"
-		if c.Skill && !c.MCP {
-			heading = "Saved configuration"
-		}
-		contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
-		for i := 2 + len(m.profiles()); i < len(contextRows); i++ {
-			contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
-		}
-	}
-	installStatus, installDetails := m.installationDetails(c)
-	contextDisplay = append(contextDisplay, displayRow{text: "Installation · AACT records: " + installStatus, contextIndex: -1, kind: "heading"})
-	for _, detail := range installDetails {
-		contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
 	}
 	selectedDisplay := 0
 	for i, row := range contextDisplay {
@@ -1091,8 +1180,8 @@ func (m *Model) homeView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	scope := " Capability Pack: " + m.settings["source"] + " · Environment directory: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
-	menubar := " F9 Main menu: Agents | Environments | Settings | Help   F2 Open / Focus"
+	scope := " Capability Pack: " + m.settings["source"] + " · Profiles: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
 	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"
 	rtitle := "Selected capability · " + c.Name

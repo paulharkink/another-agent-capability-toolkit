@@ -86,6 +86,9 @@ func (s *Service) withOperationProgress(ctx context.Context, observer func(viewm
 // UISetupPreview resolves a form without validating missing required answers or
 // changing installed state. Values retain the source of their winning layer.
 func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	if q.Ref.CapabilityID != "" {
+		return s.PreviewProfile(ctx, ProfileRequest{Ref: q.Ref})
+	}
 	if err := ctx.Err(); err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
@@ -575,6 +578,9 @@ func targetInputChoices(raw map[string]any, path string) ([]catalog.Choice, erro
 // UIInstall applies the complete form through the existing noninteractive
 // service operation. A caller-supplied form never opens the legacy editor.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	if q.Ref.CapabilityID != "" {
+		return s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
+	}
 	if _, scoped := ctx.Value(operationProgressScopeContextKey{}).(bool); !scoped {
 		if observer := viewmodel.OperationProgressObserver(ctx); observer != nil {
 			scopedService, scopedCtx := s.withOperationProgress(ctx, observer)

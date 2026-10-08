@@ -62,12 +62,12 @@ func TestCapabilityPackScopeUsesConsistentNames(t *testing.T) {
 			t.Fatalf("ambiguous scope label %q remains:\n%s", forbidden, view)
 		}
 	}
-	if !strings.Contains(view, "Capability Pack:") || !strings.Contains(view, "Environment directory:") {
+	if !strings.Contains(view, "Capability Pack:") || !strings.Contains(view, "Profiles:") {
 		t.Fatalf("scope does not name the pack and environment directory:\n%s", view)
 	}
 	m.selected = 0
 	details := strings.Join(m.managementSettingsDetails(), "\n")
-	for _, expected := range []string{"Capability Pack ID:", "Capability Pack directory:", "Catalog TOML:", "Environment directory:", "<Capability Pack>/environments", "external directory"} {
+	for _, expected := range []string{"Capability Pack ID:", "Capability Pack directory:", "Catalog TOML:", "Profile configuration directory:", "<Capability Pack>/environments", "external directory"} {
 		if !strings.Contains(details, expected) {
 			t.Errorf("Capability Pack settings omit %q:\n%s", expected, details)
 		}

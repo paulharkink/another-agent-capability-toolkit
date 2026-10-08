@@ -57,6 +57,7 @@ type SetupPreview struct {
 }
 
 type SetupInstallRequest struct {
+	ItemIDs []string
 	SetupRequest
 	Inputs         map[string]any
 	ResetInputs    []string
