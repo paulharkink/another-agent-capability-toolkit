@@ -30,6 +30,8 @@ type MCPRuntime interface {
 	Logs(context.Context, state.Key) (io.ReadCloser, error)
 }
 type Options struct {
+	Adapters           AdapterProvider
+	AgentScopes        map[string]agents.Scope
 	Runner             process.Executor
 	Editor             Editor
 	Runtime            MCPRuntime
@@ -833,6 +835,12 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 	return out, err
 }
 func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+	return s.startWithContext(ctx, p, t, config.Profile{}, k, values, interactive)
+}
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+	return s.startWithContext(ctx, p, config.Target{}, profile, k, values, interactive)
+}
+func (s *Service) startWithContext(ctx context.Context, p catalog.Package, t config.Target, profile config.Profile, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
@@ -883,7 +891,7 @@ func (s *Service) start(ctx context.Context, p catalog.Package, t config.Target,
 	}
 	if _, ok := p.MCP.Actions["prepare"]; ok {
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
-		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Target: t, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
+		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Target: t, Profile: profile, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
 		if e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}

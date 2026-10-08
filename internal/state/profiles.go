@@ -8,10 +8,15 @@ import (
 
 // ProfileRecord keeps a configured profile visible even before its MCP has
 // been started or registered with an agent.
+type ProfileSelection struct {
+	ItemIDs        []string `json:"item_ids"`
+	DestinationIDs []string `json:"destination_ids"`
+}
 type ProfileRecord struct {
-	Key   Key    `json:"key"`
-	Name  string `json:"name,omitempty"`
-	Local bool   `json:"local,omitempty"`
+	Selection *ProfileSelection `json:"selection,omitempty"`
+	Key       Key               `json:"key"`
+	Name      string            `json:"name,omitempty"`
+	Local     bool              `json:"local,omitempty"`
 }
 
 type profileLedger struct {

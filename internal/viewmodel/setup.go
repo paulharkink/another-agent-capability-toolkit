@@ -1,11 +1,14 @@
 package viewmodel
 
 import (
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
 type SetupRequest struct {
+	Ref         config.ProfileRef
 	SourceID    string
 	PackageID   string
 	Environment string
@@ -26,6 +29,7 @@ type SetupInput struct {
 }
 
 type SetupDestination struct {
+	Features                                                agents.FeatureSet
 	ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
 	DisabledReason                                          string
 	Path                                                    string
@@ -33,20 +37,23 @@ type SetupDestination struct {
 }
 
 type SetupPreview struct {
-	Key             state.Key
-	PackageName     string
-	SourceRoot      string
-	TargetPath      string
-	TargetTOML      string
-	Configured      bool
-	MCP             bool
-	Sections        []catalog.Section
-	HasManifestUI   bool
-	MCPDefinitions  []catalog.MCP
-	CredentialState string
-	CredentialNote  string
-	Inputs          []SetupInput
-	Destinations    []SetupDestination
+	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
+	Items                                             []catalog.InstallationItem
+	SelectedItemIDs, ValidationIssues                 []string
+	Key                                               state.Key
+	PackageName                                       string
+	SourceRoot                                        string
+	TargetPath                                        string
+	TargetTOML                                        string
+	Configured                                        bool
+	MCP                                               bool
+	Sections                                          []catalog.Section
+	HasManifestUI                                     bool
+	MCPDefinitions                                    []catalog.MCP
+	CredentialState                                   string
+	CredentialNote                                    string
+	Inputs                                            []SetupInput
+	Destinations                                      []SetupDestination
 }
 
 type SetupInstallRequest struct {
