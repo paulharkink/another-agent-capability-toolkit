@@ -3,7 +3,6 @@ package install
 import (
 	"context"
 	"errors"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"os"
@@ -11,7 +10,7 @@ import (
 	"testing"
 )
 
-func setup(t *testing.T) (*Skills, *state.Store, catalog.Package, agents.Environment, state.Key) {
+func setup(t *testing.T) (*Skills, *state.Store, catalog.Package, SkillDestination, state.Key) {
 	t.Helper()
 	s, err := state.Open(t.TempDir())
 	if err != nil {
@@ -19,7 +18,7 @@ func setup(t *testing.T) (*Skills, *state.Store, catalog.Package, agents.Environ
 	}
 	p := catalog.Package{ID: "sample", Dir: t.TempDir(), Skill: &catalog.Skill{Name: "sample"}}
 	os.WriteFile(filepath.Join(p.Dir, "SKILL.md"), []byte("skill"), 0644)
-	e := agents.Environment{ID: "agent", Kind: "codex", Home: t.TempDir(), SkillsDir: t.TempDir()}
+	e := SkillDestination{ID: "agent", Kind: "codex", Home: t.TempDir(), SkillsDir: t.TempDir()}
 	k := state.Key{Source: "source", Package: "sample", Environment: "env", Target: "one"}
 	return NewSkills(s), s, p, e, k
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
@@ -17,10 +16,12 @@ type Skills struct {
 	Store             *state.Store
 	Link              func(string, string) error
 	AllowSourceUpdate bool
+	recordEffect      func(state.Installation) error
+	removeDestination string
 }
 
 func NewSkills(s *state.Store) *Skills { return &Skills{Store: s, Link: os.Symlink} }
-func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Environment, k state.Key, generatedDir string) error {
+func (s *Skills) Install(ctx context.Context, p catalog.Package, e SkillDestination, k state.Key, generatedDir string) error {
 	if s.Store == nil {
 		return errors.New("state store required")
 	}
@@ -102,7 +103,7 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 			row.AgentID = e.ID
 			row.AgentHome = e.Home
 			row.AgentKind = e.Kind
-			return s.Store.Record(row)
+			return s.recordInstallation(row)
 		}
 		if len(shared) > 1 || (len(shared) == 1 && previous == nil) {
 			return fmt.Errorf("cannot update a shared skill with different content at %s", destination)
@@ -156,7 +157,7 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 			return err
 		}
 		row := state.Installation{Key: k, AgentID: e.ID, AgentHome: e.Home, AgentKind: e.Kind, Component: "skill", Destination: destination, SourcePath: source, Mode: mode, Digest: digest}
-		if err = s.Store.Record(row); err != nil {
+		if err = s.recordInstallation(row); err != nil {
 			if rollback := restore(); rollback != nil {
 				return fmt.Errorf("ledger write: %v; rollback: %w", err, rollback)
 			}
@@ -171,7 +172,7 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e agents.Enviro
 		return nil
 	}()
 }
-func (s *Skills) Uninstall(ctx context.Context, k state.Key, e agents.Environment) error {
+func (s *Skills) Uninstall(ctx context.Context, k state.Key, e SkillDestination) error {
 	if s.Store == nil {
 		return errors.New("state store required")
 	}
@@ -188,7 +189,7 @@ func (s *Skills) Uninstall(ctx context.Context, k state.Key, e agents.Environmen
 			return err
 		}
 		for _, row := range rows {
-			if row.Component != "skill" || row.Key != k || row.AgentID != e.ID || filepath.Dir(row.Destination) != selectedDir {
+			if row.Component != "skill" || row.Key != k || row.AgentID != e.ID || filepath.Dir(row.Destination) != selectedDir || (s.removeDestination != "" && row.Destination != s.removeDestination) {
 				continue
 			}
 			if err = verifyOwned(ctx, row); err != nil {

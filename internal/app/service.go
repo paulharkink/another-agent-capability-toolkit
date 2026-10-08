@@ -603,7 +603,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (out Result, er
 			}
 			agentErr := error(nil)
 			if p.Skill != nil {
-				agentErr = skills.Install(ctx, p, env, k, generated)
+				agentErr = skills.Install(ctx, p, install.SkillDestination{ID: env.ID, Home: env.Home, Kind: env.Kind, SkillsDir: env.SkillsDir}, k, generated)
 				if agentErr == nil {
 					applied = true
 					destination, absErr := filepath.Abs(filepath.Join(env.SkillsDir, p.Skill.Name))
@@ -820,7 +820,7 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (out Result, 
 				}
 			}
 			if !failed {
-				if e = skills.Uninstall(ctx, k, env); e != nil {
+				if e = skills.Uninstall(ctx, k, install.SkillDestination{ID: env.ID, Home: env.Home, Kind: env.Kind, SkillsDir: env.SkillsDir}); e != nil {
 					out.Errors = append(out.Errors, env.ID+": "+e.Error())
 				}
 			}
