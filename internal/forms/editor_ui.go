@@ -823,6 +823,10 @@ type fieldCondition struct {
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
 	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}}
+	m.fieldErrors = map[string]string{}
+	for name, err := range m.editor.initialErrors {
+		m.fieldErrors[name] = err.Error()
+	}
 	values := m.editor.Values()
 	for _, def := range defs {
 		if len(def.VisibleWhen) > 0 {
@@ -1570,6 +1574,16 @@ func textValue(value any) string {
 	return fmt.Sprint(value)
 }
 
+func inputDisplayValue(def catalog.Input, value any) string {
+	if def.Type == "boolean" && !def.Multiple {
+		if enabled, ok := value.(bool); ok && enabled {
+			return "[x]"
+		}
+		return "[ ]"
+	}
+	return textValue(value)
+}
+
 func editViewport(buffer string, cursor, width int) string {
 	runes := []rune(buffer)
 	cursor = max(0, min(cursor, len(runes)))
@@ -1826,7 +1840,7 @@ func (m *FormModel) layout() formLayout {
 			label += " *"
 		}
 		value := values[def.Name]
-		display := textValue(value)
+		display := inputDisplayValue(def, value)
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
 			display = m.emptyChoicesText(def)
 		} else if def.OptionsFrom != "" && len(def.Options) > 0 {
@@ -2116,7 +2130,7 @@ func (m *FormModel) splitLayout() formLayout {
 		if index == m.selected && m.area == 1 {
 			prefix = "> "
 		}
-		display := textValue(values[def.Name])
+		display := inputDisplayValue(def, values[def.Name])
 		choiceRows := []string{}
 		choiceRowIndexes := []int{}
 		if def.OptionsFrom != "" && len(def.Options) == 0 {

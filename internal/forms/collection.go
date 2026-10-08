@@ -61,6 +61,13 @@ func (c *Collection) check(path string, ignore int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	scalar := c.input
+	scalar.Multiple = false
+	scalar.MinItems = nil
+	scalar.MaxItems = nil
+	if err := ValidateProvided([]catalog.Input{scalar}, map[string]any{scalar.Name: clean}); err != nil {
+		return "", err
+	}
 	key := collectionPathKey(clean)
 	for i, value := range c.values {
 		if i != ignore && collectionPathKey(value) == key {

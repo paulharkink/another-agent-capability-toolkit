@@ -23,6 +23,14 @@ name = "Plain"
 name = "plain"
 `
 
+func TestInvalidPatternIncludesInputAndManifest(t *testing.T) {
+	dir := writeManifest(t, plainManifest+"[[inputs]]\nname = \"name\"\ntype = \"string\"\nregex = \"[\"\n")
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "name") || !strings.Contains(err.Error(), "package.toml") {
+		t.Fatalf("malformed pattern accepted or not identified: %v", err)
+	}
+}
+
 func TestLoadPlainSkill(t *testing.T) {
 	for _, manifest := range []bool{true, false} {
 		t.Run(map[bool]string{true: "manifest", false: "fallback"}[manifest], func(t *testing.T) {

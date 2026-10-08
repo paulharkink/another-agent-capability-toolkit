@@ -24,6 +24,9 @@ func NewEditor(defs []catalog.Input, prefill map[string]any) *Editor {
 		values, err := ResolvePartial([]catalog.Input{def}, prefill)
 		if err != nil {
 			e.initialErrors[def.Name] = err
+			if v, ok := values[def.Name]; ok {
+				e.values[def.Name] = v
+			}
 			continue
 		}
 		if v, ok := values[def.Name]; ok {

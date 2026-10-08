@@ -59,6 +59,7 @@ type Plugin struct {
 }
 type Input struct {
 	Name           string         `toml:"name" json:"name"`
+	Regex          string         `toml:"regex" json:"regex,omitempty"`
 	ConfigKey      string         `toml:"config_key" json:"config_key"`
 	ExclusiveGroup string         `toml:"exclusive_group" json:"exclusive_group"`
 	Type           string         `toml:"type" json:"type"`
