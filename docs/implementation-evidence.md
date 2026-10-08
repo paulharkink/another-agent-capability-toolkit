@@ -303,15 +303,20 @@ attributed to a stale binary. The dereference reads `ProfileRow.Configuration`.
 A focused nil-configuration test was added; its first run failed to compile
 because the helper was not yet defined. After adding the helper with a nil guard,
 the guard was temporarily removed and the test failed with a nil-pointer panic
-at `profile_home.go:69`; restoring the guard made the focused test pass. This
-proves the pointer failure mode but does not reproduce the native transition
-that supplied the nil row. A later fresh-binary run selected the state-only
-`cluster-inspector` row and exited with F10 without a panic. A bounded five-
-second wait on another launch showed the expected example-company catalog,
-Team guidance, and ota/prod rows; an earlier empty-catalog frame was transient
-during asynchronous loading. A fresh-source unsaved Boolean edit, discard, and
-F10 exit also completed without a panic. These clean runs do not clear the
-earlier native crash; its transition remains open for review.
+at `profile_home.go:69`; restoring the guard made the focused test pass. A
+follow-up model regression then reproduced the complete discard-to-saved-only
+path: a dirty workspace over a catalog capability is discarded, reload removes
+that catalog entry while retaining its saved profile row, selection reconciles
+to `CatalogIndex < 0`, and `View()` previously panicked in homeView. The test
+panicked with both protections removed and passed with the catalog-row render
+predicate and nil-safe configuration-detail projection. Later fresh-binary runs
+selected the state-only `cluster-inspector` row, completed F10, and completed an
+unsaved Boolean discard followed by F10 without a panic. A bounded five-second
+wait showed the expected example-company catalog, Team guidance, and ota/prod
+rows; the earlier empty-catalog frame was transient during asynchronous loading.
+The deterministic model reproduction grounds the source fix. The original
+native trace did not preserve enough model state to prove that exact sequence
+was the UI trigger; the successful repeats are supplementary evidence.
 
 Native verification on macOS arm64:
 
