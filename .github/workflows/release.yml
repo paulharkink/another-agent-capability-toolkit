@@ -3,6 +3,7 @@ name: Build and publish release artifacts
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -10,6 +11,7 @@ permissions:
 
 jobs:
   release:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
