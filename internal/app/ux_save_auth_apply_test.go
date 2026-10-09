@@ -1056,15 +1056,18 @@ func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExis
 	if keyErr != nil {
 		t.Fatal(keyErr)
 	}
-	sourcePath := t.TempDir() + "/removed-source.kubeconfig"
+	sourcePath := filepath.Join(t.TempDir(), "removed-source.kubeconfig")
 	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": sourcePath, "port": 9000}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(store.AuthDir(key), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(store.AuthDir(key)+"/session.bin", []byte("imported fixture material"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(store.AuthDir(key), "session.bin"), []byte("imported fixture material"), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if status, _ := svc.credentialObservation(*pkg, key); status != "present" {
+		t.Fatalf("fixture managed credentials were not observable before apply: %q", status)
 	}
 	exec := &uxActionExecutor{}
 	svc.Options.Runner = exec

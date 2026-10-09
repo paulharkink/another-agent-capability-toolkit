@@ -24,7 +24,13 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	root := t.TempDir()
 	// Agent adapters must only inspect isolated fixture homes. These tests
 	// must never read or write the developer's live agent configuration.
-	isolateUXUserHome(t, filepath.Join(root, "user-home"))
+	home := filepath.Join(root, "user-home")
+	isolateUXUserHome(t, home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("COPILOT_HOME", "")
+	t.Setenv("APPDATA", "")
+	t.Setenv("WSL_DISTRO_NAME", "")
 	t.Setenv("CODEX_HOME", "")
 	pkg := filepath.Join(root, "pkg")
 	os.MkdirAll(pkg, 0755)
@@ -66,6 +72,21 @@ func TestFixtureDiscoveryProbeIsIndependentOfHostPATH(t *testing.T) {
 	}
 	if path, err := svc.Options.DiscoveryProbe.LookPath("unknown-cli"); err == nil || path != "" {
 		t.Errorf("unknown CLI unexpectedly discovered: path=%q err=%v", path, err)
+	}
+}
+
+func TestFixtureAndProfileDestinationsIgnoreRunnerConfigRoots(t *testing.T) {
+	runnerConfig := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", runnerConfig)
+	svc, agent, _ := fixture(t)
+	if got, want := os.Getenv("XDG_CONFIG_HOME"), filepath.Join(svc.Source.Root, "user-home", ".config"); got != want {
+		t.Fatalf("fixture XDG config root = %q, want isolated root %q", got, want)
+	}
+	agent.Kind = "opencode"
+	agent.ID = "opencode"
+	profileDestinationsForTest(svc, []agents.Environment{agent})
+	if scope := svc.Options.AgentScopes["opencode"]; !scope.ExplicitHome || scope.Home != agent.Home {
+		t.Fatalf("fixture destination did not retain its explicit home: %+v", scope)
 	}
 }
 

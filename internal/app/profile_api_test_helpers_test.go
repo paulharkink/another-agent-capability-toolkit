@@ -40,6 +40,7 @@ func profileDestinationsForTest(s *Service, envs []agents.Environment) []string 
 			}
 			scope := s.Options.AgentScopes[id]
 			scope.ID, scope.Home, scope.ConfigPathOverride = id, env.Home, env.ConfigPath
+			scope.ExplicitHome = true
 			s.Options.AgentScopes[id] = scope
 		}
 	}
