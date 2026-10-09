@@ -6,11 +6,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  release:
+  prepare-release:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +33,7 @@ jobs:
 
       - run: go test ./... -count=1
 
-      # Build and validate every AACT release artifact before publishing any image.
+      # Build and validate release binaries before any MCP image is published.
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
           version: v2.18.2
@@ -42,63 +41,185 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Require Docker Hub credentials
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
-            echo 'Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository Actions secrets before publishing multi-architecture MCP images.' >&2
-            exit 1
-          fi
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - uses: actions/upload-artifact@v4
         with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          name: goreleaser-dist-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+  build-mcp-amd64:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable the Docker containerd image store
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 /etc/docker
+          if ! sudo test -f /etc/docker/daemon.json; then echo '{}' | sudo tee /etc/docker/daemon.json >/dev/null; fi
+          sudo jq '.features = ((.features // {}) + {"containerd-snapshotter": true}) | . + {"max-concurrent-downloads": 1}' /etc/docker/daemon.json | sudo tee /tmp/docker-daemon.json >/dev/null
+          sudo install -m 0644 /tmp/docker-daemon.json /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | grep -Fq 'io.containerd.snapshotter.v1'
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build package-only MCP contexts and publish version tags
-        id: mcp-images
+      - name: Verify the host Buildx builder
+        run: |
+          docker buildx version
+          docker buildx inspect default --bootstrap | tee /tmp/buildx-inspect.txt
+          grep -Fq 'Driver: docker' /tmp/buildx-inspect.txt
+
+      - name: Prefetch digest-pinned Python base
+        run: sh tools/prefetch-python-bases.sh linux/amd64 public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+
+      - name: Build and stage package-only MCP contexts
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p image-digests
+          mkdir -p image-digests/amd64
           found=0
           for dockerfile in packages/*/mcp/Dockerfile; do
             [[ -f "$dockerfile" ]] || continue
             found=1
             package="$(basename "$(dirname "$(dirname "$dockerfile")")")"
             context="$(dirname "$dockerfile")"
-            image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp:v${version}"
+            image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp"
+            staging="${image}:build-${GITHUB_SHA}-amd64"
             metadata="$(mktemp)"
             docker buildx build \
               --file "$dockerfile" \
-              --platform linux/amd64,linux/arm64 \
-              --tag "$image" \
+              --platform linux/amd64 \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=v${version}" \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
               --provenance=true \
               --sbom=true \
               --metadata-file "$metadata" \
-              --push "$context"
-            digest="$(jq -r '.["containerimage.digest"]' "$metadata")"
+              --output "type=image,name=${staging},push=true" \
+              "$context"
+            digest="$(jq -r '."containerimage.digest" // empty' "$metadata")"
             test -n "$digest" && test "$digest" != null
-            printf '%s %s\n' "$image" "$digest" > "image-digests/${package}.txt"
+            printf '%s %s %s\n' "$image" "$staging" "$digest" > "image-digests/amd64/${package}.txt"
             rm -f "$metadata"
           done
           if [[ "$found" == 0 ]]; then echo 'No packages/*/mcp/Dockerfile build contexts found.' >&2; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-image-digests-amd64-${{ github.ref_name }}
+          path: image-digests/amd64/*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  build-mcp-arm64:
+    needs: build-mcp-amd64
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable the Docker containerd image store
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 /etc/docker
+          if ! sudo test -f /etc/docker/daemon.json; then echo '{}' | sudo tee /etc/docker/daemon.json >/dev/null; fi
+          sudo jq '.features = ((.features // {}) + {"containerd-snapshotter": true}) | . + {"max-concurrent-downloads": 1}' /etc/docker/daemon.json | sudo tee /tmp/docker-daemon.json >/dev/null
+          sudo install -m 0644 /tmp/docker-daemon.json /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | grep -Fq 'io.containerd.snapshotter.v1'
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Verify the host Buildx builder
+        run: |
+          docker buildx version
+          docker buildx inspect default --bootstrap | tee /tmp/buildx-inspect.txt
+          grep -Fq 'Driver: docker' /tmp/buildx-inspect.txt
+
+      - name: Prefetch digest-pinned Python base
+        run: sh tools/prefetch-python-bases.sh linux/arm64 public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+
+      - name: Build and stage package-only MCP contexts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p image-digests/arm64
+          found=0
+          for dockerfile in packages/*/mcp/Dockerfile; do
+            [[ -f "$dockerfile" ]] || continue
+            found=1
+            package="$(basename "$(dirname "$(dirname "$dockerfile")")")"
+            context="$(dirname "$dockerfile")"
+            image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp"
+            staging="${image}:build-${GITHUB_SHA}-arm64"
+            metadata="$(mktemp)"
+            docker buildx build \
+              --file "$dockerfile" \
+              --platform linux/arm64 \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.version=v${version}" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --provenance=true \
+              --sbom=true \
+              --metadata-file "$metadata" \
+              --output "type=image,name=${staging},push=true" \
+              "$context"
+            digest="$(jq -r '."containerimage.digest" // empty' "$metadata")"
+            test -n "$digest" && test "$digest" != null
+            printf '%s %s %s\n' "$image" "$staging" "$digest" > "image-digests/arm64/${package}.txt"
+            rm -f "$metadata"
+          done
+          if [[ "$found" == 0 ]]; then echo 'No packages/*/mcp/Dockerfile build contexts found.' >&2; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-image-digests-arm64-${{ github.ref_name }}
+          path: image-digests/arm64/*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-mcp-manifests:
+    needs: [build-mcp-amd64, build-mcp-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-image-digests-amd64-${{ github.ref_name }}
+          path: image-digests/amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-image-digests-arm64-${{ github.ref_name }}
+          path: image-digests/arm64
 
       - name: Require every GHCR package to be public
         shell: bash
@@ -106,7 +227,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for digest_file in image-digests/*.txt; do
+          for digest_file in image-digests/amd64/*.txt; do
             image="$(awk '{print $1}' "$digest_file")"
             package="${image#ghcr.io/${GITHUB_REPOSITORY,,}/}"
             package="${package%:v*}"
@@ -125,14 +246,50 @@ jobs:
             fi
           done
 
+      - name: Assemble version-pinned multi-platform images
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p image-digests/final
+          for arm64_file in image-digests/arm64/*.txt; do
+            package="$(basename "$arm64_file" .txt)"
+            amd64_file="image-digests/amd64/${package}.txt"
+            test -f "$amd64_file"
+            read -r image amd64_staging amd64_digest < "$amd64_file"
+            read -r arm64_image arm64_staging arm64_digest < "$arm64_file"
+            test "$image" = "$arm64_image"
+            docker buildx imagetools create \
+              --tag "${image}:v${version}" \
+              "${image}@${amd64_digest}" \
+              "${image}@${arm64_digest}"
+            manifest="$(docker buildx imagetools inspect "${image}:v${version}" --raw)"
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] as $arch | ($arch | index("amd64")) != null and ($arch | index("arm64")) != null' <<<"$manifest" >/dev/null
+            digest="$(docker buildx imagetools inspect "${image}:v${version}" | awk '/^Digest:/ { print $2; exit }')"
+            test -n "$digest"
+            printf '%s:v%s %s\n' "$image" "$version" "$digest" > "image-digests/final/${package}.txt"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: mcp-image-digests-${{ github.ref_name }}
-          path: image-digests/*.txt
+          path: image-digests/final/*.txt
           if-no-files-found: error
           retention-days: 90
 
-      # Publish the already-built GoReleaser artifacts only after every image is pushed and public.
+  publish-release:
+    needs: [prepare-release, publish-mcp-manifests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: goreleaser-dist-${{ github.ref_name }}
+          path: dist/
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
           version: v2.18.2

@@ -2,5 +2,11 @@
   "source_image": "mcp/azure:latest",
   "digest": "sha256:91452a19f4eb5e2797a1fd5fe0a99cdda48d480f1981c4515165e4a26ace77a1",
   "resolved_at": "2026-09-30",
-  "license": "MIT"
+  "license": "MIT",
+  "build_source": "https://github.com/Azure/azure-mcp",
+  "build_revision": "1ea702cb489ba95c5d9bea8d41fc18e9343703f8",
+  "build_source_archive_sha256": "7436dba43fd5400b23ec674a5438b153c895a4d6e2adcfb6b307475be2de0b6a",
+  "sdk_image": "mcr.microsoft.com/dotnet/sdk:9.0.102-bookworm-slim@sha256:6894a71619e08b47ef9df7ff1f436b21d21db160e5d864e180c294a53d7a12f2",
+  "runtime_image": "mcr.microsoft.com/dotnet/aspnet:9.0.6-bookworm-slim@sha256:d02562e8e42f3ddfec764b05447dfe56eff84df95fbfd8b4f884054b21760df6",
+  "azure_cli_package_version": "2.91.0-1~bookworm"
 }
