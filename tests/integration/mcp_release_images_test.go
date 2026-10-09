@@ -16,7 +16,7 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(workflow)
-	for _, required := range []string{"for dockerfile in packages/*/mcp/Dockerfile", `context="$(dirname "$dockerfile")"`, `--push "$context"`, "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
+	for _, required := range []string{"for dockerfile in packages/*/mcp/Dockerfile", `context="$(dirname "$dockerfile")"`, "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("release workflow missing package-context/release contract %q", required)
 		}
@@ -46,12 +46,75 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		if !strings.Contains(pkg.MCP.ReleaseImage, ":v{aact_version}") {
 			t.Errorf("%s release image is not version pinned: %q", pkg.ID, pkg.MCP.ReleaseImage)
 		}
-		if !strings.Contains(text, "${package}-mcp:v${version}") || !strings.Contains(text, "org.opencontainers.image.source") {
+		if !strings.Contains(text, "${package}-mcp") || !strings.Contains(text, "${image}:v${version}") || !strings.Contains(text, "org.opencontainers.image.source") {
 			t.Errorf("workflow does not version and label the image for %s", pkg.ID)
 		}
 	}
-	if strings.Index(text, "args: release --skip=publish --clean") > strings.Index(text, "Build package-only MCP contexts") || strings.Index(text, "Require every GHCR package to be public") > strings.LastIndex(text, "args: publish") {
-		t.Fatal("release publication is not gated by artifact preflight, image pushes, and public visibility")
+	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [build-mcp-amd64, build-mcp-arm64]") ||
+		!strings.Contains(text, "needs: [prepare-release, publish-mcp-manifests]") ||
+		strings.Index(text, "docker buildx imagetools create") < strings.Index(text, "Require every GHCR package to be public") ||
+		strings.Index(text, "publish-release:") < strings.Index(text, "docker buildx imagetools create") {
+		t.Fatal("version tags and GoReleaser publication must wait for both builds and the GHCR public visibility gate")
+	}
+}
+
+func TestBundledDockerfilesDoNotDependOnDockerHub(t *testing.T) {
+	root := filepath.Join("..", "..")
+	var dockerfiles []string
+	err := filepath.WalkDir(filepath.Join(root, "packages"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "Dockerfile") {
+			dockerfiles = append(dockerfiles, path)
+		}
+		return nil
+	})
+	if err != nil || len(dockerfiles) == 0 {
+		t.Fatalf("expected package Dockerfiles, got %v (%v)", dockerfiles, err)
+	}
+	dockerfiles = append(dockerfiles, filepath.Join(root, "testdata", "mcp-fixture", "Dockerfile"))
+	for _, path := range dockerfiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "FROM ") && (strings.Contains(line, "docker.io/") || strings.HasPrefix(line, "FROM python:")) {
+				t.Errorf("%s has a Docker Hub base image: %s", path, line)
+			}
+		}
+	}
+	workflowDir := filepath.Join("..", "..", ".github", "workflows")
+	workflowEntries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range workflowEntries {
+		if entry.IsDir() || !(strings.HasSuffix(entry.Name(), ".yml") || strings.HasSuffix(entry.Name(), ".yaml")) {
+			continue
+		}
+		workflow, err := os.ReadFile(filepath.Join(workflowDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(workflow)
+		for _, forbidden := range []string{"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "docker.io/", "docker/setup-qemu-action", "docker/setup-buildx-action", "docker/build-push-action"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s still depends on Docker Hub credentials, image refs, or container actions: %s", entry.Name(), forbidden)
+			}
+		}
+	}
+	workflow, err := os.ReadFile(filepath.Join(workflowDir, "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	if !strings.Contains(text, "runs-on: ubuntu-24.04-arm") || !strings.Contains(text, "runs-on: ubuntu-latest") ||
+		!strings.Contains(text, "--platform linux/amd64") || !strings.Contains(text, "--platform linux/arm64") ||
+		!strings.Contains(text, "docker buildx imagetools create") || !strings.Contains(text, "containerd-snapshotter") {
+		t.Fatal("release workflow must build on native amd64 and arm64 runners, then assemble a multi-platform tag")
 	}
 }
 
@@ -78,5 +141,45 @@ func TestTagReleaseDispatchesReleaseWorkflowOnCreatedTag(t *testing.T) {
 	}
 	if !strings.Contains(tagText, `gh workflow run release.yml --repo paulharkink/another-agent-capability-toolkit --ref "$tag"`) {
 		t.Fatal("tag workflow must dispatch the release workflow on the exact tag it just created")
+	}
+}
+
+func TestCIWorkflowDoesNotDuplicateFeatureBranchPullRequestRuns(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	pushStart := strings.Index(text, "  push:")
+	pullRequestStart := strings.Index(text, "  pull_request:")
+	if pushStart < 0 || pullRequestStart < 0 || pushStart >= pullRequestStart {
+		t.Fatal("CI workflow must validate pull requests and main pushes")
+	}
+	pushTriggers := text[pushStart:pullRequestStart]
+	if !strings.Contains(pushTriggers, "branches: [main]") || strings.Contains(pushTriggers, "feature/**") {
+		t.Fatal("CI workflow must validate main pushes without duplicating pull_request runs on feature branches")
+	}
+}
+
+func TestCIWorkflowDoesNotRequireDockerHubSecrets(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	dockerJob := strings.Index(text, "  docker:")
+	if dockerJob < 0 {
+		t.Fatal("CI workflow must define the Docker validation job")
+	}
+	dockerText := text[dockerJob:]
+	trustCondition := "if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+	if !strings.Contains(dockerText, trustCondition) {
+		t.Fatal("Docker job must skip fork pull requests so their code cannot access repository secrets")
+	}
+	if strings.Contains(dockerText, "DOCKERHUB_USERNAME") || strings.Contains(dockerText, "DOCKERHUB_TOKEN") || strings.Contains(dockerText, "docker/login-action@v3") {
+		t.Fatal("Docker CI must not require Docker Hub credentials")
+	}
+	if strings.Contains(dockerText, "docker.io/") || !strings.Contains(dockerText, "tools/prefetch-python-bases.sh") {
+		t.Fatal("Docker CI must prefetch digest-pinned Python bases from ECR Public without Docker Hub")
 	}
 }
