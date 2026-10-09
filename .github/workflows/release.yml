@@ -247,28 +247,9 @@ jobs:
           done
 
       - name: Assemble version-pinned multi-platform images
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          mkdir -p image-digests/final
-          for arm64_file in image-digests/arm64/*.txt; do
-            package="$(basename "$arm64_file" .txt)"
-            amd64_file="image-digests/amd64/${package}.txt"
-            test -f "$amd64_file"
-            read -r image amd64_staging amd64_digest < "$amd64_file"
-            read -r arm64_image arm64_staging arm64_digest < "$arm64_file"
-            test "$image" = "$arm64_image"
-            docker buildx imagetools create \
-              --tag "${image}:v${version}" \
-              "${image}@${amd64_digest}" \
-              "${image}@${arm64_digest}"
-            manifest="$(docker buildx imagetools inspect "${image}:v${version}" --raw)"
-            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] as $arch | ($arch | index("amd64")) != null and ($arch | index("arm64")) != null' <<<"$manifest" >/dev/null
-            digest="$(docker buildx imagetools inspect "${image}:v${version}" | awk '/^Digest:/ { print $2; exit }')"
-            test -n "$digest"
-            printf '%s:v%s %s\n' "$image" "$version" "$digest" > "image-digests/final/${package}.txt"
-          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/publish-mcp-manifests.sh
 
       - uses: actions/upload-artifact@v4
         with:
