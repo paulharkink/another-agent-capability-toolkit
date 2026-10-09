@@ -76,6 +76,7 @@ func TestUXSkillOnlyDefaultsAll(t *testing.T) {
 	svc, _, _ := fixture(t)
 	home := t.TempDir()
 	isolateUXNativeConfigs(t, home)
+	setFixtureProbeHome(svc, home)
 	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +105,7 @@ func TestUXOpenCodePreviewMatchesActualJSONCWrite(t *testing.T) {
 	svc, _, _ := fixture(t)
 	home := t.TempDir()
 	isolateUXNativeConfigs(t, home)
+	setFixtureProbeHome(svc, home)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	dir := filepath.Join(home, ".config", "opencode")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -167,6 +169,7 @@ func TestUXUIInstallRecordsTheOpenCodeConfigFileItWrites(t *testing.T) {
 	svc, _, store := fixture(t)
 	home := t.TempDir()
 	isolateUXNativeConfigs(t, home)
+	setFixtureProbeHome(svc, home)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	svc.Options.Runtime = &fakeRuntime{}
 
@@ -253,6 +256,7 @@ func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
 	svc, _, store := fixture(t)
 	nativeHome := t.TempDir()
 	isolateUXNativeConfigs(t, nativeHome)
+	setFixtureProbeHome(svc, nativeHome)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
 	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
 	key, err := store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)

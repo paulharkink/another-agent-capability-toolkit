@@ -79,6 +79,7 @@ func TestUIDefaultAgentConfigPathsMatchNativeOverrides(t *testing.T) {
 
 	svc, _, _ := fixture(t)
 	isolateUXUserHome(t, home)
+	setFixtureProbeHome(svc, home)
 	t.Setenv("USERPROFILE", home)
 	codexRoot := filepath.Join(home, "alternate-codex")
 	xdgRoot := filepath.Join(home, "alternate-xdg")

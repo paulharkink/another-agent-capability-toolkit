@@ -15,6 +15,7 @@ func TestUXJourney13RememberedSourcePreviewAndInstallIgnoreProcessWorkingDirecto
 	root, packageDir := rememberedSkillSource(t, svc)
 	home := t.TempDir()
 	isolateUXUserHome(t, home)
+	setFixtureProbeHome(svc, home)
 	manifest := `schema_version = 1
 id = "demo"
 name = "Remembered Demo"

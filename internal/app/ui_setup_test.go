@@ -462,6 +462,7 @@ func TestUISetupPreviewOffersGlobalOnlyForSkillOnlyPackage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	setFixtureProbeHome(svc, home)
 	skill, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
 	if err != nil {
 		t.Fatal(err)
@@ -815,6 +816,7 @@ func TestUIInstallUsesExplicitAnswersAndGlobalDestinationWithoutEditor(t *testin
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	setFixtureProbeHome(svc, home)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: true}}
 	svc.Source.Catalog[0].Templates = []catalog.Template{{Source: "SKILL.md.mustache", Destination: "SKILL.md"}}
 	if err := os.WriteFile(filepath.Join(svc.Source.Catalog[0].Dir, "SKILL.md.mustache"), []byte("hello {{{inputs.label}}}"), 0644); err != nil {
