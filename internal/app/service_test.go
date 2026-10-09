@@ -37,14 +37,48 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	probeHome := filepath.Join(root, "home")
+	probe := &agents.DiscoveryProbe{
+		GOOS: "linux", Home: probeHome,
+		Getenv: os.Getenv,
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "codex", "opencode", "claude":
+				return filepath.Join(root, "bin", name), nil
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	}
 	src := config.Source{ID: "fixture", Root: root, ManifestPath: filepath.Join(root, "aact.toml"), Catalog: []catalog.Package{{ID: "demo", Name: "Demo", Dir: pkg, Skill: &catalog.Skill{Name: "demo"}}}, PackageDefaults: map[string]map[string]any{}}
-	return New(src, s, Options{}), env, s
+	return New(src, s, Options{DiscoveryProbe: probe}), env, s
+}
+
+func TestFixtureDiscoveryProbeIsIndependentOfHostPATH(t *testing.T) {
+	svc, _, _ := fixture(t)
+	if svc.Options.DiscoveryProbe == nil {
+		t.Fatal("fixture must provide an explicit discovery probe")
+	}
+	for _, name := range []string{"codex", "opencode", "claude"} {
+		if path, err := svc.Options.DiscoveryProbe.LookPath(name); err != nil || path == "" {
+			t.Errorf("fixture CLI %q was not discoverable: path=%q err=%v", name, path, err)
+		}
+	}
+	if path, err := svc.Options.DiscoveryProbe.LookPath("unknown-cli"); err == nil || path != "" {
+		t.Errorf("unknown CLI unexpectedly discovered: path=%q err=%v", path, err)
+	}
 }
 
 func isolateUXUserHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+}
+
+func setFixtureProbeHome(svc *Service, home string) {
+	if svc.Options.DiscoveryProbe != nil {
+		svc.Options.DiscoveryProbe.Home = home
+	}
 }
 
 type fakeRuntime struct{ starts int }
