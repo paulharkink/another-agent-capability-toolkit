@@ -144,6 +144,9 @@ Without a Capability Pack manifest, AACT exposes the bundled catalog.
 Existing configuration can be previewed with `aact migrate --dry-run --json` and
 adopted with `aact migrate --apply`. Dry-run does not create manager state.
 
+Before upgrading from a build that created generic manual MCP registrations,
+remove those registrations with that older build. See [Upgrade instructions](docs/upgrading.md).
+
 State defaults to `$XDG_STATE_HOME/agent-skills` or
 `~/.local/state/agent-skills` on Unix and `%LOCALAPPDATA%\aact\state` on native
 Windows. Override with `--state-dir` or `AACT_STATE_DIR`. Installed releases and
