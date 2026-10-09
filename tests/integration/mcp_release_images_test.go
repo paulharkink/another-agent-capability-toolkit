@@ -104,3 +104,20 @@ func TestReleaseWorkflowAuthenticatesDockerHubBeforeSettingUpQEMU(t *testing.T) 
 		t.Fatal("Docker Hub login must use the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets")
 	}
 }
+
+func TestCIWorkflowDoesNotDuplicateFeatureBranchPullRequestRuns(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	pushStart := strings.Index(text, "  push:")
+	pullRequestStart := strings.Index(text, "  pull_request:")
+	if pushStart < 0 || pullRequestStart < 0 || pushStart >= pullRequestStart {
+		t.Fatal("CI workflow must validate pull requests and main pushes")
+	}
+	pushTriggers := text[pushStart:pullRequestStart]
+	if !strings.Contains(pushTriggers, "branches: [main]") || strings.Contains(pushTriggers, "feature/**") {
+		t.Fatal("CI workflow must validate main pushes without duplicating pull_request runs on feature branches")
+	}
+}
