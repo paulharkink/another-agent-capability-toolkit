@@ -54,3 +54,29 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		t.Fatal("release publication is not gated by artifact preflight, image pushes, and public visibility")
 	}
 }
+
+func TestTagReleaseDispatchesReleaseWorkflowOnCreatedTag(t *testing.T) {
+	root := filepath.Join("..", "..")
+	releaseWorkflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagWorkflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "tag-release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseText := string(releaseWorkflow)
+	tagText := string(tagWorkflow)
+	if !strings.Contains(releaseText, "workflow_dispatch:") {
+		t.Fatal("release workflow must accept workflow_dispatch so the tag workflow can start it with GITHUB_TOKEN")
+	}
+	if !strings.Contains(releaseText, "tags: ['v*']") {
+		t.Fatal("release workflow must continue to run automatically for version tags")
+	}
+	if !strings.Contains(releaseText, "if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')") {
+		t.Fatal("release workflow must only build and publish artifacts when dispatched for a version tag")
+	}
+	if !strings.Contains(tagText, `gh workflow run release.yml --repo paulharkink/another-agent-capability-toolkit --ref "$tag"`) {
+		t.Fatal("tag workflow must dispatch the release workflow on the exact tag it just created")
+	}
+}
