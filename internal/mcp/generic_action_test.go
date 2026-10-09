@@ -3,12 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 )
 
 func TestGenericActionProfileAndFileCredentials(t *testing.T) {
@@ -30,8 +33,19 @@ func TestGenericActionMissingHelperNeverFallsBack(t *testing.T) {
 	p.Dir = t.TempDir()
 	p.MCP.Actions["prepare"].Argv[0] = "bin/inspector-helper"
 	_, err := RunAction(context.Background(), p, ActionRequest{Action: "prepare"})
-	if err == nil || !strings.Contains(err.Error(), filepath.Join(p.Dir, "bin", "inspector-helper")) {
-		t.Fatalf("missing declared path: %v", err)
+	if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing declared helper did not return an executable-not-found error: %v", err)
+	}
+	var lookupErr *exec.Error
+	var pathErr *os.PathError
+	commandPath := ""
+	if errors.As(err, &lookupErr) {
+		commandPath = lookupErr.Name
+	} else if errors.As(err, &pathErr) {
+		commandPath = pathErr.Path
+	}
+	if !filepath.IsAbs(commandPath) || filepath.Base(commandPath) != "inspector-helper" || filepath.Base(filepath.Dir(commandPath)) != "bin" {
+		t.Fatalf("missing helper command fell back from its declared package path: %q", commandPath)
 	}
 }
 func TestGenericActionAactDoesNotEmbedPackageHelpers(t *testing.T) {

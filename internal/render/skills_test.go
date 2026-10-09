@@ -50,8 +50,11 @@ func TestStageSkillGeneratorChild(t *testing.T) {
 	}
 	data, err := os.ReadFile(filepath.Join(stage, "SKILL.md"))
 	canonical, canonicalErr := filepath.EvalSymlinks(source)
-	if err != nil || canonicalErr != nil || string(data) != canonical {
-		t.Fatalf("generator used wrong skill working directory: %s %v", data, err)
+	generatedDir := string(data)
+	generatedInfo, generatedErr := os.Stat(generatedDir)
+	sourceInfo, sourceErr := os.Stat(canonical)
+	if err != nil || canonicalErr != nil || generatedErr != nil || sourceErr != nil || !os.SameFile(generatedInfo, sourceInfo) {
+		t.Fatalf("generator used wrong skill working directory: %q (source %q; errors: read=%v resolve=%v generated=%v source=%v)", generatedDir, canonical, err, canonicalErr, generatedErr, sourceErr)
 	}
 	if _, err := StageSkill(context.Background(), catalog.Package{Dir: root}, skill, map[string]any{"fail": true}, config.Profile{}, t.TempDir()); err == nil || !strings.Contains(err.Error(), "deliberately failed") {
 		t.Fatalf("generator failure not explained: %v", err)

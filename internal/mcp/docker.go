@@ -457,7 +457,10 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			}
 			registeredName := candidate.Config.Labels["aact.registration_name"]
 			candidateName, nameErr := containerNameForRegistration(registeredName)
-			if registeredName == "" || nameErr != nil || registeredName == s.RegistrationName || candidateName == name {
+			actualName := strings.TrimPrefix(candidate.Name, "/")
+			retainedBackup := actualName != name && strings.HasPrefix(actualName, "aact-previous-")
+			sameRegistrationBackup := registeredName == s.RegistrationName && retainedBackup
+			if registeredName == "" || nameErr != nil || (candidateName == name && registeredName != s.RegistrationName) || (registeredName == s.RegistrationName && !sameRegistrationBackup) {
 				return Instance{}, errors.New("container name collision: existing runtime does not identify a distinct registration name")
 			}
 			old, inspectErr = candidate, nil
@@ -629,6 +632,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		}
 		for _, row := range rows {
 			if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath == previous.ID {
+				// recordAction has already replaced this exact ledger slot with
+				// the new container when a same-name runtime was retried.
+				if row.Destination == out.Name {
+					continue
+				}
 				if e = r.Store.Remove(row); e != nil {
 					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
 				}
