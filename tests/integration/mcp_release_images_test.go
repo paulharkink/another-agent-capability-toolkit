@@ -87,10 +87,16 @@ func TestReleaseWorkflowAuthenticatesDockerHubBeforeSettingUpQEMU(t *testing.T) 
 		t.Fatal(err)
 	}
 	text := string(workflow)
+	preflight := strings.Index(text, `name: Require Docker Hub credentials`)
 	login := strings.Index(text, `name: Login to Docker Hub`)
 	qemu := strings.Index(text, "uses: docker/setup-qemu-action@v3")
-	if login < 0 || qemu < 0 || login >= qemu {
-		t.Fatal("release workflow must authenticate to Docker Hub before setup-qemu pulls the binfmt image")
+	if preflight < 0 || login < 0 || qemu < 0 || preflight >= login || login >= qemu {
+		t.Fatal("release workflow must check Docker Hub credentials, log in, then set up QEMU")
+	}
+	if !strings.Contains(text[preflight:login], "DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}") ||
+		!strings.Contains(text[preflight:login], "DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}") ||
+		!strings.Contains(text[preflight:login], "Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository Actions secrets") {
+		t.Fatal("release workflow must fail clearly when Docker Hub repository secrets are missing")
 	}
 	if !strings.Contains(text[login:qemu], "uses: docker/login-action@v3") ||
 		!strings.Contains(text[login:qemu], "username: ${{ secrets.DOCKERHUB_USERNAME }}") ||

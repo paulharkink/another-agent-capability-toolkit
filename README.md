@@ -188,7 +188,10 @@ publish a version-pinned image to GHCR. New GHCR container packages start privat
 the release workflow checks package visibility before publishing the GitHub
 release and stops if any image is not public. For the first release, set each
 new package to **Public** in its GitHub Packages settings, then rerun the
-workflow. Image digest files are attached as workflow artifacts. The manager
+workflow. The release workflow also requires the repository Actions secrets
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token) so its
+multi-architecture builds can authenticate before pulling QEMU and base images.
+Image digest files are attached as workflow artifacts. The manager
 uses release images by default when declared; choose **Settings → MCP images →
 Build locally** or run `aact config set-image-source local` to build from the
 bundled package context instead. Restore prebuilt images with
