@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
@@ -118,6 +123,116 @@ func TestStartReplacesCurrentOwnedRuntimeWhenRegistrationNameChanges(t *testing.
 	}
 	if runCount != 2 || oldStopIndex == 0 || oldStopIndex > newRunIndex {
 		t.Fatalf("old port owner was not stopped before replacement run: %v", calls)
+	}
+}
+
+func TestStartRetriesSameRegistrationAfterFailedHealthCheck(t *testing.T) {
+	r, executor, key := testRuntime(t)
+	containers := map[string]dockerInfo{}
+	nextID := 0
+	executor.f = func(args []string) ([]byte, error) {
+		if len(args) < 2 {
+			return nil, errors.New("invalid Docker command")
+		}
+		switch args[1] {
+		case "ps":
+			ids := make([]string, 0, len(containers))
+			for id := range containers {
+				ids = append(ids, id)
+			}
+			return []byte(strings.Join(ids, "\n")), nil
+		case "inspect":
+			for _, container := range containers {
+				if args[2] == container.ID || args[2] == strings.TrimPrefix(container.Name, "/") {
+					return json.Marshal([]dockerInfo{container})
+				}
+			}
+			return nil, errors.New("No such object: requested container")
+		case "run":
+			name := ""
+			labels := map[string]string{}
+			for i := 2; i < len(args); i++ {
+				switch args[i] {
+				case "--name":
+					name = args[i+1]
+				case "--label":
+					parts := strings.SplitN(args[i+1], "=", 2)
+					labels[parts[0]] = parts[1]
+				}
+			}
+			nextID++
+			id := fmt.Sprintf("retry-container-%d", nextID)
+			containers[id] = dockerInfo{ID: id, Name: "/" + name, Config: dockerConfig{Labels: labels}, State: dockerState{Running: true, Status: "running"}}
+			return []byte(id), nil
+		case "stop":
+			container := containers[args[2]]
+			container.State.Running = false
+			container.State.Status = "exited"
+			containers[args[2]] = container
+			return nil, nil
+		case "rename":
+			container := containers[args[2]]
+			container.Name = "/" + args[3]
+			container.State.Running = false
+			container.State.Status = "exited"
+			containers[args[2]] = container
+			return nil, nil
+		case "rm":
+			delete(containers, args[len(args)-1])
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker operation: %v", args)
+		}
+	}
+
+	spec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80, RegistrationName: "Retry Fixture"}
+	first, err := r.Start(context.Background(), key, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.run(context.Background(), []string{"stop", first.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.SkipHealth = false
+	failingSpec := unhealthySpec(t)
+	failingSpec.RegistrationName = spec.RegistrationName
+	failureCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, err = r.Start(failureCtx, key, failingSpec)
+	cancel()
+	if err == nil {
+		t.Fatal("unhealthy replacement was accepted")
+	}
+	retained := containers[first.ID]
+	if retained.ID == "" || retained.State.Running || !strings.HasPrefix(strings.TrimPrefix(retained.Name, "/"), "aact-previous-") || len(containers) != 1 {
+		t.Fatalf("failed replacement must leave the previous runtime stopped under its backup name: %+v, inventory=%+v", retained, containers)
+	}
+
+	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+	}))
+	t.Cleanup(healthyServer.Close)
+	healthyURL, err := url.Parse(healthyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthySpec := failingSpec
+	healthySpec.Host = healthyURL.Hostname()
+	healthySpec.HostPort, err = strconv.Atoi(healthyURL.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := r.Start(context.Background(), key, healthySpec)
+	if err != nil {
+		t.Fatalf("explicit retry of the same registration could not replace its retained runtime: %v", err)
+	}
+	if retry.ID == first.ID || retry.Name != first.Name || containers[first.ID].ID != "" || containers[retry.ID].State.Status != "running" {
+		t.Fatalf("retry did not replace the retained backup with the desired runtime: retry=%+v inventory=%+v", retry, containers)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != retry.ID || rows[0].Destination != retry.Name || rows[0].LastAction != "start" {
+		t.Fatalf("successful retry did not retain only the new runtime record: %+v %v", rows, err)
 	}
 }
 

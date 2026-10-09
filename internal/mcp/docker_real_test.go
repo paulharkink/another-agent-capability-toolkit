@@ -8,13 +8,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
-func TestActualDockerRestoresStoppedRuntimeAfterHealthFailure(t *testing.T) {
+func TestActualDockerRetriesReplacementAfterHealthFailure(t *testing.T) {
 	store, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -63,12 +64,14 @@ func TestActualDockerRestoresStoppedRuntimeAfterHealthFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("bad endpoint accepted")
 	}
-	restored, err := r.inspect(ctx, containerName(k))
+	// Start returns the actual Docker container identity. The readable Docker
+	// name may differ from the legacy key-derived name used by older runtimes.
+	restored, err := r.inspect(ctx, old.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.ID != old.ID || restored.State.Running {
-		t.Fatalf("prior stopped container not restored: %+v", restored)
+	if restored.ID != old.ID || restored.State.Running || !strings.HasPrefix(strings.TrimPrefix(restored.Name, "/"), "aact-previous-") {
+		t.Fatalf("failed replacement should retain the old stopped container under its backup name: %+v", restored)
 	}
 	rows, err := store.Installations()
 	if err != nil || len(rows) != 1 || rows[0].SourcePath != old.ID {
@@ -96,6 +99,10 @@ func TestActualDockerRestoresStoppedRuntimeAfterHealthFailure(t *testing.T) {
 	}
 	if _, err = r.inspect(ctx, old.ID); err == nil {
 		t.Fatal("old stopped container retained after healthy commit")
+	}
+	rows, err = store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != replacement.ID {
+		t.Fatalf("successful retry did not retire the exact old container record: %+v %v", rows, err)
 	}
 }
 
@@ -153,7 +160,8 @@ func TestActualDockerKeepsNamedMCPChildrenIndependent(t *testing.T) {
 	if _, err := r.Start(ctx, alpha, spec(alphaPort)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Start(ctx, beta, spec(betaPort)); err != nil {
+	betaRuntime, err := r.Start(ctx, beta, spec(betaPort))
+	if err != nil {
 		t.Fatal(err)
 	}
 	listed, err := r.List(ctx)
@@ -188,7 +196,7 @@ func TestActualDockerKeepsNamedMCPChildrenIndependent(t *testing.T) {
 			t.Fatalf("stopped child remains live: %+v", item)
 		}
 	}
-	if _, err := r.inspect(ctx, containerName(beta)); err != nil {
+	if _, err := r.inspect(ctx, betaRuntime.ID); err != nil {
 		t.Fatalf("stopping alpha affected beta child: %v", err)
 	}
 	if betaAfter, err := r.List(ctx); err != nil {
