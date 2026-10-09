@@ -761,6 +761,29 @@ func TestUISettingsPreservesMigratedAgentPreference(t *testing.T) {
 	}
 }
 
+func TestMCPImageSourceDefaultsToReleaseAndCanBeSetToLocal(t *testing.T) {
+	svc, _, store := fixture(t)
+	settings, err := svc.UISettings(context.Background())
+	if err != nil || settings["image_source"] != "release" {
+		t.Fatalf("image source default = %q, %v", settings["image_source"], err)
+	}
+	if err = svc.UISetMCPImageSource(context.Background(), "local"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = svc.UISettings(context.Background())
+	if err != nil || settings["image_source"] != "local" {
+		t.Fatalf("image source setting = %q, %v", settings["image_source"], err)
+	}
+	if err = svc.UISetMCPImageSource(context.Background(), "unknown"); err == nil {
+		t.Fatal("invalid image source accepted")
+	}
+	var saved map[string]any
+	b, _ := os.ReadFile(filepath.Join(store.Root(), "manager", "settings.json"))
+	if json.Unmarshal(b, &saved) != nil || saved["image_source"] != "local" {
+		t.Fatalf("invalid setting changed preferences: %s", b)
+	}
+}
+
 // A future-install preference must not discard migration metadata or mutate registrations.
 func TestUISetDefaultAgentsPreservesOtherSettings(t *testing.T) {
 	svc, _, store := fixture(t)

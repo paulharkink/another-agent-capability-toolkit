@@ -99,6 +99,20 @@ func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
 	}
 }
 
+func TestCLIConfigSetsMCPImageSource(t *testing.T) {
+	cfg, _, _ := cliFixture(t)
+	stateDir := filepath.Join(t.TempDir(), "state")
+	var out, errout bytes.Buffer
+	args := []string{"config", "set-image-source", "local", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("config failed (%d): %s", code, errout.String())
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, "manager", "settings.json"))
+	if err != nil || !strings.Contains(string(b), `"image_source": "local"`) {
+		t.Fatalf("image source not saved: %s %v", b, err)
+	}
+}
+
 func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer

@@ -354,7 +354,9 @@ func (h *Helper) Run(ctx context.Context, id string, q mcp.ActionRequest) (mcp.A
 			}
 		}
 	}
-	if p.MCP.BuildContext != "" {
+	if q.ImageSource == "release" && q.ReleaseImage != "" {
+		spec.Image = q.ReleaseImage
+	} else if p.MCP.BuildContext != "" {
 		hash := sha256.Sum256([]byte(p.Dir))
 		spec.Image = "aact/" + id + "-" + hex.EncodeToString(hash[:])[:12] + ":local"
 		iidFile, fileErr := os.CreateTemp("", "aact-build-iid-*")

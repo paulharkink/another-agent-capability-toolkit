@@ -141,6 +141,7 @@ advertised_host_input = "advertised_host"
 registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
+release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/grafana-inspector-mcp:v{aact_version}"
 
 [mcp.actions.prepare]
 command = ["bin/inspector-helper", "grafana-inspector", "prepare"]

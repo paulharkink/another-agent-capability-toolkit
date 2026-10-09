@@ -50,6 +50,7 @@ host_port_input = "local_port"
 bind_ip_input = "host"
 advertised_host_input = "advertised_host"
 build_context = "./mcp"
+release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/azure-inspector-mcp:v{aact_version}"
 
 [mcp.actions.prepare]
 command = ["bin/inspector-helper", "azure-inspector", "prepare"]

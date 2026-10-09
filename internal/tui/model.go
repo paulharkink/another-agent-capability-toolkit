@@ -80,6 +80,7 @@ type Model struct {
 	logProfile                 state.Key
 	logLabel                   string
 	pendingDefaultAgents       bool
+	pendingMCPImageSource      bool
 	agents                     []string
 	agentManagement            []viewmodel.AgentManagementRow
 	settings, sourceLabels     map[string]string
@@ -539,6 +540,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pendingDefaultAgents = false
+			m.pendingMCPImageSource = false
 			m.form.MarkClean()
 			return m, m.finishUnsavedExit(intent)
 		}
@@ -639,6 +641,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
 			m.pendingDefaultAgents = false
+			m.pendingMCPImageSource = false
 			m.creatingProfile = nil
 			m.workspace = nil
 			m.output = "Cancelled"
@@ -709,6 +712,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return settingsSavedMsg{err: backend.UISetDefaultAgents(ctx, append([]string(nil), selected...))}
 			}
+		}
+		if m.pendingMCPImageSource {
+			selected, _ := values["image_source"].(string)
+			backend := m.backend.(mcpImageSourceBackend)
+			ctx := m.ctx
+			m.action, m.busy = "save MCP image source", true
+			m.retryOperation = func() tea.Cmd {
+				return func() tea.Msg { return settingsSavedMsg{err: backend.UISetMCPImageSource(ctx, selected)} }
+			}
+			return m, func() tea.Msg { return settingsSavedMsg{err: backend.UISetMCPImageSource(ctx, selected)} }
 		}
 		op := m.pending
 		if op.action == "set-environment-root" {
@@ -798,7 +811,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "save settings"})
 			return m, nil
 		}
+		if m.pendingMCPImageSource {
+			m.pendingMCPImageSource = false
+			if m.form != nil {
+				if v, ok := m.form.Values()["image_source"].(string); ok {
+					m.settings["image_source"] = v
+				}
+			}
+			m.output = "MCP image source saved"
+			m.form = nil
+			m.management.FormOverlay = false
+			m.focusSettingsDetails()
+			return m, nil
+		}
 		m.pendingDefaultAgents = false
+		m.pendingMCPImageSource = false
 		m.navigate("Catalog")
 		m.output = "Default named agents saved for future MCP installs"
 		return m, m.load()

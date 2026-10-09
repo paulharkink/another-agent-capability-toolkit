@@ -43,6 +43,7 @@ aact mcp start|stop|logs|prepare|authenticate CAPABILITY --profile NAME [--mcp S
 aact profile create CAPABILITY NAME
 aact agents | settings                   Show supported agents / configuration
 aact config set-profile-directory PATH  Save a default profile configuration directory
+aact config set-image-source release|local  Select prebuilt release images or local Docker builds
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
 Flags: --config PATH --state-dir PATH --profile-directory PATH
@@ -254,9 +255,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	case "config":
-		if len(f.args) != 3 || (f.args[1] != "set-profile-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root") {
-			fmt.Fprintln(errOut, "usage: aact config set-profile-directory PATH")
+		if len(f.args) != 3 || (f.args[1] != "set-profile-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root" && f.args[1] != "set-image-source") {
+			fmt.Fprintln(errOut, "usage: aact config set-profile-directory PATH | aact config set-image-source release|local")
 			return 2
+		}
+		if f.args[1] == "set-image-source" {
+			if e := svc.UISetMCPImageSource(ctx, f.args[2]); e != nil {
+				return fail(e)
+			}
+			fmt.Fprintln(out, "MCP image source:", f.args[2])
+			return 0
 		}
 		message, e := svc.UIRun(ctx, "set-environment-root", "", "", "", "", "", f.args[2])
 		if e != nil {

@@ -462,7 +462,8 @@ func TestSettingsActionsExplainMissingPreferenceService(t *testing.T) {
 
 type editableSettingsBackend struct {
 	fixtureBackend
-	saved []string
+	saved       []string
+	imageSource string
 }
 
 func (*editableSettingsBackend) UIAgentDefaultOptions(context.Context) ([]string, error) {
@@ -472,8 +473,41 @@ func (b *editableSettingsBackend) UISetDefaultAgents(_ context.Context, ids []st
 	b.saved = append([]string(nil), ids...)
 	return nil
 }
+func (b *editableSettingsBackend) UISetMCPImageSource(_ context.Context, source string) error {
+	b.imageSource = source
+	return nil
+}
 func (*editableSettingsBackend) UISettings(context.Context) (map[string]string, error) {
-	return map[string]string{"environment_root": "/environments", "default_agents": "claude"}, nil
+	return map[string]string{"environment_root": "/environments", "default_agents": "claude", "image_source": "release"}, nil
+}
+
+func TestSettingsOffersReleaseOrLocalMCPImageSource(t *testing.T) {
+	backend := &editableSettingsBackend{}
+	m := New(backend).(*Model)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(m.Init()())
+	m.navigate("Settings")
+	for range 4 {
+		press(m, tea.KeyDown, "")
+	}
+	press(m, tea.KeyF2, "")
+	press(m, tea.KeyEnd, "")
+	press(m, tea.KeyEnter, "")
+	if m.form == nil || !strings.Contains(m.View().Content, "Prebuilt release image") {
+		t.Fatalf("image source choice missing: %s", m.View().Content)
+	}
+	press(m, tea.KeyRight, "")
+	if !strings.Contains(m.View().Content, "Build locally") {
+		t.Fatalf("local build choice not selectable: %s", m.View().Content)
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("saving image source did not dispatch")
+	}
+	m.Update(cmd())
+	if backend.imageSource != "local" {
+		t.Fatalf("local build choice saved as %q", backend.imageSource)
+	}
 }
 
 // The Settings action must save a future-install preference without running an install.

@@ -181,6 +181,7 @@ func (m *Model) discardFormAndContinue(reason string) tea.Cmd {
 		m.pendingSetup = nil
 		m.pendingSetupField = ""
 		m.pendingDefaultAgents = false
+		m.pendingMCPImageSource = false
 		m.workspace = nil
 		m.output = "Cancelled"
 	}
@@ -213,6 +214,7 @@ func (m *Model) finishUnsavedExit(intent *unsavedExitState) tea.Cmd {
 		m.pendingSetup = nil
 		m.pendingSetupField = ""
 		m.pendingDefaultAgents = false
+		m.pendingMCPImageSource = false
 		m.workspace = nil
 		m.output = "Cancelled"
 		return m.load()
