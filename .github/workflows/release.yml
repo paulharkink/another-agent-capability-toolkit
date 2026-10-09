@@ -3,10 +3,10 @@ name: Build and publish release artifacts
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -32,9 +32,91 @@ jobs:
 
       - run: go test ./... -count=1
 
+      # Build and validate every AACT release artifact before publishing any image.
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
           version: v2.18.2
-          args: release --clean
+          args: release --skip=publish --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build package-only MCP contexts and publish version tags
+        id: mcp-images
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p image-digests
+          found=0
+          for dockerfile in packages/*/mcp/Dockerfile; do
+            [[ -f "$dockerfile" ]] || continue
+            found=1
+            package="$(basename "$(dirname "$(dirname "$dockerfile")")")"
+            context="$(dirname "$dockerfile")"
+            image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp:v${version}"
+            metadata="$(mktemp)"
+            docker buildx build \
+              --file "$dockerfile" \
+              --platform linux/amd64,linux/arm64 \
+              --tag "$image" \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.version=v${version}" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --provenance=true \
+              --sbom=true \
+              --metadata-file "$metadata" \
+              --push "$context"
+            digest="$(jq -r '.["containerimage.digest"]' "$metadata")"
+            test -n "$digest" && test "$digest" != null
+            printf '%s %s\n' "$image" "$digest" > "image-digests/${package}.txt"
+            rm -f "$metadata"
+          done
+          if [[ "$found" == 0 ]]; then echo 'No packages/*/mcp/Dockerfile build contexts found.' >&2; exit 1; fi
+
+      - name: Require every GHCR package to be public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for digest_file in image-digests/*.txt; do
+            image="$(awk '{print $1}' "$digest_file")"
+            package="${image#ghcr.io/${GITHUB_REPOSITORY,,}/}"
+            package="${package%:v*}"
+            encoded_package="${GITHUB_REPOSITORY#*/}%2F${package}"
+            if ! package_metadata="$(gh api "/user/packages/container/${encoded_package}" 2>&1)"; then
+              echo "Could not inspect GHCR visibility for ${image%:*}." >&2
+              echo 'Set the package visibility to Public in GitHub Packages settings, then rerun this release workflow.' >&2
+              echo "$package_metadata" >&2
+              exit 1
+            fi
+            visibility="$(jq -r '.visibility // empty' <<<"$package_metadata")"
+            if [[ "$visibility" != public ]]; then
+              echo "GHCR package ${image%:*} has visibility '${visibility:-unknown}', not public." >&2
+              echo 'Set the package visibility to Public in the GitHub Packages settings, then rerun this release workflow.' >&2
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-image-digests-${{ github.ref_name }}
+          path: image-digests/*.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      # Publish the already-built GoReleaser artifacts only after every image is pushed and public.
+      - uses: goreleaser/goreleaser-action@v6.2.1
+        with:
+          version: v2.18.2
+          args: publish
         env:
           GITHUB_TOKEN: ${{ github.token }}

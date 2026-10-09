@@ -183,6 +183,17 @@ CI runs native tests on macOS/Linux/Windows, race tests where supported, Docker
 integration on Linux, and archive-content checks. Only the version-tag workflow
 publishes releases. Creating a development archive does not publish or tag it.
 
+Version-tag releases also build each bundled `packages/*/mcp` Docker context and
+publish a version-pinned image to GHCR. New GHCR container packages start private;
+the release workflow checks package visibility before publishing the GitHub
+release and stops if any image is not public. For the first release, set each
+new package to **Public** in its GitHub Packages settings, then rerun the
+workflow. Image digest files are attached as workflow artifacts. The manager
+uses release images by default when declared; choose **Settings → MCP images →
+Build locally** or run `aact config set-image-source local` to build from the
+bundled package context instead. Restore prebuilt images with
+`aact config set-image-source release`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development, tests, agent adapters,

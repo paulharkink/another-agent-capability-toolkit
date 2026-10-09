@@ -11,6 +11,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
 	"io"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,28 @@ func New(src config.Source, s *state.Store, o Options) *Service {
 		o.Runtime = r
 	}
 	return &Service{Source: src, Store: s, Options: o}
+}
+
+func (s *Service) mcpImageChoice(ctx context.Context, definition catalog.MCP) (string, string, error) {
+	if definition.ReleaseImage == "" {
+		return "local", "", nil
+	}
+	settings, err := s.UISettings(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	source := settings["image_source"]
+	if source == "" {
+		source = "release"
+	}
+	if source == "local" {
+		return source, "", nil
+	}
+	image, err := versioninfo.ResolveImage(definition.ReleaseImage)
+	if err != nil {
+		return "", "", err
+	}
+	return "release", image, nil
 }
 
 type InstallRequest struct {
@@ -415,7 +438,11 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	}
 	if _, ok := p.MCP.Actions["prepare"]; ok {
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
-		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive})
+		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
+		if choiceErr != nil {
+			return mcp.Instance{}, operationFailure{step: "prepare", err: choiceErr}
+		}
+		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 		if e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}

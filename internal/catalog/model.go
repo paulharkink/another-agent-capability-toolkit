@@ -109,6 +109,7 @@ type MCP struct {
 	Runtime               string             `toml:"runtime" json:"runtime"`
 	BuildContext          string             `toml:"build_context" json:"build_context"`
 	Image                 string             `toml:"image" json:"image"`
+	ReleaseImage          string             `toml:"release_image" json:"release_image,omitempty"`
 	Transport             string             `toml:"transport" json:"transport"`
 	ContainerPort         int                `toml:"container_port" json:"container_port"`
 	EndpointPath          string             `toml:"endpoint_path" json:"endpoint_path"`

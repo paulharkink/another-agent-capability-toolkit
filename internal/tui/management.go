@@ -69,6 +69,10 @@ type defaultAgentsBackend interface {
 	UISetDefaultAgents(context.Context, []string) error
 }
 
+type mcpImageSourceBackend interface {
+	UISetMCPImageSource(context.Context, string) error
+}
+
 type environmentTargetMsg struct {
 	path, content string
 	err           error
@@ -507,6 +511,10 @@ func (m *Model) settingsActionIndex(details []string) (int, bool) {
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
 			return len(details) - 1, true
 		}
+	case 4:
+		if _, ok := m.backend.(mcpImageSourceBackend); ok {
+			return len(details) - 1, true
+		}
 	}
 	return 0, false
 }
@@ -561,6 +569,8 @@ func (m *Model) activateSettingsCategory() tea.Cmd {
 		} else {
 			m.output = "Default-agent preference service unavailable; use the CLI settings command."
 		}
+	case 4:
+		m.editMCPImageSource()
 	default:
 		return nil
 	}
@@ -852,7 +862,7 @@ func agentDisplayName(id string) string {
 }
 
 func (m *Model) managementSettingsRows() []string {
-	return []string{"Capability Pack", "Agent defaults", "Runtime backend", "Diagnostics"}
+	return []string{"Capability Pack", "Agent defaults", "Runtime backend", "Diagnostics", "MCP images"}
 }
 
 func (m *Model) managementSettingsDetails() []string {
@@ -867,9 +877,30 @@ func (m *Model) managementSettingsDetails() []string {
 		return append(lines, "Default-agent preference service unavailable; use the CLI settings command.")
 	case 2:
 		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
+	case 3:
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+	case 4:
+		return []string{"MCP images", "Use the version-pinned GHCR image when a capability declares one. Capabilities without a release image continue to build locally.", "Current source: " + nonempty(m.settings["image_source"], "release (default)"), "[ Change MCP image source… ]"}
 	default:
 		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	}
+}
+
+func (m *Model) editMCPImageSource() {
+	if _, ok := m.backend.(mcpImageSourceBackend); !ok {
+		m.output = "MCP image source settings are unavailable"
+		return
+	}
+	value := m.settings["image_source"]
+	if value == "" {
+		value = "release"
+	}
+	m.pendingMCPImageSource = true
+	m.management.FormOverlay = true
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "image_source", Label: "MCP image source", Type: "choice", Required: true, Options: []catalog.Choice{{Value: "release", Label: "Prebuilt release image (default)"}, {Value: "local", Label: "Build locally"}}}}, map[string]any{"image_source": value})
+	m.form.SetTitle("MCP images · Choose image source")
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
 
 func (m *Model) managementHelpRows() []string {

@@ -868,7 +868,11 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				cp := p
 				cp.MCP = &definition
 				cp.MCPs = nil
-				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpProfileKey(key, p, definition)), Interactive: false})
+				imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, definition)
+				if choiceErr != nil {
+					return out, choiceErr
+				}
+				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpProfileKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
 				if runErr != nil {
 					return out, runErr
 				}
@@ -1427,7 +1431,11 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			out.Instances = []mcp.Instance{instance}
 		} else {
 			var result mcp.ActionResult
-			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+			imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, definition)
+			if choiceErr != nil {
+				return out, choiceErr
+			}
+			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 			if err == nil && result.AuthRequired {
 				err = errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
 			}

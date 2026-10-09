@@ -2,12 +2,50 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type releasePrepareExecutor struct{ request mcp.ActionRequest }
+
+func (e *releasePrepareExecutor) Run(_ context.Context, _ []string, _ string, input []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	if err := json.Unmarshal(input, &e.request); err != nil {
+		return nil, err
+	}
+	return []byte(`{"runtime":{"image":"ghcr.io/paulharkink/another-agent-capability-toolkit/cluster-inspector-mcp:v1.2.3","host":"127.0.0.1","host_port":9000,"container_port":8765,"transport":"streamable-http","endpoint_path":"/mcp"}}`), nil
+}
+
+func TestPreparedProfileRunPassesReleaseImageThroughToRuntime(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCPs = p.MCPs[:1]
+	p.MCPs[0].ReleaseImage = "ghcr.io/paulharkink/another-agent-capability-toolkit/cluster-inspector-mcp:v{aact_version}"
+	p.MCPs[0].BuildContext = "./mcp"
+	p.MCPs[0].Actions = map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}
+	oldVersion := versioninfo.Version
+	versioninfo.Version = "1.2.3"
+	t.Cleanup(func() { versioninfo.Version = oldVersion })
+	executor := &releasePrepareExecutor{}
+	s.Options.Runner = executor
+	runtime := &providerTestRuntime{}
+	s.Options.Runtime = runtime
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	if _, err := s.RunProfileMCP(context.Background(), "start", q, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if executor.request.ImageSource != "release" || executor.request.ReleaseImage != "ghcr.io/paulharkink/another-agent-capability-toolkit/cluster-inspector-mcp:v1.2.3" {
+		t.Fatalf("prepared action did not receive release choice: %+v", executor.request)
+	}
+	if len(runtime.specs) != 1 || runtime.specs[0].Image != executor.request.ReleaseImage || runtime.specs[0].BuildContext != "" {
+		t.Fatalf("prepared runtime did not preserve prebuilt image: %+v", runtime.specs)
+	}
+}
 
 func TestLocalProfileNameUsesPackProfileGrammar(t *testing.T) {
 	s, _, q := profileApplyFixture(t)

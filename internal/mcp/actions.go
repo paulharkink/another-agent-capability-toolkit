@@ -25,6 +25,8 @@ type ActionRequest struct {
 	PackageDir      string         `json:"package_dir"`
 	StateDir        string         `json:"state_dir"`
 	Interactive     bool           `json:"interactive"`
+	ImageSource     string         `json:"image_source,omitempty"`
+	ReleaseImage    string         `json:"release_image,omitempty"`
 }
 type ActionResult struct {
 	AuthRequired bool                        `json:"auth_required"`
