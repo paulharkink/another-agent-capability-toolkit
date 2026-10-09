@@ -115,7 +115,7 @@ func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection,
 		_, err := os.Stat(result.ConfigPath)
 		result.ConfigFiles = []ConfigFile{{Path: result.ConfigPath, Scope: "explicit", Precedence: "effective", Evidence: "Explicit agent config override", Exists: err == nil}}
 	}
-	if _, err := For(a.kind, a.deps.Runner); err == nil {
+	if supportsMCPConfig(a.kind) {
 		if result.Installed {
 			result.MCPDisabledReason = MCPDestinationDisabledReason(ctx, a.kind, result.ConfigPath, d, nil, a.scopedProbe(scope))
 			result.CanCreateConfig = result.MCPDisabledReason == ""
@@ -124,4 +124,13 @@ func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection,
 		}
 	}
 	return result, nil
+}
+
+func supportsMCPConfig(kind string) bool {
+	switch kind {
+	case "codex", "copilot-cli", "opencode", "claude", "copilot-intellij":
+		return true
+	default:
+		return false
+	}
 }

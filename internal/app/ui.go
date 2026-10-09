@@ -25,16 +25,6 @@ type sourceRef struct {
 	PackageDirs     []string `json:"package_dirs"`
 }
 
-// Manual artifacts are scoped to the agent profile and home using a portable name.
-func (s *Service) manualConfigPath(env agents.Environment) string {
-	home, err := filepath.Abs(env.Home)
-	if err != nil {
-		home = env.Home
-	}
-	id := state.Key{Source: env.Kind, Package: env.ID, Target: filepath.Clean(home)}.ID()
-	return filepath.Join(s.Store.Root(), "manual", id, "mcp.json")
-}
-
 func (s *Service) sourceRefs() ([]sourceRef, error) {
 	b, e := os.ReadFile(filepath.Join(s.Store.Root(), "manager", "sources.json"))
 	if os.IsNotExist(e) {
@@ -484,6 +474,14 @@ func (s *Service) adapterFor(id, kind string) (agents.Adapter, error) {
 	}
 	return nil, err
 }
+
+func (s *Service) registrationAdapterFor(id, kind string) (agents.Adapter, error) {
+	if strings.TrimSpace(kind) != "" {
+		return s.adapterRegistry().Adapter(kind)
+	}
+	return s.adapterFor(id, kind)
+}
+
 func (s *Service) Sources() ([]string, error) {
 	refs, e := s.sourceRefs()
 	if e != nil {

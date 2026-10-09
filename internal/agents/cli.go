@@ -12,12 +12,14 @@ import (
 	"strings"
 )
 
-type cliAdapter struct {
-	kind   string
-	runner process.Executor
+func (a *mcpAdapter) cliRunner() process.Executor {
+	if a.deps.Runner != nil {
+		return a.deps.Runner
+	}
+	return process.OSExecutor{}
 }
 
-func (a cliAdapter) env(e Environment) (map[string]string, error) {
+func (a *mcpAdapter) env(e Environment) (map[string]string, error) {
 	if e.Home == "" {
 		return nil, errors.New("CLI agent home must be explicit")
 	}
@@ -38,13 +40,13 @@ func (a cliAdapter) env(e Environment) (map[string]string, error) {
 	}
 	return env, nil
 }
-func (a cliAdapter) program() string {
+func (a *mcpAdapter) program() string {
 	if a.kind == "codex" {
 		return "codex"
 	}
 	return "copilot"
 }
-func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*Registration, error) {
+func (a *mcpAdapter) current(ctx context.Context, e Environment, name string) (*Registration, error) {
 	env, err := a.env(e)
 	if err != nil {
 		return nil, err
@@ -54,7 +56,7 @@ func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*R
 		args = append(args, "--json")
 	}
 	var diagnostic []byte
-	output, err := a.runner.Run(ctx, args, e.Home, nil, env, func(chunk []byte) {
+	output, err := a.cliRunner().Run(ctx, args, e.Home, nil, env, func(chunk []byte) {
 		space := (64 << 10) - len(diagnostic)
 		if space > 0 {
 			if len(chunk) > space {
@@ -106,7 +108,7 @@ func (a cliAdapter) current(ctx context.Context, e Environment, name string) (*R
 	}
 	return &r, nil
 }
-func (a cliAdapter) verify(e Environment, current *Registration, name string) error {
+func (a *mcpAdapter) verify(e Environment, current *Registration, name string) error {
 	if current == nil {
 		return nil
 	}
@@ -131,7 +133,7 @@ type partialCLIRegistrationError struct {
 func (e *partialCLIRegistrationError) Error() string { return e.err.Error() }
 func (e *partialCLIRegistrationError) Unwrap() error { return e.err }
 
-func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration) error {
+func (a *mcpAdapter) registerWithCLI(ctx context.Context, e Environment, r Registration) error {
 	if err := validate(r); err != nil {
 		return err
 	}
@@ -166,7 +168,7 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	removedCurrent := false
 	if current != nil {
 		var diagnostic []byte
-		if _, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, collectDiagnostic(&diagnostic)); err != nil {
+		if _, err = a.cliRunner().Run(ctx, []string{a.program(), "mcp", "remove", r.Name}, e.Home, nil, env, collectDiagnostic(&diagnostic)); err != nil {
 			return fmt.Errorf("cannot remove existing %s registration %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
 		}
 		removedCurrent = true
@@ -176,7 +178,7 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 		args = []string{"copilot", "mcp", "add", "--transport", "http", "--timeout", strconv.Itoa(r.TimeoutMS), r.Name, r.URL}
 	}
 	var diagnostic []byte
-	_, err = a.runner.Run(ctx, args, e.Home, nil, env, collectDiagnostic(&diagnostic))
+	_, err = a.cliRunner().Run(ctx, args, e.Home, nil, env, collectDiagnostic(&diagnostic))
 	if err != nil {
 		registrationErr := fmt.Errorf("cannot register %s MCP server %q: %w%s", a.program(), r.Name, err, diagnosticSuffix(diagnostic))
 		if removedCurrent {
@@ -186,7 +188,7 @@ func (a cliAdapter) Register(ctx context.Context, e Environment, r Registration)
 	}
 	return nil
 }
-func (a cliAdapter) Unregister(ctx context.Context, e Environment, name string) error {
+func (a *mcpAdapter) unregisterWithCLI(ctx context.Context, e Environment, name string) error {
 	current, err := a.current(ctx, e, name)
 	if err != nil {
 		return err
@@ -202,7 +204,7 @@ func (a cliAdapter) Unregister(ctx context.Context, e Environment, name string) 
 		return err
 	}
 	var diagnostic []byte
-	_, err = a.runner.Run(ctx, []string{a.program(), "mcp", "remove", name}, e.Home, nil, env, collectDiagnostic(&diagnostic))
+	_, err = a.cliRunner().Run(ctx, []string{a.program(), "mcp", "remove", name}, e.Home, nil, env, collectDiagnostic(&diagnostic))
 	if err != nil {
 		return fmt.Errorf("cannot unregister %s MCP server %q: %w%s", a.program(), name, err, diagnosticSuffix(diagnostic))
 	}

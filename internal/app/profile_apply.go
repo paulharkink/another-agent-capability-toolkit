@@ -1279,7 +1279,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	return out, nil
 }
 func (s *Service) removeProfileBinding(ctx context.Context, row state.Installation) error {
-	a, err := s.adapterRegistry().Adapter(row.AgentKind)
+	a, err := s.registrationAdapterFor(row.AgentID, row.AgentKind)
 	if err != nil {
 		return err
 	}
@@ -1295,18 +1295,7 @@ func (s *Service) removeProfileBinding(ctx context.Context, row state.Installati
 	case "mcp":
 		manager, ok := a.(agents.MCPManager)
 		if !ok {
-			if row.Mode != "manual" {
-				return errors.New("adapter cannot remove MCP")
-			}
-			legacy, legacyErr := agents.For(row.AgentKind, s.Options.Runner)
-			if legacyErr != nil {
-				return legacyErr
-			}
-			env := agents.Environment{ID: row.AgentID, Kind: row.AgentKind, Home: row.AgentHome, ConfigPath: row.Destination, Owned: map[string]agents.Registration{
-				row.RegistrationName: {Name: row.RegistrationName, URL: row.URL, Transport: row.Transport, TimeoutMS: row.TimeoutMS},
-			}}
-			err = legacy.Unregister(ctx, env, row.RegistrationName)
-			break
+			return errors.New("adapter cannot remove MCP")
 		}
 		err = manager.Unregister(ctx, scope, row)
 	case "plugin":

@@ -52,9 +52,22 @@ func seedLegacyAndNamedRegistrations(t *testing.T) (*Service, *state.Store, stat
 	}
 	oldURL := "http://127.0.0.1:1/legacy-mcp"
 	if _, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
-		Key: key, URL: oldURL, Transport: "streamable-http", Agents: []agents.Environment{legacy, claude},
+		Key: key, URL: oldURL, Transport: "streamable-http", Agents: []agents.Environment{claude},
 	}); err != nil {
-		t.Fatalf("could not create real legacy and named MCP registrations: %v", err)
+		t.Fatalf("could not create named MCP registration: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyConfig), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyConfig, []byte(`{"servers":{"`+registrationName(key)+`":{"url":"`+oldURL+`"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(state.Installation{
+		Key: key, AgentID: legacy.ID, AgentKind: legacy.Kind, AgentHome: legacy.Home,
+		Component: "mcp", Destination: legacyConfig, RegistrationName: registrationName(key),
+		URL: oldURL, Transport: "streamable-http", Mode: "manual",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	return svc, store, key, runtime, legacyConfig, oldURL
 }
@@ -87,13 +100,13 @@ func TestUXNamedSavePreservesLegacyMCPRegistrationAndItsEndpoint(t *testing.T) {
 	}
 }
 
-func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(t *testing.T) {
-	svc, store, key, runtime, legacyConfig, _ := seedLegacyAndNamedRegistrations(t)
+func TestUXExplicitRemovalRejectsLegacyManualMCPWithoutAnAgentManager(t *testing.T) {
+	svc, store, key, runtime, legacyConfig, oldURL := seedLegacyAndNamedRegistrations(t)
 	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Key: key, RemoveAgentIDs: []string{"generic:legacy"},
 	})
-	if err != nil {
-		t.Fatalf("explicit legacy removal failed: result=%+v err=%v", result, err)
+	if err == nil || !strings.Contains(err.Error(), "cannot unregister MCP") {
+		t.Fatalf("manual record was removed without an agent manager: result=%+v err=%v", result, err)
 	}
 	if !result.Connection.CheckedAt.IsZero() {
 		t.Fatalf("removal unexpectedly checked the endpoint: %+v", result.Connection)
@@ -105,19 +118,17 @@ func TestUXExplicitRemovalRemovesOnlySelectedRecordedMCPWithoutCheckingEndpoint(
 	if err != nil {
 		t.Fatal(err)
 	}
-	var named, skillRow bool
+	var named, skillRow, legacy bool
 	for _, row := range rows {
 		named = named || row.Component == "mcp" && row.AgentID == "claude"
 		skillRow = skillRow || row.Component == "skill" && row.AgentID == "claude"
-		if row.AgentID == "generic:legacy" {
-			t.Fatalf("selected legacy MCP registration remains in ledger: %+v", row)
-		}
+		legacy = legacy || row.AgentID == "generic:legacy" && row.Component == "mcp"
 	}
 	contents, readErr := os.ReadFile(legacyConfig)
-	if readErr != nil || strings.Contains(string(contents), "legacy-mcp") {
-		t.Fatalf("selected legacy MCP registration remains in its actual config: %s err=%v", contents, readErr)
+	if readErr != nil || !strings.Contains(string(contents), oldURL) {
+		t.Fatalf("rejected removal changed the legacy artifact: %s err=%v", contents, readErr)
 	}
-	if !named || skillRow {
+	if !named || skillRow || !legacy {
 		t.Fatalf("unchecking one agent changed another agent's MCP registration or touched profile skill state: %+v", rows)
 	}
 }

@@ -83,10 +83,6 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 	if err != nil {
 		return MCPRegistrationResult{}, err
 	}
-	legacy, err := For(a.kind, a.deps.Runner)
-	if err != nil {
-		return MCPRegistrationResult{}, err
-	}
 	var ownedRows []state.Installation
 	if a.deps.Store != nil {
 		rows, readErr := a.deps.Store.Installations()
@@ -99,7 +95,7 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 			}
 		}
 	}
-	if err := legacy.Register(ctx, e, request.Registration); err != nil {
+	if err := a.registerMCPConfig(ctx, e, request.Registration); err != nil {
 		result := MCPRegistrationResult{}
 		var partial *partialCLIRegistrationError
 		if errors.As(err, &partial) {
@@ -120,6 +116,17 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 	}
 	return MCPRegistrationResult{Installation: row}, nil
 }
+
+func (a *mcpAdapter) registerMCPConfig(ctx context.Context, scope Environment, registration Registration) error {
+	switch a.kind {
+	case "codex", "copilot-cli":
+		return a.registerWithCLI(ctx, scope, registration)
+	case "opencode", "claude", "copilot-intellij":
+		return a.registerWithJSON(ctx, scope, registration)
+	default:
+		return fmt.Errorf("adapter %s does not support MCP registration", a.kind)
+	}
+}
 func (a *mcpAdapter) Unregister(ctx context.Context, scope Scope, row state.Installation) error {
 	e, err := a.registrationScope(scope, row.Key)
 	if err != nil {
@@ -131,11 +138,18 @@ func (a *mcpAdapter) Unregister(ctx context.Context, scope Scope, row state.Inst
 	if _, ok := e.Owned[row.RegistrationName]; !ok {
 		e.Owned[row.RegistrationName] = Registration{Name: row.RegistrationName, URL: row.URL, Transport: row.Transport, TimeoutMS: row.TimeoutMS}
 	}
-	legacy, err := For(a.kind, a.deps.Runner)
-	if err != nil {
-		return err
+	return a.unregisterMCPConfig(ctx, e, row.RegistrationName)
+}
+
+func (a *mcpAdapter) unregisterMCPConfig(ctx context.Context, scope Environment, name string) error {
+	switch a.kind {
+	case "codex", "copilot-cli":
+		return a.unregisterWithCLI(ctx, scope, name)
+	case "opencode", "claude", "copilot-intellij":
+		return a.unregisterWithJSON(ctx, scope, name)
+	default:
+		return fmt.Errorf("adapter %s does not support MCP registration", a.kind)
 	}
-	return legacy.Unregister(ctx, e, row.RegistrationName)
 }
 
 // readMCPInventory interprets only this adapter's native config format.
