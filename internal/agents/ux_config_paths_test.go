@@ -38,10 +38,7 @@ func TestUXResolveOpenCodeWritePathMatchesAdapter(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			adapter, err := For("opencode", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			adapter := managerAdapterForTest(t, "opencode", nil, home)
 			if err := adapter.Register(context.Background(), env, Registration{Name: "ux-fixture", URL: "http://127.0.0.1:8765/mcp", TimeoutMS: 30000}); err != nil {
 				t.Fatal(err)
 			}

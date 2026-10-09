@@ -12,10 +12,6 @@ import (
 	"strings"
 )
 
-type jsonAdapter struct {
-	kind, parent string
-}
-
 func standardJSON(b []byte) (map[string]any, error) {
 	v, err := hujson.Parse(append([]byte(nil), b...))
 	if err != nil {
@@ -60,7 +56,18 @@ func validateAST(v *hujson.Value) error {
 	return problem
 }
 func pointer(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1") }
-func (a jsonAdapter) value(r Registration) map[string]any {
+func (a *mcpAdapter) configParent() string {
+	switch a.kind {
+	case "opencode":
+		return "mcp"
+	case "claude":
+		return "mcpServers"
+	default:
+		return "servers"
+	}
+}
+
+func (a *mcpAdapter) registrationValue(r Registration) map[string]any {
 	var value map[string]any
 	if a.kind == "opencode" {
 		value = map[string]any{"type": "remote", "url": r.URL, "enabled": true, "oauth": false, "timeout": r.TimeoutMS}
@@ -83,14 +90,14 @@ func sameJSON(a, b any) bool {
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
 }
-func (a jsonAdapter) Register(ctx context.Context, e Environment, r Registration) error {
+func (a *mcpAdapter) registerWithJSON(ctx context.Context, e Environment, r Registration) error {
 	if err := validate(r); err != nil {
 		return err
 	}
-	return a.update(ctx, e, r.Name, &r)
+	return a.updateJSON(ctx, e, r.Name, &r)
 }
-func (a jsonAdapter) Unregister(ctx context.Context, e Environment, name string) error {
-	return a.update(ctx, e, name, nil)
+func (a *mcpAdapter) unregisterWithJSON(ctx context.Context, e Environment, name string) error {
+	return a.updateJSON(ctx, e, name, nil)
 }
 
 type fileEdit struct {
@@ -100,15 +107,12 @@ type fileEdit struct {
 	mode              os.FileMode
 }
 
-func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *Registration) error {
+func (a *mcpAdapter) updateJSON(ctx context.Context, e Environment, name string, r *Registration) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	path := e.ConfigPath
 	if path == "" {
-		if IsManual(a.kind) {
-			return errors.New("generic MCP requires an explicit manual artifact ConfigPath")
-		}
 		resolved, err := ResolveEnvironment(e.ID, a.kind, e.Home)
 		if err != nil {
 			return err
@@ -169,11 +173,12 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			return fmt.Errorf("invalid agent config %s: %w", file, err)
 		}
 		var servers map[string]any
-		if parent, ok := document[a.parent]; ok {
+		configParent := a.configParent()
+		if parent, ok := document[configParent]; ok {
 			var valid bool
 			servers, valid = parent.(map[string]any)
 			if !valid {
-				return fmt.Errorf("agent config %s must contain an object at %s", file, a.parent)
+				return fmt.Errorf("agent config %s must contain an object at %s", file, configParent)
 			}
 		}
 		current := servers[name]
@@ -182,7 +187,7 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 			if !ok {
 				return fmt.Errorf("refusing foreign MCP registration %q in %s", name, file)
 			}
-			if !sameJSON(current, a.value(owned)) {
+			if !sameJSON(current, a.registrationValue(owned)) {
 				return fmt.Errorf("owned MCP registration %q changed in %s", name, file)
 			}
 		}
@@ -201,12 +206,12 @@ func (a jsonAdapter) update(ctx context.Context, e Environment, name string, r *
 		}
 		ops := []map[string]any{}
 		if servers == nil {
-			ops = append(ops, map[string]any{"op": "add", "path": "/" + pointer(a.parent), "value": map[string]any{}})
+			ops = append(ops, map[string]any{"op": "add", "path": "/" + pointer(a.configParent()), "value": map[string]any{}})
 		}
-		op := map[string]any{"op": "remove", "path": "/" + pointer(a.parent) + "/" + pointer(name)}
+		op := map[string]any{"op": "remove", "path": "/" + pointer(a.configParent()) + "/" + pointer(name)}
 		if fileRegistration != nil {
 			op["op"] = "add"
-			op["value"] = a.value(*fileRegistration)
+			op["value"] = a.registrationValue(*fileRegistration)
 		}
 		ops = append(ops, op)
 		patch, _ := json.Marshal(ops)

@@ -73,13 +73,20 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 		}
 	}
 	desired := make(map[string]agents.Environment, len(q.Agents))
+	desiredManagers := make(map[string]agents.MCPManager, len(q.Agents))
+	desiredScopes := make(map[string]agents.Scope, len(q.Agents))
 	timeoutMS := s.registrationTimeoutForKey(q.Key)
 	for _, env := range q.Agents {
-		env, err = s.registrationEnvironment(env)
+		var manager agents.MCPManager
+		var scope agents.Scope
+		env, manager, scope, err = s.registrationTarget(ctx, env)
 		if err != nil {
 			return out, err
 		}
-		desired[env.ID+"\x00"+env.ConfigPath] = env
+		identity := env.ID + "\x00" + env.ConfigPath
+		desired[identity] = env
+		desiredManagers[identity] = manager
+		desiredScopes[identity] = scope
 	}
 	preserved := make(map[string]bool, len(q.preserve))
 	for _, env := range q.preserve {
@@ -120,18 +127,26 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 			}
 			env := agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination}
 			env = s.ownedEnvironment(env, rows)
-			adapter, err := agents.For(env.Kind, s.Options.Runner)
+			adapter, err := s.registrationAdapterFor(env.ID, env.Kind)
+			var manager agents.MCPManager
 			if err == nil {
-				var files []registrationFile
+				manager, _ = adapter.(agents.MCPManager)
+				if manager == nil {
+					err = fmt.Errorf("adapter %s cannot unregister MCP entries", adapter.ID())
+				}
+			}
+			var files []registrationFile
+			if err == nil {
 				files, err = snapshotRegistration(env)
+			}
+			if err == nil {
+				scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}
+				err = manager.Unregister(ctx, scope, row)
 				if err == nil {
-					err = adapter.Unregister(ctx, env, row.RegistrationName)
-					if err == nil {
-						err = s.removeRegistration(row)
-					}
-					if err != nil {
-						err = errors.Join(err, restoreRegistration(files))
-					}
+					err = s.removeRegistration(row)
+				}
+				if err != nil {
+					err = errors.Join(err, restoreRegistration(files))
 				}
 			}
 			if err != nil {
@@ -144,6 +159,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			identity := env.ID + "\x00" + env.ConfigPath
 			rows, err := s.Store.Installations()
 			if err != nil {
 				return err
@@ -161,24 +177,30 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 				continue
 			}
 			env = s.ownedEnvironment(env, rows)
-			adapter, err := agents.For(env.Kind, s.Options.Runner)
-			if err != nil {
-				out.Errors = append(out.Errors, env.ID+": "+err.Error())
-				continue
-			}
+			manager := desiredManagers[identity]
+			scope := desiredScopes[identity]
 			registration := agents.Registration{Name: registrationName(q.Key), URL: q.URL, Transport: q.Transport, TimeoutMS: timeoutMS}
 			files, err := snapshotRegistration(env)
+			var effect agents.MCPRegistrationResult
 			if err == nil {
-				err = adapter.Register(ctx, env, registration)
+				effect, err = manager.Register(ctx, scope, agents.MCPRequest{Key: q.Key, Registration: registration})
 				if err != nil {
 					err = errors.Join(err, restoreRegistration(files))
 				}
 			}
 			if err == nil {
-				row := state.Installation{Key: q.Key, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, Mode: "registration", RegistrationName: registration.Name, URL: registration.URL, Transport: registration.Transport, TimeoutMS: registration.TimeoutMS, ExternalRegistration: externalOnly}
-				if agents.IsManual(env.Kind) {
-					row.Mode = "manual"
-				}
+				row := effect.Installation
+				row.Key = q.Key
+				row.AgentID = env.ID
+				row.AgentHome = env.Home
+				row.AgentKind = env.Kind
+				row.Component = "mcp"
+				row.Mode = "registration"
+				row.RegistrationName = registration.Name
+				row.URL = registration.URL
+				row.Transport = registration.Transport
+				row.TimeoutMS = registration.TimeoutMS
+				row.ExternalRegistration = externalOnly
 				err = s.recordRegistration(row)
 				if err != nil {
 					err = errors.Join(err, restoreRegistration(files))
@@ -297,13 +319,21 @@ func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, iden
 			}
 			env := agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination}
 			env = s.ownedEnvironment(env, rows)
-			adapter, adapterErr := agents.For(env.Kind, s.Options.Runner)
+			adapter, adapterErr := s.registrationAdapterFor(env.ID, env.Kind)
+			var manager agents.MCPManager
+			if adapterErr == nil {
+				manager, _ = adapter.(agents.MCPManager)
+				if manager == nil {
+					adapterErr = fmt.Errorf("adapter %s cannot unregister MCP entries", adapter.ID())
+				}
+			}
 			var files []registrationFile
 			if adapterErr == nil {
 				files, adapterErr = snapshotRegistration(env)
 			}
 			if adapterErr == nil {
-				adapterErr = adapter.Unregister(ctx, env, row.RegistrationName)
+				scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}
+				adapterErr = manager.Unregister(ctx, scope, row)
 			}
 			if adapterErr == nil {
 				adapterErr = s.removeRegistration(row)
@@ -334,21 +364,48 @@ func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, iden
 	return out, err
 }
 
-func (s *Service) registrationEnvironment(env agents.Environment) (agents.Environment, error) {
-	if env.ConfigPath != "" {
-		return env, nil
-	}
-	if agents.IsManual(env.Kind) {
-		env.ConfigPath = s.manualConfigPath(env)
-		return env, nil
-	}
-	resolved, err := agents.ResolveEnvironment(env.ID, env.Kind, env.Home)
+func (s *Service) registrationTarget(ctx context.Context, env agents.Environment) (agents.Environment, agents.MCPManager, agents.Scope, error) {
+	adapter, err := s.registrationAdapterFor(env.ID, env.Kind)
 	if err != nil {
-		return env, err
+		return env, nil, agents.Scope{}, err
 	}
-	env.ConfigPath = resolved.ConfigPath
+	manager, ok := adapter.(agents.MCPManager)
+	if !ok || !adapter.Features().MCPs {
+		return env, nil, agents.Scope{}, fmt.Errorf("adapter %s cannot manage MCP registrations", adapter.Name())
+	}
+	scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: env.Home != ""}
+	detection, err := adapter.Detect(ctx, scope)
+	if err != nil {
+		return env, manager, scope, err
+	}
+	if !detection.Installed {
+		return env, manager, scope, fmt.Errorf("agent %s is not installed: %s", adapter.Name(), detection.Reason)
+	}
+	if detection.MCPDisabledReason != "" {
+		return env, manager, scope, fmt.Errorf("agent %s cannot manage MCP registrations: %s", adapter.Name(), detection.MCPDisabledReason)
+	}
+	if env.Home == "" {
+		env.Home = detection.Home
+		scope.Home = detection.Home
+	}
 	if env.SkillsDir == "" {
-		env.SkillsDir = resolved.SkillsDir
+		env.SkillsDir = detection.SkillsPath
 	}
-	return env, nil
+	if env.ConfigPath == "" {
+		env.ConfigPath = detection.ConfigPath
+		if env.ConfigPath == "" {
+			for _, file := range detection.ConfigFiles {
+				if file.Precedence == "effective" {
+					env.ConfigPath = file.Path
+					break
+				}
+			}
+		}
+		scope.ConfigPathOverride = env.ConfigPath
+	}
+	if env.ConfigPath == "" {
+		return env, manager, scope, fmt.Errorf("adapter %s did not report an effective MCP config path", adapter.Name())
+	}
+	env.Kind = adapter.ID()
+	return env, manager, scope, nil
 }

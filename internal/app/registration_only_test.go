@@ -12,6 +12,83 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
+type managerOnlyRegistrationAdapter struct {
+	registerCalls   int
+	unregisterCalls int
+	lastRequest     agents.MCPRequest
+}
+
+func (a *managerOnlyRegistrationAdapter) ID() string   { return "opencode" }
+func (a *managerOnlyRegistrationAdapter) Name() string { return "manager fixture" }
+func (a *managerOnlyRegistrationAdapter) Features() agents.FeatureSet {
+	return agents.FeatureSet{MCPs: true}
+}
+func (a *managerOnlyRegistrationAdapter) Detect(_ context.Context, scope agents.Scope) (agents.Detection, error) {
+	return agents.Detection{Home: scope.Home, ConfigPath: scope.ConfigPathOverride, Installed: true, State: "installed", CanCreateConfig: true}, nil
+}
+func (a *managerOnlyRegistrationAdapter) Observe(context.Context, agents.Scope, agents.ObservationRequest) (agents.Observation, error) {
+	return agents.Observation{}, nil
+}
+func (a *managerOnlyRegistrationAdapter) Register(_ context.Context, scope agents.Scope, request agents.MCPRequest) (agents.MCPRegistrationResult, error) {
+	a.registerCalls++
+	a.lastRequest = request
+	return agents.MCPRegistrationResult{Installation: state.Installation{
+		Key: request.Key, AgentID: scope.ID, AgentHome: scope.Home, AgentKind: "opencode", Component: "mcp",
+		Destination: scope.ConfigPathOverride, RegistrationName: request.Registration.Name,
+		URL: request.Registration.URL, Transport: request.Registration.Transport,
+		TimeoutMS: request.Registration.TimeoutMS, Mode: "registration",
+	}}, nil
+}
+func (a *managerOnlyRegistrationAdapter) Unregister(context.Context, agents.Scope, state.Installation) error {
+	a.unregisterCalls++
+	return nil
+}
+
+type managerOnlyRegistrationRegistry struct {
+	AdapterProvider
+	adapter agents.Adapter
+}
+
+func (r managerOnlyRegistrationRegistry) Adapter(id string) (agents.Adapter, error) {
+	if id == r.adapter.ID() {
+		return r.adapter, nil
+	}
+	return r.AdapterProvider.Adapter(id)
+}
+func (r managerOnlyRegistrationRegistry) Adapters() []agents.Adapter {
+	return append(r.AdapterProvider.Adapters(), r.adapter)
+}
+
+func TestConfigureRegistrationsUsesSelectedAdapterMCPManager(t *testing.T) {
+	svc, agent, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}
+	agent.ID, agent.Kind = "opencode", "opencode"
+	agent.ConfigPath = filepath.Join(t.TempDir(), "adapter-owned.jsonc")
+	manager := &managerOnlyRegistrationAdapter{}
+	svc.Options.Adapters = managerOnlyRegistrationRegistry{AdapterProvider: svc.adapterRegistry(), adapter: manager}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "profile"}
+
+	result, err := configureRegistrationsTest(context.Background(), svc, RegistrationRequest{
+		Key: key, URL: "http://localhost:8765/mcp", Transport: "streamable-http", Agents: []agents.Environment{agent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.registerCalls != 1 || manager.lastRequest.Key != key || manager.lastRequest.Registration.Name != registrationName(key) {
+		t.Fatalf("selected adapter manager was not given the MCP request: calls=%d request=%+v", manager.registerCalls, manager.lastRequest)
+	}
+	if len(result.Changes) != 1 || result.Changes[0].Destination != agent.ConfigPath {
+		t.Fatalf("manager installation was not recorded as the applied effect: %+v", result.Changes)
+	}
+	if _, err := os.Stat(agent.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("app bypassed adapter MCP manager and wrote a config file: err=%v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].Destination != agent.ConfigPath {
+		t.Fatalf("manager result was not persisted: rows=%+v err=%v", rows, err)
+	}
+}
+
 func TestConfigureRegistrationsForForeignMCPOnlyChangesLocalAgent(t *testing.T) {
 	svc, localAgent, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http"}

@@ -142,11 +142,22 @@ func TestUXOpenCodePreviewMatchesActualJSONCWrite(t *testing.T) {
 	if _, err := agents.ApplyNativeConfigOverrides(env); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := agents.For("opencode", svc.Options.Runner)
+	adapter, err := svc.adapterRegistry().Adapter("opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Register(context.Background(), env, agents.Registration{Name: "fixture-demo", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", TimeoutMS: 30000}); err != nil {
+	manager, ok := adapter.(agents.MCPManager)
+	if !ok {
+		t.Fatal("OpenCode adapter does not expose MCP management")
+	}
+	result, err := manager.Register(context.Background(), agents.Scope{ID: "opencode", Home: home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}, agents.MCPRequest{
+		Key:          state.Key{Source: "fixture", Package: "demo", Target: "default"},
+		Registration: agents.Registration{Name: "fixture-demo", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", TimeoutMS: 30000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.Record(result.Installation); err != nil {
 		t.Fatal(err)
 	}
 	jsonBytes, err := os.ReadFile(jsonPath)

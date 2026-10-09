@@ -63,10 +63,7 @@ func TestCodexFailedReplacementDoesNotRestoreRemovedRegistration(t *testing.T) {
 		commandErr:    map[string]error{strings.Join(addArgs, " "): errors.New("exit status 1")},
 		commandStderr: map[string][]byte{strings.Join(addArgs, " "): []byte("fixture add failed")},
 	}
-	a, err := For("codex", runner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := managerAdapterForTest(t, "codex", runner, e.Home)
 	err = a.Register(context.Background(), e, reg)
 	if err == nil || !strings.Contains(err.Error(), "fixture add failed") {
 		t.Fatalf("actual add stderr missing: %v", err)
@@ -94,10 +91,7 @@ func TestCodexRegisterCreatesMissingConfigDirectoryBeforeProbeAndPreservesConten
 		t.Fatal(err)
 	}
 	runner := &captureRunner{getErr: errors.New("No MCP server named local found")}
-	a, err := For("codex", runner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := managerAdapterForTest(t, "codex", runner, e.Home)
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp"}
 	if err := a.Register(context.Background(), e, reg); err != nil {
 		t.Fatal(err)
@@ -145,10 +139,7 @@ func TestCodexRegisterTreatsMissingEntriesAsAbsentWithExistingHomeStates(t *test
 				}
 			}
 			runner := &captureRunner{getErr: errors.New("Error: No MCP server named 'local' found.")}
-			a, err := For("codex", runner)
-			if err != nil {
-				t.Fatal(err)
-			}
+			a := managerAdapterForTest(t, "codex", runner, home)
 			if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp"}); err != nil {
 				t.Fatal(err)
 			}
@@ -162,9 +153,9 @@ func TestCodexRegisterTreatsMissingEntriesAsAbsentWithExistingHomeStates(t *test
 func TestCodexCurrentDoesNotExposeStdoutFromFailedProbe(t *testing.T) {
 	const sentinel = "Bearer registration-secret-sentinel"
 	runner := &captureRunner{get: []byte(`{"http_headers":{"Authorization":"` + sentinel + `"}}`), getErr: errors.New("exit status 1"), stderr: []byte("Error: failed to load bootstrap configuration")}
-	a, _ := For("codex", runner)
+	a := managerAdapterForTest(t, "codex", runner, t.TempDir())
 	e, _ := ResolveEnvironment("codex", "codex", t.TempDir())
-	_, err := a.(cliAdapter).current(context.Background(), e, "local")
+	_, err := a.current(context.Background(), e, "local")
 	if err == nil || !strings.Contains(err.Error(), string(runner.stderr)) {
 		t.Fatalf("stderr diagnostic missing: %v", err)
 	}
@@ -175,9 +166,9 @@ func TestCodexCurrentDoesNotExposeStdoutFromFailedProbe(t *testing.T) {
 
 func TestCodexCurrentPreservesUnexpectedCLIStderr(t *testing.T) {
 	runner := &captureRunner{getErr: errors.New("exit status 1"), stderr: []byte("failed to resolve CODEX_HOME: no such file or directory")}
-	a, _ := For("codex", runner)
+	a := managerAdapterForTest(t, "codex", runner, t.TempDir())
 	e, _ := ResolveEnvironment("codex", "codex", t.TempDir())
-	_, err := a.(cliAdapter).current(context.Background(), e, "local")
+	_, err := a.current(context.Background(), e, "local")
 	if _, statErr := os.Stat(filepath.Join(e.Home, ".codex")); !os.IsNotExist(statErr) {
 		t.Fatalf("read-only current probe created CODEX_HOME: %v", statErr)
 	}
@@ -188,13 +179,10 @@ func TestCodexCurrentPreservesUnexpectedCLIStderr(t *testing.T) {
 
 func TestCodexArgsAndExplicitHome(t *testing.T) {
 	r := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
-	a, err := For("codex", r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := managerAdapterForTest(t, "codex", r, t.TempDir())
 	e, _ := ResolveEnvironment("codex", "codex", t.TempDir())
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "http"}
-	if err = a.Register(context.Background(), e, reg); err != nil {
+	if err := a.Register(context.Background(), e, reg); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.calls) < 2 {
@@ -207,7 +195,7 @@ func TestCodexArgsAndExplicitHome(t *testing.T) {
 }
 func TestCopilotCLIArgs(t *testing.T) {
 	r := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
-	a, _ := For("copilot-cli", r)
+	a := managerAdapterForTest(t, "copilot-cli", r, t.TempDir())
 	e, _ := ResolveEnvironment("copilot", "copilot-cli", t.TempDir())
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", Transport: "http", TimeoutMS: 30000}
 	if err := a.Register(context.Background(), e, reg); err != nil {
@@ -238,10 +226,7 @@ func TestCopilotCLIUsesCOPILOTHomeAndLeavesJSONConfigAsCLIManaged(t *testing.T) 
 		t.Fatalf("COPILOT_HOME config path = %q", e.ConfigPath)
 	}
 	runner := &captureRunner{getErr: errors.New("MCP server 'local' not found")}
-	a, err := For("copilot-cli", runner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := managerAdapterForTest(t, "copilot-cli", runner, e.Home)
 	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +239,7 @@ func TestCopilotCLIUsesCOPILOTHomeAndLeavesJSONConfigAsCLIManaged(t *testing.T) 
 		t.Fatalf("adapter bypassed the official CLI and edited its managed config: %v", err)
 	}
 }
-func configFixture(t *testing.T, kind, body string) (LegacyMCPAdapter, Environment) {
+func configFixture(t *testing.T, kind, body string) (*mcpTestHarness, Environment) {
 	t.Helper()
 	e, err := ResolveEnvironment("agent", kind, t.TempDir())
 	if err != nil {
@@ -267,10 +252,7 @@ func configFixture(t *testing.T, kind, body string) (LegacyMCPAdapter, Environme
 	if body != "" {
 		os.WriteFile(e.ConfigPath, []byte(body), 0644)
 	}
-	a, err := For(kind, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := managerAdapterForTest(t, kind, nil, e.Home)
 	return a, e
 }
 func readJSON(t *testing.T, path string) map[string]any {
@@ -305,19 +287,15 @@ func TestOpenCodeUpdatesExistingJSONAndJSONC(t *testing.T) {
 	}
 }
 
-func TestHTTPRegistrationIncludesHeadersForOpenCodeClaudeAndGeneric(t *testing.T) {
-	for _, kind := range []string{"opencode", "claude", "generic"} {
+func TestHTTPRegistrationIncludesHeadersForOpenCodeAndClaude(t *testing.T) {
+	for _, kind := range []string{"opencode", "claude"} {
 		t.Run(kind, func(t *testing.T) {
-			adapter, _ := For(kind, nil)
-			jsonConfig, ok := adapter.(jsonAdapter)
-			if !ok {
-				t.Fatalf("%s adapter is not JSON-backed", kind)
-			}
+			adapter := managerAdapterForTest(t, kind, nil, t.TempDir())
 			registration := Registration{
 				Name: "git-provider-github", URL: "http://127.0.0.1:8080/mcp", Transport: "http",
 				Headers: map[string]string{"Authorization": "Bearer test-token"},
 			}
-			value := jsonConfig.value(registration)
+			value := adapter.registrationValue(registration)
 			headers, ok := value["headers"].(map[string]string)
 			if !ok || headers["Authorization"] != "Bearer test-token" {
 				t.Fatalf("registration headers were not serialized: %#v", value)
@@ -366,7 +344,7 @@ func TestOpenCodeBothFilesRegisterInEffectiveJSONCOnly(t *testing.T) {
 
 func TestOpenCodeRemovalDoesNotExposeLowerPrecedenceOwnedEntry(t *testing.T) {
 	reg := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
-	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(reg))
+	entry, _ := json.Marshal(managerAdapterForTest(t, "opencode", nil, t.TempDir()).registrationValue(reg))
 	body := `{"mcp":{"local":` + string(entry) + `}}`
 	a, e := configFixture(t, "opencode", body)
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
@@ -388,7 +366,7 @@ func TestOpenCodeRemovalDoesNotExposeLowerPrecedenceOwnedEntry(t *testing.T) {
 func TestOpenCodeUpdateRetiresOwnedLowerPrecedenceEntry(t *testing.T) {
 	previous := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
 	next := Registration{Name: "local", URL: "http://localhost:2/mcp", TimeoutMS: 30000}
-	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(previous))
+	entry, _ := json.Marshal(managerAdapterForTest(t, "opencode", nil, t.TempDir()).registrationValue(previous))
 	body := `{"mcp":{"local":` + string(entry) + `}}`
 	a, e := configFixture(t, "opencode", body)
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
@@ -449,8 +427,12 @@ func TestMalformedConfigRemainsUnchanged(t *testing.T) {
 }
 func TestJetBrainsAIJSONSnippetDoesNotEnableUnverifiedFileAdapter(t *testing.T) {
 	for _, kind := range []string{"intellij", "intellij-ai-assistant"} {
-		if _, err := For(kind, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "no supported external config file") {
-			t.Fatalf("For(%q) = %v, want an explicit unsupported-mechanism error", kind, err)
+		adapter, err := NewRegistry(Dependencies{}).Adapter(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := adapter.(MCPManager); ok || adapter.Features().MCPs {
+			t.Fatalf("%s exposed unsupported MCP management", kind)
 		}
 		env, err := ResolveEnvironment(kind, kind, t.TempDir())
 		if err != nil {
@@ -461,22 +443,27 @@ func TestJetBrainsAIJSONSnippetDoesNotEnableUnverifiedFileAdapter(t *testing.T) 
 		}
 	}
 }
-func TestCopilotIntellijUsesServers(t *testing.T) {
-	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-existing"))
-	a, e := configFixture(t, "copilot-intellij", `{}`)
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
-		t.Fatal(err)
-	}
-	if readJSON(t, e.ConfigPath)["servers"] == nil {
-		t.Fatal("wrong config shape")
-	}
-	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming-missing"))
-	a, e = configFixture(t, "copilot-intellij", "")
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"}); err != nil {
-		t.Fatalf("registration should initialize a missing MCP config: %v", err)
-	}
-	if got := readJSON(t, e.ConfigPath)["servers"].(map[string]any)["local"].(map[string]any)["url"]; got != "http://localhost:1" {
-		t.Fatalf("new Copilot in JetBrains config has wrong server URL: %v", got)
+func TestCopilotIntellijDoesNotWriteUnverifiedMCPConfig(t *testing.T) {
+	for _, initial := range []string{"{}", ""} {
+		a, e := configFixture(t, "copilot-intellij", initial)
+		before, readErr := os.ReadFile(e.ConfigPath)
+		if initial == "" && !os.IsNotExist(readErr) {
+			t.Fatalf("expected absent MCP config before operation: %v", readErr)
+		}
+		if initial != "" && readErr != nil {
+			t.Fatal(readErr)
+		}
+		err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://localhost:1"})
+		if err == nil || !strings.Contains(err.Error(), "not installed") {
+			t.Fatalf("unverified Copilot in JetBrains registration error = %v", err)
+		}
+		after, readErr := os.ReadFile(e.ConfigPath)
+		if initial == "" && !os.IsNotExist(readErr) {
+			t.Fatalf("unverified agent caused a config file to be created: %v", readErr)
+		}
+		if initial != "" && (readErr != nil || string(after) != string(before)) {
+			t.Fatalf("unverified agent changed config: before=%s after=%s err=%v", before, after, readErr)
+		}
 	}
 }
 
@@ -526,32 +513,16 @@ func TestClaudeCodeConfigDirectoryOverride(t *testing.T) {
 		t.Fatalf("Claude Code override ignored: %+v, %v", e, err)
 	}
 }
-func TestChangedOwnedRegistrationRefused(t *testing.T) {
-	a, e := configFixture(t, "generic-mcp", `{"servers":{"local":{"url":"http://changed"}}}`)
-	reg := Registration{Name: "local", URL: "http://original"}
-	e.Owned = map[string]Registration{"local": reg}
-	if err := a.Unregister(context.Background(), e, "local"); err == nil {
-		t.Fatal("edited registration removed")
-	}
-	if err := a.Register(context.Background(), e, reg); err == nil {
-		t.Fatal("edited registration overwritten")
-	}
-}
-func TestForeignRegistrationRefused(t *testing.T) {
-	a, e := configFixture(t, "generic-mcp", `{"servers":{"local":{"url":"http://foreign"}}}`)
-	if err := a.Register(context.Background(), e, Registration{Name: "local", URL: "http://foreign"}); err == nil {
-		t.Fatal("unowned matching registration adopted")
-	}
-}
-func TestGenericReturnsConfigurationArtifact(t *testing.T) {
-	a, e := configFixture(t, "generic-mcp", "")
-	reg := Registration{Name: "local", URL: "http://localhost:1"}
-	if err := a.Register(context.Background(), e, reg); err != nil {
+func TestGenericAdapterDoesNotExposeMCPConfiguration(t *testing.T) {
+	adapter, err := NewRegistry(Dependencies{}).Adapter("generic")
+	if err != nil {
 		t.Fatal(err)
 	}
-	v := readJSON(t, e.ConfigPath)
-	if server(t, v, "servers", "local")["url"] != reg.URL || !IsManual(e.Kind) {
-		t.Fatal("missing manual artifact")
+	if adapter.Features().MCPs {
+		t.Fatal("generic skills adapter unexpectedly manages MCP configuration")
+	}
+	if _, ok := adapter.(MCPManager); ok {
+		t.Fatal("generic skills adapter exposed an MCP manager")
 	}
 }
 
@@ -572,7 +543,7 @@ func server(t *testing.T, v map[string]any, parent, name string) map[string]any 
 
 func TestCLIChangedOwnedRegistrationRefused(t *testing.T) {
 	r := &captureRunner{get: []byte(`{"transport":{"type":"streamable_http","url":"http://changed"}}`)}
-	a, _ := For("codex", r)
+	a := managerAdapterForTest(t, "codex", r, t.TempDir())
 	e, _ := ResolveEnvironment("agent", "codex", t.TempDir())
 	e.Owned = map[string]Registration{"local": {Name: "local", URL: "http://original"}}
 	if err := a.Unregister(context.Background(), e, "local"); err == nil {
@@ -597,7 +568,7 @@ func TestOpenCodePrevalidatesBothFiles(t *testing.T) {
 
 func TestCopilotHumanGetUsesConfigForOwnership(t *testing.T) {
 	r := &captureRunner{get: []byte("Name: local\nURL: http://localhost:1\n")}
-	a, _ := For("copilot-cli", r)
+	a := managerAdapterForTest(t, "copilot-cli", r, t.TempDir())
 	e, _ := ResolveEnvironment("agent", "copilot-cli", t.TempDir())
 	reg := Registration{Name: "local", URL: "http://localhost:1", TimeoutMS: 30000}
 	e.Owned = map[string]Registration{"local": reg}
@@ -613,7 +584,7 @@ func TestCopilotHumanGetUsesConfigForOwnership(t *testing.T) {
 
 func TestCLIQueryFailurePreservesOwnedRegistration(t *testing.T) {
 	r := &captureRunner{getErr: errors.New("authentication service unavailable")}
-	a, _ := For("codex", r)
+	a := managerAdapterForTest(t, "codex", r, t.TempDir())
 	e, _ := ResolveEnvironment("agent", "codex", t.TempDir())
 	reg := Registration{Name: "local", URL: "http://original"}
 	e.Owned = map[string]Registration{"local": reg}
@@ -644,7 +615,7 @@ type cancelBetweenSiblingWritesContext struct {
 
 func (c *cancelBetweenSiblingWritesContext) Err() error {
 	c.checks++
-	if c.checks > 2 {
+	if c.checks > 5 {
 		return context.Canceled
 	}
 	return nil
@@ -653,7 +624,7 @@ func (c *cancelBetweenSiblingWritesContext) Err() error {
 func TestOpenCodeCancellationRestoresRetiredOwnedShadow(t *testing.T) {
 	previous := Registration{Name: "local", URL: "http://localhost:1/mcp", TimeoutMS: 30000}
 	next := Registration{Name: "local", URL: "http://localhost:2/mcp", TimeoutMS: 30000}
-	entry, _ := json.Marshal(jsonAdapter{kind: "opencode"}.value(previous))
+	entry, _ := json.Marshal(managerAdapterForTest(t, "opencode", nil, t.TempDir()).registrationValue(previous))
 	body := `{"mcp":{"local":` + string(entry) + `}}`
 	a, e := configFixture(t, "opencode", body)
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
@@ -675,7 +646,7 @@ func TestOpenCodeCancellationRestoresRetiredOwnedShadow(t *testing.T) {
 
 func (c *cancelBeforeWriteContext) Err() error {
 	c.checks++
-	if c.checks > 1 {
+	if c.checks > 4 {
 		return context.Canceled
 	}
 	return nil
