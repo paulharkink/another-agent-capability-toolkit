@@ -121,3 +121,42 @@ func TestCIWorkflowDoesNotDuplicateFeatureBranchPullRequestRuns(t *testing.T) {
 		t.Fatal("CI workflow must validate main pushes without duplicating pull_request runs on feature branches")
 	}
 }
+
+func TestCIWorkflowAuthenticatesDockerHubOnlyForTrustedDockerJobs(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	dockerJob := strings.Index(text, "  docker:")
+	if dockerJob < 0 {
+		t.Fatal("CI workflow must define the Docker validation job")
+	}
+	nativeJob := text[:dockerJob]
+	if strings.Contains(nativeJob, "DOCKERHUB_USERNAME") || strings.Contains(nativeJob, "DOCKERHUB_TOKEN") {
+		t.Fatal("Docker Hub secrets must not be exposed to native jobs that execute pull request code")
+	}
+	dockerText := text[dockerJob:]
+	trustCondition := "if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+	if !strings.Contains(dockerText, trustCondition) {
+		t.Fatal("Docker job must skip fork pull requests so their code cannot access repository secrets")
+	}
+	preflight := strings.Index(dockerText, "name: Require Docker Hub credentials")
+	login := strings.Index(dockerText, "name: Login to Docker Hub")
+	test := strings.Index(dockerText, "go test -tags integration ./tests/integration -run TestDockerMCP")
+	if preflight < 0 || login < 0 || test < 0 || preflight >= login || login >= test {
+		t.Fatal("Docker job must check credentials and log in before building test containers")
+	}
+	preflightText := dockerText[preflight:login]
+	if !strings.Contains(preflightText, "DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}") ||
+		!strings.Contains(preflightText, "DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}") ||
+		!strings.Contains(preflightText, "Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository Actions secrets") {
+		t.Fatal("Docker job must fail clearly when Docker Hub secrets are missing")
+	}
+	loginText := dockerText[login:test]
+	if !strings.Contains(loginText, "uses: docker/login-action@v3") ||
+		!strings.Contains(loginText, "username: ${{ secrets.DOCKERHUB_USERNAME }}") ||
+		!strings.Contains(loginText, "password: ${{ secrets.DOCKERHUB_TOKEN }}") {
+		t.Fatal("Docker job must log in with the required Docker Hub secrets before Docker tests")
+	}
+}
