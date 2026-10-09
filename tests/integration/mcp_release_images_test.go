@@ -16,6 +16,11 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(workflow)
+	manifestPublisher, err := os.ReadFile(filepath.Join(root, "tools", "publish-mcp-manifests.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasePipeline := text + "\n" + string(manifestPublisher)
 	for _, required := range []string{"for dockerfile in packages/*/mcp/Dockerfile", `context="$(dirname "$dockerfile")"`, "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("release workflow missing package-context/release contract %q", required)
@@ -46,15 +51,49 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		if !strings.Contains(pkg.MCP.ReleaseImage, ":v{aact_version}") {
 			t.Errorf("%s release image is not version pinned: %q", pkg.ID, pkg.MCP.ReleaseImage)
 		}
-		if !strings.Contains(text, "${package}-mcp") || !strings.Contains(text, "${image}:v${version}") || !strings.Contains(text, "org.opencontainers.image.source") {
+		if !strings.Contains(releasePipeline, "${package}-mcp") || !strings.Contains(releasePipeline, "${image}:v${version}") || !strings.Contains(releasePipeline, "org.opencontainers.image.source") {
 			t.Errorf("workflow does not version and label the image for %s", pkg.ID)
 		}
 	}
 	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [build-mcp-amd64, build-mcp-arm64]") ||
 		!strings.Contains(text, "needs: [prepare-release, publish-mcp-manifests]") ||
-		strings.Index(text, "docker buildx imagetools create") < strings.Index(text, "Require every GHCR package to be public") ||
-		strings.Index(text, "publish-release:") < strings.Index(text, "docker buildx imagetools create") {
+		strings.Index(text, "Require every GHCR package to be public") > strings.Index(text, "tools/publish-mcp-manifests.sh") ||
+		strings.Index(text, "publish-release:") < strings.Index(text, "tools/publish-mcp-manifests.sh") {
 		t.Fatal("version tags and GoReleaser publication must wait for both builds and the GHCR public visibility gate")
+	}
+}
+
+func TestManifestPublisherPreservesExistingImagesAndRetriesRegistryInspection(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := os.ReadFile(filepath.Join(root, "tools", "publish-mcp-manifests.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflow), "tools/publish-mcp-manifests.sh") {
+		t.Fatal("release workflow must use the tested MCP manifest publisher")
+	}
+	text := string(publisher)
+	for _, required := range []string{
+		"imagetools inspect",
+		"imagetools create",
+		"gh api --paginate",
+		"refusing to assume",
+		"Skipping existing version-pinned image",
+		"existing image does not match the architecture digests from this run",
+		"Failed to verify the published manifest",
+		"for attempt in 1 2 3 4 5",
+		"sleep",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("MCP manifest publisher must preserve existing tags and report/retry registry operations; missing %q", required)
+		}
+	}
+	if strings.Index(text, "Skipping existing version-pinned image") > strings.Index(text, "imagetools create") {
+		t.Fatal("publisher must verify and preserve an existing version tag before creating a tag")
 	}
 }
 
@@ -110,7 +149,11 @@ func TestBundledDockerfilesDoNotDependOnDockerHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(workflow)
+	publisher, err := os.ReadFile(filepath.Join(root, "tools", "publish-mcp-manifests.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow) + "\n" + string(publisher)
 	if !strings.Contains(text, "runs-on: ubuntu-24.04-arm") || !strings.Contains(text, "runs-on: ubuntu-latest") ||
 		!strings.Contains(text, "--platform linux/amd64") || !strings.Contains(text, "--platform linux/arm64") ||
 		!strings.Contains(text, "docker buildx imagetools create") || !strings.Contains(text, "containerd-snapshotter") {
