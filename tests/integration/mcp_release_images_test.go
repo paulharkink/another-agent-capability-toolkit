@@ -80,3 +80,21 @@ func TestTagReleaseDispatchesReleaseWorkflowOnCreatedTag(t *testing.T) {
 		t.Fatal("tag workflow must dispatch the release workflow on the exact tag it just created")
 	}
 }
+
+func TestReleaseWorkflowAuthenticatesDockerHubBeforeSettingUpQEMU(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	login := strings.Index(text, `name: Login to Docker Hub`)
+	qemu := strings.Index(text, "uses: docker/setup-qemu-action@v3")
+	if login < 0 || qemu < 0 || login >= qemu {
+		t.Fatal("release workflow must authenticate to Docker Hub before setup-qemu pulls the binfmt image")
+	}
+	if !strings.Contains(text[login:qemu], "uses: docker/login-action@v3") ||
+		!strings.Contains(text[login:qemu], "username: ${{ secrets.DOCKERHUB_USERNAME }}") ||
+		!strings.Contains(text[login:qemu], "password: ${{ secrets.DOCKERHUB_TOKEN }}") {
+		t.Fatal("Docker Hub login must use the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets")
+	}
+}
