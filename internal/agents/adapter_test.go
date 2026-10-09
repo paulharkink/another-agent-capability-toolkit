@@ -241,6 +241,11 @@ func TestCopilotCLIUsesCOPILOTHomeAndLeavesJSONConfigAsCLIManaged(t *testing.T) 
 }
 func configFixture(t *testing.T, kind, body string) (*mcpTestHarness, Environment) {
 	t.Helper()
+	if kind == "copilot-intellij" {
+		// The Windows default follows APPDATA; fixture files must stay under
+		// this test's temporary home instead of the runner's roaming profile.
+		t.Setenv("APPDATA", "")
+	}
 	e, err := ResolveEnvironment("agent", kind, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -444,8 +449,13 @@ func TestJetBrainsAIJSONSnippetDoesNotEnableUnverifiedFileAdapter(t *testing.T) 
 	}
 }
 func TestCopilotIntellijDoesNotWriteUnverifiedMCPConfig(t *testing.T) {
+	hostAppData := t.TempDir()
+	t.Setenv("APPDATA", hostAppData)
 	for _, initial := range []string{"{}", ""} {
 		a, e := configFixture(t, "copilot-intellij", initial)
+		if rel, err := filepath.Rel(e.Home, e.ConfigPath); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("fixture config path escaped its temporary home: home=%q config=%q rel=%q err=%v", e.Home, e.ConfigPath, rel, err)
+		}
 		before, readErr := os.ReadFile(e.ConfigPath)
 		if initial == "" && !os.IsNotExist(readErr) {
 			t.Fatalf("expected absent MCP config before operation: %v", readErr)
