@@ -124,6 +124,33 @@ func TestManualReleaseDispatchUsesMainWorkflowAndSelectedTagSource(t *testing.T)
 	}
 }
 
+func TestArm64BuildReceivesResolvedReleaseOutputs(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	start := strings.Index(text, "  build-mcp-arm64:")
+	if start < 0 {
+		t.Fatal("release workflow must define arm64 build job")
+	}
+	end := strings.Index(text[start:], "  publish-mcp-manifests:")
+	if end < 0 {
+		t.Fatal("release workflow must define arm64 build and manifest jobs")
+	}
+	arm64Job := text[start : start+end]
+	for _, required := range []string{
+		"needs: [prepare-release, build-mcp-amd64]",
+		"needs.prepare-release.outputs.version",
+		"needs.prepare-release.outputs.source_commit",
+		"name: mcp-image-digests-arm64-${{ needs.prepare-release.outputs.tag }}",
+	} {
+		if !strings.Contains(arm64Job, required) {
+			t.Errorf("arm64 build must receive and use resolved release outputs; missing %q", required)
+		}
+	}
+}
+
 func TestManifestPublisherPreservesExistingImagesAndRetriesRegistryInspection(t *testing.T) {
 	root := filepath.Join("..", "..")
 	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))

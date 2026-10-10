@@ -175,7 +175,7 @@ jobs:
           retention-days: 7
 
   build-mcp-arm64:
-    needs: build-mcp-amd64
+    needs: [prepare-release, build-mcp-amd64]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
