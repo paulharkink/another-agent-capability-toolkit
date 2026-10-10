@@ -29,8 +29,8 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 	if strings.Contains(text, "docker buildx build .") || strings.Contains(text, "docker buildx build ..") || strings.Contains(text, "${package}-mcp:latest") {
 		t.Fatal("release workflow uses a repository-wide context or mutable latest tag")
 	}
-	if strings.Contains(text, "args: release --clean") || !strings.Contains(text, "args: publish") {
-		t.Fatal("release workflow must publish the prebuilt GoReleaser artifacts without rebuilding after image publication")
+	if !strings.Contains(text, "args: release --skip=publish --clean") || !strings.Contains(text, "args: release --clean") {
+		t.Fatal("release workflow must preflight GoReleaser before image publication and run a full supported release afterward")
 	}
 	if !strings.Contains(text, "Could not inspect GHCR visibility") || !strings.Contains(text, "Set the package visibility to Public") {
 		t.Fatal("release workflow must explain how to recover when GHCR visibility cannot be verified")
@@ -60,6 +60,31 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		strings.Index(text, "Require every GHCR package to be public") > strings.Index(text, "tools/publish-mcp-manifests.sh") ||
 		strings.Index(text, "publish-release:") < strings.Index(text, "tools/publish-mcp-manifests.sh") {
 		t.Fatal("version tags and GoReleaser publication must wait for both builds and the GHCR public visibility gate")
+	}
+}
+
+func TestReleaseWorkflowUsesSupportedGoReleaserPublishPhase(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	publishStart := strings.Index(text, "  publish-release:")
+	if publishStart < 0 {
+		t.Fatal("release workflow must define its GoReleaser publication job")
+	}
+	publishJob := text[publishStart:]
+	if !strings.Contains(publishJob, "args: release --clean") {
+		t.Fatal("GoReleaser OSS must run its supported release command to build and publish release assets")
+	}
+	if strings.Contains(publishJob, "args: publish") {
+		t.Fatal("GoReleaser OSS has no standalone publish command")
+	}
+	if strings.Contains(publishJob, "actions/download-artifact@v4") {
+		t.Fatal("publish job must not download prebuilt GoReleaser artifacts that the OSS CLI cannot publish separately")
+	}
+	if !strings.Contains(publishJob, "needs: [prepare-release, publish-mcp-manifests]") {
+		t.Fatal("GoReleaser must publish only after release preflight and MCP image publication succeed")
 	}
 }
 
