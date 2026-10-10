@@ -56,7 +56,7 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		}
 	}
 	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]") ||
-		!strings.Contains(text, "needs: [prepare-release, publish-mcp-manifests]") ||
+		!strings.Contains(text, "needs: [prepare-release, publish-mcp-manifests, verify-existing-mcp-images]") ||
 		strings.Index(text, "Require every GHCR package to be public") > strings.Index(text, "tools/publish-mcp-manifests.sh") ||
 		strings.Index(text, "publish-release:") < strings.Index(text, "tools/publish-mcp-manifests.sh") {
 		t.Fatal("version tags and GoReleaser publication must wait for both builds and the GHCR public visibility gate")
@@ -83,8 +83,10 @@ func TestReleaseWorkflowUsesSupportedGoReleaserPublishPhase(t *testing.T) {
 	if strings.Contains(publishJob, "actions/download-artifact@v4") {
 		t.Fatal("publish job must not download prebuilt GoReleaser artifacts that the OSS CLI cannot publish separately")
 	}
-	if !strings.Contains(publishJob, "needs: [prepare-release, publish-mcp-manifests]") {
-		t.Fatal("GoReleaser must publish only after release preflight and MCP image publication succeed")
+	if !strings.Contains(publishJob, "always() && needs.prepare-release.result == 'success'") ||
+		!strings.Contains(publishJob, "needs.publish-mcp-manifests.result == 'success'") ||
+		!strings.Contains(publishJob, "needs.verify-existing-mcp-images.result == 'success'") {
+		t.Fatal("GoReleaser must publish after preflight and either normal image publication or assets-only image verification succeeds")
 	}
 }
 
@@ -106,14 +108,23 @@ func TestManualReleaseDispatchUsesMainWorkflowAndSelectedTagSource(t *testing.T)
 		"inputs.release_tag",
 		"tag: ${{ steps.resolve-release.outputs.tag }}",
 		"source_commit: ${{ steps.resolve-release.outputs.source_commit }}",
-		"ref: ${{ inputs.release_tag || github.ref }}",
+		"ref: ${{ needs.prepare-release.outputs.source_commit }}",
 		"AACT_RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}",
 		"org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}",
 		"ref: ${{ github.workflow_sha }}",
+		"git checkout --detach \"$source_commit\"",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("release workflow does not support dispatching the main workflow against a selected tag: missing %q", required)
 		}
+	}
+	validateTag := strings.Index(text, `if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]`)
+	fetchTag := strings.Index(text, `git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"`)
+	if validateTag < 0 || fetchTag < 0 || validateTag >= fetchTag {
+		t.Fatal("release_tag must be validated before it is used in the tag fetch")
+	}
+	if strings.Contains(text, "ref: ${{ inputs.release_tag || github.ref }}") {
+		t.Fatal("unvalidated workflow_dispatch input must not be used as a checkout ref")
 	}
 	if !strings.Contains(string(publisher), `release_tag="${AACT_RELEASE_TAG:-$GITHUB_REF_NAME}"`) {
 		t.Fatal("manifest publisher must use the explicitly selected release tag when workflow_dispatch runs from main")
@@ -148,6 +159,80 @@ func TestArm64BuildReceivesResolvedReleaseOutputs(t *testing.T) {
 		if !strings.Contains(arm64Job, required) {
 			t.Errorf("arm64 build must receive and use resolved release outputs; missing %q", required)
 		}
+	}
+}
+
+func TestAssetsOnlyRecoveryValidatesExistingImagesAndSkipsImagePublishing(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := os.ReadFile(filepath.Join(root, "tools", "verify-mcp-release-images.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, required := range []string{
+		"publish_assets_only:",
+		"type: boolean",
+		"default: false",
+		"if: inputs.publish_assets_only != true",
+		"verify-existing-mcp-images:",
+		"if: inputs.publish_assets_only == true",
+		"run: bash tools/verify-mcp-release-images.sh",
+		"needs: [prepare-release, publish-mcp-manifests, verify-existing-mcp-images]",
+		"always() && needs.prepare-release.result == 'success'",
+		"needs.verify-existing-mcp-images.result == 'success'",
+		"needs.publish-mcp-manifests.result == 'success'",
+		"args: release --clean",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("assets-only recovery workflow is missing %q", required)
+		}
+	}
+	verifyStart := strings.Index(text, "  verify-existing-mcp-images:")
+	publishStart := strings.Index(text, "  publish-release:")
+	if verifyStart < 0 || publishStart < 0 || verifyStart >= publishStart {
+		t.Fatal("assets-only verification job must precede the release publication job")
+	}
+	if strings.Contains(text[verifyStart:publishStart], "imagetools create") || strings.Contains(text[verifyStart:publishStart], "actions/download-artifact@v4") {
+		t.Fatal("assets-only verification job must not create or push image manifests")
+	}
+	buildStart := strings.Index(text, "  build-mcp-amd64:")
+	armStart := strings.Index(text, "  build-mcp-arm64:")
+	manifestStart := strings.Index(text, "  publish-mcp-manifests:")
+	if buildStart < 0 || armStart < 0 || manifestStart < 0 ||
+		!strings.HasPrefix(text[buildStart:], "  build-mcp-amd64:\n    if: inputs.publish_assets_only != true") ||
+		!strings.HasPrefix(text[armStart:], "  build-mcp-arm64:\n    if: inputs.publish_assets_only != true") ||
+		!strings.HasPrefix(text[manifestStart:], "  publish-mcp-manifests:\n    if: inputs.publish_assets_only != true") {
+		t.Fatal("assets-only recovery must skip both image builds and the image manifest publisher")
+	}
+	verifyText := string(verifier)
+	for _, required := range []string{
+		"azure-inspector cluster-inspector grafana-inspector",
+		"AACT_RELEASE_TAG",
+		"gh api",
+		"visibility",
+		"public",
+		"docker buildx imagetools inspect",
+		"linux",
+		"amd64",
+		"arm64",
+	} {
+		if !strings.Contains(verifyText, required) {
+			t.Errorf("assets-only verification helper is missing %q", required)
+		}
+	}
+	if strings.Contains(verifyText, "imagetools create") || strings.Contains(verifyText, "--push") {
+		t.Fatal("assets-only verification helper must only inspect images and visibility")
+	}
+	goreleaserConfig, err := os.ReadFile(filepath.Join(root, ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goreleaserConfig), "replace_existing_artifacts: true") {
+		t.Fatal("GoReleaser must support replacing the incomplete v0.4.3 assets during a safe retry")
 	}
 }
 
