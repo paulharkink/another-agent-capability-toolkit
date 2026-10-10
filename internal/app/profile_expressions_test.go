@@ -10,6 +10,7 @@ import (
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 )
 
 type expressionActionExecutor struct {
@@ -196,5 +197,63 @@ command = ["helper", "${ base64encode(\"${inputs.display}:${inputs.token}\") }"]
 				t.Fatalf("action request: %#v", executor.request)
 			}
 		})
+	}
+}
+
+func TestProfileValuesRenderHCLComputedInputInMustacheTemplate(t *testing.T) {
+	s, _, _ := fixture(t)
+	dir := s.Source.Catalog[0].Dir
+	manifest := `schema_version = 1
+id = "computed-template"
+name = "Computed Template"
+[[inputs]]
+name = "email"
+type = "string"
+[[inputs]]
+name = "token"
+type = "secret"
+[[inputs]]
+name = "derived_value"
+type = "string"
+default = "${ base64encode(\"${inputs.email}:${inputs.token}\") }"
+[skill]
+name = "computed-template"
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+`
+	if err := os.WriteFile(filepath.Join(dir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	template := "value={{inputs.derived_value}}"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md.mustache"), []byte(template), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := catalog.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0] = p
+	key, err := s.Store.ResolveProfileKey(s.Source.ID, p.ID, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: p.ID, Name: "default"}}
+	resolved, _, values, _, err := s.profileValues(p, profile, key, ProfileRequest{
+		Inputs: map[string]any{"email": "alice", "token": "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := render.Stage(context.Background(), resolved, values, config.Target{}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(stage, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "value=YWxpY2U6c2VjcmV0" {
+		t.Fatalf("rendered template = %q, want computed input in Mustache context", got)
 	}
 }
