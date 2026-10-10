@@ -9,6 +9,11 @@ on:
         description: Existing version tag to publish (dispatch from main only)
         required: false
         type: string
+      publish_assets_only:
+        description: Publish GitHub release assets after verifying existing public multi-platform MCP images
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -27,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
 
       - name: Resolve and validate release source
@@ -64,11 +69,9 @@ jobs:
           fi
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           source_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          git checkout --detach "$source_commit"
           checked_out_commit="$(git rev-parse HEAD)"
-          if [[ "$source_commit" != "$checked_out_commit" ]]; then
-            echo "Checked out ${checked_out_commit}, but ${tag} resolves to ${source_commit}." >&2
-            exit 1
-          fi
+          [[ "$source_commit" == "$checked_out_commit" ]]
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "source_commit=${source_commit}" >> "$GITHUB_OUTPUT"
@@ -98,6 +101,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
   build-mcp-amd64:
+    if: inputs.publish_assets_only != true
     needs: prepare-release
     runs-on: ubuntu-latest
     permissions:
@@ -106,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.source_commit }}
 
       - name: Enable the Docker containerd image store
         shell: bash
@@ -175,7 +179,8 @@ jobs:
           retention-days: 7
 
   build-mcp-arm64:
-    needs: build-mcp-amd64
+    if: inputs.publish_assets_only != true
+    needs: [prepare-release, build-mcp-amd64]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -183,7 +188,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.source_commit }}
 
       - name: Enable the Docker containerd image store
         shell: bash
@@ -252,6 +257,7 @@ jobs:
           retention-days: 7
 
   publish-mcp-manifests:
+    if: inputs.publish_assets_only != true
     needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]
     runs-on: ubuntu-latest
     permissions:
@@ -314,15 +320,36 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  verify-existing-mcp-images:
+    if: inputs.publish_assets_only == true && github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && github.ref_name == 'main'
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+      - name: Verify existing release MCP images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AACT_RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: bash tools/verify-mcp-release-images.sh
+
   publish-release:
-    needs: [prepare-release, publish-mcp-manifests]
+    needs: [prepare-release, publish-mcp-manifests, verify-existing-mcp-images]
+    if: >-
+      always() && needs.prepare-release.result == 'success' &&
+      ((inputs.publish_assets_only == true && needs.verify-existing-mcp-images.result == 'success') ||
+      (inputs.publish_assets_only != true && needs.publish-mcp-manifests.result == 'success'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.source_commit }}
           fetch-depth: 0
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
