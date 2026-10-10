@@ -202,10 +202,18 @@ func TestAssetsOnlyRecoveryValidatesExistingImagesAndSkipsImagePublishing(t *tes
 	buildStart := strings.Index(text, "  build-mcp-amd64:")
 	armStart := strings.Index(text, "  build-mcp-arm64:")
 	manifestStart := strings.Index(text, "  publish-mcp-manifests:")
-	if buildStart < 0 || armStart < 0 || manifestStart < 0 ||
-		!strings.HasPrefix(text[buildStart:], "  build-mcp-amd64:\n    if: inputs.publish_assets_only != true") ||
-		!strings.HasPrefix(text[armStart:], "  build-mcp-arm64:\n    if: inputs.publish_assets_only != true") ||
-		!strings.HasPrefix(text[manifestStart:], "  publish-mcp-manifests:\n    if: inputs.publish_assets_only != true") {
+	if buildStart < 0 || armStart < 0 || manifestStart < 0 {
+		t.Fatal("release workflow must define both image builds and the manifest publisher")
+	}
+	jobUntil := func(start, next int) string {
+		if next < 0 {
+			return text[start:]
+		}
+		return text[start:next]
+	}
+	if !strings.Contains(jobUntil(buildStart, armStart), "if: inputs.publish_assets_only != true") ||
+		!strings.Contains(jobUntil(armStart, manifestStart), "if: inputs.publish_assets_only != true") ||
+		!strings.Contains(jobUntil(manifestStart, verifyStart), "if: inputs.publish_assets_only != true") {
 		t.Fatal("assets-only recovery must skip both image builds and the image manifest publisher")
 	}
 	verifyText := string(verifier)
