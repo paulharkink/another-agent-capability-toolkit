@@ -55,7 +55,7 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 			t.Errorf("workflow does not version and label the image for %s", pkg.ID)
 		}
 	}
-	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [build-mcp-amd64, build-mcp-arm64]") ||
+	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]") ||
 		!strings.Contains(text, "needs: [prepare-release, publish-mcp-manifests]") ||
 		strings.Index(text, "Require every GHCR package to be public") > strings.Index(text, "tools/publish-mcp-manifests.sh") ||
 		strings.Index(text, "publish-release:") < strings.Index(text, "tools/publish-mcp-manifests.sh") {
@@ -85,6 +85,42 @@ func TestReleaseWorkflowUsesSupportedGoReleaserPublishPhase(t *testing.T) {
 	}
 	if !strings.Contains(publishJob, "needs: [prepare-release, publish-mcp-manifests]") {
 		t.Fatal("GoReleaser must publish only after release preflight and MCP image publication succeed")
+	}
+}
+
+func TestManualReleaseDispatchUsesMainWorkflowAndSelectedTagSource(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := os.ReadFile(filepath.Join(root, "tools", "publish-mcp-manifests.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, required := range []string{
+		"release_tag:",
+		"github.event_name == 'workflow_dispatch'",
+		"github.ref_name == 'main'",
+		"inputs.release_tag",
+		"tag: ${{ steps.resolve-release.outputs.tag }}",
+		"source_commit: ${{ steps.resolve-release.outputs.source_commit }}",
+		"ref: ${{ inputs.release_tag || github.ref }}",
+		"AACT_RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}",
+		"org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}",
+		"ref: ${{ github.workflow_sha }}",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("release workflow does not support dispatching the main workflow against a selected tag: missing %q", required)
+		}
+	}
+	if !strings.Contains(string(publisher), `release_tag="${AACT_RELEASE_TAG:-$GITHUB_REF_NAME}"`) {
+		t.Fatal("manifest publisher must use the explicitly selected release tag when workflow_dispatch runs from main")
+	}
+	manifestJob := text[strings.Index(text, "  publish-mcp-manifests:"):]
+	if !strings.Contains(manifestJob, "needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]") {
+		t.Fatal("manifest job must directly depend on prepare-release to receive its tag and source commit outputs")
 	}
 }
 
@@ -204,8 +240,11 @@ func TestTagReleaseDispatchesReleaseWorkflowOnCreatedTag(t *testing.T) {
 	if !strings.Contains(releaseText, "tags: ['v*']") {
 		t.Fatal("release workflow must continue to run automatically for version tags")
 	}
-	if !strings.Contains(releaseText, "if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')") {
-		t.Fatal("release workflow must only build and publish artifacts when dispatched for a version tag")
+	if !strings.Contains(releaseText, "github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')") {
+		t.Fatal("release workflow must continue to build and publish automatically for pushed version tags")
+	}
+	if !strings.Contains(releaseText, "github.event_name == 'workflow_dispatch'") || !strings.Contains(releaseText, "github.ref_name == 'main'") {
+		t.Fatal("manual release dispatch must use the current main workflow, not the old workflow embedded in a tag")
 	}
 	if !strings.Contains(tagText, `gh workflow run release.yml --repo paulharkink/another-agent-capability-toolkit --ref "$tag"`) {
 		t.Fatal("tag workflow must dispatch the release workflow on the exact tag it just created")

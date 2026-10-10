@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${GITHUB_REF_NAME#v}"
+release_tag="${AACT_RELEASE_TAG:-$GITHUB_REF_NAME}"
+version="${release_tag#v}"
 manifest_dir=$(mktemp -d)
 trap 'rm -rf "$manifest_dir"' EXIT
 

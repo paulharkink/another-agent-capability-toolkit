@@ -4,23 +4,79 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish (dispatch from main only)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   prepare-release:
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && inputs.release_tag == '') ||
+      (github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && github.ref_name == 'main' && inputs.release_tag != '')
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve-release.outputs.tag }}
+      version: ${{ steps.resolve-release.outputs.version }}
+      source_commit: ${{ steps.resolve-release.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
+
+      - name: Resolve and validate release source
+        id: resolve-release
+        shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF_TYPE: ${{ github.ref_type }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$EVENT_REF_TYPE" == tag && -z "$RELEASE_TAG_INPUT" ]]; then
+              # tag-release.yml dispatches this workflow on the freshly created tag.
+              tag="$EVENT_REF_NAME"
+            elif [[ "$EVENT_REF_TYPE" == branch && "$EVENT_REF_NAME" == main && -n "$RELEASE_TAG_INPUT" ]]; then
+              # Recovery dispatches run the current workflow from main against an existing tag.
+              tag="$RELEASE_TAG_INPUT"
+            else
+              echo 'Manual release dispatch must run on a version tag without release_tag, or from main with release_tag.' >&2
+              exit 1
+            fi
+          else
+            tag="$EVENT_REF_NAME"
+            if [[ "$EVENT_REF_TYPE" != tag || -n "$RELEASE_TAG_INPUT" ]]; then
+              echo 'Automatic release workflow must run on a version tag without a release_tag input.' >&2
+              exit 1
+            fi
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          source_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ "$source_commit" != "$checked_out_commit" ]]; then
+            echo "Checked out ${checked_out_commit}, but ${tag} resolves to ${source_commit}." >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "source_commit=${source_commit}" >> "$GITHUB_OUTPUT"
 
       - name: Require README to name this release
         shell: bash
         run: |
-          expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v ${GITHUB_REF_NAME#v}"
+          expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v ${{ steps.resolve-release.outputs.version }}"
           if ! grep -Fqx "$expected" README.md; then
             echo "README.md must contain '$expected' before publishing this release." >&2
             exit 1
@@ -49,6 +105,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Enable the Docker containerd image store
         shell: bash
@@ -80,7 +138,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.prepare-release.outputs.version }}"
           mkdir -p image-digests/amd64
           found=0
           for dockerfile in packages/*/mcp/Dockerfile; do
@@ -89,14 +147,14 @@ jobs:
             package="$(basename "$(dirname "$(dirname "$dockerfile")")")"
             context="$(dirname "$dockerfile")"
             image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp"
-            staging="${image}:build-${GITHUB_SHA}-amd64"
+            staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-amd64"
             metadata="$(mktemp)"
             docker buildx build \
               --file "$dockerfile" \
               --platform linux/amd64 \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=v${version}" \
-              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}" \
               --provenance=true \
               --sbom=true \
               --metadata-file "$metadata" \
@@ -111,7 +169,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-image-digests-amd64-${{ github.ref_name }}
+          name: mcp-image-digests-amd64-${{ needs.prepare-release.outputs.tag }}
           path: image-digests/amd64/*.txt
           if-no-files-found: error
           retention-days: 7
@@ -124,6 +182,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Enable the Docker containerd image store
         shell: bash
@@ -155,7 +215,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.prepare-release.outputs.version }}"
           mkdir -p image-digests/arm64
           found=0
           for dockerfile in packages/*/mcp/Dockerfile; do
@@ -164,14 +224,14 @@ jobs:
             package="$(basename "$(dirname "$(dirname "$dockerfile")")")"
             context="$(dirname "$dockerfile")"
             image="ghcr.io/${GITHUB_REPOSITORY,,}/${package}-mcp"
-            staging="${image}:build-${GITHUB_SHA}-arm64"
+            staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-arm64"
             metadata="$(mktemp)"
             docker buildx build \
               --file "$dockerfile" \
               --platform linux/arm64 \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=v${version}" \
-              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}" \
               --provenance=true \
               --sbom=true \
               --metadata-file "$metadata" \
@@ -186,19 +246,21 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-image-digests-arm64-${{ github.ref_name }}
+          name: mcp-image-digests-arm64-${{ needs.prepare-release.outputs.tag }}
           path: image-digests/arm64/*.txt
           if-no-files-found: error
           retention-days: 7
 
   publish-mcp-manifests:
-    needs: [build-mcp-amd64, build-mcp-arm64]
+    needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -207,11 +269,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: mcp-image-digests-amd64-${{ github.ref_name }}
+          name: mcp-image-digests-amd64-${{ needs.prepare-release.outputs.tag }}
           path: image-digests/amd64
       - uses: actions/download-artifact@v4
         with:
-          name: mcp-image-digests-arm64-${{ github.ref_name }}
+          name: mcp-image-digests-arm64-${{ needs.prepare-release.outputs.tag }}
           path: image-digests/arm64
 
       - name: Require every GHCR package to be public
@@ -242,11 +304,12 @@ jobs:
       - name: Assemble version-pinned multi-platform images
         env:
           GH_TOKEN: ${{ github.token }}
+          AACT_RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
         run: bash tools/publish-mcp-manifests.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-image-digests-${{ github.ref_name }}
+          name: mcp-image-digests-${{ needs.prepare-release.outputs.tag }}
           path: image-digests/final/*.txt
           if-no-files-found: error
           retention-days: 90
@@ -259,6 +322,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
