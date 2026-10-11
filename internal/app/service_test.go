@@ -882,6 +882,84 @@ func TestChangedRunningMCPPreparesOnlyOnce(t *testing.T) {
 	}
 }
 
+type configRevisionExecutor struct{}
+
+func (configRevisionExecutor) Run(_ context.Context, _ []string, _ string, stdin []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	var request mcp.ActionRequest
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	revision, _ := request.Inputs["config_revision"].(string)
+	result := mcp.ActionResult{Runtime: &mcp.RunSpec{
+		Image: "fixture", Host: "127.0.0.1", HostPort: 18766, ContainerPort: 8765,
+		Transport: "streamable-http", EndpointPath: "/mcp",
+		Env:    map[string]string{"AACT_CONFIG_DIGEST": revision},
+		Mounts: []mcp.Mount{{Source: filepath.Join(request.StateDir, "config"), Destination: "/config", ReadOnly: true}},
+	}}
+	return json.Marshal(result)
+}
+
+type configRevisionRuntime struct {
+	current *mcp.RunSpec
+	starts  int
+	stops   int
+}
+
+func (r *configRevisionRuntime) Start(_ context.Context, _ state.Key, spec mcp.RunSpec) (mcp.Instance, error) {
+	r.starts++
+	if r.current != nil && !reflect.DeepEqual(*r.current, spec) {
+		return mcp.Instance{}, mcp.ErrRunningWithDifferentSettings
+	}
+	copy := spec
+	r.current = &copy
+	return mcp.Instance{URL: "http://127.0.0.1:18766/mcp", Status: "running"}, nil
+}
+func (r *configRevisionRuntime) Stop(context.Context, state.Key) error {
+	r.stops++
+	r.current = nil
+	return nil
+}
+func (*configRevisionRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (*configRevisionRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func TestPreparedMountedConfigRevisionReplacesRuntimeAtStableMount(t *testing.T) {
+	svc, _, _ := fixture(t)
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Skills = nil
+	pkg.Inputs = []catalog.Input{{Name: "config_revision", Type: "string", Required: true}, {Name: "port", Type: "integer", Required: true}}
+	pkg.MCP = &catalog.MCP{
+		Name: "demo", Image: "fixture", Transport: "streamable-http", ContainerPort: 8765,
+		HostPortInput: "port", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}},
+	}
+	profile := config.Profile{}
+	key := state.Key{Source: "fixture", Package: pkg.ID, Environment: "dev", Target: "default"}
+	runtime := &configRevisionRuntime{}
+	svc.Options.Runtime = runtime
+	svc.Options.Runner = configRevisionExecutor{}
+
+	_, err := svc.startConfigurationProfile(context.Background(), *pkg, profile, key, map[string]any{"config_revision": "revision-one", "port": int64(18766)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSpec := *runtime.current
+	_, err = svc.startConfigurationProfile(context.Background(), *pkg, profile, key, map[string]any{"config_revision": "revision-two", "port": int64(18766)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.starts != 3 || runtime.stops != 1 {
+		t.Fatalf("changed config revision was not reconciled by replacement: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
+	if firstSpec.Env["AACT_CONFIG_DIGEST"] == runtime.current.Env["AACT_CONFIG_DIGEST"] {
+		t.Fatal("changed config revision did not reach the runtime spec")
+	}
+	if !reflect.DeepEqual(firstSpec.Mounts, runtime.current.Mounts) {
+		t.Fatalf("mount path/options unexpectedly changed: %v / %v", firstSpec.Mounts, runtime.current.Mounts)
+	}
+}
+
 func TestProfileInputsOverrideSavedCredentials(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
