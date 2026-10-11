@@ -12,7 +12,7 @@ import (
 )
 
 func TestWorkspaceInformationUsesAvailablePaneWidthAcrossResizes(t *testing.T) {
-	var widestRows []int
+	var wrappedRows []int
 	for _, size := range []tea.WindowSizeMsg{{Width: 200, Height: 40}, {Width: 80, Height: 24}} {
 		t.Run(fmt.Sprintf("%dx%d", size.Width, size.Height), func(t *testing.T) {
 			m := NewContext(t.Context(), &setupBackendFixture{})
@@ -28,6 +28,21 @@ func TestWorkspaceInformationUsesAvailablePaneWidthAcrossResizes(t *testing.T) {
 			m.configureWorkspaceForm(preview)
 			m.form.SelectSectionID(sectionInformationID)
 			m.form.FocusSection()
+			contentWidth := m.form.SectionContentWidth()
+			information := workspaceInformationLines(preview, contentWidth)
+			informationWraps := 0
+			for _, line := range information {
+				if strings.Contains(line, "INFOBLOCK") {
+					informationWraps++
+					if width := ansi.StringWidth(line); width > contentWidth {
+						t.Fatalf("pre-wrapped Information row is %d cells, actual content width is %d: %q", width, contentWidth, line)
+					}
+				}
+			}
+			if informationWraps == 0 {
+				t.Fatal("long Information note did not wrap")
+			}
+			wrappedRows = append(wrappedRows, informationWraps)
 
 			formRows := strings.Split(ansi.Strip(m.form.View().Content), "\n")
 			for rowIndex, row := range formRows {
@@ -54,17 +69,19 @@ func TestWorkspaceInformationUsesAvailablePaneWidthAcrossResizes(t *testing.T) {
 			if longRows == 0 {
 				t.Fatal("long capability information was not rendered")
 			}
-			widestRows = append(widestRows, widest)
+			if size.Width == 80 && contentWidth > 48 {
+				t.Fatalf("narrow pane content width is %d cells, want <= 48", contentWidth)
+			}
 			if size.Width == 200 && widest < 110 {
 				t.Fatalf("wide Information pane left long rows artificially narrow: widest=%d, rows=%d", widest, longRows)
 			}
-			if size.Width == 80 && widest > 50 {
+			if size.Width == 80 && widest > 48 {
 				t.Fatalf("narrow Information row exceeds its pane-safe width: widest=%d\n%s", widest, strings.Join(formRows, "\n"))
 			}
 		})
 	}
-	if len(widestRows) != 2 || widestRows[0] <= widestRows[1] {
-		t.Fatalf("wider terminal did not use wider information rows (and reduce wraps): wide/narrow=%v", widestRows)
+	if len(wrappedRows) != 2 || wrappedRows[0] >= wrappedRows[1] {
+		t.Fatalf("wider terminal did not produce fewer wrapped Information rows: wide/narrow=%v", wrappedRows)
 	}
 }
 
