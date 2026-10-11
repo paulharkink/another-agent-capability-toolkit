@@ -922,7 +922,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if len(authenticationRequired) == 0 {
 		out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
 	} else {
-		out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+		out.AuthenticationStatus = viewmodel.AuthenticationNotCheckedThisRun
 	}
 	if destIDs == nil {
 		settings, e := s.UISettings(ctx)
@@ -1069,6 +1069,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 					return out, e
 				}
 				if result.AuthRequired {
+					out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
 					// Older providers may return the legacy auth-required marker
 					// without a diagnostic. Preserve that flow while retaining the
 					// pending method transition; always stop before registration can

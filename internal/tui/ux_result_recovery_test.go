@@ -665,6 +665,18 @@ func TestUXResultSeparatesSavedAuthenticationAndObservedRegistration(t *testing.
 	}
 }
 
+func TestUXResultReportsSkippedAuthenticationAsNotCheckedThisRun(t *testing.T) {
+	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
+		Target: "demo/default", Saved: true, SavedApplicable: true,
+		AuthenticationStatus: viewmodel.AuthenticationNotCheckedThisRun,
+		Changes:              []state.Installation{{Component: "mcp", AgentID: "opencode", RegistrationName: "demo"}},
+	})
+	joined := strings.Join(result.Rows, "\n")
+	if !strings.Contains(joined, "Authentication: not checked this run") || !strings.Contains(joined, "Applied effects: 1 reported") {
+		t.Fatalf("skipped authentication status was unclear or successful registration was omitted:\n%s", joined)
+	}
+}
+
 func TestUXResultReportsCompletedAuthenticationWithoutClaimingRegistration(t *testing.T) {
 	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
 		Target: "demo/default", Saved: true, SavedApplicable: true,
