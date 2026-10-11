@@ -44,8 +44,13 @@ func splitDisplayLine(line string, width int) []string {
 	for _, r := range line {
 		candidate := current + string(r)
 		if current != "" && lipgloss.Width(candidate) > width {
-			out = append(out, current)
-			current = string(r)
+			if space := strings.LastIndex(candidate, " "); space >= 0 && space < len(candidate)-1 {
+				out = append(out, candidate[:space+1])
+				current = candidate[space+1:]
+			} else {
+				out = append(out, current)
+				current = string(r)
+			}
 		} else {
 			current = candidate
 		}
