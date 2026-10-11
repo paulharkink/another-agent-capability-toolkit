@@ -152,6 +152,20 @@ func TestProfileHomeLabelsUnmanagedComponentInventory(t *testing.T) {
 	}
 }
 
+func TestProfileHomeLabelsInstalledSkillAndRegisteredMCP(t *testing.T) {
+	for _, tc := range []struct {
+		component viewmodel.ComponentStatus
+		want      string
+	}{
+		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "skill", Name: "field-guide", Status: "installed", Managed: true}, "opencode · skill · field-guide · installed"},
+		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "mcp", Name: "map-server", Status: "installed", Managed: true}, "opencode · mcp · map-server · registered"},
+	} {
+		if got := profileComponentStatusText(tc.component); got != tc.want {
+			t.Errorf("component status = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestProfileHomeSkipsMissingConfigurationDetails(t *testing.T) {
 	if got := profileConfigurationDetails(ProfileRow{}); len(got) != 0 {
 		t.Fatalf("missing configuration details = %+v", got)

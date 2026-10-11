@@ -279,6 +279,24 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	}
 }
 
+func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.T) {
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key:         state.Key{Source: "team", Package: "inspect", Target: "default"},
+		PackageName: "Inspector", ItemFieldName: "__components", SelectedItemIDs: []string{"set:starter"},
+		Items:        []catalog.InstallationItem{{ID: "set:starter", Label: "starter", Skills: []string{"field-guide"}, MCPs: []string{"map-server"}}},
+		Destinations: []viewmodel.SetupDestination{{ID: "opencode", Name: "OpenCode", Path: "/tmp/opencode", Selected: true}},
+	})
+	m.form.SelectSectionID(sectionComponentsID)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Components", "field-guide", "map-server", "OpenCode", "selected to apply"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("component selection does not explain %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})

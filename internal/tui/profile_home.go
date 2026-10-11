@@ -58,7 +58,12 @@ func profileStatusSummary(p viewmodel.CapabilityProfile) string {
 
 func profileComponentStatusText(c viewmodel.ComponentStatus) string {
 	status := c.Status
-	if status == "installed" && !c.Managed {
+	if c.Kind == "mcp" && status == "installed" {
+		status = "registered"
+		if !c.Managed {
+			status += " · unmanaged"
+		}
+	} else if status == "installed" && !c.Managed {
 		status = "installed · unmanaged"
 	}
 	return c.AgentID + " · " + c.Kind + " · " + c.Name + " · " + status

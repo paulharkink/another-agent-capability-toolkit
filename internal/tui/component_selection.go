@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -14,14 +13,14 @@ const sectionComponentsID = "tool:components"
 
 func componentChoiceLabel(item catalog.InstallationItem) string {
 	parts := []string{}
-	if len(item.Skills) > 0 {
-		parts = append(parts, fmt.Sprintf("%d skill(s)", len(item.Skills)))
+	for _, name := range item.Skills {
+		parts = append(parts, "skill: "+name)
 	}
-	if len(item.MCPs) > 0 {
-		parts = append(parts, fmt.Sprintf("%d MCP(s)", len(item.MCPs)))
+	for _, name := range item.MCPs {
+		parts = append(parts, "MCP: "+name)
 	}
-	if len(item.Plugins) > 0 {
-		parts = append(parts, "native plugin")
+	for _, name := range item.Plugins {
+		parts = append(parts, "plugin: "+name)
 	}
 	return item.Label + " · " + strings.Join(parts, " + ")
 }
@@ -60,6 +59,22 @@ func (m *Model) refreshComponentAvailability() {
 	}
 	destinations, _ := m.form.Values()[m.pendingSetupField].([]string)
 	m.form.SetChoices(m.pendingSetupItemsField, componentOptions(*m.pendingSetup, destinations))
+	names := []string{}
+	for _, destination := range m.pendingSetup.Destinations {
+		if !slices.Contains(destinations, destination.ID) {
+			continue
+		}
+		name := destination.Name
+		if name == "" {
+			name = destination.ID
+		}
+		names = append(names, name)
+	}
+	hint := "Checked components will be applied to selected agents."
+	if len(names) > 0 {
+		hint = "Checked components selected to apply to: " + strings.Join(names, ", ")
+	}
+	m.form.SetHint(m.pendingSetupItemsField, hint)
 }
 func (m *Model) selectAllSkills() {
 	if m.pendingSetup == nil || m.form == nil || m.pendingSetupItemsField == "" {
