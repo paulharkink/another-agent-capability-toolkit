@@ -55,6 +55,18 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	if p.MCP == nil {
 		return ActionResult{}, errors.New("package has no MCP")
 	}
+	// Capability-pack action helpers still consume the legacy target-shaped
+	// profile context. Profile-driven callers have the same values in Profile,
+	// so expose them through Target for helpers that read the v1 envelope.
+	if q.Target.Path == "" && q.Profile.Path != "" {
+		q.Target = config.Target{
+			Environment: q.Profile.Ref.PackID,
+			Name:        q.Profile.Ref.Name,
+			Path:        q.Profile.Path,
+			Raw:         q.Profile.Raw,
+			InputPolicy: q.Profile.InputPolicy,
+		}
+	}
 	cmd, ok := p.MCP.Actions[q.Action]
 	if !ok {
 		return ActionResult{}, fmt.Errorf("package %s has no %s action", p.ID, q.Action)
