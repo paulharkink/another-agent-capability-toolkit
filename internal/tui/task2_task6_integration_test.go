@@ -21,6 +21,18 @@ import (
 
 type integratedAuthActionExecutor struct{ diagnostic bool }
 
+type capturedProfileAuthExecutor struct {
+	request mcp.ActionRequest
+}
+
+func (e *capturedProfileAuthExecutor) Run(_ context.Context, _ []string, _ string, input []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	if err := json.Unmarshal(input, &e.request); err != nil {
+		return nil, err
+	}
+	cookie, _ := e.request.Inputs["grafana_session"].(string)
+	return json.Marshal(mcp.ActionResult{AuthRequired: true, Diagnostic: "Grafana rejected session " + cookie})
+}
+
 func (e integratedAuthActionExecutor) Run(_ context.Context, _ []string, _ string, input []byte, _ map[string]string, stderr func([]byte)) ([]byte, error) {
 	var request mcp.ActionRequest
 	if err := json.Unmarshal(input, &request); err != nil {
@@ -186,5 +198,128 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 				t.Fatalf("legacy auth-required action guidance missing:\n%s", joined)
 			}
 		})
+	}
+}
+
+func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironment(t *testing.T) {
+	const (
+		profileCookie = "fixture-saved-cookie"
+		formCookie    = "fixture-form-cookie"
+		profileExpiry = "fixture-saved-expiry"
+	)
+	for _, name := range []string{"GRAFANA_SESSION", "GRAFANA_SESSION_EXPIRY"} {
+		previous, hadValue := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if hadValue {
+				_ = os.Setenv(name, previous)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	pkgDir := filepath.Join(root, "package")
+	if err := os.MkdirAll(pkgDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	profileRoot := filepath.Join(root, "profiles")
+	if err := os.MkdirAll(filepath.Join(profileRoot, "grafana"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profileRoot, "grafana", "production.toml")
+	if err := os.WriteFile(profilePath, []byte("[inputs]\ngrafana_session = \"fixture-profile-default\"\nsession_expiry = \"fixture-expiry-default\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pkg := catalog.Package{
+		ID: "grafana", Name: "Grafana",
+		Dir: pkgDir,
+		Inputs: []catalog.Input{
+			{Name: "grafana_session", Label: "Grafana session cookie", Type: "secret", Required: true},
+			{Name: "session_expiry", Label: "Session expiry", Type: "string", Required: true},
+		},
+		MCP: &catalog.MCP{Name: "grafana", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
+			"authenticate": {Argv: []string{"fixture-grafana-auth"}},
+		}},
+	}
+	store, err := state.Open(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &capturedProfileAuthExecutor{}
+	service := app.New(config.Source{
+		ID: "fixture-pack", Root: root, ProfileRoot: profileRoot,
+		Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{},
+	}, store, app.Options{
+		Runner: executor, Runtime: &integratedAuthRuntime{},
+		Adapters: integratedAuthAdapters{adapter: integratedAuthAdapter{}},
+	})
+	ref := config.ProfileRef{PackID: "fixture-pack", CapabilityID: "grafana", Name: "production"}
+	key := state.Key{Source: ref.PackID, Package: ref.CapabilityID, Target: ref.Name}
+	if err := store.SaveAnswers(key, map[string]any{"grafana_session": profileCookie, "session_expiry": profileExpiry}); err != nil {
+		t.Fatal(err)
+	}
+	model := NewContext(t.Context(), service)
+	model.width, model.height = 120, 32
+	open := model.openTargetWorkspace(viewmodel.SetupRequest{Ref: ref}, "Authentication")
+	if open == nil {
+		t.Fatal("opening selected profile did not request its setup form")
+	}
+	model.Update(open())
+	if model.form == nil || model.pendingSetup == nil {
+		t.Fatalf("selected profile did not open its form: form=%v preview=%+v", model.form != nil, model.pendingSetup)
+	}
+	values := model.form.Values()
+	if values["grafana_session"] != profileCookie || values["session_expiry"] != profileExpiry {
+		t.Fatalf("saved profile inputs were not loaded into form: %#v", values)
+	}
+	formOverrides := map[string]any{"grafana_session": formCookie}
+	if model.pendingSetupField != "" {
+		formOverrides[model.pendingSetupField] = []string{"fixture-agent"}
+	}
+	if model.pendingSetupItemsField != "" {
+		formOverrides[model.pendingSetupItemsField] = []string{"mcp:grafana"}
+	}
+	if err := model.form.ApplyValues(formOverrides); err != nil {
+		t.Fatal(err)
+	}
+	values = model.form.Values()
+	if values["grafana_session"] != formCookie || values["session_expiry"] != profileExpiry {
+		t.Fatalf("form overrides were not retained: %#v", values)
+	}
+	cmd := model.applySetup(values)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("Save & Apply did not start UIInstall: %T", batch)
+	}
+	message, ok := batch[0]().(operationMsg)
+	if !ok {
+		t.Fatalf("Save & Apply returned %T, want operationMsg", batch[0]())
+	}
+	if executor.request.Action != "authenticate" {
+		t.Fatalf("action helper did not receive auth request: %+v; operation err=%v output=%q", executor.request, message.err, message.output)
+	}
+	if executor.request.Profile.Ref != ref || executor.request.Target.Environment != ref.PackID || executor.request.Target.Name != ref.Name || executor.request.Target.Path != profilePath {
+		t.Fatalf("authentication request lost selected profile identity: profile=%+v target=%+v", executor.request.Profile, executor.request.Target)
+	}
+	if executor.request.Inputs["grafana_session"] != formCookie || executor.request.Inputs["session_expiry"] != profileExpiry {
+		t.Fatalf("authentication request lost resolved form overrides: %#v", executor.request.Inputs)
+	}
+	if message.err == nil && !message.failed {
+		t.Fatalf("expected fixture auth-required response to be reported as failure: %+v", message)
+	}
+	diagnostic := message.output
+	if message.err != nil {
+		diagnostic += "\n" + message.err.Error()
+	}
+	for _, value := range []string{profileCookie, formCookie, profileExpiry} {
+		if strings.Contains(diagnostic, value) {
+			t.Fatalf("credential value leaked to TUI diagnostic: %q", value)
+		}
 	}
 }
