@@ -125,6 +125,44 @@ func TestLongLogLineClipsToResizedLogViewportAndPreservesPan(t *testing.T) {
 	}
 }
 
+func TestLongOperationDiagnosticWrapsToResizedResultWidth(t *testing.T) {
+	m, _ := homeFixture()
+	diagnostic := "Failed: " + strings.Repeat("RESULTTOKEN", 24)
+	m.action = "configure"
+	m.Update(operationMsg{origin: "Catalog", err: fmt.Errorf("%s", strings.TrimPrefix(diagnostic, "Failed: "))})
+	wideRows := wrapResultRows(m.result.Rows, m.resultBodyWidth())
+	if len(wideRows) < 2 {
+		t.Fatal("long operation diagnostic did not wrap at the initial result width")
+	}
+	if !strings.Contains(strings.Join(m.result.Rows, "\n"), strings.TrimPrefix(diagnostic, "Failed: ")) {
+		t.Fatal("result state did not preserve the complete diagnostic")
+	}
+
+	var visibleTokenWidths []int
+	for _, size := range []tea.WindowSizeMsg{{Width: 200, Height: 30}, {Width: 80, Height: 24}} {
+		m.Update(size)
+		view := ansi.Strip(m.View().Content)
+		widest := 0
+		for lineNumber, line := range strings.Split(view, "\n") {
+			if got := ansi.StringWidth(line); got > size.Width {
+				t.Fatalf("%dx%d result line %d exceeds terminal width (%d cells): %q", size.Width, size.Height, lineNumber+1, got, line)
+			}
+			if strings.Contains(line, "RESULTTOKEN") {
+				if got := strings.Count(line, "RESULTTOKEN") * len("RESULTTOKEN"); got > widest {
+					widest = got
+				}
+			}
+		}
+		if widest == 0 {
+			t.Fatalf("%dx%d result viewer hides the long diagnostic", size.Width, size.Height)
+		}
+		visibleTokenWidths = append(visibleTokenWidths, widest)
+	}
+	if visibleTokenWidths[0] <= visibleTokenWidths[1] {
+		t.Fatalf("resized result viewer did not reflow its diagnostic: wide/narrow token widths=%v", visibleTokenWidths)
+	}
+}
+
 func TestInformationWrapKeepsWordsTogetherWhenPaneAllows(t *testing.T) {
 	lines := splitDisplayLine("Managed credential material is missing at endpoint", 26)
 	if got := strings.Join(lines, ""); got != "Managed credential material is missing at endpoint" {
