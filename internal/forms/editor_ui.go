@@ -2380,7 +2380,7 @@ func (m *FormModel) splitLayout() formLayout {
 	footer := strings.Join(areaLabels, " · ") + "\n" + controls + "\n" + actions
 	if m.selected < len(m.defs) && isEditableCollection(m.defs[m.selected]) {
 		if def := m.defs[m.selected]; def.Type == "directory" || def.Type == "file" {
-			footer = "Enter edit · a Add (picker) · Backspace Remove · m Type path · b Browse\n" + footer
+			footer = "Enter edit · a Add (picker) · Backspace Remove · m Type path · b - Browse\n" + footer
 		} else {
 			footer = "Enter edit/add · a Add · Backspace Remove\n" + footer
 		}
