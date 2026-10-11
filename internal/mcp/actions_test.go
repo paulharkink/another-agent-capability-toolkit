@@ -91,6 +91,28 @@ func TestActionJSONContract(t *testing.T) {
 		t.Fatalf("%+v %v", out, e)
 	}
 }
+
+func TestActionDerivesLegacyTargetContextFromProfile(t *testing.T) {
+	f := &actionExec{output: `{"auth_required":false}`}
+	r := ActionRunner{Executor: f}
+	profile := config.Profile{
+		Ref:         config.ProfileRef{PackID: "dso-skills", CapabilityID: "grafana-inspector", Name: "ap"},
+		Path:        "/packs/dso-skills/environments/grafana-inspector/ap.toml",
+		Raw:         map[string]any{"grafana": map[string]any{"auth_mode": "session_cookie"}},
+		InputPolicy: map[string]string{"auth_mode": "default"},
+	}
+	if _, err := r.Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate", Profile: profile}); err != nil {
+		t.Fatal(err)
+	}
+	got := f.request.Target
+	if got.Environment != "dso-skills" || got.Name != "ap" || got.Path != profile.Path {
+		t.Fatalf("helper target context = %+v, want pack/profile/path from %+v", got, profile)
+	}
+	if got.Raw["grafana"] == nil || got.InputPolicy["auth_mode"] != "default" {
+		t.Fatalf("helper target context lost profile values or policy: %+v", got)
+	}
+}
+
 func TestNoninteractiveAuthRequiredDoesNotLogin(t *testing.T) {
 	f := &actionExec{output: `{"auth_required":true}`}
 	r := ActionRunner{Executor: f}
