@@ -219,3 +219,106 @@ func TestPowerShellInstallerArchitectureMapping(t *testing.T) {
 		}
 	}
 }
+
+
+func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
+    if runtime.GOOS == "windows" {
+        t.Skip("Unix launcher migration")
+    }
+    home := t.TempDir()
+    legacy := filepath.Join(home, ".local", "bin", "aact")
+    if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+        t.Fatal(err)
+    }
+    old := []byte("#!/bin/sh\nprintf '0.0.0-SNAPSHOT-old\\n'\n")
+    if err := os.WriteFile(legacy, old, 0755); err != nil {
+        t.Fatal(err)
+    }
+    stateRoot := filepath.Join(home, ".local", "state", "agent-skills")
+    generated := filepath.Join(stateRoot, "generated", "skill-output")
+    if err := os.MkdirAll(generated, 0700); err != nil {
+        t.Fatal(err)
+    }
+    if err := os.WriteFile(filepath.Join(generated, "SKILL.md"), []byte("managed skill"), 0600); err != nil {
+        t.Fatal(err)
+    }
+    agentLink := filepath.Join(home, ".agents", "skills", "sample")
+    if err := os.MkdirAll(filepath.Dir(agentLink), 0700); err != nil {
+        t.Fatal(err)
+    }
+    if err := os.Symlink(generated, agentLink); err != nil {
+        t.Fatal(err)
+    }
+    settings := filepath.Join(stateRoot, "manager", "settings.json")
+    if err := os.MkdirAll(filepath.Dir(settings), 0700); err != nil {
+        t.Fatal(err)
+    }
+    settingsData := []byte("{\"default_pack\":\"/home/example/dso-skills/aact.toml\",\"agents\":[\"codex\"],\"image_source\":\"local\"}")
+    if err := os.WriteFile(settings, settingsData, 0600); err != nil {
+        t.Fatal(err)
+    }
+    sources := filepath.Join(stateRoot, "manager", "sources.json")
+    if err := os.WriteFile(sources, []byte("[{\"id\":\"dso-skills\",\"manifest_path\":\"/home/example/dso-skills/aact.toml\"}]"), 0600); err != nil {
+        t.Fatal(err)
+    }
+    server := fixtureServer(t, false)
+    cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+    cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+    output, err := cmd.CombinedOutput()
+    if err != nil {
+        t.Fatalf("install failed: %s: %v", output, err)
+    }
+    target, err := os.Readlink(legacy)
+    if err != nil {
+        t.Fatalf("legacy launcher was not migrated: %q %v", output, err)
+    }
+    want := filepath.Join(home, ".local", "share", "aact", "bin", "aact")
+    if target != want {
+        t.Fatalf("legacy launcher target = %q, want %q", target, want)
+    }
+    backup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-0.0.0-SNAPSHOT-old")
+    if got, err := os.ReadFile(backup); err != nil || string(got) != string(old) {
+        t.Fatalf("legacy executable backup = %q, %v", got, err)
+    }
+    if !strings.Contains(string(output), "Migrated legacy launcher") {
+        t.Fatalf("migration was not reported: %s", output)
+    }
+    if target, err := os.Readlink(agentLink); err != nil || target != generated {
+        t.Fatalf("managed agent link changed: %q %v", target, err)
+    }
+    if got, err := os.ReadFile(settings); err != nil || string(got) != string(settingsData) {
+        t.Fatalf("saved settings changed: %q %v", got, err)
+    }
+    if _, err := os.Stat(sources); err != nil {
+        t.Fatalf("saved capability references removed: %v", err)
+    }
+}
+
+func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
+    if runtime.GOOS == "windows" {
+        t.Skip("Unix launcher migration")
+    }
+    home := t.TempDir()
+    legacy := filepath.Join(home, ".local", "bin", "aact")
+    if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+        t.Fatal(err)
+    }
+    old := []byte("#!/bin/sh\nprintf 'not-aact\\n'\n")
+    if err := os.WriteFile(legacy, old, 0755); err != nil {
+        t.Fatal(err)
+    }
+    server := fixtureServer(t, false)
+    cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+    cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+    output, err := cmd.CombinedOutput()
+    if err != nil {
+        t.Fatalf("install failed: %s: %v", output, err)
+    }
+    got, err := os.ReadFile(legacy)
+    if err != nil || string(got) != string(old) {
+        t.Fatalf("unrecognized launcher changed: %q, %v", got, err)
+    }
+    if !strings.Contains(string(output), "not recognized") {
+        t.Fatalf("unrecognized launcher was not reported: %s", output)
+    }
+}
