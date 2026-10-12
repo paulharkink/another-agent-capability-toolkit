@@ -166,6 +166,28 @@ func TestUpdateKeepsReferencedResources(t *testing.T) {
 		t.Fatal("shell profile written")
 	}
 }
+
+func TestUpdateWithSymlinkedInstallDir(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real-root")
+	rootAlias := filepath.Join(base, "root-alias")
+	if err := os.Mkdir(realRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realRoot, rootAlias); err != nil {
+		t.Fatal(err)
+	}
+	s := fixtureServer(t, false)
+	if out, err := runInstaller(t, rootAlias, "1.2.3", s.URL); err != nil {
+		t.Fatalf("initial install: %s: %v", out, err)
+	}
+	if out, err := runInstaller(t, rootAlias, "1.2.4", s.URL); err != nil {
+		t.Fatalf("upgrade through symlinked install dir: %s: %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(realRoot, "releases", "1.2.3-"+installerPlatform()+"-amd64", "packages", "sample", "SKILL.md")); err != nil {
+		t.Fatalf("prior release resource was not preserved: %v", err)
+	}
+}
 func TestRuntimeWorksWithoutHostScriptTools(t *testing.T) {
 	root := t.TempDir()
 	s := fixtureServer(t, false)

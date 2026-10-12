@@ -33,6 +33,7 @@ download() {
 }
 mkdir -p "$ROOT/releases" "$ROOT/bin"
 ROOT=$(cd "$ROOT" && pwd)
+ROOT_PHYSICAL=$(CDPATH= cd -P "$ROOT" && pwd -P)
 work=$(mktemp -d "$ROOT/releases/.install-XXXXXX")
 launcher="$ROOT/bin/.aact-next-$$"
 trap 'rm -rf "$work"; rm -f "$launcher"' EXIT HUP INT TERM
@@ -82,7 +83,7 @@ if [ "$platform" != windows ]; then
     if [ -L "$canonical" ]; then
       canonical_target=$(readlink -f "$canonical" 2>/dev/null || true)
       case "$canonical_target" in
-        "$ROOT"/releases/*/bin/aact) ;;
+        "$ROOT_PHYSICAL"/releases/*/bin/aact) ;;
         *) printf 'Canonical launcher is an unrelated symlink and was left unchanged: %s\n' "$canonical" >&2; exit 1 ;;
       esac
       canonical_release_dir=$(dirname "$(dirname "$canonical_target")")
@@ -114,7 +115,7 @@ if [ "$platform" != windows ]; then
       esac
       canonical_backup="$ROOT/legacy/bin/aact-canonical-$canonical_version"
     fi
-    if [ "$canonical_target" = "$release/bin/aact" ]; then
+    if [ "$canonical_target" = "$ROOT_PHYSICAL/releases/${VERSION}-${platform}-${arch}/bin/aact" ]; then
       :
     elif [ -e "$canonical_backup" ] || [ -L "$canonical_backup" ]; then
       printf 'Cannot update canonical launcher; backup already exists: %s\n' "$canonical_backup" >&2
