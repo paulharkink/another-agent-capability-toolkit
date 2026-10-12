@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -172,4 +173,48 @@ func TestDiscoverPreviewDoesNotCreateLocalIdentity(t *testing.T) {
 	if e != nil || preview.ID != saved.ID {
 		t.Fatalf("%#v %#v %v", saved, preview, e)
 	}
+}
+
+
+
+func TestDiscoverUsesSavedDefaultPackOutsideItsCheckout(t *testing.T) {
+    pack := checkout(t)
+    put(t, filepath.Join(pack, "aact.toml"), "schema_version=1\nsource_id='saved-pack'\n")
+    state := filepath.Join(t.TempDir(), "state")
+    first, err := Discover(pack, "", "", state)
+    if err != nil || first.ID != "saved-pack" {
+        t.Fatalf("initial pack: %#v %v", first, err)
+    }
+    selected, err := Discover(t.TempDir(), "", "", state)
+    if err != nil || selected.ID != "saved-pack" || selected.ManifestPath != filepath.Join(pack, "aact.toml") {
+        t.Fatalf("saved default from home = %#v, %v", selected, err)
+    }
+    otherPack := checkout(t)
+    put(t, filepath.Join(otherPack, "aact.toml"), "schema_version=1\nsource_id='cwd-pack'\n")
+    selected, err = Discover(otherPack, "", "", state)
+    if err != nil || selected.ID != "cwd-pack" {
+        t.Fatalf("cwd pack should win: %#v %v", selected, err)
+    }
+}
+
+func TestExplicitConfigOverridesSavedDefaultAndBrokenDefaultIsClear(t *testing.T) {
+    pack := checkout(t)
+    put(t, filepath.Join(pack, "aact.toml"), "schema_version=1\nsource_id='saved-pack'\n")
+    state := filepath.Join(t.TempDir(), "state")
+    if _, err := Discover(pack, "", "", state); err != nil {
+        t.Fatal(err)
+    }
+    explicit := filepath.Join(t.TempDir(), "aact.toml")
+    put(t, explicit, "schema_version=1\nsource_id='explicit-pack'\n")
+    got, err := Discover(t.TempDir(), explicit, "", state)
+    if err != nil || got.ID != "explicit-pack" {
+        t.Fatalf("explicit config should win: %#v %v", got, err)
+    }
+    if err := os.WriteFile(filepath.Join(state, "manager", "default-pack"), []byte("/missing/aact.toml\n"), 0600); err != nil {
+        t.Fatal(err)
+    }
+    _, err = Discover(t.TempDir(), "", "", state)
+    if err == nil || !strings.Contains(err.Error(), "saved default Capability Pack") {
+        t.Fatalf("missing saved pack should explain the failed path: %v", err)
+    }
 }
