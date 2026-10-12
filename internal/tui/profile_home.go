@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
@@ -58,10 +59,15 @@ func profileStatusSummary(p viewmodel.CapabilityProfile) string {
 
 func profileComponentStatusText(c viewmodel.ComponentStatus) string {
 	status := c.Status
-	if status == "installed" && !c.Managed {
+	if c.Kind == "mcp" && status == "installed" {
+		status = "registered"
+		if !c.Managed {
+			status += " · unmanaged"
+		}
+	} else if status == "installed" && !c.Managed {
 		status = "installed · unmanaged"
 	}
-	return c.AgentID + " · " + c.Kind + " · " + c.Name + " · " + status
+	return agents.DisplayName(c.AgentID) + " · " + c.Kind + " · " + c.Name + " · " + status
 }
 
 func profileConfigurationDetails(row ProfileRow) []string {

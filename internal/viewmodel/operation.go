@@ -44,9 +44,9 @@ type OperationResult struct {
 	// package's input configuration. When false, Saved is not presented as an
 	// outcome; registration-only and observation operations do not save inputs.
 	SavedApplicable bool
-	// AuthenticationStatus reports only authentication established during this
-	// apply operation. Saved credentials and credential-file presence do not
-	// imply completion.
+	// AuthenticationStatus reports the selected package authentication action's
+	// result during this apply operation. Saved credentials and credential-file
+	// presence do not imply completion.
 	AuthenticationStatus string
 	Message              string
 	Step                 string
@@ -55,9 +55,10 @@ type OperationResult struct {
 }
 
 const (
-	AuthenticationComplete     = "complete"
-	AuthenticationNotConfirmed = "not confirmed"
-	AuthenticationNotRequired  = "not required"
+	AuthenticationComplete          = "complete"
+	AuthenticationNotConfirmed      = "not confirmed"
+	AuthenticationNotCheckedThisRun = "not checked this run"
+	AuthenticationNotRequired       = "not required"
 )
 
 // OperationProgress contains only information reported by a running operation.

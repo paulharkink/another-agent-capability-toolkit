@@ -452,7 +452,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 		m.pendingSetupItemsField = field
 		preview.ItemFieldName = field
-		defs = append(defs, catalog.Input{Name: field, Label: "Capability components", Type: "multichoice", Options: componentOptions(preview, selected)})
+		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
 	}
 	replayValues := make(map[string]any, len(overrides))
@@ -544,6 +544,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		width, height = m.width, m.height
 	}
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m.refreshComponentAvailability()
 }
 
 func setupDisplayValue(input viewmodel.SetupInput) bool {

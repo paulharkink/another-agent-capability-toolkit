@@ -147,8 +147,22 @@ func TestProfileModeCanRenderLegacyStateOnlyCapabilityRows(t *testing.T) {
 
 func TestProfileHomeLabelsUnmanagedComponentInventory(t *testing.T) {
 	component := viewmodel.ComponentStatus{AgentID: "opencode", Kind: "skill", Name: "guide", Status: "installed", Managed: false}
-	if got := profileComponentStatusText(component); got != "opencode · skill · guide · installed · unmanaged" {
+	if got := profileComponentStatusText(component); got != "OpenCode · skill · guide · installed · unmanaged" {
 		t.Fatalf("unmanaged status = %q", got)
+	}
+}
+
+func TestProfileHomeLabelsInstalledSkillAndRegisteredMCP(t *testing.T) {
+	for _, tc := range []struct {
+		component viewmodel.ComponentStatus
+		want      string
+	}{
+		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "skill", Name: "field-guide", Status: "installed", Managed: true}, "OpenCode · skill · field-guide · installed"},
+		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "mcp", Name: "map-server", Status: "installed", Managed: true}, "OpenCode · mcp · map-server · registered"},
+	} {
+		if got := profileComponentStatusText(tc.component); got != tc.want {
+			t.Errorf("component status = %q, want %q", got, tc.want)
+		}
 	}
 }
 

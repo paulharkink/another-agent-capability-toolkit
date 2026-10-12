@@ -93,8 +93,8 @@ func TestApplyProfileDoesNotInferAuthenticationFromSavedCredentialFile(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) == 0 {
-		t.Fatalf("saved credential presence was mistaken for completed authentication: %+v", result)
+	if result.AuthenticationStatus != viewmodel.AuthenticationNotCheckedThisRun || len(result.Changes) == 0 {
+		t.Fatalf("existing credentials should allow apply but report authentication was not checked this run: %+v", result)
 	}
 }
 

@@ -279,6 +279,55 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	}
 }
 
+func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.T) {
+	m, loaded := homeFixture()
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	item := catalog.InstallationItem{ID: "set:starter", Label: "starter", Skills: []string{"field-guide"}, MCPs: []string{"map-server"}}
+	loaded.catalog[0].Skill = &catalog.Skill{Name: item.Skills[0]}
+	loaded.catalog[0].MCP = &catalog.MCP{Name: item.MCPs[0]}
+	loaded.capabilityProfiles = map[string]viewmodel.CapabilityProfileSnapshot{"inspect": {Profiles: []viewmodel.CapabilityProfile{{
+		Ref: config.ProfileRef{Name: "default"}, Key: state.Key{Source: "one", Package: "inspect", Target: "default"},
+		CompletionScopeKnown: true, CompletionScopeRelevant: true,
+		SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: item.Skills[0]}, {Kind: "mcp", Name: item.MCPs[0]}},
+		SelectedDestinations: []string{"opencode"}, EligibleDestinations: []string{"opencode"},
+		Components: []viewmodel.ComponentStatus{{AgentID: "opencode", Kind: "skill", Name: item.Skills[0], Status: "installed"}, {AgentID: "opencode", Kind: "mcp", Name: item.MCPs[0], Status: "absent"}},
+	}}}}
+	m.Update(loaded)
+	statusView := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Installation · AACT records: Partial", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: absent"} {
+		if !strings.Contains(statusView, want) {
+			t.Fatalf("capability status does not render %q from the selected manifest components:\n%s", want, statusView)
+		}
+	}
+	loaded.capabilityProfiles["inspect"].Profiles[0].Components[1].Status = "installed"
+	m.Update(loaded)
+	completeView := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Installation · AACT records: Installed", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: registered"} {
+		if !strings.Contains(completeView, want) {
+			t.Fatalf("complete selected component status does not render %q:\n%s", want, completeView)
+		}
+	}
+	loaded.capabilityProfiles["inspect"].Profiles[0].Components[1].Status = "absent"
+	m.Update(loaded)
+	m.openSetupForm(viewmodel.SetupPreview{
+		Key:         state.Key{Source: "team", Package: "inspect", Target: "default"},
+		PackageName: "Inspector", ItemFieldName: "__components", SelectedItemIDs: []string{"set:starter"},
+		Items:        []catalog.InstallationItem{item},
+		Destinations: []viewmodel.SetupDestination{{ID: "opencode", Name: "OpenCode", Path: "/tmp/opencode", Selected: true}},
+	})
+	m.form.SelectSectionID(sectionComponentsID)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Components", "field-guide", "map-server", "OpenCode", "selected to apply"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("component selection does not explain %q:\n%s", want, view)
+		}
+	}
+	status, _ := m.installationDetails(m.capabilities()[0])
+	if status != "Partial" {
+		t.Fatalf("declared skill/MCP selection with one absent component = %q, want Partial", status)
+	}
+}
+
 func TestTargetChoiceFormCanRemovePreviouslySavedEmptyEntry(t *testing.T) {
 	m := NewContext(context.Background(), &setupBackendFixture{})
 	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})

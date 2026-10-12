@@ -9,6 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 func TestOperationResultOpensScrollableViewerWithAllAgentMessagesAndError(t *testing.T) {
@@ -73,6 +75,22 @@ func TestResultStatusIsProminentAndFailuresUseHighContrastErrorRows(t *testing.T
 	m.Update(operationMsg{origin: "Catalog", output: "Installed"})
 	if !strings.Contains(ansi.Strip(m.View().Content), "SUCCESS") {
 		t.Fatalf("successful outcome lacks an explicit SUCCESS label: %q", m.View().Content)
+	}
+}
+
+func TestPartialComponentApplyNamesOnlyReportedEffectAndExactFailure(t *testing.T) {
+	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
+		Changes: []state.Installation{{AgentID: "opencode", Component: "mcp", Key: state.Key{MCP: "map-server"}, Destination: "/tmp/opencode/mcp.json"}},
+		Errors:  []string{"opencode: skill field-guide: permission denied"},
+	})
+	joined := strings.Join(result.Rows, "\n")
+	for _, want := range []string{"Applied · opencode · mcp · map-server", "Failed · opencode: skill field-guide: permission denied"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("partial result omitted %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "Applied · opencode · skill · field-guide") {
+		t.Fatalf("unreported skill was presented as successful:\n%s", joined)
 	}
 }
 

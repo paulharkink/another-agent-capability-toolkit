@@ -25,6 +25,7 @@ type uxActionCall struct {
 	Action      string         `json:"action"`
 	Inputs      map[string]any `json:"inputs"`
 	Interactive bool           `json:"interactive"`
+	Target      config.Target  `json:"target"`
 }
 
 func profileTestAgent(t *testing.T, svc *Service, id string) (config.ProfileRef, string) {
@@ -254,6 +255,13 @@ func TestUXSaveAuthenticatesWithSubmittedValuesBeforePrepareAndRegistersActualEf
 	}
 	if exec.calls[0].Inputs["token"] != "submitted" || exec.calls[0].Interactive || exec.calls[1].Interactive {
 		t.Fatalf("submitted auth values or noninteractive boundary lost: %#v", exec.calls)
+	}
+	profile, err := config.LoadProfile(svc.Source.CapabilityPack(), ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := exec.calls[0].Target; got.Environment != ref.PackID || got.Name != ref.Name || got.Path != profile.Path {
+		t.Fatalf("authentication helper lost selected profile context: got %+v, profile %+v", got, profile)
 	}
 	if len(order) != 1 || order[0] != "start" {
 		t.Fatalf("runtime effects = %#v", order)
