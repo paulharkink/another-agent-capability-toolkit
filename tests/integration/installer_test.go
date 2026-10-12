@@ -236,6 +236,16 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-old\n"; else printf "Anot
     if err := os.WriteFile(legacy, old, 0755); err != nil {
         t.Fatal(err)
     }
+    canonical := filepath.Join(home, ".local", "share", "aact", "bin", "aact")
+    if err := os.MkdirAll(filepath.Dir(canonical), 0700); err != nil {
+        t.Fatal(err)
+    }
+    canonicalOld := []byte(`#!/bin/sh
+if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf "Another Agent Capability Toolkit (aact)\n"; fi
+`)
+    if err := os.WriteFile(canonical, canonicalOld, 0755); err != nil {
+        t.Fatal(err)
+    }
     stateRoot := filepath.Join(home, ".local", "state", "agent-skills")
     generated := filepath.Join(stateRoot, "generated", "skill-output")
     if err := os.MkdirAll(generated, 0700); err != nil {
@@ -286,6 +296,10 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-old\n"; else printf "Anot
     backup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-0.0.0-SNAPSHOT-old")
     if got, err := os.ReadFile(backup); err != nil || string(got) != string(old) {
         t.Fatalf("legacy executable backup = %q, %v", got, err)
+    }
+    canonicalBackup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-canonical-0.0.0-SNAPSHOT-canonical")
+    if got, err := os.ReadFile(canonicalBackup); err != nil || string(got) != string(canonicalOld) {
+        t.Fatalf("canonical launcher backup = %q, %v", got, err)
     }
     if !strings.Contains(string(output), "Migrated legacy launcher") {
         t.Fatalf("migration was not reported: %s", output)

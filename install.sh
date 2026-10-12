@@ -74,6 +74,61 @@ printf '%s\n' "$expected" > "$work/tree/.archive-sha256"
 if [ -e "$release" ]; then
   [ -f "$release/.archive-sha256" ] && [ "$(cat "$release/.archive-sha256")" = "$expected" ] || { echo 'Existing version directory differs; refusing to replace referenced resources' >&2; exit 1; }
 else mv "$work/tree" "$release"; fi
+if [ "$platform" != windows ]; then
+  canonical="$ROOT/bin/aact"
+  if [ -e "$canonical" ] || [ -L "$canonical" ]; then
+    canonical_target=
+    canonical_backup=
+    if [ -L "$canonical" ]; then
+      canonical_target=$(readlink -f "$canonical" 2>/dev/null || true)
+      case "$canonical_target" in
+        "$ROOT"/releases/*/bin/aact) ;;
+        *) printf 'Canonical launcher is an unrelated symlink and was left unchanged: %s\n' "$canonical" >&2; exit 1 ;;
+      esac
+      canonical_release_dir=$(dirname "$(dirname "$canonical_target")")
+      if [ ! -f "$canonical_release_dir/.archive-sha256" ]; then
+        printf 'Canonical launcher target lacks AACT release metadata and was left unchanged: %s\n' "$canonical" >&2
+        exit 1
+      fi
+      canonical_backup="$ROOT/legacy/bin/aact-canonical-managed-$(basename "$canonical_release_dir")"
+    else
+      if [ ! -f "$canonical" ] || [ ! -x "$canonical" ]; then
+        printf 'Canonical launcher is not an executable regular file and was left unchanged: %s\n' "$canonical" >&2
+        exit 1
+      fi
+      canonical_help=$("$canonical" --help 2>/dev/null || true)
+      canonical_version=$("$canonical" --version 2>/dev/null || true)
+      canonical_version=$(printf '%s\n' "$canonical_version" | sed -n '1p')
+      if ! printf '%s' "$canonical_help" | grep -Fq 'Another Agent Capability Toolkit (aact)'; then
+        printf 'Canonical launcher was not recognized as AACT and was left unchanged: %s\n' "$canonical" >&2
+        exit 1
+      fi
+      case "$canonical_version" in
+        [0-9]*|v[0-9]*) ;;
+        *) printf 'Canonical launcher version was not recognized and was left unchanged: %s\n' "$canonical" >&2; exit 1 ;;
+      esac
+      case "$canonical_version" in *[!A-Za-z0-9._+-]*|'')
+        printf 'Canonical launcher version is unsafe to back up: %s\n' "$canonical" >&2
+        exit 1
+        ;;
+      esac
+      canonical_backup="$ROOT/legacy/bin/aact-canonical-$canonical_version"
+    fi
+    if [ "$canonical_target" = "$release/bin/aact" ]; then
+      :
+    elif [ -e "$canonical_backup" ] || [ -L "$canonical_backup" ]; then
+      printf 'Cannot update canonical launcher; backup already exists: %s\n' "$canonical_backup" >&2
+      exit 1
+    else
+      mkdir -p "$ROOT/legacy/bin"
+      if ! cp -a "$canonical" "$canonical_backup"; then
+        printf 'Could not back up canonical launcher: %s\n' "$canonical" >&2
+        exit 1
+      fi
+      printf 'Backed up canonical launcher %s at %s\n' "$canonical" "$canonical_backup"
+    fi
+  fi
+fi
 chmod +x "$release/bin/$binary"
 if [ "$platform" = windows ]; then
   printf '#!/bin/sh\nexec "%s/bin/aact.exe" "$@"\n' "$release" > "$launcher"
