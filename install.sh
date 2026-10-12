@@ -4,12 +4,14 @@ set -eu
 VERSION=${AACT_VERSION:-0.1.0-dev}
 BASE=${AACT_DOWNLOAD_BASE:-https://github.com/paulharkink/another-agent-capability-toolkit/releases/download}
 ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
+MIGRATE_USER_BIN=1
+[ "${AACT_INSTALL_DIR+x}" != x ] || MIGRATE_USER_BIN=0
 PRINT_TARGET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
-    --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; shift 2 ;;
+    --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; MIGRATE_USER_BIN=0; shift 2 ;;
     --print-target) PRINT_TARGET=1; shift ;;
     --help) echo 'Usage: install.sh [-v|--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
@@ -81,6 +83,56 @@ if [ "$platform" = windows ]; then
 else
   ln -s "$release/bin/aact" "$launcher"
   mv -f "$launcher" "$ROOT/bin/aact"
+fi
+if [ "$platform" != windows ] && [ "$MIGRATE_USER_BIN" = 1 ]; then
+  legacy="$HOME/.local/bin/aact"
+  if [ -L "$legacy" ]; then
+    target=$(readlink "$legacy" 2>/dev/null || true)
+    if [ "$target" != "$ROOT/bin/aact" ]; then
+      printf 'Legacy launcher is a symlink and was left unchanged: %s\n' "$legacy"
+    fi
+  elif [ -e "$legacy" ]; then
+    if [ -f "$legacy" ] && [ -x "$legacy" ]; then
+      legacy_help=$("$legacy" --help 2>/dev/null || true)
+      if ! printf '%s' "$legacy_help" | grep -Fq 'Another Agent Capability Toolkit (aact)'; then
+        printf 'Legacy launcher was not recognized and was left unchanged: %s\n' "$legacy"
+      else
+      legacy_version=$("$legacy" --version 2>/dev/null || true)
+      legacy_version=$(printf '%s\n' "$legacy_version" | sed -n '1p')
+      case "$legacy_version" in
+        [0-9]*|v[0-9]*) ;;
+        *) printf 'Legacy launcher was not recognized and was left unchanged: %s\n' "$legacy" ;;
+      esac
+      case "$legacy_version" in
+        [0-9]*|v[0-9]*)
+          case "$legacy_version" in *[!A-Za-z0-9._+-]*|'')
+            printf 'Legacy launcher version is unsafe to migrate; left unchanged: %s\n' "$legacy" ;;
+            *)
+              backup_dir="$ROOT/legacy/bin"
+              backup="$backup_dir/aact-$legacy_version"
+              if [ -e "$backup" ]; then
+                printf 'Cannot migrate legacy launcher; backup already exists: %s\n' "$backup" >&2
+                exit 1
+              fi
+              mkdir -p "$backup_dir"
+              legacy_next="$legacy.migrating-$$"
+              if mv "$legacy" "$backup" && ln -s "$ROOT/bin/aact" "$legacy_next" && mv -f "$legacy_next" "$legacy"; then
+                printf 'Migrated legacy launcher %s (%s); original saved at %s\n' "$legacy" "$legacy_version" "$backup"
+              else
+                rm -f "$legacy_next"
+                if [ -e "$backup" ] && [ ! -e "$legacy" ]; then mv "$backup" "$legacy"; fi
+                printf 'Failed to migrate legacy launcher: %s\n' "$legacy" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          ;;
+      esac
+      fi
+    else
+      printf 'Legacy launcher is not an executable regular file and was left unchanged: %s\n' "$legacy"
+    fi
+  fi
 fi
 printf 'Installed AACT %s (%s/%s) at %s\n' "$VERSION" "$platform" "$arch" "$release"
 case ":${PATH:-}:" in *":$ROOT/bin:"*) ;; *) printf 'Add %s to PATH to run aact. Your shell profiles were not modified.\n' "$ROOT/bin" ;; esac

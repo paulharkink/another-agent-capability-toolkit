@@ -230,7 +230,9 @@ func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
     if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
         t.Fatal(err)
     }
-    old := []byte("#!/bin/sh\nprintf '0.0.0-SNAPSHOT-old\\n'\n")
+    old := []byte(`#!/bin/sh
+if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-old\n"; else printf "Another Agent Capability Toolkit (aact)\n"; fi
+`)
     if err := os.WriteFile(legacy, old, 0755); err != nil {
         t.Fatal(err)
     }
@@ -253,7 +255,12 @@ func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
     if err := os.MkdirAll(filepath.Dir(settings), 0700); err != nil {
         t.Fatal(err)
     }
-    settingsData := []byte("{\"default_pack\":\"/home/example/dso-skills/aact.toml\",\"agents\":[\"codex\"],\"image_source\":\"local\"}")
+    settingsData := []byte("{\"agents\":[\"codex\"],\"image_source\":\"local\"}")
+    defaultPack := filepath.Join(stateRoot, "manager", "default-pack")
+    defaultPackData := []byte("/home/example/dso-skills/aact.toml\n")
+    if err := os.WriteFile(defaultPack, defaultPackData, 0600); err != nil {
+        t.Fatal(err)
+    }
     if err := os.WriteFile(settings, settingsData, 0600); err != nil {
         t.Fatal(err)
     }
@@ -288,6 +295,9 @@ func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
     }
     if got, err := os.ReadFile(settings); err != nil || string(got) != string(settingsData) {
         t.Fatalf("saved settings changed: %q %v", got, err)
+    }
+    if got, err := os.ReadFile(defaultPack); err != nil || string(got) != string(defaultPackData) {
+        t.Fatalf("saved default pack changed: %q %v", got, err)
     }
     if _, err := os.Stat(sources); err != nil {
         t.Fatalf("saved capability references removed: %v", err)
