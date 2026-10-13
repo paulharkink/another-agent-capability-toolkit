@@ -596,9 +596,85 @@ def test_worker_handshake_timeout_terminates_only_its_owned_process_group(tmp_pa
     monkeypatch.setattr(module, "WORKER_HANDSHAKE_SECONDS", 0)
 
     assert module.launch_auth_worker(req) == {}
-    assert killed_groups == [(worker.pid, module.signal.SIGTERM)]
+    assert killed_groups == [
+        (worker.pid, module.signal.SIGTERM),
+        (worker.pid, module.signal.SIGKILL),
+    ]
     assert terminated == []
     assert not list(state.glob("*.json"))
+
+
+def test_worker_timeout_kills_term_ignoring_descendants_before_releasing_lock(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, callback_port=8085)
+    state = Path(req["state_dir"])
+    state.mkdir(mode=0o700)
+    marker = state / "config"
+    child_pid_file = tmp_path / "child-pid"
+    child_ready_file = tmp_path / "child-ready"
+    child_script = (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(child_ready_file)!r}, 'w').write('ready'); "
+        f"time.sleep(0.5); open({str(marker)!r}, 'w').write('stale')"
+    )
+    parent_script = (
+        "import signal, subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}])\n"
+        f"deadline = time.monotonic() + 2\nwhile time.monotonic() < deadline and not __import__('os').path.exists({str(child_ready_file)!r}): time.sleep(0.01)\n"
+        f"open({str(child_pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+    real_popen = subprocess.Popen
+
+    def launch_owned_process(_argv, **kwargs):
+        return real_popen([sys.executable, "-c", parent_script], **kwargs)
+
+    owned_processes = []
+
+    def launch_and_remember(argv, **kwargs):
+        process = launch_owned_process(argv, **kwargs)
+        owned_processes.append(process)
+        return process
+
+    def wait_for_child_then_timeout(*_a, **_k):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            time.sleep(0.01)
+        assert child_pid_file.exists(), "worker failed to start its CLI descendant"
+        return ([], [], [])
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch_and_remember)
+    monkeypatch.setattr(module.select, "select", wait_for_child_then_timeout)
+    monkeypatch.setattr(module, "WORKER_HANDSHAKE_SECONDS", 0)
+
+    try:
+        assert module.launch_auth_worker(req) == {}
+
+        lock_path = state / ".auth-worker.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            module.fcntl.flock(lock_fd, module.fcntl.LOCK_EX | module.fcntl.LOCK_NB)
+        finally:
+            os.close(lock_fd)
+
+        assert child_pid_file.exists()
+        child_pid = int(child_pid_file.read_text())
+        time.sleep(0.6)
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            child_alive = False
+        else:
+            child_alive = True
+        assert not child_alive, f"timed-out worker descendant {child_pid} is still alive"
+        assert not marker.exists(), "a stale worker descendant promoted state after timeout"
+    finally:
+        if owned_processes:
+            try:
+                os.killpg(owned_processes[0].pid, module.signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            owned_processes[0].wait()
 
 
 def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):

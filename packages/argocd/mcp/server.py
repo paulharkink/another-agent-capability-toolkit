@@ -364,21 +364,22 @@ def run_auth_worker(request: dict[str, Any], *,
 
 def _stop_owned_worker(process: subprocess.Popen) -> None:
     """Stop a timed-out worker and its CLI child in the process group it created."""
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
+        process.wait()
         return
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
+        pass
+    # The worker may exit on SIGTERM while an owned CLI descendant ignores it.
+    # Escalate against the original group even after reaping the group leader.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 def launch_auth_worker(request: dict[str, Any]) -> dict[str, str]:
