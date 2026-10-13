@@ -78,11 +78,11 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 	}
 	actionPath := filepath.Join(root, "authenticate.sh")
 	command := "[\"sh\", " + strconv.Quote(actionPath) + "]"
-	actionBody := []byte("#!/bin/sh\nprintf '%s\\n' '{\"login_url\":\"https://login.example/device\"}'\n")
+	actionBody := []byte("#!/bin/sh\nprintf 'x\\n' >> \"$(dirname \"$0\")/calls\"\nprintf '%s\\n' '{\"login_url\":\"https://login.example/device\"}'\n")
 	if runtime.GOOS == "windows" {
 		actionPath += ".cmd"
 		command = "[\"cmd\", \"/c\", " + strconv.Quote(actionPath) + "]"
-		actionBody = []byte("@echo {\"login_url\":\"https://login.example/device\"}\r\n")
+		actionBody = []byte("@echo x>>\"%~dp0calls\"\r\n@echo {\"login_url\":\"https://login.example/device\"}\r\n")
 	}
 	if err := os.WriteFile(actionPath, actionBody, 0700); err != nil {
 		t.Fatal(err)
@@ -103,16 +103,34 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		code        int
+		output, err string
+	}
+	done := make(chan result, 1)
 	args := []string{"mcp", "authenticate", "demo", "--profile", "default", "--config", cfg, "--state-dir", stateDir}
-	if code := Run(context.Background(), args, nil, &out, &errOut); code != 0 {
-		t.Fatalf("authenticate failed (%d): %s", code, errOut.String())
+	go func() {
+		var commandOut, commandErr bytes.Buffer
+		code := Run(ctx, args, nil, &commandOut, &commandErr)
+		done <- result{code: code, output: commandOut.String(), err: commandErr.String()}
+	}()
+	var got result
+	select {
+	case got = <-done:
+	case <-ctx.Done():
+		t.Fatal("direct authenticate did not return before its bounded context expired")
 	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("direct authenticate took %v; it should return without waiting for health", elapsed)
+	if got.code != 0 {
+		t.Fatalf("authenticate failed (%d): %s", got.code, got.err)
 	}
-	if got := strings.TrimSpace(out.String()); got != "https://login.example/device" {
-		t.Fatalf("authenticate output = %q, want returned login URL", got)
+	if strings.TrimSpace(got.output) != "https://login.example/device" {
+		t.Fatalf("authenticate output = %q, want returned login URL", got.output)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || string(calls) != "x\n" {
+		t.Fatalf("authenticate action invocations = %q, %v; want exactly one", calls, err)
 	}
 }
 

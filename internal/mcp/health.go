@@ -130,6 +130,13 @@ func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL,
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// Health probes may carry profile registration headers, so never follow a
+	// redirect that could send them to another origin. Copy the client to keep
+	// this policy local to the probe and preserve all other caller settings.
+	probeClient := *client
+	probeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -145,7 +152,7 @@ func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL,
 				request.Header.Add(name, value)
 			}
 		}
-		response, err := client.Do(request)
+		response, err := probeClient.Do(request)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

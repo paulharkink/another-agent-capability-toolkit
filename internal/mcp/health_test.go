@@ -63,6 +63,31 @@ func TestWaitForAuthenticatedPollsFalseUntilExplicitTrue(t *testing.T) {
 	}
 }
 
+func TestWaitForAuthenticatedRejectsCrossOriginRedirectWithoutForwardingHeaders(t *testing.T) {
+	var secondRequests int
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests++
+		if got := r.Header.Get("X-Profile-Token"); got != "" {
+			t.Errorf("sensitive profile header reached redirected origin: %q", got)
+		}
+		_, _ = w.Write([]byte(`{"authenticated":true}`))
+	}))
+	defer second.Close()
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", second.URL+"/health")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer first.Close()
+
+	err := waitForAuthenticated(context.Background(), first.Client(), first.URL, "/health", http.Header{"X-Profile-Token": []string{"selected-secret"}}, time.Millisecond)
+	if err == nil {
+		t.Fatal("health probe accepted a redirect to another origin")
+	}
+	if secondRequests != 0 {
+		t.Fatalf("redirect target received %d requests, want none", secondRequests)
+	}
+}
+
 func TestWaitForAuthenticatedRejectsMalformedAndUnexpectedResponses(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
