@@ -427,6 +427,9 @@ func (s *Store) AuthDir(k Key) string {
 // EnsureAuthDir creates the profile's authentication state directory with
 // owner-only permissions and returns its persistent path.
 func (s *Store) EnsureAuthDir(k Key) (string, error) {
+	if s.readonly {
+		return "", ErrReadOnly
+	}
 	path := s.AuthDir(k)
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return "", err

@@ -53,6 +53,49 @@ func TestProfileAuthStateDirectoryIsPrivateAndIsolated(t *testing.T) {
 	}
 }
 
+func TestEnsureAuthDirReadOnlyDoesNotCreateDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "readonly-state")
+	store, err := OpenReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Source: "company", Package: "connector", Target: "east", Profile: "new"}
+	path := store.AuthDir(key)
+	if _, err := store.EnsureAuthDir(key); err != ErrReadOnly {
+		t.Fatalf("EnsureAuthDir error = %v, want ErrReadOnly", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("read-only EnsureAuthDir created %q: stat error %v", path, err)
+	}
+}
+
+func TestEnsureAuthDirReadOnlyPreservesExistingPermissions(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	writable, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Source: "company", Package: "connector", Target: "east", Profile: "existing"}
+	path := writable.AuthDir(key)
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := OpenReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readonly.EnsureAuthDir(key); err != ErrReadOnly {
+		t.Fatalf("EnsureAuthDir error = %v, want ErrReadOnly", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Fatalf("read-only EnsureAuthDir changed permissions to %04o", info.Mode().Perm())
+	}
+}
+
 func TestProfileRecordsPersistWithoutRuntimeOrRegistration(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	store, err := Open(root)
