@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from starlette.testclient import TestClient
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_background_worker_completes_sso_and_promotes_config_without_action_poll
     assert (state / "config").read_text() == "callback completed login"
     assert (state / "config").stat().st_mode & 0o777 == 0o600
     assert json.loads((state / "credentials.json").read_text()) == {
-        "mode": "sso", "server": "argocd.example.test"
+        "mode": "sso", "server": "argocd.example.test", "connection": {}
     }
     assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: True) is True
     assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: False) is False
@@ -183,7 +184,9 @@ def test_one_shot_action_returns_url_then_synthetic_callback_completes_detached_
         while time.monotonic() < deadline and not saved.exists():
             time.sleep(0.02)
         assert saved.exists()
-        assert json.loads(saved.read_text()) == {"mode": "sso", "server": "argocd.example.test"}
+        assert json.loads(saved.read_text()) == {
+            "mode": "sso", "server": "argocd.example.test", "connection": {}
+        }
         assert (Path(req["state_dir"]) / "config").read_text() == "synthetic callback session"
 
         worker_pid = int(worker_pid_file.read_text())
@@ -255,6 +258,92 @@ def test_auth_failure_expiry_and_invalid_credentials_preserve_previous_state(tmp
     assert module.run_auth_worker(token_req, identity_checker=lambda *_a, **_k: False) == {}
     assert (token_state / "credentials.json").read_bytes() == token_old
     assert module.is_authenticated(token_req, identity_checker=lambda *_a, **_k: False) is False
+
+
+def test_credential_promotion_failure_preserves_both_previous_files(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, "username_password", username="synthetic-user", password="new-secret")
+    state = Path(req["state_dir"])
+    old_config, old_credentials = seed_previous_auth(state)
+
+    def successful_login(_mode, argv, *, env, password, on_login_url):
+        Path(env["ARGOCD_CONFIG"]).write_text("new session")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(module, "_stage_json", lambda *_args: (_ for _ in ()).throw(OSError("synthetic disk failure")))
+    assert module.run_auth_worker(req, login_runner=successful_login, identity_checker=lambda *_a, **_k: True) == {}
+    assert (state / "config").read_bytes() == old_config
+    assert (state / "credentials.json").read_bytes() == old_credentials
+
+
+def test_credential_replace_failure_rolls_back_promoted_config(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, "username_password", username="synthetic-user", password="new-secret")
+    state = Path(req["state_dir"])
+    old_config, old_credentials = seed_previous_auth(state)
+
+    def successful_login(_mode, argv, *, env, password, on_login_url):
+        Path(env["ARGOCD_CONFIG"]).write_text("new session")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    real_replace = module.os.replace
+    failed = False
+
+    def fail_credentials_replace(source, destination):
+        nonlocal failed
+        if Path(destination) == state / "credentials.json" and not failed:
+            failed = True
+            raise OSError("synthetic replacement failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", fail_credentials_replace)
+    assert module.run_auth_worker(req, login_runner=successful_login, identity_checker=lambda *_a, **_k: True) == {}
+    assert failed
+    assert (state / "config").read_bytes() == old_config
+    assert (state / "credentials.json").read_bytes() == old_credentials
+    assert not list(state.glob(".*backup-*"))
+
+
+@pytest.mark.parametrize("mode", ["sso", "api_token", "username_password"])
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_health_route_returns_only_current_binary_identity_without_mutating_state(
+    tmp_path, monkeypatch, mode, authenticated
+):
+    module = load_server()
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    credentials = {"mode": mode, "server": "argocd.example.test", "connection": {"grpc_web": True}}
+    if mode == "api_token":
+        credentials["api_token"] = "synthetic-health-secret"
+    (state / "credentials.json").write_text(json.dumps(credentials))
+    (state / "config").write_text("private synthetic config")
+    before = {p.name: (p.read_bytes(), p.stat().st_mode & 0o777, p.stat().st_mtime_ns) for p in state.iterdir()}
+    monkeypatch.setattr(module, "STATE_DIR", state)
+    monkeypatch.setattr(module, "_identity", lambda *_args, **_kwargs: authenticated)
+
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": authenticated}
+    assert "synthetic-health-secret" not in response.text
+    assert {p.name: (p.read_bytes(), p.stat().st_mode & 0o777, p.stat().st_mtime_ns) for p in state.iterdir()} == before
+
+
+def test_health_route_is_false_for_missing_or_expired_private_state_without_creating_files(tmp_path, monkeypatch):
+    module = load_server()
+    state = tmp_path / "missing-state"
+    monkeypatch.setattr(module, "STATE_DIR", state)
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False}
+    assert not state.exists()
+
+    state.mkdir()
+    (state / "credentials.json").write_text('{"mode":"sso","server":"argocd.example.test"}')
+    monkeypatch.setattr(module, "_identity", lambda *_args, **_kwargs: False)
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False}
+    assert list(state.iterdir()) == [state / "credentials.json"]
 
 
 def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):

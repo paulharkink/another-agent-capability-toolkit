@@ -15,22 +15,26 @@ import time
 from typing import Any, Callable
 
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 mcp = FastMCP("argocd")
 CLI = "/usr/local/bin/argocd"
+STATE_DIR = Path(os.environ.get("AACT_AUTH_STATE_DIR", "/state"))
 URI_RE = re.compile(r"https?://[^\s\"'<>]+")
 PASSWORD_PROMPT_RE = re.compile(rb"password\s*:", re.I)
 MAX_OUTPUT = 16_384
 WORKER_HANDSHAKE_SECONDS = 15
 
 
-def _state_dir(request: dict[str, Any]) -> Path:
+def _state_dir(request: dict[str, Any], *, create: bool = True) -> Path:
     value = request.get("state_dir")
     if not isinstance(value, str) or not value:
         raise ValueError("Private authentication state directory is required.")
     state = Path(value)
-    state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(state, 0o700)
+    if create:
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(state, 0o700)
     return state
 
 
@@ -57,8 +61,9 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _auth_inputs(request: dict[str, Any], *, require_credentials: bool = True) -> tuple[Path, str, dict[str, Any], str]:
-    state = _state_dir(request)
+def _auth_inputs(request: dict[str, Any], *, require_credentials: bool = True,
+                 create_state: bool = True) -> tuple[Path, str, dict[str, Any], str]:
+    state = _state_dir(request, create=create_state)
     inputs = request.get("inputs")
     if not isinstance(inputs, dict):
         raise ValueError("Saved profile inputs are required.")
@@ -168,6 +173,83 @@ def _candidate_config(state: Path) -> Path:
     return config
 
 
+def _credential_record(mode: str, server: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "mode": mode,
+        "server": server,
+        "connection": {key: inputs[key] for key in ("grpc_web", "grpc_web_root_path", "plaintext", "insecure")
+                       if key in inputs},
+    }
+    if mode == "api_token":
+        record["api_token"] = inputs["api_token"]
+    return record
+
+
+def _stage_json(path: Path, value: dict[str, Any]) -> Path:
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staged = Path(name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return staged
+    except Exception:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _backup_link(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
+    os.close(fd)
+    backup = Path(name)
+    backup.unlink()
+    os.link(path, backup)
+    return backup
+
+
+def _promote_login_state(config: Path, state: Path, credentials: dict[str, Any]) -> None:
+    """Promote config and matching metadata, rolling back handled failures."""
+    config_path = state / "config"
+    credentials_path = state / "credentials.json"
+    staged_credentials = _stage_json(credentials_path, credentials)
+    config_backup: Path | None = None
+    credentials_backup: Path | None = None
+    config_promoted = False
+    credentials_promoted = False
+    try:
+        config_backup = _backup_link(config_path)
+        credentials_backup = _backup_link(credentials_path)
+        os.replace(config, config_path)
+        config_promoted = True
+        os.replace(staged_credentials, credentials_path)
+        credentials_promoted = True
+        os.chmod(config_path, 0o600)
+    except OSError:
+        if config_promoted:
+            if config_backup is None:
+                config_path.unlink(missing_ok=True)
+            else:
+                os.replace(config_backup, config_path)
+                config_backup = None
+        if credentials_promoted:
+            if credentials_backup is None:
+                credentials_path.unlink(missing_ok=True)
+            else:
+                os.replace(credentials_backup, credentials_path)
+                credentials_backup = None
+        raise
+    finally:
+        staged_credentials.unlink(missing_ok=True)
+        if config_backup is not None:
+            config_backup.unlink(missing_ok=True)
+        if credentials_backup is not None:
+            credentials_backup.unlink(missing_ok=True)
+
+
 def run_auth_worker(request: dict[str, Any], *,
                     login_runner: Callable[..., subprocess.CompletedProcess] | None = None,
                     identity_checker: Callable[..., bool] | None = None,
@@ -192,7 +274,7 @@ def run_auth_worker(request: dict[str, Any], *,
         publish()
         token = inputs["api_token"]
         if check_identity(state, server, inputs, token=token):
-            _atomic_json(state / "credentials.json", {"mode": mode, "api_token": token, "server": server})
+            _atomic_json(state / "credentials.json", _credential_record(mode, server, inputs))
         return event
 
     config = _candidate_config(state)
@@ -214,9 +296,9 @@ def run_auth_worker(request: dict[str, Any], *,
             publish()
         if result.returncode != 0 or not check_identity(state, server, inputs, config_path=config):
             return event
-        os.replace(config, state / "config")
-        os.chmod(state / "config", 0o600)
-        _atomic_json(state / "credentials.json", {"mode": mode, "server": server})
+        _promote_login_state(config, state, _credential_record(mode, server, inputs))
+        return event
+    except OSError:
         return event
     finally:
         config.unlink(missing_ok=True)
@@ -255,7 +337,7 @@ def is_authenticated(request: dict[str, Any], *,
                      identity_checker: Callable[..., bool] | None = None) -> bool:
     """Return a binary read-only login check for internal MCP/server use."""
     try:
-        state, server, inputs, mode = _auth_inputs(request, require_credentials=False)
+        state, server, inputs, mode = _auth_inputs(request, require_credentials=False, create_state=False)
     except (ValueError, OSError):
         return False
     credentials = _read_json(state / "credentials.json")
@@ -264,6 +346,38 @@ def is_authenticated(request: dict[str, Any], *,
     token = credentials.get("api_token") if mode == "api_token" else None
     check_identity = identity_checker or _identity
     return bool(check_identity(state, server, inputs, token=token))
+
+
+def _current_profile_request() -> dict[str, Any] | None:
+    credentials = _read_json(STATE_DIR / "credentials.json")
+    if not credentials:
+        return None
+    mode = credentials.get("mode")
+    server = credentials.get("server")
+    if mode not in {"sso", "api_token", "username_password"} or not isinstance(server, str):
+        return None
+    inputs: dict[str, Any] = {"server": server, "auth_mode": mode}
+    connection = credentials.get("connection")
+    if isinstance(connection, dict):
+        inputs.update(connection)
+    if mode == "api_token":
+        token = credentials.get("api_token")
+        if not isinstance(token, str) or not token:
+            return None
+        inputs["api_token"] = token
+    return {"state_dir": str(STATE_DIR), "inputs": inputs}
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(_: Request) -> JSONResponse:
+    """Binary auth signal; MCP initialization/readiness remains a separate check."""
+    authenticated = False
+    try:
+        request = _current_profile_request()
+        authenticated = is_authenticated(request) if request is not None else False
+    except Exception:
+        authenticated = False
+    return JSONResponse({"authenticated": authenticated}, status_code=200)
 
 
 def _read_worker_request() -> dict[str, Any]:
