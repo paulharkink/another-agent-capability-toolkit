@@ -186,3 +186,63 @@ func TestProfileResolvesSelectedImageVariantInputsAndPackagePaths(t *testing.T) 
 		t.Fatalf("profile variant inputs were not resolved: %+v", spec)
 	}
 }
+
+func TestPreparedProfilePreservesImageVariantBasePortsAndState(t *testing.T) {
+	for _, imageSource := range []string{"release", "local"} {
+		t.Run(imageSource, func(t *testing.T) {
+			s, _, q := profileApplyFixture(t)
+			p := &s.Source.Catalog[0]
+			p.Dir = t.TempDir()
+			contextDir := filepath.Join(p.Dir, "mcp")
+			if err := os.MkdirAll(contextDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile.variant"), []byte("FROM ${AACT_BASE_IMAGE}\\nARG CLI_VERSION\\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			p.MCPs = p.MCPs[:1]
+			p.MCPs[0].Image = ""
+			p.MCPs[0].BuildContext = "mcp"
+			p.MCPs[0].ReleaseImage = "ghcr.io/example/server:v{aact_version}"
+			p.MCPs[0].Actions = map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}
+			p.MCPs[0].ImageVariant = &catalog.ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}
+			p.MCPs[0].AdditionalPorts = []catalog.ConditionalPort{{ContainerPort: 7443, HostPortInput: "callback_port", When: map[string]any{"enabled": true}}}
+			p.Inputs = append(p.Inputs, catalog.Input{Name: "cli_version", Type: "string", Required: true}, catalog.Input{Name: "callback_port", Type: "integer", Required: true})
+			q.Inputs = map[string]any{"label": "company", "enabled": true, "cli_version": "v2.10.1", "callback_port": int64(17443)}
+			if imageSource == "local" {
+				if err := s.UISetMCPImageSource(context.Background(), "local"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			oldVersion := versioninfo.Version
+			versioninfo.Version = "1.2.3"
+			t.Cleanup(func() { versioninfo.Version = oldVersion })
+			executor := &releasePrepareExecutor{}
+			s.Options.Runner = executor
+			runtime := &providerTestRuntime{}
+			s.Options.Runtime = runtime
+			if _, err := s.RunProfileMCP(context.Background(), "start", q, "alpha"); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.specs) != 1 {
+				t.Fatalf("expected one runtime spec: %+v", runtime.specs)
+			}
+			spec := runtime.specs[0]
+			if spec.ImageVariant == nil || spec.ImageVariant.Version != "v2.10.1" || spec.ImageVariant.Dockerfile != filepath.Join(p.Dir, "mcp", "Dockerfile.variant") {
+				t.Fatalf("prepare discarded selected image variant: %+v", spec)
+			}
+			if imageSource == "release" && (spec.Image != "ghcr.io/example/server:v1.2.3" || spec.BuildContext != "") {
+				t.Fatalf("release base selection was lost: %+v", spec)
+			}
+			if imageSource == "local" && (spec.Image != "" || spec.BuildContext != contextDir) {
+				t.Fatalf("local base selection was lost: %+v", spec)
+			}
+			if len(spec.AdditionalPorts) != 1 || spec.AdditionalPorts[0] != (mcp.PortMapping{HostPort: 17443, ContainerPort: 7443}) {
+				t.Fatalf("conditional ports were lost: %+v", spec.AdditionalPorts)
+			}
+			if len(spec.Mounts) != 1 || spec.Mounts[0].Destination != "/state" || spec.Mounts[0].ReadOnly {
+				t.Fatalf("private state mount was lost: %+v", spec.Mounts)
+			}
+		})
+	}
+}

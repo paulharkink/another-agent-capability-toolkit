@@ -475,6 +475,11 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.HostPort = port
 	}
 	if _, ok := p.MCP.Actions["prepare"]; ok {
+		// The selected base and typed variant are resolved from the saved profile
+		// before prepare. Preserve them when prepare returns connection settings.
+		selectedImageVariant := spec.ImageVariant
+		selectedBaseImage := spec.Image
+		selectedBaseContext := spec.BuildContext
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
 		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
 		if choiceErr != nil {
@@ -494,6 +499,11 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
+		if selectedImageVariant != nil {
+			spec.ImageVariant = selectedImageVariant
+			spec.Image = selectedBaseImage
+			spec.BuildContext = selectedBaseContext
+		}
 		spec.RegistrationName = resolvedRegistrationName
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
