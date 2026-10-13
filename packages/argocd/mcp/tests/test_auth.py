@@ -435,6 +435,62 @@ def test_credential_promotion_failure_preserves_both_previous_files(tmp_path, mo
     assert (state / "credentials.json").stat().st_mode & 0o777 == 0o600
 
 
+def test_replacement_marker_write_failure_is_hard_error_before_login_and_preserves_old_files(
+    tmp_path, monkeypatch
+):
+    module = load_server()
+    req = request(tmp_path, "username_password", username="new-user", password="new-secret")
+    state = Path(req["state_dir"])
+    old_config, old_credentials = seed_previous_auth(state)
+    old_modes = {
+        "config": (state / "config").stat().st_mode & 0o777,
+        "credentials.json": (state / "credentials.json").stat().st_mode & 0o777,
+    }
+    login_started = []
+
+    def fail_marker_write(*_args):
+        raise OSError("synthetic marker write failure")
+
+    def login(*_args, **_kwargs):
+        login_started.append(True)
+        raise AssertionError("replacement login must not begin before its pending marker is durable")
+
+    class WorkerInput(io.BytesIO):
+        def __init__(self, write_fd):
+            super().__init__()
+            self.write_fd = write_fd
+
+        def close(self):
+            request_json = self.getvalue().decode()
+            original_stdin, original_stdout = module.sys.stdin, module.sys.stdout
+            worker_output = os.fdopen(self.write_fd, "w", encoding="utf-8")
+            try:
+                module.sys.stdin = io.StringIO(request_json)
+                module.sys.stdout = worker_output
+                module._worker_entry()
+            finally:
+                module.sys.stdin, module.sys.stdout = original_stdin, original_stdout
+                worker_output.close()
+                super().close()
+
+    class Worker:
+        def __init__(self, *_args, **_kwargs):
+            read_fd, write_fd = os.pipe()
+            self.stdin = WorkerInput(write_fd)
+            self.stdout = os.fdopen(read_fd, "rb")
+
+    monkeypatch.setattr(module, "_atomic_json", fail_marker_write)
+    monkeypatch.setattr(module.subprocess, "Popen", Worker)
+    monkeypatch.setattr(module, "run_interactive_cli", login)
+    with pytest.raises(RuntimeError, match="Could not persist pending credential replacement"):
+        module.authenticate(req)
+
+    assert login_started == []
+    assert (state / "config").read_bytes() == old_config
+    assert (state / "credentials.json").read_bytes() == old_credentials
+    assert {name: (state / name).stat().st_mode & 0o777 for name in old_modes} == old_modes
+
+
 def test_credential_replace_failure_rolls_back_promoted_config(tmp_path, monkeypatch):
     module = load_server()
     req = request(tmp_path, "username_password", username="synthetic-user", password="new-secret")

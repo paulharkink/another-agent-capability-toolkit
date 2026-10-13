@@ -28,6 +28,12 @@ URI_RE = re.compile(r"https?://[^\s\"'<>]+")
 PASSWORD_PROMPT_RE = re.compile(rb"password\s*:", re.I)
 MAX_OUTPUT = 16_384
 WORKER_HANDSHAKE_SECONDS = 15
+
+
+class ReplacementMarkerError(RuntimeError):
+    """A replacement login cannot safely start without a durable pending marker."""
+
+
 PROFILE_ENV = {
     "server": "AACT_ARGOCD_SERVER",
     "auth_mode": "AACT_ARGOCD_AUTH_MODE",
@@ -562,7 +568,10 @@ def _mark_replacement_pending(state: Path) -> None:
     if record is None:
         return
     record["replacement_pending"] = True
-    _atomic_json(credentials_path, record)
+    try:
+        _atomic_json(credentials_path, record)
+    except OSError as error:
+        raise ReplacementMarkerError("Could not persist pending credential replacement.") from error
 
 
 def _stage_json(path: Path, value: dict[str, Any]) -> Path:
@@ -738,6 +747,8 @@ def launch_auth_worker(request: dict[str, Any]) -> dict[str, str]:
             event = json.loads(line) if line else {}
         except ValueError:
             event = {}
+        if isinstance(event, dict) and isinstance(event.get("action_error"), str):
+            raise ReplacementMarkerError(event["action_error"])
         return {"login_url": event["login_url"]} if isinstance(event, dict) and isinstance(event.get("login_url"), str) else {}
     finally:
         if process is not None and not worker_accepted:
@@ -832,6 +843,12 @@ def _worker_entry(lock_fd: int | None = None) -> None:
 
         run_auth_worker(request, emit=send)
         send({})
+    except ReplacementMarkerError as error:
+        try:
+            sys.stdout.write(json.dumps({"action_error": str(error)}, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            pass
     except Exception:
         try:
             sys.stdout.write("{}\n")
