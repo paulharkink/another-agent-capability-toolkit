@@ -750,6 +750,14 @@ def authenticate(request: dict[str, Any]) -> dict[str, Any]:
         _auth_inputs(request)
         return launch_auth_worker(request)
     except (ValueError, OSError) as error:
+        if str(error) in {
+            "Enter the API token and try again.",
+            "Enter the username and password and try again.",
+        }:
+            try:
+                _mark_replacement_pending(_state_dir(request, create=False))
+            except (ValueError, OSError):
+                pass
         return {"diagnostic": str(error)}
 
 

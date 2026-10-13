@@ -297,6 +297,56 @@ def test_auth_failure_expiry_and_invalid_credentials_preserve_previous_state(tmp
     assert module.is_authenticated(token_req, identity_checker=lambda *_a, **_k: False) is False
 
 
+@pytest.mark.parametrize(
+    ("mode", "replacement_inputs"),
+    [
+        ("api_token", {}),
+        ("api_token", {"api_token": ""}),
+        ("username_password", {"username": "new-user"}),
+        ("username_password", {"username": "new-user", "password": ""}),
+    ],
+)
+def test_invalid_replacement_credentials_make_health_false_and_preserve_config(
+    tmp_path, monkeypatch, mode, replacement_inputs
+):
+    state = tmp_path / "state"
+    original_config = b"existing authenticated config"
+    state.mkdir(mode=0o700)
+    (state / "config").write_bytes(original_config)
+    (state / "config").chmod(0o600)
+    previous_credentials = {
+        "mode": mode,
+        "server": "argocd.example.test",
+        "connection": {
+            "grpc_web": False, "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+        },
+    }
+    if mode == "api_token":
+        previous_credentials["api_token"] = "valid-old-token"
+    credentials_path = state / "credentials.json"
+    credentials_path.write_text(json.dumps(previous_credentials))
+    credentials_path.chmod(0o600)
+
+    monkeypatch.setenv("AACT_AUTH_STATE_DIR", str(state))
+    set_profile_env(monkeypatch, auth_mode=mode)
+    module = load_server()
+    monkeypatch.setattr(module, "_identity", lambda *_a, **_k: True)
+    health = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http"))
+    assert health.get("/health").json() == {"authenticated": True}
+
+    req = request(tmp_path, mode, **replacement_inputs)
+    result = module.authenticate(req)
+    assert "diagnostic" in result
+    assert health.get("/health").json() == {"authenticated": False}
+    assert (state / "config").read_bytes() == original_config
+    assert (state / "config").stat().st_mode & 0o777 == 0o600
+    saved_credentials = json.loads(credentials_path.read_text())
+    if mode == "api_token":
+        assert saved_credentials["api_token"] == "valid-old-token"
+    assert saved_credentials["replacement_pending"] is True
+    assert credentials_path.stat().st_mode & 0o777 == 0o600
+
+
 @pytest.mark.parametrize("mode", ["api_token", "username_password"])
 def test_failed_replacement_login_makes_health_false_until_requested_login_succeeds(
     tmp_path, monkeypatch, mode
