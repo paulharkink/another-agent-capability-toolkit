@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -688,6 +689,95 @@ func TestStoppedOwnedRuntimeSurvivesFailedReplacement(t *testing.T) {
 			}
 			if oldRemoved || currentName == containerName(k) || !strings.HasPrefix(currentName, "aact-previous-") {
 				t.Fatalf("stopped prior runtime was automatically restored or lost: removed=%v name=%s calls=%v", oldRemoved, currentName, f.calls)
+			}
+		})
+	}
+}
+
+func TestMCPRunSpecChangesWhenConditionalPortsChange(t *testing.T) {
+	key := state.Key{Source: "source", Package: "package", Environment: "env", Target: "target"}
+	var first, second RunSpec
+	if err := json.Unmarshal([]byte(`{"image":"fixture","host_port":8000,"container_port":80,"additional_ports":[{"host_port":7443,"container_port":7443}]}`), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"image":"fixture","host_port":8000,"container_port":80,"additional_ports":[{"host_port":7444,"container_port":7443}]}`), &second); err != nil {
+		t.Fatal(err)
+	}
+	if labels(key, first)["aact.spec"] == labels(key, second)["aact.spec"] {
+		t.Fatal("changing a resolved port mapping did not change the runtime spec hash")
+	}
+}
+
+func TestRuntimeExecRequiresOwnedContainerAndUsesArgv(t *testing.T) {
+	r, f, key := testRuntime(t)
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80}
+	owned := dockerInfo{ID: "owned-runtime", Name: "/" + containerName(key), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, spec)}, State: dockerState{Running: true, Status: "running"}}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "ps":
+			return []byte("owned-runtime\n"), nil
+		case "inspect":
+			return json.Marshal([]dockerInfo{owned})
+		case "exec":
+			return []byte("ok"), nil
+		default:
+			return nil, errors.New("unexpected Docker command")
+		}
+	}
+	executor, ok := any(r).(interface {
+		Exec(context.Context, state.Key, []string, []byte) ([]byte, error)
+	})
+	if !ok {
+		t.Fatal("Runtime.Exec(context, key, argv, stdin) is not implemented")
+	}
+	argv := []string{"tool", "subcommand", "value with spaces"}
+	got, err := executor.Exec(context.Background(), key, argv, []byte("input"))
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("Exec result = %q, %v", got, err)
+	}
+	if len(f.calls) != 3 {
+		t.Fatalf("expected inventory, ownership inspect, and exec calls; got %v", f.calls)
+	}
+	want := []string{"docker", "exec", "-i", "owned-runtime", "tool", "subcommand", "value with spaces"}
+	if got := f.calls[2]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Docker argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestRuntimeExecRejectsUnownedAndStoppedContainers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		running bool
+		status  string
+		foreign bool
+	}{
+		{name: "foreign", running: true, status: "running", foreign: true},
+		{name: "stopped", running: false, status: "exited"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, f, key := testRuntime(t)
+			spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80}
+			ownerKey := key
+			if tc.foreign {
+				ownerKey.Package = "other-package"
+			}
+			info := dockerInfo{ID: "candidate", Name: "/" + containerName(key), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, ownerKey, spec)}, State: dockerState{Running: tc.running, Status: tc.status}}
+			f.f = func(args []string) ([]byte, error) {
+				if args[1] == "ps" {
+					return []byte("candidate\n"), nil
+				}
+				if args[1] == "inspect" {
+					return json.Marshal([]dockerInfo{info})
+				}
+				return nil, errors.New("unexpected execution")
+			}
+			if _, err := r.Exec(context.Background(), key, []string{"helper"}, nil); err == nil {
+				t.Fatal("Exec accepted a container that is not locally owned and running")
+			}
+			for _, call := range f.calls {
+				if call[1] == "exec" {
+					t.Fatalf("Exec reached Docker for rejected container: %v", f.calls)
+				}
 			}
 		})
 	}

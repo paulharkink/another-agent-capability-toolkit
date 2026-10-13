@@ -7,6 +7,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -205,5 +206,39 @@ func TestActionResultDecodesOptionalProviderDiagnostic(t *testing.T) {
 	}
 	if legacy.Diagnostic != "" {
 		t.Fatalf("legacy diagnostic = %q", legacy.Diagnostic)
+	}
+}
+
+type recordingContainerActionExec struct {
+	argv   []string
+	stdin  []byte
+	output string
+}
+
+func (f *recordingContainerActionExec) Exec(_ context.Context, argv []string, stdin []byte) ([]byte, error) {
+	f.argv = append([]string(nil), argv...)
+	f.stdin = append([]byte(nil), stdin...)
+	return []byte(f.output), nil
+}
+
+func TestContainerActionUsesInjectedRuntimeExec(t *testing.T) {
+	pkg := actionPackage()
+	pkg.MCP.Actions["authenticate"] = catalog.Command{Target: "container", Argv: []string{"helper", "authenticate", "value with spaces"}}
+	host := &recordingActionExec{output: `{}`}
+	container := &recordingContainerActionExec{output: `{}`}
+	runner := ActionRunner{Executor: host, ContainerExecutor: container}
+	if _, err := runner.Run(context.Background(), pkg, ActionRequest{Action: "authenticate"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.argv) != 0 {
+		t.Fatalf("container action fell back to host executor: %v", host.argv)
+	}
+	want := []string{"helper", "authenticate", "value with spaces"}
+	if !reflect.DeepEqual(container.argv, want) {
+		t.Fatalf("container argv = %#v, want %#v", container.argv, want)
+	}
+	var request ActionRequest
+	if err := json.Unmarshal(container.stdin, &request); err != nil || request.ProtocolVersion != 1 || request.Action != "authenticate" {
+		t.Fatalf("container stdin request = %+v, %v", request, err)
 	}
 }

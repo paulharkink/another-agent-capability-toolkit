@@ -27,6 +27,10 @@ type Mount struct {
 	Destination string `json:"destination"`
 	ReadOnly    bool   `json:"read_only"`
 }
+type PortMapping struct {
+	HostPort      int `json:"host_port"`
+	ContainerPort int `json:"container_port"`
+}
 type RunSpec struct {
 	User             string            `json:"user,omitempty"`
 	Image            string            `json:"image"`
@@ -40,11 +44,12 @@ type RunSpec struct {
 	RegistrationName string            `json:"registration_name,omitempty"`
 	// Host is retained for actions and saved specs written before bind and
 	// advertised endpoint addressing were separated.
-	Host          string `json:"host"`
-	HostPort      int    `json:"host_port"`
-	ContainerPort int    `json:"container_port"`
-	Transport     string `json:"transport"`
-	EndpointPath  string `json:"endpoint_path"`
+	Host            string        `json:"host"`
+	HostPort        int           `json:"host_port"`
+	ContainerPort   int           `json:"container_port"`
+	AdditionalPorts []PortMapping `json:"additional_ports,omitempty"`
+	Transport       string        `json:"transport"`
+	EndpointPath    string        `json:"endpoint_path"`
 }
 type Instance struct {
 	Key          state.Key `json:"key"`
@@ -177,8 +182,19 @@ func validateAdvertisedHost(host string) error {
 	}
 	return nil
 }
+func canonicalRunSpec(s RunSpec) RunSpec {
+	s.AdditionalPorts = append([]PortMapping(nil), s.AdditionalPorts...)
+	sort.Slice(s.AdditionalPorts, func(i, j int) bool {
+		if s.AdditionalPorts[i].ContainerPort != s.AdditionalPorts[j].ContainerPort {
+			return s.AdditionalPorts[i].ContainerPort < s.AdditionalPorts[j].ContainerPort
+		}
+		return s.AdditionalPorts[i].HostPort < s.AdditionalPorts[j].HostPort
+	})
+	return s
+}
+
 func labels(k state.Key, s RunSpec) map[string]string {
-	b, _ := json.Marshal(s)
+	b, _ := json.Marshal(canonicalRunSpec(s))
 	h := sha256.Sum256(b)
 	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
 	if s.RegistrationName != "" {
@@ -387,6 +403,18 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	if s.HostPort < 1 || s.HostPort > 65535 || s.ContainerPort < 1 || s.ContainerPort > 65535 {
 		return Instance{}, errors.New("MCP port outside 1..65535")
 	}
+	usedHostPorts := map[int]bool{s.HostPort: true}
+	usedContainerPorts := map[int]bool{s.ContainerPort: true}
+	for _, port := range s.AdditionalPorts {
+		if port.HostPort < 1 || port.HostPort > 65535 || port.ContainerPort < 1 || port.ContainerPort > 65535 {
+			return Instance{}, errors.New("MCP additional port outside 1..65535")
+		}
+		if usedHostPorts[port.HostPort] || usedContainerPorts[port.ContainerPort] {
+			return Instance{}, errors.New("MCP additional port mappings must use unique host and container ports")
+		}
+		usedHostPorts[port.HostPort] = true
+		usedContainerPorts[port.ContainerPort] = true
+	}
 	if s.Image == "" && s.BuildContext == "" {
 		return Instance{}, errors.New("MCP image or build context required")
 	}
@@ -529,6 +557,9 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		a = append(a, "--label", n+"="+expected[n])
 	}
 	a = append(a, "--publish", net.JoinHostPort(s.BindIP, strconv.Itoa(s.HostPort))+":"+strconv.Itoa(s.ContainerPort))
+	for _, port := range canonicalRunSpec(s).AdditionalPorts {
+		a = append(a, "--publish", net.JoinHostPort(s.BindIP, strconv.Itoa(port.HostPort))+":"+strconv.Itoa(port.ContainerPort))
+	}
 	for _, m := range s.Mounts {
 		if strings.Contains(m.Source, ",") || strings.Contains(m.Destination, ",") {
 			return Instance{}, errors.New("Docker mount paths cannot contain commas")
@@ -717,6 +748,36 @@ func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance,
 	}
 	return *match, nil
 }
+
+// Exec sends an argv array to the exact running container currently observed as locally owned.
+// Docker receives the arguments directly; no shell is inserted between the caller and executable.
+func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []byte) ([]byte, error) {
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, errors.New("container action argv is required")
+	}
+	observed, err := r.observedContainer(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	if observed.Status != "running" {
+		return nil, fmt.Errorf("refusing to execute in non-running container %s", observed.ID)
+	}
+	args := append([]string{"docker", "exec", "-i", observed.ID}, argv...)
+	var diagnostics bytes.Buffer
+	out, err := r.Executor.Run(ctx, args, "", stdin, nil, func(p []byte) {
+		if diagnostics.Len() < 8192 {
+			diagnostics.Write(p)
+		}
+		if r.OnStderr != nil {
+			r.OnStderr(p)
+		}
+	})
+	if err != nil {
+		return out, dockerCommandError("exec", err, diagnostics.Bytes())
+	}
+	return out, nil
+}
+
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	observed, err := r.observedContainer(ctx, k)
 	if err != nil {

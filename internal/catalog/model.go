@@ -87,9 +87,15 @@ type Template struct {
 	Destination string `toml:"destination" json:"destination"`
 }
 type Command struct {
+	Target         string   `toml:"target" json:"target,omitempty"`
 	Argv           []string `toml:"command" json:"command"`
 	Windows        *Command `toml:"windows" json:"windows"`
 	TimeoutSeconds int      `toml:"timeout_seconds" json:"timeout_seconds"`
+}
+type ConditionalPort struct {
+	ContainerPort int            `toml:"container_port" json:"container_port"`
+	HostPortInput string         `toml:"host_port_input" json:"host_port_input"`
+	When          map[string]any `toml:"when" json:"when"`
 }
 type MCP struct {
 	CredentialFiles       []string           `toml:"credential_files" json:"credential_files,omitempty"`
@@ -118,4 +124,5 @@ type MCP struct {
 	AdvertisedHostInput   string             `toml:"advertised_host_input" json:"advertised_host_input,omitempty"`
 	RegistrationTimeoutMS int                `toml:"registration_timeout_ms" json:"registration_timeout_ms"`
 	Actions               map[string]Command `toml:"actions" json:"actions"`
+	AdditionalPorts       []ConditionalPort  `toml:"additional_ports" json:"additional_ports,omitempty"`
 }

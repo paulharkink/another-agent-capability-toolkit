@@ -472,6 +472,44 @@ func Validate(p Package) error {
 		}
 	}
 	for _, mcp := range p.MCPDefinitions() {
+		usedContainerPorts := map[int]bool{}
+		for _, port := range mcp.AdditionalPorts {
+			if len(port.When) == 0 {
+				return fmt.Errorf("mcp %s additional port condition is required", mcp.Name)
+			}
+			if port.ContainerPort < 1 || port.ContainerPort > 65535 {
+				return fmt.Errorf("mcp %s additional port must be within 1..65535", mcp.Name)
+			}
+			if usedContainerPorts[port.ContainerPort] {
+				return fmt.Errorf("mcp %s additional port %d is declared more than once", mcp.Name, port.ContainerPort)
+			}
+			usedContainerPorts[port.ContainerPort] = true
+			hostPortInput, ok := inputsByName[port.HostPortInput]
+			if !ok || hostPortInput.Type != "integer" {
+				return fmt.Errorf("mcp %s additional port host_port_input %q must reference a declared integer input", mcp.Name, port.HostPortInput)
+			}
+			for inputName, expected := range port.When {
+				input, ok := inputsByName[inputName]
+				if !ok {
+					return fmt.Errorf("mcp %s additional port condition references undeclared input %q", mcp.Name, inputName)
+				}
+				if !validInputEquality(input, expected) {
+					return fmt.Errorf("mcp %s additional port condition for %s must use a scalar value compatible with the input", mcp.Name, inputName)
+				}
+				if input.Type == "choice" {
+					found := false
+					for _, option := range input.Options {
+						if option.Value == expected {
+							found = true
+							break
+						}
+					}
+					if !found {
+						return fmt.Errorf("mcp %s additional port condition for %s must match a declared choice", mcp.Name, inputName)
+					}
+				}
+			}
+		}
 		if mcp.EnabledInput != "" {
 			input, ok := inputsByName[mcp.EnabledInput]
 			if !ok {
@@ -625,7 +663,37 @@ func Validate(p Package) error {
 	}
 	return nil
 }
+func validInputEquality(input Input, value any) bool {
+	switch input.Type {
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "integer":
+		switch value.(type) {
+		case int, int64:
+			return true
+		default:
+			return false
+		}
+	case "number", "float":
+		switch value.(type) {
+		case int, int64, float64:
+			return true
+		default:
+			return false
+		}
+	case "string", "secret", "choice":
+		_, ok := value.(string)
+		return ok
+	default:
+		return false
+	}
+}
+
 func validateCommand(c Command) error {
+	if c.Target != "" && c.Target != "host" && c.Target != "container" {
+		return fmt.Errorf("target must be host or container")
+	}
 	if len(c.Argv) == 0 || c.Argv[0] == "" {
 		return fmt.Errorf("command is required")
 	}

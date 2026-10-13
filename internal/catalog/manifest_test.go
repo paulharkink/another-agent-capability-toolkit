@@ -814,3 +814,66 @@ func fixture(t *testing.T, name string) string {
 	}
 	return string(data)
 }
+
+func TestMCPConditionalPortsValidateAgainstDeclaredInputs(t *testing.T) {
+	base := `schema_version = 1
+id = "ports"
+name = "Ports"
+[mcp]
+name = "service"
+[[inputs]]
+name = "mode"
+type = "choice"
+[[inputs.options]]
+value = "interactive"
+label = "Interactive"
+[[inputs]]
+name = "callback_port"
+type = "integer"
+min = 1
+max = 65535
+`
+	valid := base + `[[mcp.additional_ports]]
+container_port = 7443
+host_port_input = "callback_port"
+when = { mode = "interactive" }
+`
+	if _, err := Load(writeManifest(t, valid)); err != nil {
+		t.Fatalf("valid conditional port declaration rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		port string
+		when string
+	}{
+		{name: "undeclared input", port: `host_port_input = "missing"`, when: `when = { mode = "interactive" }`},
+		{name: "invalid port", port: `host_port_input = "callback_port"`, when: `when = { mode = "interactive" }`},
+		{name: "unknown condition input", port: `host_port_input = "callback_port"`, when: `when = { absent = "interactive" }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := base + "[[mcp.additional_ports]]\n"
+			if tc.name == "invalid port" {
+				manifest += "container_port = 70000\n"
+			} else {
+				manifest += "container_port = 7443\n"
+			}
+			manifest += tc.port + "\n" + tc.when + "\n"
+			if _, err := Load(writeManifest(t, manifest)); err == nil {
+				t.Fatal("invalid conditional port declaration accepted")
+			}
+		})
+	}
+}
+
+func TestMCPActionRejectsUnknownTarget(t *testing.T) {
+	manifest := plainManifest + `
+[mcp]
+name = "service"
+[mcp.actions.authenticate]
+target = "remote"
+command = ["helper", "authenticate"]
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil {
+		t.Fatal("unknown action execution target accepted")
+	}
+}
