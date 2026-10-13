@@ -926,6 +926,21 @@ func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) 
 	if got := inputs["read_only"].Default; got != true {
 		t.Fatalf("read_only default = %#v, want true", got)
 	}
+	for _, name := range []string{"AACT_ARGOCD_SERVER", "AACT_ARGOCD_AUTH_MODE", "AACT_ARGOCD_GRPC_WEB", "AACT_ARGOCD_GRPC_WEB_ROOT_PATH", "AACT_ARGOCD_PLAINTEXT", "AACT_ARGOCD_INSECURE"} {
+		if mcp.Env[name] == "" {
+			t.Errorf("container profile environment %s must be templated from selected inputs", name)
+		}
+	}
+	resolved, err := ResolveExpressions(pkg, map[string]any{
+		"server": "argocd.example.test", "auth_mode": "sso", "grpc_web": true,
+		"grpc_web_root_path": "/current", "plaintext": false, "insecure": true,
+	})
+	if err != nil {
+		t.Fatalf("resolve selected Argo profile environment: %v", err)
+	}
+	if resolved.MCP.Env["AACT_ARGOCD_SERVER"] != "argocd.example.test" || resolved.MCP.Env["AACT_ARGOCD_AUTH_MODE"] != "sso" || resolved.MCP.Env["AACT_ARGOCD_GRPC_WEB"] != "true" || resolved.MCP.Env["AACT_ARGOCD_GRPC_WEB_ROOT_PATH"] != "/current" || resolved.MCP.Env["AACT_ARGOCD_PLAINTEXT"] != "false" || resolved.MCP.Env["AACT_ARGOCD_INSECURE"] != "true" {
+		t.Fatalf("selected profile environment did not resolve exactly: %#v", resolved.MCP.Env)
+	}
 	command, ok := mcp.Actions["authenticate"]
 	if !ok || command.Target != "container" {
 		t.Errorf("authenticate must be the container-target action, got %#v", command)

@@ -97,6 +97,7 @@ default = false
 name = "grpc_web_root_path"
 type = "string"
 label = "gRPC web root path"
+default = ""
 
 [[inputs]]
 name = "plaintext"
@@ -129,6 +130,14 @@ registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
 release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/argocd-mcp:v{aact_version}"
+
+[mcp.env]
+AACT_ARGOCD_SERVER = "${ inputs.server }"
+AACT_ARGOCD_AUTH_MODE = "${ inputs.auth_mode }"
+AACT_ARGOCD_GRPC_WEB = "${ tostring(inputs.grpc_web) }"
+AACT_ARGOCD_GRPC_WEB_ROOT_PATH = "${ inputs.grpc_web_root_path }"
+AACT_ARGOCD_PLAINTEXT = "${ tostring(inputs.plaintext) }"
+AACT_ARGOCD_INSECURE = "${ tostring(inputs.insecure) }"
 
 [mcp.image_variant]
 dockerfile = "mcp/Dockerfile.variant"

@@ -16,6 +16,29 @@ import pytest
 
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
+PROFILE_ENV = {
+    "server": "AACT_ARGOCD_SERVER",
+    "auth_mode": "AACT_ARGOCD_AUTH_MODE",
+    "grpc_web": "AACT_ARGOCD_GRPC_WEB",
+    "grpc_web_root_path": "AACT_ARGOCD_GRPC_WEB_ROOT_PATH",
+    "plaintext": "AACT_ARGOCD_PLAINTEXT",
+    "insecure": "AACT_ARGOCD_INSECURE",
+}
+
+
+def set_profile_env(monkeypatch, *, server="argocd.example.test", auth_mode="sso",
+                    grpc_web=False, grpc_web_root_path="", plaintext=False, insecure=False):
+    values = {
+        "server": server,
+        "auth_mode": auth_mode,
+        "grpc_web": grpc_web,
+        "grpc_web_root_path": grpc_web_root_path,
+        "plaintext": plaintext,
+        "insecure": insecure,
+    }
+    for key, env_name in PROFILE_ENV.items():
+        value = values[key]
+        monkeypatch.setenv(env_name, value if isinstance(value, str) else str(value).lower())
 
 
 def load_server():
@@ -126,7 +149,9 @@ def test_background_worker_completes_sso_and_promotes_config_without_action_poll
     assert (state / "config").read_text() == "callback completed login"
     assert (state / "config").stat().st_mode & 0o777 == 0o600
     assert json.loads((state / "credentials.json").read_text()) == {
-        "mode": "sso", "server": "argocd.example.test", "connection": {}
+        "mode": "sso", "server": "argocd.example.test", "connection": {
+            "grpc_web": False, "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+        }
     }
     assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: True) is True
     assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: False) is False
@@ -185,7 +210,9 @@ def test_one_shot_action_returns_url_then_synthetic_callback_completes_detached_
             time.sleep(0.02)
         assert saved.exists()
         assert json.loads(saved.read_text()) == {
-            "mode": "sso", "server": "argocd.example.test", "connection": {}
+            "mode": "sso", "server": "argocd.example.test", "connection": {
+                "grpc_web": False, "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+            }
         }
         assert (Path(req["state_dir"]) / "config").read_text() == "synthetic callback session"
 
@@ -319,6 +346,7 @@ def test_health_route_returns_only_current_binary_identity_without_mutating_stat
     (state / "config").write_text("private synthetic config")
     before = {p.name: (p.read_bytes(), p.stat().st_mode & 0o777, p.stat().st_mtime_ns) for p in state.iterdir()}
     monkeypatch.setattr(module, "STATE_DIR", state)
+    set_profile_env(monkeypatch, auth_mode=mode, grpc_web=True)
     monkeypatch.setattr(module, "_identity", lambda *_args, **_kwargs: authenticated)
 
     response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
@@ -332,6 +360,7 @@ def test_health_route_is_false_for_missing_or_expired_private_state_without_crea
     module = load_server()
     state = tmp_path / "missing-state"
     monkeypatch.setattr(module, "STATE_DIR", state)
+    set_profile_env(monkeypatch)
     response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
     assert response.status_code == 200
     assert response.json() == {"authenticated": False}
@@ -344,6 +373,115 @@ def test_health_route_is_false_for_missing_or_expired_private_state_without_crea
     assert response.status_code == 200
     assert response.json() == {"authenticated": False}
     assert list(state.iterdir()) == [state / "credentials.json"]
+
+
+@pytest.mark.parametrize(
+    ("field", "selected"),
+    [
+        ("server", "new.argocd.example.test"),
+        ("auth_mode", "api_token"),
+        ("plaintext", True),
+        ("insecure", True),
+        ("grpc_web", True),
+        ("grpc_web_root_path", "/new-root"),
+    ],
+)
+def test_health_rejects_saved_session_from_changed_profile_scope(tmp_path, monkeypatch, field, selected):
+    module = load_server()
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    old_scope = {
+        "server": "argocd.example.test", "auth_mode": "sso", "grpc_web": False,
+        "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+    }
+    (state / "credentials.json").write_text(json.dumps({
+        "mode": "sso", "server": old_scope["server"], "connection": {
+            "grpc_web": old_scope["grpc_web"], "grpc_web_root_path": old_scope["grpc_web_root_path"],
+            "plaintext": old_scope["plaintext"], "insecure": old_scope["insecure"],
+        },
+    }))
+    (state / "config").write_text("old synthetic session")
+    monkeypatch.setattr(module, "STATE_DIR", state)
+    old_scope[field] = selected
+    set_profile_env(monkeypatch, **old_scope)
+    identity_calls = []
+    monkeypatch.setattr(module, "_identity", lambda *args, **kwargs: identity_calls.append((args, kwargs)) or True)
+
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False}
+    assert identity_calls == []
+
+
+@pytest.mark.parametrize("mode", ["sso", "api_token", "username_password"])
+def test_health_uses_matching_current_profile_settings_for_identity_probe(tmp_path, monkeypatch, mode):
+    module = load_server()
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    connection = {"grpc_web": True, "grpc_web_root_path": "/current", "plaintext": False, "insecure": True}
+    credentials = {"mode": mode, "server": "current.argocd.example.test", "connection": connection}
+    if mode == "api_token":
+        credentials["api_token"] = "private-synthetic-token"
+    (state / "credentials.json").write_text(json.dumps(credentials))
+    (state / "config").write_text("current synthetic session")
+    monkeypatch.setattr(module, "STATE_DIR", state)
+    set_profile_env(
+        monkeypatch, server="current.argocd.example.test", auth_mode=mode, grpc_web=True,
+        grpc_web_root_path="/current", insecure=True,
+    )
+    observed = {}
+
+    def run_cli(argv, *, env):
+        observed["argv"] = argv
+        observed["env"] = env
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(module, "run_cli", run_cli)
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": True}
+    assert observed["argv"] == [
+        "/usr/local/bin/argocd", "account", "get-user-info", "--server", "current.argocd.example.test",
+        "--grpc-web", "--grpc-web-root-path", "/current", "--insecure",
+    ]
+    assert observed["env"]["ARGOCD_CONFIG"] == str(state / "config")
+    if mode == "api_token":
+        assert observed["env"]["ARGOCD_AUTH_TOKEN"] == "private-synthetic-token"
+    else:
+        assert "ARGOCD_AUTH_TOKEN" not in observed["env"]
+
+
+@pytest.mark.parametrize(
+    ("field", "selected", "request_value"),
+    [
+        ("server", "selected.argocd.example.test", "old.argocd.example.test"),
+        ("auth_mode", "api_token", "sso"),
+        ("plaintext", True, False),
+        ("insecure", True, False),
+        ("grpc_web", True, False),
+        ("grpc_web_root_path", "/current", "/old"),
+    ],
+)
+def test_authenticate_rejects_inputs_that_differ_from_current_container_profile(
+    tmp_path, monkeypatch, field, selected, request_value
+):
+    module = load_server()
+    selected_profile = {
+        "server": "selected.argocd.example.test", "auth_mode": "sso", "grpc_web": False,
+        "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+    }
+    selected_profile[field] = selected
+    set_profile_env(monkeypatch, **selected_profile)
+    monkeypatch.setattr(module, "launch_auth_worker", lambda *_args: pytest.fail("mismatched profile started login"))
+    request_profile = dict(selected_profile)
+    request_profile[field] = request_value
+    request_value = {
+        "protocol_version": 1, "action": "authenticate", "state_dir": str(tmp_path / "state"),
+        "inputs": {**request_profile, "callback_port": 8085},
+    }
+    assert module.authenticate(request_value) == {
+        "diagnostic": "Authentication request does not match the selected container profile."
+    }
 
 
 def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):

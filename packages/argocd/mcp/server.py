@@ -25,6 +25,46 @@ URI_RE = re.compile(r"https?://[^\s\"'<>]+")
 PASSWORD_PROMPT_RE = re.compile(rb"password\s*:", re.I)
 MAX_OUTPUT = 16_384
 WORKER_HANDSHAKE_SECONDS = 15
+PROFILE_ENV = {
+    "server": "AACT_ARGOCD_SERVER",
+    "auth_mode": "AACT_ARGOCD_AUTH_MODE",
+    "grpc_web": "AACT_ARGOCD_GRPC_WEB",
+    "grpc_web_root_path": "AACT_ARGOCD_GRPC_WEB_ROOT_PATH",
+    "plaintext": "AACT_ARGOCD_PLAINTEXT",
+    "insecure": "AACT_ARGOCD_INSECURE",
+}
+
+
+def _profile_from_environment() -> dict[str, Any] | None:
+    present = [name in os.environ for name in PROFILE_ENV.values()]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("The selected container profile configuration is incomplete.")
+    profile: dict[str, Any] = {}
+    for key, name in PROFILE_ENV.items():
+        value = os.environ[name]
+        if key in {"grpc_web", "plaintext", "insecure"}:
+            if value not in {"true", "false"}:
+                raise ValueError("The selected container profile configuration is invalid.")
+            profile[key] = value == "true"
+        else:
+            profile[key] = value
+    server, mode = profile["server"], profile["auth_mode"]
+    if (not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server)
+            or mode not in {"sso", "api_token", "username_password"}):
+        raise ValueError("The selected container profile configuration is invalid.")
+    return profile
+
+
+def _connection_scope(inputs: dict[str, Any]) -> dict[str, Any]:
+    root_path = inputs.get("grpc_web_root_path", "")
+    return {
+        "grpc_web": inputs.get("grpc_web") is True,
+        "grpc_web_root_path": root_path if isinstance(root_path, str) else "",
+        "plaintext": inputs.get("plaintext") is True,
+        "insecure": inputs.get("insecure") is True,
+    }
 
 
 def _state_dir(request: dict[str, Any], *, create: bool = True) -> Path:
@@ -73,6 +113,12 @@ def _auth_inputs(request: dict[str, Any], *, require_credentials: bool = True,
     mode = inputs.get("auth_mode")
     if mode not in {"sso", "api_token", "username_password"}:
         raise ValueError("The saved authentication mode is unsupported.")
+    selected = _profile_from_environment()
+    if selected is not None and (
+        server != selected["server"] or mode != selected["auth_mode"]
+        or _connection_scope(inputs) != _connection_scope(selected)
+    ):
+        raise ValueError("Authentication request does not match the selected container profile.")
     if mode == "sso" and require_credentials:
         port = inputs.get("callback_port", 8085)
         if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
@@ -177,8 +223,7 @@ def _credential_record(mode: str, server: str, inputs: dict[str, Any]) -> dict[s
     record: dict[str, Any] = {
         "mode": mode,
         "server": server,
-        "connection": {key: inputs[key] for key in ("grpc_web", "grpc_web_root_path", "plaintext", "insecure")
-                       if key in inputs},
+        "connection": _connection_scope(inputs),
     }
     if mode == "api_token":
         record["api_token"] = inputs["api_token"]
@@ -343,28 +388,25 @@ def is_authenticated(request: dict[str, Any], *,
     credentials = _read_json(state / "credentials.json")
     if not credentials or credentials.get("mode") != mode or credentials.get("server") != server:
         return False
+    saved_connection = credentials.get("connection", {})
+    if not isinstance(saved_connection, dict) or _connection_scope(saved_connection) != _connection_scope(inputs):
+        return False
     token = credentials.get("api_token") if mode == "api_token" else None
     check_identity = identity_checker or _identity
     return bool(check_identity(state, server, inputs, token=token))
 
 
 def _current_profile_request() -> dict[str, Any] | None:
+    try:
+        profile = _profile_from_environment()
+    except ValueError:
+        return None
+    if profile is None:
+        return None
     credentials = _read_json(STATE_DIR / "credentials.json")
     if not credentials:
         return None
-    mode = credentials.get("mode")
-    server = credentials.get("server")
-    if mode not in {"sso", "api_token", "username_password"} or not isinstance(server, str):
-        return None
-    inputs: dict[str, Any] = {"server": server, "auth_mode": mode}
-    connection = credentials.get("connection")
-    if isinstance(connection, dict):
-        inputs.update(connection)
-    if mode == "api_token":
-        token = credentials.get("api_token")
-        if not isinstance(token, str) or not token:
-            return None
-        inputs["api_token"] = token
+    inputs: dict[str, Any] = profile
     return {"state_dir": str(STATE_DIR), "inputs": inputs}
 
 
