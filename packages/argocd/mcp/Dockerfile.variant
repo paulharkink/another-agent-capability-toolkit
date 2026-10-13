@@ -3,6 +3,7 @@ FROM ${AACT_BASE_IMAGE}
 
 ARG CLI_VERSION
 ARG TARGETARCH
+COPY verify-cli-checksum.sh /usr/local/bin/verify-cli-checksum.sh
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl coreutils mawk \
     && rm -rf /var/lib/apt/lists/* \
@@ -13,9 +14,8 @@ RUN apt-get update \
       "https://github.com/argoproj/argo-cd/releases/download/v${CLI_VERSION}/argocd-linux-${TARGETARCH}" \
       --output /usr/local/bin/argocd \
     && curl --fail --location --silent --show-error \
-      "https://github.com/argoproj/argo-cd/releases/download/v${CLI_VERSION}/argocd-linux-${TARGETARCH}.sha256" \
-      --output /tmp/argocd.sha256 \
-    && cd /usr/local/bin \
-    && sha256sum --check /tmp/argocd.sha256 \
+      "https://github.com/argoproj/argo-cd/releases/download/v${CLI_VERSION}/cli_checksums.txt" \
+      --output /tmp/cli_checksums.txt \
+    && /bin/sh /usr/local/bin/verify-cli-checksum.sh /tmp/cli_checksums.txt "argocd-linux-${TARGETARCH}" /usr/local/bin/argocd \
     && chmod 0755 /usr/local/bin/argocd \
-    && rm /tmp/argocd.sha256
+    && rm /tmp/cli_checksums.txt

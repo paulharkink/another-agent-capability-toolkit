@@ -1,7 +1,10 @@
 package catalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -968,7 +971,8 @@ func TestArgoVariantRecipeMapsBuildArchitectureToOfficialAssets(t *testing.T) {
 		`case "$TARGETARCH" in`,
 		"amd64|arm64)",
 		`argocd-linux-${TARGETARCH}`,
-		`argocd-linux-${TARGETARCH}.sha256`,
+		"cli_checksums.txt",
+		"verify-cli-checksum.sh",
 	} {
 		if !strings.Contains(contents, required) {
 			t.Errorf("variant recipe must include architecture asset mapping %q", required)
@@ -976,5 +980,43 @@ func TestArgoVariantRecipeMapsBuildArchitectureToOfficialAssets(t *testing.T) {
 	}
 	if !strings.Contains(contents, "Unsupported target architecture") {
 		t.Error("variant recipe must reject unsupported target architectures explicitly")
+	}
+}
+
+func TestArgoVariantChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.T) {
+	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
+	binaryPath := filepath.Join(t.TempDir(), "argocd-linux-amd64")
+	binary := []byte("fixture CLI binary bytes")
+	if err := os.WriteFile(binaryPath, binary, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(binary)
+	validHash := hex.EncodeToString(digest[:])
+	checksumsPath := filepath.Join(t.TempDir(), "cli_checksums.txt")
+
+	tests := []struct {
+		name      string
+		checksums string
+		wantError bool
+	}{
+		{name: "matching selected entry among other platforms", checksums: strings.Repeat("0", 64) + "  argocd-linux-arm64\n" + validHash + "  argocd-linux-amd64\n"},
+		{name: "mismatch", checksums: strings.Repeat("0", 64) + "  argocd-linux-amd64\n", wantError: true},
+		{name: "missing selected entry", checksums: strings.Repeat("0", 64) + "  argocd-linux-arm64\n", wantError: true},
+		{name: "duplicate selected entry", checksums: validHash + "  argocd-linux-amd64\n" + validHash + "  argocd-linux-amd64\n", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(checksumsPath, []byte(test.checksums), 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("sh", helper, checksumsPath, "argocd-linux-amd64", binaryPath)
+			output, err := command.CombinedOutput()
+			if test.wantError && err == nil {
+				t.Fatalf("checksum verifier accepted invalid input: %s", output)
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("checksum verifier rejected valid selected entry: %v: %s", err, output)
+			}
+		})
 	}
 }
