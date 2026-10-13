@@ -145,11 +145,3 @@ when = { auth_mode = "sso" }
 [mcp.actions.authenticate]
 target = "container"
 command = ["python", "/app/server.py", "action", "authenticate"]
-
-[mcp.actions.authentication_status]
-target = "container"
-command = ["python", "/app/server.py", "action", "authentication_status"]
-
-[mcp.actions.cancel_authentication]
-target = "container"
-command = ["python", "/app/server.py", "action", "cancel_authentication"]

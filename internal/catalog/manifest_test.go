@@ -926,10 +926,13 @@ func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) 
 	if got := inputs["read_only"].Default; got != true {
 		t.Fatalf("read_only default = %#v, want true", got)
 	}
-	for _, action := range []string{"authenticate", "authentication_status", "cancel_authentication"} {
-		command, ok := mcp.Actions[action]
-		if !ok || command.Target != "container" {
-			t.Errorf("%s must be a container-target action, got %#v", action, command)
+	command, ok := mcp.Actions["authenticate"]
+	if !ok || command.Target != "container" {
+		t.Errorf("authenticate must be the container-target action, got %#v", command)
+	}
+	for _, action := range []string{"authentication_status", "cancel_authentication"} {
+		if _, ok := mcp.Actions[action]; ok {
+			t.Errorf("%s must not be declared as an AACT action", action)
 		}
 	}
 	if len(mcp.AdditionalPorts) != 1 || mcp.AdditionalPorts[0].ContainerPort != 8085 || mcp.AdditionalPorts[0].HostPortInput != "callback_port" || mcp.AdditionalPorts[0].When["auth_mode"] != "sso" {

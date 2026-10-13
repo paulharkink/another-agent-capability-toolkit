@@ -1,0 +1,319 @@
+"""Deterministic tests for background container-owned authentication."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+import pytest
+
+
+SERVER = Path(__file__).resolve().parents[1] / "server.py"
+
+
+def load_server():
+    spec = importlib.util.spec_from_file_location("argocd_server_auth_test", SERVER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def request(tmp_path, mode="sso", **inputs):
+    return {
+        "protocol_version": 1,
+        "action": "authenticate",
+        "inputs": {"server": "argocd.example.test", "auth_mode": mode, **inputs},
+        "state_dir": str(tmp_path / "state"),
+    }
+
+
+def seed_previous_auth(state: Path) -> tuple[bytes, bytes]:
+    state.mkdir(parents=True)
+    config = state / "config"
+    config.write_bytes(b"previous session")
+    config.chmod(0o600)
+    credentials = state / "credentials.json"
+    credentials.write_text('{"mode":"api_token","api_token":"old-token","server":"old.example"}')
+    credentials.chmod(0o600)
+    return config.read_bytes(), credentials.read_bytes()
+
+
+def test_authenticate_returns_login_url_and_leaves_worker_running(tmp_path, monkeypatch):
+    module = load_server()
+    request_value = request(tmp_path, callback_port=8085)
+    calls = []
+
+    def launch(value):
+        calls.append(value)
+        return {"login_url": "https://login.example/device"}
+
+    monkeypatch.setattr(module, "launch_auth_worker", launch)
+    result = module.authenticate(request_value)
+    assert result == {"login_url": "https://login.example/device"}
+    assert calls == [request_value]
+    assert "status" not in result
+
+
+def test_worker_launcher_returns_event_without_waiting_for_or_killing_child(tmp_path, monkeypatch):
+    module = load_server()
+    read_fd, write_fd = os.pipe()
+
+    class Child:
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.kwargs = kwargs
+            self.stdin = io.BytesIO()
+            self.stdout = os.fdopen(read_fd, "rb")
+            self.waited = False
+            self.terminated = False
+
+        def wait(self, *args, **kwargs):
+            self.waited = True
+
+        def terminate(self):
+            self.terminated = True
+
+    children = []
+
+    def launch(argv, **kwargs):
+        process = Child(argv, **kwargs)
+        children.append(process)
+        return process
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+    os.write(write_fd, b'{"login_url":"https://login.example/device"}\n')
+    try:
+        req = request(tmp_path, callback_port=8085)
+        assert module.launch_auth_worker(req) == {"login_url": "https://login.example/device"}
+        child = children[0]
+        assert child.kwargs["start_new_session"] is True
+        assert child.waited is False and child.terminated is False
+    finally:
+        os.close(write_fd)
+
+
+def test_background_worker_completes_sso_and_promotes_config_without_action_poll(tmp_path):
+    module = load_server()
+    req = request(tmp_path, callback_port=8085)
+    state = Path(req["state_dir"])
+    observed = {}
+
+    def login_runner(mode, argv, *, env, password, on_login_url):
+        assert mode == "sso"
+        assert argv == ["/usr/local/bin/argocd", "login", "--server", "argocd.example.test", "--sso", "--sso-port", "8085"]
+        assert password is None
+        observed["candidate"] = Path(env["ARGOCD_CONFIG"])
+        on_login_url("https://login.example/device")
+        observed["candidate"].write_text("callback completed login")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    def identity(_state, server, inputs, *, config_path, token=None):
+        assert server == "argocd.example.test"
+        assert token is None
+        assert config_path == observed["candidate"]
+        return True
+
+    assert module.run_auth_worker(req, login_runner=login_runner, identity_checker=identity) == {
+        "login_url": "https://login.example/device"
+    }
+    assert (state / "config").read_text() == "callback completed login"
+    assert (state / "config").stat().st_mode & 0o777 == 0o600
+    assert json.loads((state / "credentials.json").read_text()) == {
+        "mode": "sso", "server": "argocd.example.test"
+    }
+    assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: True) is True
+    assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: False) is False
+    assert not hasattr(module, "authentication_status")
+    assert not hasattr(module, "cancel_authentication")
+
+
+def test_one_shot_action_returns_url_then_synthetic_callback_completes_detached_worker(tmp_path):
+    """Local fake CLI exercises the actual detached worker and a synthetic callback signal."""
+    source = SERVER.read_text(encoding="utf-8")
+    fake_cli = tmp_path / "fake-argocd"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, pathlib, sys, time\n"
+        "args=sys.argv[1:]\n"
+        "if args and args[0]=='login':\n"
+        " print('Open https://login.synthetic.test/device', flush=True)\n"
+        " deadline=time.monotonic()+5\n"
+        " marker=pathlib.Path(os.environ['FAKE_CALLBACK_FILE'])\n"
+        " while not marker.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        " if not marker.exists(): raise SystemExit(9)\n"
+        " pathlib.Path(os.environ['ARGOCD_CONFIG']).write_text('synthetic callback session')\n"
+        " pathlib.Path(os.environ['WORKER_PID_FILE']).write_text(str(os.getppid()))\n"
+        " raise SystemExit(0)\n"
+        "if args[:2]==['account','get-user-info']:\n"
+        " config=pathlib.Path(os.environ['ARGOCD_CONFIG'])\n"
+        " raise SystemExit(0 if config.exists() and 'synthetic callback session' in config.read_text() else 1)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o700)
+    test_server = tmp_path / "server.py"
+    test_server.write_text(source.replace('CLI = "/usr/local/bin/argocd"', f'CLI = "{fake_cli}"'), encoding="utf-8")
+
+    callback = tmp_path / "synthetic-callback"
+    worker_pid_file = tmp_path / "worker-pid"
+    req = request(tmp_path, callback_port=8085)
+    env = os.environ.copy()
+    env["FAKE_CALLBACK_FILE"] = str(callback)
+    env["WORKER_PID_FILE"] = str(worker_pid_file)
+    try:
+        action = subprocess.run(
+            [sys.executable, str(test_server), "action", "authenticate"],
+            input=json.dumps(req).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, timeout=8, check=False,
+        )
+        assert action.returncode == 0
+        assert json.loads(action.stdout) == {"login_url": "https://login.synthetic.test/device"}
+        assert worker_pid_file.exists() is False
+
+        # The one-shot action has exited; this marker stands in for the browser callback.
+        callback.touch()
+        deadline = time.monotonic() + 6
+        saved = Path(req["state_dir"]) / "credentials.json"
+        while time.monotonic() < deadline and not saved.exists():
+            time.sleep(0.02)
+        assert saved.exists()
+        assert json.loads(saved.read_text()) == {"mode": "sso", "server": "argocd.example.test"}
+        assert (Path(req["state_dir"]) / "config").read_text() == "synthetic callback session"
+
+        worker_pid = int(worker_pid_file.read_text())
+        exit_deadline = time.monotonic() + 2
+        while time.monotonic() < exit_deadline:
+            try:
+                os.kill(worker_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+    finally:
+        # Always release only this test's synthetic CLI if an assertion fails.
+        callback.touch()
+
+
+def test_auth_token_and_password_modes_share_boolean_auth_check(tmp_path):
+    module = load_server()
+    token_req = request(tmp_path / "token", "api_token", api_token="synthetic-token")
+    observed = {}
+
+    def identity(_state, server, inputs, *, config_path=None, token=None):
+        observed["identity"] = (server, token, config_path)
+        return True
+
+    assert module.run_auth_worker(token_req, identity_checker=identity) == {}
+    assert observed["identity"][1] == "synthetic-token"
+    assert Path(token_req["state_dir"]).stat().st_mode & 0o777 == 0o700
+    assert (Path(token_req["state_dir"]) / "credentials.json").stat().st_mode & 0o777 == 0o600
+    assert module.is_authenticated(token_req, identity_checker=identity) is True
+
+    password_req = request(
+        tmp_path / "password", "username_password", username="synthetic-user", password="synthetic-password"
+    )
+
+    def password_login(mode, argv, *, env, password, on_login_url):
+        assert mode == "username_password"
+        assert "synthetic-password" not in " ".join(argv)
+        assert password == "synthetic-password"
+        Path(env["ARGOCD_CONFIG"]).write_text("password login session")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    assert module.run_auth_worker(password_req, login_runner=password_login, identity_checker=identity) == {}
+    assert module.is_authenticated(password_req, identity_checker=identity) is True
+    assert module.is_authenticated(password_req, identity_checker=lambda *_a, **_k: False) is False
+
+    saved_only = {"state_dir": token_req["state_dir"], "inputs": {"server": "argocd.example.test", "auth_mode": "api_token"}}
+    assert module.is_authenticated(saved_only, identity_checker=identity) is True
+
+
+def test_auth_failure_expiry_and_invalid_credentials_preserve_previous_state(tmp_path):
+    module = load_server()
+    req = request(tmp_path, "username_password", username="synthetic-user", password="new-secret")
+    state = Path(req["state_dir"])
+    old_config, old_credentials = seed_previous_auth(state)
+
+    def rejected_login(_mode, argv, *, env, password, on_login_url):
+        Path(env["ARGOCD_CONFIG"]).write_text("incomplete login state")
+        return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"expired password")
+
+    assert module.run_auth_worker(req, login_runner=rejected_login, identity_checker=lambda *_a, **_k: False) == {}
+    assert (state / "config").read_bytes() == old_config
+    assert (state / "credentials.json").read_bytes() == old_credentials
+    assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: False) is False
+    assert not list(state.glob(".argocd-config-*"))
+
+    token_req = request(tmp_path / "token", "api_token", api_token="rejected-token")
+    token_state = Path(token_req["state_dir"])
+    _, token_old = seed_previous_auth(token_state)
+    assert module.run_auth_worker(token_req, identity_checker=lambda *_a, **_k: False) == {}
+    assert (token_state / "credentials.json").read_bytes() == token_old
+    assert module.is_authenticated(token_req, identity_checker=lambda *_a, **_k: False) is False
+
+
+def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):
+    module = load_server()
+    monkeypatch.setattr(module, "launch_auth_worker", lambda *_a: pytest.fail("invalid inputs must not start a worker"))
+    missing_token = request(tmp_path / "missing", "api_token")
+    assert module.authenticate(missing_token) == {"diagnostic": "Enter the API token and try again."}
+    unknown_mode = request(tmp_path / "invalid", "unsupported")
+    assert module.authenticate(unknown_mode) == {"diagnostic": "The saved authentication mode is unsupported."}
+    assert not (Path(unknown_mode["state_dir"]) / "credentials.json").exists()
+
+
+def test_auth_output_redacts_secrets_and_never_puts_password_in_argv(tmp_path):
+    module = load_server()
+    password = "synthetic-password-secret"
+    req = request(tmp_path, "username_password", username="synthetic-user", password=password)
+    observed = {}
+
+    def rejected(mode, argv, *, env, password, on_login_url):
+        observed["argv"] = argv
+        observed["password"] = password
+        observed["raw_output"] = f"CLI debug echoed {password}"
+        return subprocess.CompletedProcess(argv, 1, stdout=observed["raw_output"].encode(), stderr=b"")
+
+    result = module.run_auth_worker(req, login_runner=rejected, identity_checker=lambda *_a, **_k: False)
+    assert result == {}
+    assert password not in " ".join(observed["argv"])
+    assert password not in json.dumps(result)
+    assert not (Path(req["state_dir"]) / "credentials.json").exists()
+    assert not list(Path(req["state_dir"]).glob("*.log"))
+
+
+def test_password_is_sent_only_after_prompt_through_tty(tmp_path, monkeypatch):
+    module = load_server()
+    real_popen = subprocess.Popen
+    password = "synthetic-pty-password"
+    launched = {}
+
+    def fake_cli_process(_argv, **kwargs):
+        script = "import getpass; assert getpass.getpass('Password: ') == '" + password + "'; print('authenticated')"
+        launched["kwargs"] = kwargs
+        return real_popen([sys.executable, "-c", script], **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", fake_cli_process)
+    urls = []
+    result = module.run_interactive_cli(
+        "username_password", ["/usr/local/bin/argocd", "login", "--username", "synthetic-user"],
+        env=os.environ.copy(), password=password, on_login_url=urls.append,
+    )
+    assert result.returncode == 0
+    assert b"authenticated" in result.stdout
+    assert password.encode() not in result.stdout
+    assert launched["kwargs"]["start_new_session"] is False
+    assert urls == [""]
+
+
+@pytest.mark.parametrize("action", ["authentication_status", "cancel_authentication"])
+def test_authentication_status_and_cancel_are_not_aact_actions(action, monkeypatch, capsys):
+    module = load_server()
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO('{"protocol_version":1}'))
+    module._run_action(action)
+    assert json.loads(capsys.readouterr().out) == {"diagnostic": "Unsupported action."}
