@@ -36,6 +36,37 @@ func TestInvalidPatternIncludesInputAndManifest(t *testing.T) {
 	}
 }
 
+func TestArgoPackageUsesFixedVerifiedCLI(t *testing.T) {
+	p, err := Load(filepath.Join("..", "..", "packages", "argocd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range p.Inputs {
+		if input.Name == "cli_version" {
+			t.Fatal("Argo CD CLI version must not be selected by profile input")
+		}
+	}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "packages", "argocd", "package.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "[mcp.image_variant]") {
+		t.Fatal("Argo package manifest must not declare an image variant")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "packages", "argocd", "mcp", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"3.2.0", "verify-cli-checksum.sh", "cli_checksums.txt"} {
+		if !strings.Contains(string(dockerfile), required) {
+			t.Errorf("standard Argo MCP Dockerfile must include %q", required)
+		}
+	}
+	if strings.Contains(string(dockerfile), "ARG CLI_VERSION") || strings.Contains(string(dockerfile), "latest") {
+		t.Fatal("standard Argo MCP Dockerfile must pin its CLI version without a profile build argument or latest")
+	}
+}
+
 func TestManifestHealthPathValidation(t *testing.T) {
 	for _, path := range []string{"health", "//other.test/health", "https://other.test/health", "/health?token=x", "/health#fragment", "/../health"} {
 		t.Run(path, func(t *testing.T) {
@@ -951,14 +982,7 @@ command = ["helper", "authenticate"]
 	}
 }
 
-func TestMCPImageVariantManifestRequiresDeclaredNonSecretVersionInput(t *testing.T) {
-	p := Package{SchemaVersion: 1, ID: "variant", MCP: &MCP{Name: "server", ImageVariant: &ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}}, Inputs: []Input{{Name: "cli_version", Type: "secret", Required: true}}}
-	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "non-secret") {
-		t.Fatalf("secret CLI version should be rejected: %v", err)
-	}
-}
-
-func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) {
+func TestArgoCapabilityDeclaresAuthModesAndReadOnlyDefault(t *testing.T) {
 	pkg, err := Load("../../packages/argocd")
 	if err != nil {
 		t.Fatal(err)
@@ -985,13 +1009,9 @@ func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) 
 			t.Errorf("%s must be a named secret input, got %#v", name, input)
 		}
 	}
-	version, ok := inputs["cli_version"]
-	if !ok || version.Type != "string" || !version.Required {
-		t.Fatalf("cli_version must be required and explicit, got %#v", version)
-	}
 	mcp := pkg.MCP
-	if mcp == nil || mcp.ImageVariant == nil || mcp.ImageVariant.VersionInput != "cli_version" || mcp.ImageVariant.VersionArg == "" {
-		t.Fatalf("selected CLI version is not wired to an image variant: %#v", mcp)
+	if mcp == nil || mcp.BuildContext != "./mcp" || mcp.ReleaseImage == "" {
+		t.Fatalf("Argo must retain standard package local/release image selection: %#v", mcp)
 	}
 	if got := inputs["read_only"].Default; got != true {
 		t.Fatalf("read_only default = %#v, want true", got)
@@ -1051,8 +1071,8 @@ func TestArgoCapabilityDefaultPublishedPortsAreDistinct(t *testing.T) {
 	}
 }
 
-func TestArgoVariantRecipeMapsBuildArchitectureToOfficialAssets(t *testing.T) {
-	recipe, err := os.ReadFile("../../packages/argocd/mcp/Dockerfile.variant")
+func TestArgoStandardRecipeMapsBuildArchitectureToFixedOfficialAssets(t *testing.T) {
+	recipe, err := os.ReadFile("../../packages/argocd/mcp/Dockerfile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1062,19 +1082,20 @@ func TestArgoVariantRecipeMapsBuildArchitectureToOfficialAssets(t *testing.T) {
 		`case "$TARGETARCH" in`,
 		"amd64|arm64)",
 		`argocd-linux-${TARGETARCH}`,
+		"v3.2.0",
 		"cli_checksums.txt",
 		"verify-cli-checksum.sh",
 	} {
 		if !strings.Contains(contents, required) {
-			t.Errorf("variant recipe must include architecture asset mapping %q", required)
+			t.Errorf("standard recipe must include fixed architecture asset mapping %q", required)
 		}
 	}
 	if !strings.Contains(contents, "Unsupported target architecture") {
-		t.Error("variant recipe must reject unsupported target architectures explicitly")
+		t.Error("standard recipe must reject unsupported target architectures explicitly")
 	}
 }
 
-func TestArgoVariantChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.T) {
+func TestArgoFixedClientChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.T) {
 	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
 	binaryPath := filepath.Join(t.TempDir(), "argocd-linux-amd64")
 	binary := []byte("fixture CLI binary bytes")

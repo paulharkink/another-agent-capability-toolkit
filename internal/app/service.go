@@ -461,34 +461,6 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			spec.BuildContext = filepath.Join(p.Dir, spec.BuildContext)
 		}
 	}
-	if variant := p.MCP.ImageVariant; variant != nil {
-		version, ok := values[variant.VersionInput]
-		if !ok || version == nil {
-			return mcp.Instance{}, invalid(fmt.Errorf("selected image variant input %q is required", variant.VersionInput))
-		}
-		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
-		if choiceErr != nil {
-			return mcp.Instance{}, operationFailure{step: "start", err: choiceErr}
-		}
-		if imageSource == "release" {
-			spec.Image = releaseImage
-			spec.BuildContext = ""
-		} else {
-			spec.Image = ""
-			if p.MCP.BuildContext == "" {
-				return mcp.Instance{}, invalid(errors.New("local image variant requires an MCP build_context"))
-			}
-		}
-		dockerfile := variant.Dockerfile
-		if !filepath.IsAbs(dockerfile) {
-			dockerfile = filepath.Join(p.Dir, dockerfile)
-		}
-		contextDir := variant.Context
-		if !filepath.IsAbs(contextDir) {
-			contextDir = filepath.Join(p.Dir, contextDir)
-		}
-		spec.ImageVariant = &mcp.ImageVariantSpec{PackageRoot: p.Dir, Dockerfile: dockerfile, Context: contextDir, Version: fmt.Sprint(version), VersionArg: variant.VersionArg, BaseImageArg: variant.BaseImageArg}
-	}
 	switch port := values[p.MCP.HostPortInput].(type) {
 	case int64:
 		spec.HostPort = int(port)
@@ -496,16 +468,22 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.HostPort = port
 	}
 	if _, ok := p.MCP.Actions["prepare"]; ok {
-		// The selected base and typed variant are resolved from the saved profile
-		// before prepare. Preserve them when prepare returns connection settings.
-		selectedImageVariant := spec.ImageVariant
-		selectedBaseImage := spec.Image
-		selectedBaseContext := spec.BuildContext
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
 		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
 		if choiceErr != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: choiceErr}
 		}
+		preserveImageSelection := false
+		if imageSource == "release" {
+			spec.Image = releaseImage
+			spec.BuildContext = ""
+			preserveImageSelection = true
+		} else if p.MCP.BuildContext != "" {
+			spec.Image = ""
+			preserveImageSelection = true
+		}
+		selectedImage := spec.Image
+		selectedBuildContext := spec.BuildContext
 		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 		if e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
@@ -520,10 +498,9 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
-		if selectedImageVariant != nil {
-			spec.ImageVariant = selectedImageVariant
-			spec.Image = selectedBaseImage
-			spec.BuildContext = selectedBaseContext
+		if preserveImageSelection {
+			spec.Image = selectedImage
+			spec.BuildContext = selectedBuildContext
 		}
 		spec.RegistrationName = resolvedRegistrationName
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)

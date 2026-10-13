@@ -42,14 +42,6 @@ label = "Argo CD server"
 required = true
 
 [[inputs]]
-name = "cli_version"
-type = "string"
-label = "Argo CD CLI version"
-hint = "Exact official release version without the v prefix."
-regex = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
-required = true
-
-[[inputs]]
 name = "auth_mode"
 type = "choice"
 label = "Authentication mode"
@@ -151,13 +143,6 @@ AACT_ARGOCD_GRPC_WEB_ROOT_PATH = "${ inputs.grpc_web_root_path }"
 AACT_ARGOCD_PLAINTEXT = "${ tostring(inputs.plaintext) }"
 AACT_ARGOCD_INSECURE = "${ tostring(inputs.insecure) }"
 AACT_ARGOCD_SKIP_TEST_TLS = "${ tostring(inputs.skip_test_tls) }"
-
-[mcp.image_variant]
-dockerfile = "mcp/Dockerfile.variant"
-context = "mcp"
-version_input = "cli_version"
-version_arg = "CLI_VERSION"
-base_image_arg = "AACT_BASE_IMAGE"
 
 [[mcp.additional_ports]]
 container_port_input = "callback_port"

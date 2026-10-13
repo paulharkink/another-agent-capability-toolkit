@@ -28,13 +28,10 @@ def test_inventory_fixture_is_complete_and_every_operation_modifier_classified()
     server = load_server()
     captured = inventory()
     assert captured["schema_version"] == 1
-    assert set(captured["versions"]) == {"2.14.11", "3.2.0"}
-    v214 = captured["versions"]["2.14.11"]["commands"]
+    assert set(captured["versions"]) == {"3.2.0"}
     v32 = captured["versions"]["3.2.0"]["commands"]
-    assert len(v214) == 159 and len(v32) == 160
-    assert sum(bool(entry["children"]) for entry in v214) == 24
+    assert len(v32) == 160
     assert sum(bool(entry["children"]) for entry in v32) == 24
-    assert {entry["path"] for entry in v32} - {entry["path"] for entry in v214} == {"app get-resource"}
     serialized = INVENTORY.read_text(encoding="utf-8")
     assert "/Users/" not in serialized
     assert "/home/username" not in serialized and "yourusername" not in serialized
@@ -59,6 +56,7 @@ def test_inventory_fixture_is_complete_and_every_operation_modifier_classified()
         for modifier in data["modifiers"]:
             server.classify_operation(modifier["operation"], [modifier["name"]], version=version)
     assert all_leaves == set(server.OPERATION_POLICY)
+    assert len(all_leaves) == 136
     classes = {name: sum(policy["class"] == name for policy in server.OPERATION_POLICY.values())
                for name in ("read", "mutation", "client", "unsupported")}
     assert classes == {"read": 31, "mutation": 66, "client": 15, "unsupported": 24}
@@ -169,7 +167,7 @@ def test_public_mcp_tool_rejects_hard_refresh_in_read_only_profile(monkeypatch):
 
 def test_versioned_exclusions_and_unsupported_admin_have_distinct_errors():
     server = load_server()
-    with pytest.raises(ValueError, match=r"unavailable in selected CLI version 2\.14\.11"):
+    with pytest.raises(ValueError, match="no complete operation policy inventory"):
         server.dispatch_operation("app get-resource", read_only=True, version="2.14.11")
     with pytest.raises(ValueError, match="requires direct Kubernetes access"):
         server.dispatch_operation("admin import", read_only=False, version="3.2.0")

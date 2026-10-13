@@ -494,18 +494,6 @@ func Validate(p Package) error {
 		}
 	}
 	for _, mcp := range p.MCPDefinitions() {
-		if variant := mcp.ImageVariant; variant != nil {
-			version, ok := inputsByName[variant.VersionInput]
-			if !ok || (version.Type != "string" && version.Type != "choice") || !version.Required {
-				return fmt.Errorf("mcp %s image variant version_input %q must reference a required non-secret string or choice input", mcp.Name, variant.VersionInput)
-			}
-			if variant.Dockerfile == "" || variant.Context == "" || filepath.IsAbs(variant.Dockerfile) || filepath.IsAbs(variant.Context) || hasPathEscape(variant.Dockerfile) || hasPathEscape(variant.Context) {
-				return fmt.Errorf("mcp %s image variant paths must be package-relative", mcp.Name)
-			}
-			if !environmentName.MatchString(variant.VersionArg) || !environmentName.MatchString(variant.BaseImageArg) || variant.VersionArg == variant.BaseImageArg {
-				return fmt.Errorf("mcp %s image variant build argument names are invalid", mcp.Name)
-			}
-		}
 		usedContainerPorts := map[int]bool{}
 		for _, port := range mcp.AdditionalPorts {
 			if len(port.When) == 0 {

@@ -132,10 +132,6 @@ def _operation_inventory() -> dict[str, Any]:
     return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
 
 
-def supported_cli_versions() -> tuple[str, ...]:
-    return tuple(sorted(_operation_inventory()["versions"]))
-
-
 def selected_cli_version() -> str:
     """Read exact version from the selected binary; never trust a profile label."""
     env = {key: value for key, value in os.environ.items() if not key.startswith("ARGOCD_")}

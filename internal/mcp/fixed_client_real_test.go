@@ -6,22 +6,42 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
 func TestArgoImageContextIncludesCLIInventory(t *testing.T) {
 	root := filepath.Join("..", "..", "packages", "argocd", "mcp")
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "packages", "argocd", "package.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "cli_version") || strings.Contains(string(manifest), "[mcp.image_variant]") {
+		t.Fatal("Argo package must use one fixed CLI through the standard package image")
+	}
 	dockerfile, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(dockerfile), "COPY server.py operation_inventory.json ./") {
-		t.Fatal("Argo MCP base image must include the operation inventory required by selected_cli_version")
+		t.Fatal("Argo MCP image must include the operation inventory used by runtime discovery")
+	}
+	for _, required := range []string{"3.2.0", "verify-cli-checksum.sh", "cli_checksums.txt"} {
+		if !strings.Contains(string(dockerfile), required) {
+			t.Errorf("standard Argo MCP Dockerfile must include %q", required)
+		}
+	}
+	if strings.Contains(string(dockerfile), "ARG CLI_VERSION") || strings.Contains(string(dockerfile), "latest") {
+		t.Fatal("standard Argo MCP Dockerfile must pin its CLI version without a build argument or latest")
 	}
 	if _, err := os.Stat(filepath.Join(root, "operation_inventory.json")); err != nil {
 		t.Fatal(err)
@@ -35,12 +55,13 @@ type argoImageFixture struct {
 	} `json:"versions"`
 }
 
-// TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases is opt-in because
-// it builds four owned images and contacts the local Docker daemon and public
-// Argo CD release assets. It never uses a published AACT image or live server.
-func TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases(t *testing.T) {
-	if os.Getenv("AACT_TEST_ARGOCD_VARIANT_DOCKER") != "1" {
-		t.Skip("set AACT_TEST_ARGOCD_VARIANT_DOCKER=1 to build owned Argo CLI variant images")
+// TestArgoFixedClientStandardImage is opt-in because it builds one owned
+// package image and contacts the local Docker daemon and official release
+// assets. Its release-style tag is an owned local parity fixture; it never
+// accesses a published AACT image or live Argo CD server.
+func TestArgoFixedClientStandardImage(t *testing.T) {
+	if os.Getenv("AACT_TEST_ARGOCD_DOCKER") != "1" {
+		t.Skip("set AACT_TEST_ARGOCD_DOCKER=1 to build and inspect the standard Argo MCP image")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -58,7 +79,17 @@ func TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases(t *testing.T) {
 
 	packageRoot := filepath.Join("..", "..", "packages", "argocd")
 	mcpRoot := filepath.Join(packageRoot, "mcp")
-	fixtureBytes, err := os.ReadFile(filepath.Join(mcpRoot, "tests", "testdata", "image-variant-versions.json"))
+	packageDefinition, err := catalog.Load(packageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packageDefinition.MCP == nil || packageDefinition.MCP.BuildContext != "./mcp" || packageDefinition.MCP.ReleaseImage == "" {
+		t.Fatalf("Argo package does not select its standard MCP image path: %#v", packageDefinition.MCP)
+	}
+	if !strings.Contains(packageDefinition.MCP.ReleaseImage, "{aact_version}") {
+		t.Fatalf("expected package release image template for locally owned parity tag, got %q", packageDefinition.MCP.ReleaseImage)
+	}
+	fixtureBytes, err := os.ReadFile(filepath.Join(mcpRoot, "tests", "testdata", "fixed-client-checksum.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +97,8 @@ func TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases(t *testing.T) {
 	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	if len(fixture.Versions) != 2 {
-		t.Fatalf("expected exactly two pinned CLI releases, got %d", len(fixture.Versions))
+	if len(fixture.Versions) != 1 || fixture.Versions[0].Version != "3.2.0" {
+		t.Fatalf("expected the single fixed CLI release v3.2.0, got %#v", fixture.Versions)
 	}
 	serverSource, err := os.ReadFile(filepath.Join(mcpRoot, "server.py"))
 	if err != nil {
@@ -76,39 +107,35 @@ func TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases(t *testing.T) {
 	if !strings.Contains(string(serverSource), `CLI = "/usr/local/bin/argocd"`) || !strings.Contains(string(serverSource), "run_cli([CLI, *argv") {
 		t.Fatal("server/action operation resolver does not use the selected CLI path")
 	}
-	variantDockerfile := filepath.Join(mcpRoot, "Dockerfile.variant")
-	if _, err := os.Stat(variantDockerfile); err != nil {
-		t.Fatal(err)
-	}
 	unique, err := randomDockerSuffix()
 	if err != nil {
 		t.Fatal(err)
 	}
-	imagePrefix := "aact-task8-argocd-" + unique
-	localBase := imagePrefix + ":local-base"
-	releaseBase := "ghcr.io/aact-task8/argocd-mcp:v" + unique
-	images := []string{localBase, releaseBase}
-	containerNames := []string{}
+	releaseStyleImage := strings.ReplaceAll(packageDefinition.MCP.ReleaseImage, "{aact_version}", "local-"+unique)
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewDockerRuntime(store)
+	runtime.Executor = boundedRuntimeDockerExecutor{}
+	runtime.SkipHealth = true
+	started := map[state.Key]bool{}
+	ownedImages := []string{}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cleanupCancel()
-		for _, name := range containerNames {
-			_, _ = runOwnedDocker(cleanupCtx, t, "rm", "--force", name)
+		for key, isStarted := range started {
+			if isStarted {
+				_ = runtime.Stop(cleanupCtx, key)
+			}
 		}
-		for _, image := range images {
+		for _, image := range ownedImages {
 			_, _ = runOwnedDocker(cleanupCtx, t, "image", "rm", "--force", image)
 		}
 	})
-	if output, err := runOwnedDocker(ctx, t, "build", "--file", filepath.Join(mcpRoot, "Dockerfile"), "--tag", localBase, mcpRoot); err != nil {
-		t.Fatalf("build owned local FastMCP base: %v\n%s", err, output)
-	}
-	if output, err := runOwnedDocker(ctx, t, "image", "tag", localBase, releaseBase); err != nil {
-		t.Fatalf("create locally owned release-style base tag: %v\n%s", err, output)
-	}
-
-	evidenceRoot := os.Getenv("AACT_TASK8_EVIDENCE_DIR")
+	evidenceRoot := os.Getenv("AACT_ARGOCD_EVIDENCE_DIR")
 	if evidenceRoot == "" {
-		evidenceRoot, err = os.MkdirTemp("", "aact-task8-image-evidence-")
+		evidenceRoot, err = os.MkdirTemp("", "aact-argocd-fixed-image-evidence-")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,33 +144,95 @@ func TestArgoVariantContainsSelectedCLIForLocalAndReleaseBases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, base := range []struct{ name, tag string }{{"local", localBase}, {"release-style", releaseBase}} {
-		for _, selected := range fixture.Versions {
-			version := selected.Version
-			checksum, ok := selected.SHA256[platform.Arch]
-			if !ok {
-				t.Fatalf("fixture has no official %s checksum for Argo CD %s", platform.Arch, version)
-			}
-			image := imagePrefix + ":" + base.name + "-v" + version
-			images = append(images, image)
-			buildOutput, buildErr := runOwnedDocker(ctx, t,
-				"build", "--file", variantDockerfile, "--tag", image,
-				"--build-arg", "CLI_VERSION="+version,
-				"--build-arg", "AACT_BASE_IMAGE="+base.tag,
-				"--platform", "linux/"+platform.Arch, mcpRoot,
-			)
-			if buildErr != nil {
-				t.Fatalf("build %s variant for Argo CD %s: %v\n%s", base.name, version, buildErr, buildOutput)
-			}
-			containerName := "aact-task8-" + unique + "-" + base.name + "-" + strings.ReplaceAll(version, ".", "-")
-			containerNames = append(containerNames, containerName)
-			result, err := runImageInventory(ctx, t, image, containerName, version, checksum, platform.Arch, evidenceRoot, base.name)
-			if err != nil {
-				t.Fatalf("verify %s Argo CD %s image: %v", base.name, version, err)
-			}
-			t.Logf("%s Argo CD %s: %d executable commands, %d command paths; version=%q; evidence=%s", base.name, version, result.ExecutableCommands, result.CommandPaths, result.VersionOutput, filepath.Join(evidenceRoot, base.name+"-v"+version))
-		}
+	selected := fixture.Versions[0]
+	checksum, ok := selected.SHA256[platform.Arch]
+	if !ok {
+		t.Fatalf("fixture has no official %s checksum for Argo CD %s", platform.Arch, selected.Version)
 	}
+	sourceHostPort, err := freeLoopbackPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "source", Profile: unique, MCP: "source"}
+	sourceImage := "aact/" + sourceKey.ID()[:24] + ":local"
+	ownedImages = append(ownedImages, sourceImage, releaseStyleImage)
+	sourceSpec := fixedArgoRunSpec(mcpRoot, "", sourceHostPort, store.Root(), "aact-argocd-fixed-"+unique+"-source")
+	sourceInstance, err := runtime.Start(ctx, sourceKey, sourceSpec)
+	if err != nil {
+		t.Fatalf("start standard Argo source package through AACT Runtime.Start: %v", err)
+	}
+	started[sourceKey] = true
+	if output, err := runOwnedDocker(ctx, t, "image", "tag", sourceImage, releaseStyleImage); err != nil {
+		t.Fatalf("create locally owned package release-style tag: %v\n%s", err, output)
+	}
+	for _, image := range []struct {
+		name     string
+		key      state.Key
+		tag      string
+		instance Instance
+	}{
+		{name: "source", key: sourceKey, tag: sourceImage, instance: sourceInstance},
+	} {
+		result, err := runStartedContainerInventory(ctx, t, image.instance.ID, selected.Version, checksum, evidenceRoot, image.name)
+		if err != nil {
+			t.Fatalf("verify standard Argo MCP %s runtime: %v", image.name, err)
+		}
+		t.Logf("%s package image tag Argo CD %s: %d executable commands, %d command paths; version=%q; evidence=%s", image.name, selected.Version, result.ExecutableCommands, result.CommandPaths, result.VersionOutput, filepath.Join(evidenceRoot, image.name+"-v"+selected.Version))
+		if err := runtime.Stop(ctx, image.key); err != nil {
+			t.Fatalf("stop owned standard Argo %s runtime: %v", image.name, err)
+		}
+		started[image.key] = false
+	}
+	releaseHostPort, err := freeLoopbackPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "release", Profile: unique, MCP: "release"}
+	releaseSpec := fixedArgoRunSpec("", releaseStyleImage, releaseHostPort, store.Root(), "aact-argocd-fixed-"+unique+"-release")
+	releaseInstance, err := runtime.Start(ctx, releaseKey, releaseSpec)
+	if err != nil {
+		t.Fatalf("start locally owned release-style image through AACT Runtime.Start: %v", err)
+	}
+	started[releaseKey] = true
+	result, err := runStartedContainerInventory(ctx, t, releaseInstance.ID, selected.Version, checksum, evidenceRoot, "release-style-local")
+	if err != nil {
+		t.Fatalf("verify standard Argo release-style runtime: %v", err)
+	}
+	t.Logf("locally owned release-style package tag Argo CD %s: %d executable commands, %d command paths; version=%q; evidence=%s", selected.Version, result.ExecutableCommands, result.CommandPaths, result.VersionOutput, filepath.Join(evidenceRoot, "release-style-local-v"+selected.Version))
+	if err := runtime.Stop(ctx, releaseKey); err != nil {
+		t.Fatalf("stop owned standard Argo release-style runtime: %v", err)
+	}
+	started[releaseKey] = false
+}
+
+func freeLoopbackPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func fixedArgoRunSpec(buildContext, image string, hostPort int, stateDir, registrationName string) RunSpec {
+	return RunSpec{
+		Image: image, BuildContext: buildContext, Env: map[string]string{
+			"AACT_ARGOCD_SERVER": "127.0.0.1", "AACT_ARGOCD_READ_ONLY": "true", "AACT_ARGOCD_AUTH_MODE": "sso",
+		},
+		Mounts: []Mount{{Source: stateDir, Destination: "/state"}},
+		Host:   "127.0.0.1", HostPort: hostPort, ContainerPort: 8765,
+		Transport: "streamable-http", EndpointPath: "/mcp", RegistrationName: registrationName,
+	}
+}
+
+type boundedRuntimeDockerExecutor struct{}
+
+func (boundedRuntimeDockerExecutor) Run(ctx context.Context, argv []string, cwd string, stdin []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
+	if len(argv) >= 2 && argv[0] == "docker" && argv[1] == "run" {
+		limits := []string{"--memory", "512m", "--cpus", "1", "--pids-limit", "64", "--read-only", "--tmpfs", "/tmp:size=64m"}
+		argv = append(append(append([]string{}, argv[:2]...), limits...), argv[2:]...)
+	}
+	return (process.OSExecutor{}).Run(ctx, argv, cwd, stdin, env, onStderr)
 }
 
 type dockerPlatformInfo struct{ Arch string }
@@ -364,12 +453,11 @@ print(json.dumps({"version_output": version_output, "selected_version": selected
                   "help": raw_help, "normalized_defaults": normalized_defaults}, separators=(",", ":")))
 `
 
-func runImageInventory(ctx context.Context, t *testing.T, image, containerName, version, checksum, arch, evidenceRoot, baseName string) (imageInventoryResult, error) {
+func runStartedContainerInventory(ctx context.Context, t *testing.T, containerID, version, checksum, evidenceRoot, baseName string) (imageInventoryResult, error) {
 	t.Helper()
-	args := []string{"run", "--rm", "--name", containerName, "--network", "none", "--memory", "512m", "--cpus", "1", "--pids-limit", "64", "--read-only", "--tmpfs", "/tmp:size=64m", "--env", "AACT_ARGOCD_READ_ONLY=true", "--entrypoint", "python", image, "-c", selectedImageInventoryScript, version, checksum}
-	output, err := runOwnedDocker(ctx, t, args...)
+	output, err := runOwnedDocker(ctx, t, "exec", containerID, "python", "-c", selectedImageInventoryScript, version, checksum)
 	if err != nil {
-		return imageInventoryResult{}, fmt.Errorf("container inventory verification failed: %w\n%s", err, output)
+		return imageInventoryResult{}, fmt.Errorf("started-container inventory verification failed: %w\n%s", err, output)
 	}
 	var report struct {
 		VersionOutput      string `json:"version_output"`

@@ -157,37 +157,7 @@ func TestProfileApplyHoldsLockDuringAdapterEffects(t *testing.T) {
 	}
 }
 
-func TestProfileResolvesSelectedImageVariantInputsAndPackagePaths(t *testing.T) {
-	s, _, q := profileApplyFixture(t)
-	p := &s.Source.Catalog[0]
-	p.Dir = t.TempDir()
-	if err := os.MkdirAll(filepath.Join(p.Dir, "mcp"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(p.Dir, "mcp", "Dockerfile.variant"), []byte("FROM scratch"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	p.MCPs[0].Image = ""
-	p.MCPs[0].BuildContext = "mcp"
-	p.MCPs[0].ReleaseImage = "example.invalid/mcp:v1"
-	p.MCPs[0].ImageVariant = &catalog.ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}
-	p.Inputs = append(p.Inputs, catalog.Input{Name: "cli_version", Type: "string", Required: true})
-	q.Inputs = map[string]any{"label": "company", "enabled": true, "cli_version": "v2.10.1"}
-	runtime := &providerTestRuntime{}
-	s.Options.Runtime = runtime
-	if _, err := s.RunProfileMCP(context.Background(), "start", q, "alpha"); err != nil {
-		t.Fatal(err)
-	}
-	if len(runtime.specs) != 1 {
-		t.Fatalf("expected one resolved runtime spec: %+v", runtime.specs)
-	}
-	spec := runtime.specs[0]
-	if spec.Image != "example.invalid/mcp:v1" || spec.BuildContext != "" || spec.ImageVariant == nil || spec.ImageVariant.Version != "v2.10.1" || spec.ImageVariant.PackageRoot != p.Dir || spec.ImageVariant.Dockerfile != filepath.Join(p.Dir, "mcp", "Dockerfile.variant") || spec.ImageVariant.Context != filepath.Join(p.Dir, "mcp") {
-		t.Fatalf("profile variant inputs were not resolved: %+v", spec)
-	}
-}
-
-func TestPreparedProfilePreservesImageVariantBasePortsAndState(t *testing.T) {
+func TestPreparedProfilePreservesStandardImageSelectionPortsAndState(t *testing.T) {
 	for _, imageSource := range []string{"release", "local"} {
 		t.Run(imageSource, func(t *testing.T) {
 			s, _, q := profileApplyFixture(t)
@@ -197,18 +167,14 @@ func TestPreparedProfilePreservesImageVariantBasePortsAndState(t *testing.T) {
 			if err := os.MkdirAll(contextDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(contextDir, "Dockerfile.variant"), []byte("FROM ${AACT_BASE_IMAGE}\\nARG CLI_VERSION\\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
 			p.MCPs = p.MCPs[:1]
 			p.MCPs[0].Image = ""
 			p.MCPs[0].BuildContext = "mcp"
 			p.MCPs[0].ReleaseImage = "ghcr.io/example/server:v{aact_version}"
 			p.MCPs[0].Actions = map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}
-			p.MCPs[0].ImageVariant = &catalog.ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}
 			p.MCPs[0].AdditionalPorts = []catalog.ConditionalPort{{ContainerPort: 7443, HostPortInput: "callback_port", When: map[string]any{"enabled": true}}}
-			p.Inputs = append(p.Inputs, catalog.Input{Name: "cli_version", Type: "string", Required: true}, catalog.Input{Name: "callback_port", Type: "integer", Required: true})
-			q.Inputs = map[string]any{"label": "company", "enabled": true, "cli_version": "v2.10.1", "callback_port": int64(17443)}
+			p.Inputs = append(p.Inputs, catalog.Input{Name: "callback_port", Type: "integer", Required: true})
+			q.Inputs = map[string]any{"label": "company", "enabled": true, "callback_port": int64(17443)}
 			if imageSource == "local" {
 				if err := s.UISetMCPImageSource(context.Background(), "local"); err != nil {
 					t.Fatal(err)
@@ -228,9 +194,6 @@ func TestPreparedProfilePreservesImageVariantBasePortsAndState(t *testing.T) {
 				t.Fatalf("expected one runtime spec: %+v", runtime.specs)
 			}
 			spec := runtime.specs[0]
-			if spec.ImageVariant == nil || spec.ImageVariant.Version != "v2.10.1" || spec.ImageVariant.Dockerfile != filepath.Join(p.Dir, "mcp", "Dockerfile.variant") {
-				t.Fatalf("prepare discarded selected image variant: %+v", spec)
-			}
 			if imageSource == "release" && (spec.Image != "ghcr.io/example/server:v1.2.3" || spec.BuildContext != "") {
 				t.Fatalf("release base selection was lost: %+v", spec)
 			}
