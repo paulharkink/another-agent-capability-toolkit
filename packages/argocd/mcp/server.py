@@ -32,6 +32,7 @@ PROFILE_ENV = {
     "grpc_web_root_path": "AACT_ARGOCD_GRPC_WEB_ROOT_PATH",
     "plaintext": "AACT_ARGOCD_PLAINTEXT",
     "insecure": "AACT_ARGOCD_INSECURE",
+    "skip_test_tls": "AACT_ARGOCD_SKIP_TEST_TLS",
 }
 
 
@@ -44,7 +45,7 @@ def _profile_from_environment() -> dict[str, Any] | None:
     profile: dict[str, Any] = {}
     for key, name in PROFILE_ENV.items():
         value = os.environ[name]
-        if key in {"grpc_web", "plaintext", "insecure"}:
+        if key in {"grpc_web", "plaintext", "insecure", "skip_test_tls"}:
             if value not in {"true", "false"}:
                 raise ValueError("The selected container profile configuration is invalid.")
             profile[key] = value == "true"
@@ -117,6 +118,7 @@ def _auth_inputs(request: dict[str, Any], *, require_credentials: bool = True,
     if selected is not None and (
         server != selected["server"] or mode != selected["auth_mode"]
         or _connection_scope(inputs) != _connection_scope(selected)
+        or (inputs.get("skip_test_tls") is True) != selected["skip_test_tls"]
     ):
         raise ValueError("Authentication request does not match the selected container profile.")
     if mode == "sso" and require_credentials:
@@ -334,6 +336,8 @@ def run_auth_worker(request: dict[str, Any], *,
         argv = [CLI, "login", "--server", server, "--username", inputs["username"], *_connection_args(inputs)]
         password = inputs["password"]
         publish()
+    if inputs.get("skip_test_tls") is True:
+        argv.append("--skip-test-tls")
     runner = login_runner or run_interactive_cli
     try:
         result = runner(mode, argv, env=env, password=password, on_login_url=publish)

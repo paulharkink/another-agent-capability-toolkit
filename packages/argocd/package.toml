@@ -117,6 +117,12 @@ type = "boolean"
 label = "Skip TLS verification"
 default = false
 
+[[inputs]]
+name = "skip_test_tls"
+type = "boolean"
+label = "Skip TLS test during Argo CD login"
+default = false
+
 [mcp]
 name = "argocd"
 runtime = "docker"
@@ -138,6 +144,7 @@ AACT_ARGOCD_GRPC_WEB = "${ tostring(inputs.grpc_web) }"
 AACT_ARGOCD_GRPC_WEB_ROOT_PATH = "${ inputs.grpc_web_root_path }"
 AACT_ARGOCD_PLAINTEXT = "${ tostring(inputs.plaintext) }"
 AACT_ARGOCD_INSECURE = "${ tostring(inputs.insecure) }"
+AACT_ARGOCD_SKIP_TEST_TLS = "${ tostring(inputs.skip_test_tls) }"
 
 [mcp.image_variant]
 dockerfile = "mcp/Dockerfile.variant"

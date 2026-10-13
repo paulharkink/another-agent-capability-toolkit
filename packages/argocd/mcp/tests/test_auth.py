@@ -23,11 +23,13 @@ PROFILE_ENV = {
     "grpc_web_root_path": "AACT_ARGOCD_GRPC_WEB_ROOT_PATH",
     "plaintext": "AACT_ARGOCD_PLAINTEXT",
     "insecure": "AACT_ARGOCD_INSECURE",
+    "skip_test_tls": "AACT_ARGOCD_SKIP_TEST_TLS",
 }
 
 
 def set_profile_env(monkeypatch, *, server="argocd.example.test", auth_mode="sso",
-                    grpc_web=False, grpc_web_root_path="", plaintext=False, insecure=False):
+                    grpc_web=False, grpc_web_root_path="", plaintext=False, insecure=False,
+                    skip_test_tls=False):
     values = {
         "server": server,
         "auth_mode": auth_mode,
@@ -35,6 +37,7 @@ def set_profile_env(monkeypatch, *, server="argocd.example.test", auth_mode="sso
         "grpc_web_root_path": grpc_web_root_path,
         "plaintext": plaintext,
         "insecure": insecure,
+        "skip_test_tls": skip_test_tls,
     }
     for key, env_name in PROFILE_ENV.items():
         value = values[key]
@@ -427,7 +430,7 @@ def test_health_uses_matching_current_profile_settings_for_identity_probe(tmp_pa
     monkeypatch.setattr(module, "STATE_DIR", state)
     set_profile_env(
         monkeypatch, server="current.argocd.example.test", auth_mode=mode, grpc_web=True,
-        grpc_web_root_path="/current", insecure=True,
+        grpc_web_root_path="/current", insecure=True, skip_test_tls=True,
     )
     observed = {}
 
@@ -444,6 +447,7 @@ def test_health_uses_matching_current_profile_settings_for_identity_probe(tmp_pa
         "/usr/local/bin/argocd", "account", "get-user-info", "--server", "current.argocd.example.test",
         "--grpc-web", "--grpc-web-root-path", "/current", "--insecure",
     ]
+    assert "--skip-test-tls" not in observed["argv"]
     assert observed["env"]["ARGOCD_CONFIG"] == str(state / "config")
     if mode == "api_token":
         assert observed["env"]["ARGOCD_AUTH_TOKEN"] == "private-synthetic-token"
@@ -458,6 +462,7 @@ def test_health_uses_matching_current_profile_settings_for_identity_probe(tmp_pa
         ("auth_mode", "api_token", "sso"),
         ("plaintext", True, False),
         ("insecure", True, False),
+        ("skip_test_tls", True, False),
         ("grpc_web", True, False),
         ("grpc_web_root_path", "/current", "/old"),
     ],
@@ -468,7 +473,7 @@ def test_authenticate_rejects_inputs_that_differ_from_current_container_profile(
     module = load_server()
     selected_profile = {
         "server": "selected.argocd.example.test", "auth_mode": "sso", "grpc_web": False,
-        "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+        "grpc_web_root_path": "", "plaintext": False, "insecure": False, "skip_test_tls": False,
     }
     selected_profile[field] = selected
     set_profile_env(monkeypatch, **selected_profile)
@@ -482,6 +487,44 @@ def test_authenticate_rejects_inputs_that_differ_from_current_container_profile(
     assert module.authenticate(request_value) == {
         "diagnostic": "Authentication request does not match the selected container profile."
     }
+
+
+@pytest.mark.parametrize(
+    ("skip_test_tls", "insecure"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_login_applies_skip_test_tls_independently_from_insecure(tmp_path, monkeypatch, skip_test_tls, insecure):
+    module = load_server()
+    req = request(
+        tmp_path, "sso", callback_port=8085, skip_test_tls=skip_test_tls, insecure=insecure
+    )
+    set_profile_env(monkeypatch, skip_test_tls=skip_test_tls, insecure=insecure)
+    observed = {}
+
+    def login(mode, argv, *, env, password, on_login_url):
+        observed["argv"] = argv
+        Path(env["ARGOCD_CONFIG"]).write_text("synthetic login config")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    assert module.run_auth_worker(req, login_runner=login, identity_checker=lambda *_a, **_k: True) == {}
+    assert ("--skip-test-tls" in observed["argv"]) is skip_test_tls
+    assert ("--insecure" in observed["argv"]) is insecure
+
+
+def test_identity_probe_never_passes_login_only_skip_test_tls_flag(tmp_path, monkeypatch):
+    module = load_server()
+    set_profile_env(monkeypatch, skip_test_tls=True)
+    observed = {}
+
+    def run_cli(argv, *, env):
+        observed["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(module, "run_cli", run_cli)
+    assert module._identity(
+        tmp_path, "argocd.example.test", {"server": "argocd.example.test", "auth_mode": "sso", "skip_test_tls": True}
+    ) is True
+    assert "--skip-test-tls" not in observed["argv"]
 
 
 def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):
