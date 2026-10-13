@@ -140,6 +140,7 @@ release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/argocd-mcp
 
 [mcp.env]
 AACT_ARGOCD_SERVER = "${ inputs.server }"
+AACT_ARGOCD_READ_ONLY = "${ tostring(inputs.read_only) }"
 AACT_ARGOCD_AUTH_MODE = "${ inputs.auth_mode }"
 AACT_ARGOCD_GRPC_WEB = "${ tostring(inputs.grpc_web) }"
 AACT_ARGOCD_GRPC_WEB_ROOT_PATH = "${ inputs.grpc_web_root_path }"

@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+from functools import lru_cache
 import pty
 import re
 import select
@@ -36,6 +37,318 @@ PROFILE_ENV = {
     "insecure": "AACT_ARGOCD_INSECURE",
     "skip_test_tls": "AACT_ARGOCD_SKIP_TEST_TLS",
 }
+
+
+INVENTORY_PATH = Path(__file__).with_name("operation_inventory.json")
+
+# Every executable command leaf is classified explicitly. Group nodes remain in the
+# independent help inventory but cannot be dispatched as operations. New CLI leaves
+# require an explicit policy entry before discovery can expose them.
+READ_OPERATIONS = frozenset({
+    "account can-i", "account get", "account get-user-info",
+    "account list", "app actions list", "app diff",
+    "app get", "app get-resource", "app history",
+    "app list", "app logs", "app manifests",
+    "app resources", "app wait", "appset generate",
+    "appset get", "appset list", "cert list",
+    "cluster get", "cluster list", "gpg get",
+    "gpg list", "proj get", "proj list",
+    "proj role get", "proj role list", "proj role list-tokens",
+    "proj windows list", "repo get", "repo list",
+    "repocreds list",
+})
+MUTATION_OPERATIONS = frozenset({
+    "account delete-token", "account generate-token", "account update-password",
+    "app actions run", "app add-source", "app confirm-deletion",
+    "app create", "app delete", "app delete-resource",
+    "app edit", "app patch", "app patch-resource",
+    "app remove-source", "app rollback", "app set",
+    "app sync", "app terminate-op", "app unset",
+    "appset create", "appset delete", "cert add-ssh",
+    "cert add-tls", "cert rm", "cluster add",
+    "cluster rm", "cluster rotate-auth", "cluster set",
+    "gpg add", "gpg rm", "proj add-destination",
+    "proj add-destination-service-account", "proj add-orphaned-ignore", "proj add-signature-key",
+    "proj add-source", "proj add-source-namespace", "proj allow-cluster-resource",
+    "proj allow-namespace-resource", "proj create", "proj delete",
+    "proj deny-cluster-resource", "proj deny-namespace-resource", "proj edit",
+    "proj remove-destination", "proj remove-destination-service-account", "proj remove-orphaned-ignore",
+    "proj remove-signature-key", "proj remove-source", "proj remove-source-namespace",
+    "proj role add-group", "proj role add-policy", "proj role create",
+    "proj role create-token", "proj role delete", "proj role delete-token",
+    "proj role remove-group", "proj role remove-policy", "proj set",
+    "proj windows add", "proj windows delete", "proj windows disable-manual-sync",
+    "proj windows enable-manual-sync", "proj windows update", "repo add",
+    "repo rm", "repocreds add", "repocreds rm",
+})
+CLIENT_OPERATIONS = frozenset({
+    "account bcrypt", "admin app generate-spec", "admin cluster generate-spec",
+    "admin dashboard", "admin proj generate-allow-list", "admin proj generate-spec",
+    "admin repo generate-spec", "completion", "configure",
+    "context", "help", "login",
+    "logout", "relogin", "version",
+})
+UNSUPPORTED_OPERATIONS = frozenset({
+    "admin app diff-reconcile-results", "admin app get-reconcile-results", "admin cluster kubeconfig",
+    "admin cluster namespaces disable-namespaced-mode", "admin cluster namespaces enable-namespaced-mode", "admin cluster shards",
+    "admin cluster stats", "admin export", "admin import",
+    "admin initial-password", "admin notifications template get", "admin notifications template notify",
+    "admin notifications trigger get", "admin notifications trigger run", "admin proj update-role-policy",
+    "admin redis-initial-password", "admin settings rbac can", "admin settings rbac validate",
+    "admin settings resource-overrides health", "admin settings resource-overrides ignore-differences", "admin settings resource-overrides ignore-resource-updates",
+    "admin settings resource-overrides list-actions", "admin settings resource-overrides run-action", "admin settings validate",
+})
+OPERATION_POLICY = {
+    **{operation: {"class": "read"} for operation in READ_OPERATIONS},
+    **{operation: {"class": "mutation"} for operation in MUTATION_OPERATIONS},
+    **{operation: {"class": "client", "reason": "client_side_or_local_tooling"} for operation in CLIENT_OPERATIONS},
+    **{operation: {"class": "unsupported", "reason": "direct_kubernetes_access"} for operation in UNSUPPORTED_OPERATIONS},
+}
+POLICY_MODIFIERS = {
+    ("app get", "--refresh"): "read",
+    ("app get", "--hard-refresh"): "mutation",
+    ("app diff", "--refresh"): "read",
+    ("app diff", "--hard-refresh"): "mutation",
+    ("repo get", "--refresh"): "mutation",
+    ("repo list", "--refresh"): "mutation",
+}
+GLOBAL_OVERRIDE_NAMES = frozenset({
+    "server", "context", "argocd_context", "auth", "auth_token", "token", "config",
+    "config_path", "grpc_web", "grpc_web_root_path", "plaintext", "insecure", "core",
+    "kube_context", "client_crt", "client_crt_key", "header", "port_forward",
+    "port_forward_namespace", "server_crt", "server_name", "skip_test_tls", "loglevel",
+    "logformat", "http_retry_max", "prompts_enabled",
+})
+
+
+@lru_cache(maxsize=1)
+def _operation_inventory() -> dict[str, Any]:
+    return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+
+
+def supported_cli_versions() -> tuple[str, ...]:
+    return tuple(sorted(_operation_inventory()["versions"]))
+
+
+def selected_cli_version() -> str:
+    """Read exact version from the selected binary; never trust a profile label."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("ARGOCD_")}
+    env.update({"ARGOCD_CONFIG": str(STATE_DIR / "config"), "HOME": "/tmp/aact-home"})
+    try:
+        result = subprocess.run([CLI, "version", "--client", "--short"], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("The selected Argo CD CLI version could not be verified.") from error
+    output = result.stdout.decode("utf-8", "replace").strip()
+    match = re.search(r"argocd:\s*v?(\d+\.\d+\.\d+)(?:[+ ].*)?$", output, re.MULTILINE)
+    if result.returncode != 0 or match is None:
+        raise ValueError("The selected Argo CD CLI version could not be verified.")
+    version = match.group(1)
+    if version not in _operation_inventory()["versions"]:
+        raise ValueError(f"Argo CD CLI version {version} has no complete operation policy inventory.")
+    return version
+
+
+def _version_inventory(version: str | None) -> tuple[str, dict[str, Any]]:
+    selected = selected_cli_version() if version is None else version
+    versions = _operation_inventory()["versions"]
+    if selected not in versions:
+        raise ValueError(f"Argo CD CLI version {selected} has no complete operation policy inventory.")
+    return selected, versions[selected]
+
+
+def classify_operation(operation: str, modifiers: Any = (), *, version: str | None = None) -> str:
+    selected, inventory = _version_inventory(version)
+    if not isinstance(operation, str):
+        raise ValueError(f"Unknown or unclassified operation {operation!r}; it is not in the policy registry.")
+    entries = {entry["path"]: entry for entry in inventory["commands"]}
+    if operation in entries and entries[operation]["children"]:
+        raise ValueError(f"Command group {operation!r} is not an executable operation.")
+    if operation not in OPERATION_POLICY:
+        raise ValueError(f"Unknown or unclassified operation {operation!r}; it is not in the policy registry.")
+    if operation not in entries:
+        raise ValueError(f"Operation {operation!r} is unavailable in selected CLI version {selected}.")
+    classification = OPERATION_POLICY[operation]["class"]
+    if isinstance(modifiers, str):
+        raise ValueError("Operation modifiers must be supplied as a list of exact flag names.")
+    if not isinstance(modifiers, (list, tuple, set, frozenset)):
+        raise ValueError("Operation modifiers must be a list of exact flag names.")
+    modifier_list = tuple(modifiers)
+    if any(not isinstance(modifier, str) for modifier in modifier_list):
+        raise ValueError("Operation modifiers must be exact flag names.")
+    if len(set(modifier_list)) != len(modifier_list):
+        raise ValueError("Duplicate operation modifiers are not allowed.")
+    for modifier in modifier_list:
+        modifier_class = POLICY_MODIFIERS.get((operation, modifier))
+        if modifier_class is None:
+            raise ValueError(f"Unknown or incompatible modifier {modifier!r} for operation {operation!r}.")
+        if classification == "client" or classification == "unsupported":
+            raise ValueError(f"Modifier {modifier!r} cannot be used with excluded operation {operation!r}.")
+        if modifier_class == "mutation":
+            classification = "mutation"
+    if (operation, "--refresh") in POLICY_MODIFIERS and {"--refresh", "--hard-refresh"}.issubset(modifier_list):
+        raise ValueError("--refresh and --hard-refresh are incompatible when used together.")
+    return classification
+
+
+def operation_is_allowed(operation: str, modifiers: Any = (), *, read_only: bool,
+                          version: str | None = None) -> bool:
+    if not isinstance(read_only, bool):
+        raise ValueError("read_only policy must be a Boolean.")
+    classification = classify_operation(operation, modifiers, version=version)
+    if classification in {"client", "unsupported"}:
+        return False
+    return classification != "mutation" or read_only is False
+
+
+def discover_operations(*, read_only: bool, version: str | None = None) -> tuple[str, ...]:
+    selected, inventory = _version_inventory(version)
+    captured = {entry["path"] for entry in inventory["commands"]}
+    return tuple(sorted(
+        operation for operation in OPERATION_POLICY
+        if operation in captured and operation_is_allowed(operation, read_only=read_only, version=selected)
+    ))
+
+
+def _operation_flags(operation: str, version: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    _, inventory = _version_inventory(version)
+    entry = next((item for item in inventory["commands"] if item["path"] == operation), None)
+    if entry is None:
+        raise ValueError(f"Operation {operation!r} is unavailable in selected CLI version {version}.")
+    local: dict[str, dict[str, Any]] = {}
+    global_names: set[str] = set()
+    for flag in entry["flags"]:
+        names = [flag["name"]]
+        if flag.get("short"):
+            names.append(flag["short"])
+        if flag["scope"] == "global_flags":
+            global_names.update(names)
+        elif flag["scope"] == "flags":
+            for name in names:
+                local[name] = flag
+    return local, global_names
+
+
+def validate_operation_arguments(operation: str, arguments: dict[str, Any], *,
+                                 version: str | None = None) -> None:
+    selected, _ = _version_inventory(version)
+    if not isinstance(arguments, dict):
+        raise ValueError("Operation arguments must be an object.")
+    local_flags, global_flags = _operation_flags(operation, selected)
+    for key, value in arguments.items():
+        if key == "positionals":
+            if not isinstance(value, list) or any(not isinstance(item, str) or item.startswith("-") for item in value):
+                raise ValueError("positionals must be a list of strings that do not contain CLI flags.")
+            continue
+        if not isinstance(key, str):
+            raise ValueError("Operation argument names must be strings.")
+        if key in {"command", "raw_command", "rpc", "raw_rpc", "grpc"}:
+            raise ValueError("Raw command and RPC arguments are unsupported by this MCP server.")
+        normalized = key if key.startswith("-") else "--" + key.replace("_", "-")
+        bare = normalized.lstrip("-").replace("-", "_")
+        if normalized in global_flags or bare in GLOBAL_OVERRIDE_NAMES:
+            raise ValueError(f"Per-call connection, authentication, configuration, and global flag overrides are not allowed: {key}.")
+        flag = local_flags.get(normalized)
+        if flag is None:
+            raise ValueError(f"Unknown or incompatible option {key!r} for operation {operation!r}.")
+        if flag["name"] == "--help":
+            raise ValueError("The CLI help flag is not an operation argument.")
+        if flag.get("value") is None:
+            if not isinstance(value, bool):
+                raise ValueError(f"Boolean option {key!r} requires true or false.")
+        elif isinstance(value, bool) or not isinstance(value, (str, int, float, list)):
+            raise ValueError(f"Option {key!r} requires a scalar or list value.")
+        elif isinstance(value, list) and any(not isinstance(item, (str, int, float)) or isinstance(item, bool) for item in value):
+            raise ValueError(f"Option {key!r} requires a scalar or list value.")
+
+
+def dispatch_operation(operation: str, arguments: dict[str, Any] | None = None, *,
+                       modifiers: Any = (), read_only: bool, version: str | None = None) -> list[str]:
+    selected, _ = _version_inventory(version)
+    arguments = {} if arguments is None else arguments
+    validate_operation_arguments(operation, arguments, version=selected)
+    if not isinstance(modifiers, (list, tuple, set, frozenset)):
+        raise ValueError("Operation modifiers must be a list of exact flag names.")
+    policy_modifiers = list(modifiers)
+    options = {key: value for key, value in arguments.items() if key != "positionals"}
+    for key, value in options.items():
+        flag_name = key if key.startswith("-") else "--" + key.replace("_", "-")
+        if (operation, flag_name) in POLICY_MODIFIERS and value is not False:
+            policy_modifiers.append(flag_name)
+    if not operation_is_allowed(operation, modifiers=policy_modifiers, read_only=read_only, version=selected):
+        classification = classify_operation(operation, policy_modifiers, version=selected)
+        if classification == "client":
+            raise ValueError(f"Client-side/local operation {operation!r} is excluded from the MCP surface.")
+        if classification == "unsupported":
+            raise ValueError(f"Operation {operation!r} is unsupported because it requires direct Kubernetes access.")
+        raise ValueError(f"Mutation operation {operation!r} is denied by read-only policy.")
+    argv = operation.split()
+    argv.extend(arguments.get("positionals", []))
+    for key, value in options.items():
+        flag_name = key if key.startswith("-") else "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                argv.append(flag_name)
+        elif isinstance(value, list):
+            for item in value:
+                argv.extend((flag_name, str(item)))
+        else:
+            argv.extend((flag_name, str(value)))
+    return argv
+
+
+def _read_only_setting() -> bool:
+    value = os.environ.get("AACT_ARGOCD_READ_ONLY", "true")
+    if value not in {"true", "false"}:
+        raise ValueError("AACT_ARGOCD_READ_ONLY must be true or false.")
+    return value == "true"
+
+
+def _run_operation_tool(operation: str, arguments: dict[str, Any] | None = None) -> str:
+    try:
+        read_only = _read_only_setting()
+        version = selected_cli_version()
+        argv = dispatch_operation(operation, arguments, read_only=read_only, version=version)
+        request = _current_profile_request()
+        if request is None or not is_authenticated(request):
+            return json.dumps({"error": "Argo CD authentication is required."}, separators=(",", ":"))
+        state, server, inputs, mode = _auth_inputs(request, require_credentials=False, create_state=False)
+        credentials = _read_json(state / "credentials.json") or {}
+        token = credentials.get("api_token") if mode == "api_token" else None
+        env = _cli_environment(state / "config", token=token)
+        cli_result = run_cli([CLI, *argv, "--server", server, *_connection_args(inputs)], env=env)
+        output = (cli_result.stdout + cli_result.stderr).decode("utf-8", "replace")
+        if token:
+            output = output.replace(token, "[redacted]")
+        return json.dumps({"exit_code": cli_result.returncode, "output": output}, separators=(",", ":"))
+    except (OSError, ValueError) as error:
+        return json.dumps({"error": str(error)}, separators=(",", ":"))
+
+
+def _register_operation_tools() -> None:
+    try:
+        version = selected_cli_version()
+        read_only = _read_only_setting()
+    except ValueError as error:
+        def make_error_tool(message: str) -> Callable[[], str]:
+            def policy_error() -> str:
+                """Explain why no CLI operations are available for this selected image."""
+                return json.dumps({"error": message}, separators=(",", ":"))
+            return policy_error
+        mcp.tool(name="argocd_policy_error")(make_error_tool(str(error)))
+        return
+    for operation in discover_operations(read_only=read_only, version=version):
+        tool_name = "argocd_" + operation.replace(" ", "_").replace("-", "_")
+
+        def make_tool(selected_operation: str, name: str) -> Callable[..., str]:
+            def invoke(arguments: dict[str, Any] | None = None) -> str:
+                """Run one explicitly classified Argo CD operation."""
+                return _run_operation_tool(selected_operation, arguments)
+            invoke.__name__ = name
+            invoke.__doc__ = f"Execute the classified `{selected_operation}` Argo CD operation. Pass CLI-local options and positional values in `arguments`."
+            return invoke
+
+        mcp.tool(name=tool_name)(make_tool(operation, tool_name))
 
 
 def _profile_from_environment() -> dict[str, Any] | None:
@@ -530,6 +843,9 @@ def main() -> None:
         _run_action(action)
         return
     mcp.run(transport="http", host="0.0.0.0", port=8765, path="/mcp")
+
+
+_register_operation_tools()
 
 
 if __name__ == "__main__":
