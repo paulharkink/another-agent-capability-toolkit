@@ -1,0 +1,19 @@
+ARG AACT_BASE_IMAGE
+FROM ${AACT_BASE_IMAGE}
+
+ARG CLI_VERSION
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl coreutils mawk \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "$CLI_VERSION" in *[!0-9.]*|.*|*.) echo "CLI_VERSION must be an exact X.Y.Z release" >&2; exit 1 ;; esac \
+    && test "$(printf '%s' "$CLI_VERSION" | awk -F. '{print NF}')" -eq 3 \
+    && curl --fail --location --silent --show-error \
+      "https://github.com/argoproj/argo-cd/releases/download/v${CLI_VERSION}/argocd-linux-amd64" \
+      --output /usr/local/bin/argocd \
+    && curl --fail --location --silent --show-error \
+      "https://github.com/argoproj/argo-cd/releases/download/v${CLI_VERSION}/argocd-linux-amd64.sha256" \
+      --output /tmp/argocd.sha256 \
+    && cd /usr/local/bin \
+    && sha256sum --check /tmp/argocd.sha256 \
+    && chmod 0755 /usr/local/bin/argocd \
+    && rm /tmp/argocd.sha256

@@ -884,3 +884,52 @@ func TestMCPImageVariantManifestRequiresDeclaredNonSecretVersionInput(t *testing
 		t.Fatalf("secret CLI version should be rejected: %v", err)
 	}
 }
+
+func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) {
+	pkg, err := Load("../../packages/argocd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]Input{}
+	for _, input := range pkg.Inputs {
+		inputs[input.Name] = input
+	}
+	mode, ok := inputs["auth_mode"]
+	if !ok || mode.Type != "choice" || len(mode.Options) != 3 {
+		t.Fatalf("auth_mode must declare exactly three choices, got %#v", mode)
+	}
+	for _, want := range []string{"sso", "api_token", "username_password"} {
+		found := false
+		for _, option := range mode.Options {
+			found = found || option.Value == want
+		}
+		if !found {
+			t.Errorf("auth_mode choices missing %q", want)
+		}
+	}
+	for _, name := range []string{"api_token", "username", "password"} {
+		if input, ok := inputs[name]; !ok || input.Type != "secret" {
+			t.Errorf("%s must be a named secret input, got %#v", name, input)
+		}
+	}
+	version, ok := inputs["cli_version"]
+	if !ok || version.Type != "string" || !version.Required {
+		t.Fatalf("cli_version must be required and explicit, got %#v", version)
+	}
+	mcp := pkg.MCP
+	if mcp == nil || mcp.ImageVariant == nil || mcp.ImageVariant.VersionInput != "cli_version" || mcp.ImageVariant.VersionArg == "" {
+		t.Fatalf("selected CLI version is not wired to an image variant: %#v", mcp)
+	}
+	if got := inputs["read_only"].Default; got != true {
+		t.Fatalf("read_only default = %#v, want true", got)
+	}
+	for _, action := range []string{"authenticate", "authentication_status", "cancel_authentication"} {
+		command, ok := mcp.Actions[action]
+		if !ok || command.Target != "container" {
+			t.Errorf("%s must be a container-target action, got %#v", action, command)
+		}
+	}
+	if len(mcp.AdditionalPorts) != 1 || mcp.AdditionalPorts[0].ContainerPort != 8085 || mcp.AdditionalPorts[0].HostPortInput != "callback_port" || mcp.AdditionalPorts[0].When["auth_mode"] != "sso" {
+		t.Fatalf("SSO callback port declaration = %#v", mcp.AdditionalPorts)
+	}
+}

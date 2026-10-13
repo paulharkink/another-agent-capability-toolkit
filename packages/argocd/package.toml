@@ -1,0 +1,155 @@
+schema_version = 1
+id = "argocd"
+name = "Argo CD"
+
+[skill]
+name = "argocd"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "MCP listen port"
+default = 8085
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Listen address"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "advertised_host"
+type = "string"
+label = "Client address host"
+default = "localhost"
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+required = true
+
+[[inputs]]
+name = "server"
+type = "string"
+label = "Argo CD server"
+required = true
+
+[[inputs]]
+name = "cli_version"
+type = "string"
+label = "Argo CD CLI version"
+hint = "Exact official release version without the v prefix."
+regex = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+required = true
+
+[[inputs]]
+name = "auth_mode"
+type = "choice"
+label = "Authentication mode"
+required = true
+[[inputs.options]]
+value = "sso"
+label = "SSO"
+[[inputs.options]]
+value = "api_token"
+label = "API token"
+[[inputs.options]]
+value = "username_password"
+label = "Username and password"
+
+[[inputs]]
+name = "api_token"
+type = "secret"
+label = "API token"
+visible_when = { auth_mode = "api_token" }
+
+[[inputs]]
+name = "username"
+type = "secret"
+label = "Username"
+visible_when = { auth_mode = "username_password" }
+
+[[inputs]]
+name = "password"
+type = "secret"
+label = "Password"
+visible_when = { auth_mode = "username_password" }
+
+[[inputs]]
+name = "callback_port"
+type = "integer"
+label = "SSO callback port"
+default = 8085
+min = 1024
+max = 65535
+visible_when = { auth_mode = "sso" }
+
+[[inputs]]
+name = "grpc_web"
+type = "boolean"
+label = "Use gRPC web"
+default = false
+
+[[inputs]]
+name = "grpc_web_root_path"
+type = "string"
+label = "gRPC web root path"
+
+[[inputs]]
+name = "plaintext"
+type = "boolean"
+label = "Use plaintext connection"
+default = false
+
+[[inputs]]
+name = "read_only"
+type = "boolean"
+label = "Read-only operations"
+default = true
+
+[[inputs]]
+name = "insecure"
+type = "boolean"
+label = "Skip TLS verification"
+default = false
+
+[mcp]
+name = "argocd"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "local_port"
+bind_ip_input = "host"
+advertised_host_input = "advertised_host"
+registration_name_input = "registration_name"
+registration_timeout_ms = 60000
+build_context = "./mcp"
+release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/argocd-mcp:v{aact_version}"
+
+[mcp.image_variant]
+dockerfile = "mcp/Dockerfile.variant"
+context = "mcp"
+version_input = "cli_version"
+version_arg = "CLI_VERSION"
+base_image_arg = "AACT_BASE_IMAGE"
+
+[[mcp.additional_ports]]
+container_port = 8085
+host_port_input = "callback_port"
+when = { auth_mode = "sso" }
+
+[mcp.actions.authenticate]
+target = "container"
+command = ["python", "/app/server.py", "action", "authenticate"]
+
+[mcp.actions.authentication_status]
+target = "container"
+command = ["python", "/app/server.py", "action", "authentication_status"]
+
+[mcp.actions.cancel_authentication]
+target = "container"
+command = ["python", "/app/server.py", "action", "cancel_authentication"]

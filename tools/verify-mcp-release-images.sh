@@ -14,7 +14,7 @@ manifest_file="$(mktemp)"
 error_file="$(mktemp)"
 trap 'rm -f "$manifest_file" "$error_file"' EXIT
 
-for package in azure-inspector cluster-inspector grafana-inspector; do
+for package in azure-inspector cluster-inspector grafana-inspector argocd; do
   package_name="${package}-mcp"
   image="ghcr.io/${repository_lower}/${package_name}:${release_tag}"
   encoded_package="${repository_name}%2F${package_name}"
