@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func cliFixture(t *testing.T) (string, string, string) {
@@ -65,6 +67,52 @@ func TestParseNamedExternalURLs(t *testing.T) {
 	}
 	if _, err := parse([]string{"install", "demo", "--external-url", "search=https://one", "--external-url", "search=https://two"}); err == nil {
 		t.Fatal("duplicate named endpoint accepted")
+	}
+}
+
+func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "demo")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	actionPath := filepath.Join(root, "authenticate.sh")
+	command := "[\"sh\", " + strconv.Quote(actionPath) + "]"
+	actionBody := []byte("#!/bin/sh\nprintf '%s\\n' '{\"login_url\":\"https://login.example/device\"}'\n")
+	if runtime.GOOS == "windows" {
+		actionPath += ".cmd"
+		command = "[\"cmd\", \"/c\", " + strconv.Quote(actionPath) + "]"
+		actionBody = []byte("@echo {\"login_url\":\"https://login.example/device\"}\r\n")
+	}
+	if err := os.WriteFile(actionPath, actionBody, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n[mcp]\nname = \"server\"\nhealth_path = \"/health\"\n[mcp.actions.authenticate]\ntarget = \"host\"\ncommand = " + command + "\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(root, "aact.toml")
+	if err := os.WriteFile(cfg, []byte("schema_version = 1\nsource_id = \"fixture\"\n[[catalog]]\nid = \"demo\"\nsource = \"./demo\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	var out, errOut bytes.Buffer
+	profileArgs := []string{"profile", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), profileArgs, nil, &out, &errOut); code != 0 {
+		t.Fatalf("profile creation failed (%d): %s", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	started := time.Now()
+	args := []string{"mcp", "authenticate", "demo", "--profile", "default", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), args, nil, &out, &errOut); code != 0 {
+		t.Fatalf("authenticate failed (%d): %s", code, errOut.String())
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("direct authenticate took %v; it should return without waiting for health", elapsed)
+	}
+	if got := strings.TrimSpace(out.String()); got != "https://login.example/device" {
+		t.Fatalf("authenticate output = %q, want returned login URL", got)
 	}
 }
 
