@@ -149,6 +149,24 @@ def test_help_inventory_parser_preserves_one_and_two_space_command_rows():
         assert "generate-spec" in admin_repo["children"]
 
 
+def test_public_mcp_tool_rejects_hard_refresh_in_read_only_profile(monkeypatch):
+    server = load_server()
+    monkeypatch.setattr(server, "selected_cli_version", lambda: "3.2.0")
+    monkeypatch.setenv("AACT_ARGOCD_READ_ONLY", "true")
+    server._register_operation_tools()
+
+    async def call_public_tool():
+        tools = {tool.name for tool in await server.mcp.list_tools()}
+        assert "argocd_app_get" in tools
+        return await server.mcp.call_tool(
+            "argocd_app_get", {"arguments": {"hard_refresh": True}}
+        )
+
+    result = asyncio.run(call_public_tool())
+    error = json.loads(result.content[0].text)["error"]
+    assert "denied by read-only policy" in error
+
+
 def test_versioned_exclusions_and_unsupported_admin_have_distinct_errors():
     server = load_server()
     with pytest.raises(ValueError, match=r"unavailable in selected CLI version 2\.14\.11"):
