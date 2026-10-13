@@ -933,3 +933,48 @@ func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) 
 		t.Fatalf("SSO callback port declaration = %#v", mcp.AdditionalPorts)
 	}
 }
+
+func TestArgoCapabilityDefaultPublishedPortsAreDistinct(t *testing.T) {
+	pkg, err := Load("../../packages/argocd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, err := ResolveInputDefinitions(pkg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := map[string]any{}
+	for _, input := range definitions {
+		defaults[input.Name] = input.Default
+	}
+	mcpPort, mcpOK := defaults["local_port"].(int64)
+	callbackPort, callbackOK := defaults["callback_port"].(int64)
+	if !mcpOK || !callbackOK {
+		t.Fatalf("expected integer defaults for local_port/callback_port, got %#v and %#v", defaults["local_port"], defaults["callback_port"])
+	}
+	if mcpPort == callbackPort {
+		t.Fatalf("default MCP listener port %d collides with default SSO callback port %d", mcpPort, callbackPort)
+	}
+}
+
+func TestArgoVariantRecipeMapsBuildArchitectureToOfficialAssets(t *testing.T) {
+	recipe, err := os.ReadFile("../../packages/argocd/mcp/Dockerfile.variant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(recipe)
+	for _, required := range []string{
+		"ARG TARGETARCH",
+		`case "$TARGETARCH" in`,
+		"amd64|arm64)",
+		`argocd-linux-${TARGETARCH}`,
+		`argocd-linux-${TARGETARCH}.sha256`,
+	} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("variant recipe must include architecture asset mapping %q", required)
+		}
+	}
+	if !strings.Contains(contents, "Unsupported target architecture") {
+		t.Error("variant recipe must reject unsupported target architectures explicitly")
+	}
+}

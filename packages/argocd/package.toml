@@ -9,7 +9,7 @@ name = "argocd"
 name = "local_port"
 type = "integer"
 label = "MCP listen port"
-default = 8085
+default = 8765
 min = 1024
 max = 65535
 
