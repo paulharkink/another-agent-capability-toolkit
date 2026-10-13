@@ -202,3 +202,49 @@ func containsSequence(haystack, needle []string) bool {
 	}
 	return false
 }
+
+func TestImageVariantKeyChangesWhenDockerfileOutsideContextChanges(t *testing.T) {
+	r, f, k := testRuntime(t)
+	root := t.TempDir()
+	contextDir := filepath.Join(root, "context")
+	if err := os.MkdirAll(contextDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "payload.txt"), []byte("stable context"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := filepath.Join(root, "Dockerfile.variant")
+	if err := os.WriteFile(dockerfile, []byte("FROM ${AACT_BASE_IMAGE}\nARG CLI_VERSION\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.f = func(a []string) ([]byte, error) {
+		if len(a) > 2 && a[1] == "image" && a[2] == "inspect" {
+			if strings.Contains(a[len(a)-1], "variant-") {
+				return nil, errors.New("No such image")
+			}
+			return []byte("sha256:base"), nil
+		}
+		if len(a) > 1 && a[1] == "info" {
+			return []byte("linux/amd64"), nil
+		}
+		return []byte("ok"), nil
+	}
+	base := RunSpec{Image: "fixture", ImageVariant: &ImageVariantSpec{PackageRoot: root, Dockerfile: dockerfile, Context: contextDir, Version: "v2.10.1", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}}
+	first := base
+	if err := r.prepareImageVariant(context.Background(), k, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dockerfile, []byte("FROM ${AACT_BASE_IMAGE}\nARG CLI_VERSION\n# changed recipe\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second := base
+	if err := r.prepareImageVariant(context.Background(), k, &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.ImageVariantKey == second.ImageVariantKey {
+		t.Fatal("Dockerfile content outside context did not change variant identity")
+	}
+	if first.Image == second.Image {
+		t.Fatal("Dockerfile content outside context reused the derived image tag")
+	}
+}

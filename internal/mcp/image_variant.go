@@ -105,6 +105,27 @@ func imageVariantContextHash(root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+func imageVariantBuildContextHash(packageRoot, dockerfile, contextDir string) (string, error) {
+	contextHash, err := imageVariantContextHash(contextDir)
+	if err != nil {
+		return "", err
+	}
+	recipe, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return "", err
+	}
+	relativeRecipe, err := filepath.Rel(packageRoot, dockerfile)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte(filepath.ToSlash(relativeRecipe) + "\x00"))
+	_, _ = h.Write(recipe)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(contextHash))
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func variantKey(base, version, contextHash, platform string) string {
 	h := sha256.Sum256([]byte(strings.Join([]string{base, version, contextHash, platform}, "\x00")))
 	return hex.EncodeToString(h[:])
@@ -121,7 +142,7 @@ func (r *Runtime) prepareImageVariant(ctx context.Context, key state.Key, spec *
 	if err := validateVariantPaths(v.PackageRoot, v.Dockerfile, v.Context); err != nil {
 		return err
 	}
-	contentHash, err := imageVariantContextHash(v.Context)
+	contentHash, err := imageVariantBuildContextHash(v.PackageRoot, v.Dockerfile, v.Context)
 	if err != nil {
 		return err
 	}
