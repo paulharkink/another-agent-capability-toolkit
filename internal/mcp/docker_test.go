@@ -725,13 +725,13 @@ func TestRuntimeExecRequiresOwnedContainerAndUsesArgv(t *testing.T) {
 		}
 	}
 	executor, ok := any(r).(interface {
-		Exec(context.Context, state.Key, []string, []byte) ([]byte, error)
+		Exec(context.Context, state.Key, []string, []byte, func([]byte)) ([]byte, error)
 	})
 	if !ok {
 		t.Fatal("Runtime.Exec(context, key, argv, stdin) is not implemented")
 	}
 	argv := []string{"tool", "subcommand", "value with spaces"}
-	got, err := executor.Exec(context.Background(), key, argv, []byte("input"))
+	got, err := executor.Exec(context.Background(), key, argv, []byte("input"), nil)
 	if err != nil || string(got) != "ok" {
 		t.Fatalf("Exec result = %q, %v", got, err)
 	}
@@ -771,7 +771,7 @@ func TestRuntimeExecRejectsUnownedAndStoppedContainers(t *testing.T) {
 				}
 				return nil, errors.New("unexpected execution")
 			}
-			if _, err := r.Exec(context.Background(), key, []string{"helper"}, nil); err == nil {
+			if _, err := r.Exec(context.Background(), key, []string{"helper"}, nil, nil); err == nil {
 				t.Fatal("Exec accepted a container that is not locally owned and running")
 			}
 			for _, call := range f.calls {
@@ -780,5 +780,29 @@ func TestRuntimeExecRejectsUnownedAndStoppedContainers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDockerPublishesMultipleAdditionalPortMappings(t *testing.T) {
+	r, f, key := testRuntime(t)
+	f.f = absent
+	_, err := r.Start(context.Background(), key, RunSpec{
+		Image: "fixture", BindIP: "127.0.0.1", HostPort: 8765, ContainerPort: 80,
+		AdditionalPorts: []PortMapping{{HostPort: 7444, ContainerPort: 7443}, {HostPort: 7445, ContainerPort: 7446}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publishes []string
+	for _, args := range f.calls {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--publish" {
+				publishes = append(publishes, args[i+1])
+			}
+		}
+	}
+	want := []string{"127.0.0.1:8765:80", "127.0.0.1:7444:7443", "127.0.0.1:7445:7446"}
+	if !reflect.DeepEqual(publishes, want) {
+		t.Fatalf("published mappings = %#v, want %#v", publishes, want)
 	}
 }

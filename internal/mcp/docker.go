@@ -751,7 +751,7 @@ func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance,
 
 // Exec sends an argv array to the exact running container currently observed as locally owned.
 // Docker receives the arguments directly; no shell is inserted between the caller and executable.
-func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []byte) ([]byte, error) {
+func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return nil, errors.New("container action argv is required")
 	}
@@ -768,7 +768,9 @@ func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []
 		if diagnostics.Len() < 8192 {
 			diagnostics.Write(p)
 		}
-		if r.OnStderr != nil {
+		if stderr != nil {
+			stderr(p)
+		} else if r.OnStderr != nil {
 			r.OnStderr(p)
 		}
 	})

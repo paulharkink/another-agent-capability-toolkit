@@ -215,7 +215,7 @@ type recordingContainerActionExec struct {
 	output string
 }
 
-func (f *recordingContainerActionExec) Exec(_ context.Context, argv []string, stdin []byte) ([]byte, error) {
+func (f *recordingContainerActionExec) Exec(_ context.Context, argv []string, stdin []byte, _ func([]byte)) ([]byte, error) {
 	f.argv = append([]string(nil), argv...)
 	f.stdin = append([]byte(nil), stdin...)
 	return []byte(f.output), nil
@@ -240,5 +240,32 @@ func TestContainerActionUsesInjectedRuntimeExec(t *testing.T) {
 	var request ActionRequest
 	if err := json.Unmarshal(container.stdin, &request); err != nil || request.ProtocolVersion != 1 || request.Action != "authenticate" {
 		t.Fatalf("container stdin request = %+v, %v", request, err)
+	}
+}
+
+type secretDiagnosticContainerExec struct{}
+
+func (secretDiagnosticContainerExec) Exec(_ context.Context, _ []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	var request ActionRequest
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	stderr([]byte("authentication output: " + request.Inputs["token"].(string)))
+	return []byte(`{}`), nil
+}
+
+func TestContainerActionRedactsSecretFromLiveStderr(t *testing.T) {
+	pkg := actionPackage()
+	pkg.MCP.Actions["authenticate"] = catalog.Command{Target: "container", Argv: []string{"helper", "authenticate"}}
+	var logged string
+	runner := ActionRunner{
+		ContainerExecutor: secretDiagnosticContainerExec{},
+		OnStderr:          func(output []byte) { logged += string(output) },
+	}
+	if _, err := runner.Run(context.Background(), pkg, ActionRequest{Action: "authenticate", Inputs: map[string]any{"token": "private-secret"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logged, "private-secret") || !strings.Contains(logged, "[redacted]") {
+		t.Fatalf("live container diagnostic was not redacted: %q", logged)
 	}
 }

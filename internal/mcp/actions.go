@@ -35,7 +35,7 @@ type ActionResult struct {
 	Runtime      *RunSpec                    `json:"runtime,omitempty"`
 }
 type ContainerActionExecutor interface {
-	Exec(context.Context, []string, []byte) ([]byte, error)
+	Exec(context.Context, []string, []byte, func([]byte)) ([]byte, error)
 }
 
 type ActionRunner struct {
@@ -126,7 +126,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		if r.ContainerExecutor == nil {
 			e = errors.New("container action runtime is unavailable")
 		} else {
-			out, e = r.ContainerExecutor.Exec(ctx, argv, b)
+			out, e = r.ContainerExecutor.Exec(ctx, argv, b, redactor.Write)
 		}
 	} else {
 		out, e = executor.Run(ctx, argv, workingDir, b, nil, redactor.Write)
