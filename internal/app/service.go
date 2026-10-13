@@ -440,6 +440,34 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			spec.BuildContext = filepath.Join(p.Dir, spec.BuildContext)
 		}
 	}
+	if variant := p.MCP.ImageVariant; variant != nil {
+		version, ok := values[variant.VersionInput]
+		if !ok || version == nil {
+			return mcp.Instance{}, invalid(fmt.Errorf("selected image variant input %q is required", variant.VersionInput))
+		}
+		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
+		if choiceErr != nil {
+			return mcp.Instance{}, operationFailure{step: "start", err: choiceErr}
+		}
+		if imageSource == "release" {
+			spec.Image = releaseImage
+			spec.BuildContext = ""
+		} else {
+			spec.Image = ""
+			if p.MCP.BuildContext == "" {
+				return mcp.Instance{}, invalid(errors.New("local image variant requires an MCP build_context"))
+			}
+		}
+		dockerfile := variant.Dockerfile
+		if !filepath.IsAbs(dockerfile) {
+			dockerfile = filepath.Join(p.Dir, dockerfile)
+		}
+		contextDir := variant.Context
+		if !filepath.IsAbs(contextDir) {
+			contextDir = filepath.Join(p.Dir, contextDir)
+		}
+		spec.ImageVariant = &mcp.ImageVariantSpec{PackageRoot: p.Dir, Dockerfile: dockerfile, Context: contextDir, Version: fmt.Sprint(version), VersionArg: variant.VersionArg, BaseImageArg: variant.BaseImageArg}
+	}
 	switch port := values[p.MCP.HostPortInput].(type) {
 	case int64:
 		spec.HostPort = int(port)

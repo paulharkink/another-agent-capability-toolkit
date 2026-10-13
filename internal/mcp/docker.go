@@ -35,6 +35,8 @@ type RunSpec struct {
 	User             string            `json:"user,omitempty"`
 	Image            string            `json:"image"`
 	BuildContext     string            `json:"build_context,omitempty"`
+	ImageVariant     *ImageVariantSpec `json:"image_variant,omitempty"`
+	ImageVariantKey  string            `json:"image_variant_key,omitempty"`
 	Args             []string          `json:"args,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	SecretEnv        map[string]string `json:"secret_env,omitempty"`
@@ -417,6 +419,12 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	}
 	if s.Image == "" && s.BuildContext == "" {
 		return Instance{}, errors.New("MCP image or build context required")
+	}
+	if s.ImageVariant != nil {
+		varErr := r.prepareImageVariant(ctx, k, &s)
+		if varErr != nil {
+			return Instance{}, varErr
+		}
 	}
 	registrationName := s.RegistrationName
 	if strings.TrimSpace(registrationName) == "" {

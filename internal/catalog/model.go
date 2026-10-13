@@ -97,6 +97,13 @@ type ConditionalPort struct {
 	HostPortInput string         `toml:"host_port_input" json:"host_port_input"`
 	When          map[string]any `toml:"when" json:"when"`
 }
+type ImageVariant struct {
+	Dockerfile   string `toml:"dockerfile" json:"dockerfile"`
+	Context      string `toml:"context" json:"context"`
+	VersionInput string `toml:"version_input" json:"version_input"`
+	VersionArg   string `toml:"version_arg" json:"version_arg"`
+	BaseImageArg string `toml:"base_image_arg" json:"base_image_arg"`
+}
 type MCP struct {
 	CredentialFiles       []string           `toml:"credential_files" json:"credential_files,omitempty"`
 	Name                  string             `toml:"name" json:"name"`
@@ -125,4 +132,5 @@ type MCP struct {
 	RegistrationTimeoutMS int                `toml:"registration_timeout_ms" json:"registration_timeout_ms"`
 	Actions               map[string]Command `toml:"actions" json:"actions"`
 	AdditionalPorts       []ConditionalPort  `toml:"additional_ports" json:"additional_ports,omitempty"`
+	ImageVariant          *ImageVariant      `toml:"image_variant" json:"image_variant,omitempty"`
 }

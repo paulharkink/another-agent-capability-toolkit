@@ -877,3 +877,10 @@ command = ["helper", "authenticate"]
 		t.Fatal("unknown action execution target accepted")
 	}
 }
+
+func TestMCPImageVariantManifestRequiresDeclaredNonSecretVersionInput(t *testing.T) {
+	p := Package{SchemaVersion: 1, ID: "variant", MCP: &MCP{Name: "server", ImageVariant: &ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}}, Inputs: []Input{{Name: "cli_version", Type: "secret", Required: true}}}
+	if err := Validate(p); err == nil || !strings.Contains(err.Error(), "non-secret") {
+		t.Fatalf("secret CLI version should be rejected: %v", err)
+	}
+}

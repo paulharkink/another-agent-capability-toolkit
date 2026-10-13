@@ -156,3 +156,33 @@ func TestProfileApplyHoldsLockDuringAdapterEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProfileResolvesSelectedImageVariantInputsAndPackagePaths(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Dir = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(p.Dir, "mcp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.Dir, "mcp", "Dockerfile.variant"), []byte("FROM scratch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p.MCPs[0].Image = ""
+	p.MCPs[0].BuildContext = "mcp"
+	p.MCPs[0].ReleaseImage = "example.invalid/mcp:v1"
+	p.MCPs[0].ImageVariant = &catalog.ImageVariant{Dockerfile: "mcp/Dockerfile.variant", Context: "mcp", VersionInput: "cli_version", VersionArg: "CLI_VERSION", BaseImageArg: "AACT_BASE_IMAGE"}
+	p.Inputs = append(p.Inputs, catalog.Input{Name: "cli_version", Type: "string", Required: true})
+	q.Inputs = map[string]any{"label": "company", "enabled": true, "cli_version": "v2.10.1"}
+	runtime := &providerTestRuntime{}
+	s.Options.Runtime = runtime
+	if _, err := s.RunProfileMCP(context.Background(), "start", q, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.specs) != 1 {
+		t.Fatalf("expected one resolved runtime spec: %+v", runtime.specs)
+	}
+	spec := runtime.specs[0]
+	if spec.Image != "example.invalid/mcp:v1" || spec.BuildContext != "" || spec.ImageVariant == nil || spec.ImageVariant.Version != "v2.10.1" || spec.ImageVariant.PackageRoot != p.Dir || spec.ImageVariant.Dockerfile != filepath.Join(p.Dir, "mcp", "Dockerfile.variant") || spec.ImageVariant.Context != filepath.Join(p.Dir, "mcp") {
+		t.Fatalf("profile variant inputs were not resolved: %+v", spec)
+	}
+}
