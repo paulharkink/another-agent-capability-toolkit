@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,7 +33,7 @@ func TestConditionalCallbackPortAndMCPReadinessAreIndependent(t *testing.T) {
 		t.Fatalf("callback mapping is not restricted to the requested SSO callback port: %+v", callback)
 	}
 
-	authenticated := false
+	var authenticated atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/mcp":
@@ -42,9 +43,9 @@ func TestConditionalCallbackPortAndMCPReadinessAreIndependent(t *testing.T) {
 			}
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
 		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]bool{"authenticated": authenticated})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"authenticated": authenticated.Load()})
 		case "/oauth/callback":
-			authenticated = true
+			authenticated.Store(true)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
