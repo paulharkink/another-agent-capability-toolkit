@@ -46,6 +46,12 @@ func reportOperationStep(ctx context.Context, step string) {
 	}
 }
 
+func reportOperationOutput(ctx context.Context, output string) {
+	if progress, _ := ctx.Value(operationProgressContextKey{}).(*operationProgressScope); progress != nil && output != "" {
+		progress.output([]byte(output + "\n"))
+	}
+}
+
 func (s *Service) withOperationProgress(ctx context.Context, observer func(viewmodel.OperationProgress)) (*Service, context.Context) {
 	progress := &operationProgressScope{observer: observer}
 	options := s.Options

@@ -27,6 +27,26 @@ type MCPRuntime interface {
 	List(context.Context) ([]mcp.Instance, error)
 	Logs(context.Context, state.Key) (io.ReadCloser, error)
 }
+type mcpRuntimeActionExecutor interface {
+	Exec(context.Context, state.Key, []string, []byte, func([]byte)) ([]byte, error)
+}
+type profileActionExecutor struct {
+	runtime mcpRuntimeActionExecutor
+	key     state.Key
+}
+
+func (e profileActionExecutor) Exec(ctx context.Context, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	return e.runtime.Exec(ctx, e.key, argv, stdin, stderr)
+}
+
+func (s *Service) containerActionExecutor(key state.Key) mcp.ContainerActionExecutor {
+	runtime, ok := s.Options.Runtime.(mcpRuntimeActionExecutor)
+	if !ok {
+		return nil
+	}
+	return profileActionExecutor{runtime: runtime, key: key}
+}
+
 type Options struct {
 	Adapters           AdapterProvider
 	AgentScopes        map[string]agents.Scope
@@ -128,6 +148,7 @@ type Result struct {
 	Changes   []state.Installation `json:"changes"`
 	Errors    []string             `json:"errors"`
 	Saved     bool                 `json:"saved"`
+	LoginURL  string               `json:"login_url,omitempty"`
 	Instances []mcp.Instance       `json:"instances,omitempty"`
 	Logs      string               `json:"logs,omitempty"`
 	Message   string               `json:"message,omitempty"`
@@ -480,7 +501,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		selectedImageVariant := spec.ImageVariant
 		selectedBaseImage := spec.Image
 		selectedBaseContext := spec.BuildContext
-		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
+		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
 		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
 		if choiceErr != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: choiceErr}
@@ -533,46 +554,71 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 func resolveConditionalPorts(definition catalog.MCP, inputs []catalog.Input, values map[string]any) ([]mcp.PortMapping, error) {
 	resolved := make([]mcp.PortMapping, 0, len(definition.AdditionalPorts))
 	for _, port := range definition.AdditionalPorts {
-		var input *catalog.Input
-		for i := range inputs {
-			if inputs[i].Name == port.HostPortInput {
-				input = &inputs[i]
-				break
-			}
-		}
-		if input == nil {
+		hostInput := findInput(inputs, port.HostPortInput)
+		if hostInput == nil {
 			return nil, fmt.Errorf("conditional port references unknown input %q", port.HostPortInput)
 		}
-		if !catalog.InputVisible(catalog.Input{VisibleWhen: port.When}, values) || !catalog.InputVisible(*input, values) {
+		var containerInput *catalog.Input
+		if port.ContainerPortInput != "" {
+			containerInput = findInput(inputs, port.ContainerPortInput)
+			if containerInput == nil {
+				return nil, fmt.Errorf("conditional port references unknown container input %q", port.ContainerPortInput)
+			}
+		}
+		if !catalog.InputVisible(catalog.Input{VisibleWhen: port.When}, values) || !catalog.InputVisible(*hostInput, values) || containerInput != nil && !catalog.InputVisible(*containerInput, values) {
 			continue
 		}
-		var hostPort int
-		switch value := values[port.HostPortInput].(type) {
-		case int:
-			hostPort = value
-		case int64:
-			hostPort = int(value)
-			if int64(hostPort) != value {
-				return nil, fmt.Errorf("conditional port input %q is outside the supported range", port.HostPortInput)
-			}
-		case json.Number:
-			parsed, err := value.Int64()
+		hostPort, err := resolvePortInputValue(port.HostPortInput, values[port.HostPortInput])
+		if err != nil {
+			return nil, err
+		}
+		containerPort := port.ContainerPort
+		if containerInput != nil {
+			containerPort, err = resolvePortInputValue(port.ContainerPortInput, values[port.ContainerPortInput])
 			if err != nil {
-				return nil, fmt.Errorf("conditional port input %q must be an integer", port.HostPortInput)
+				return nil, err
 			}
-			hostPort = int(parsed)
-			if int64(hostPort) != parsed {
-				return nil, fmt.Errorf("conditional port input %q is outside the supported range", port.HostPortInput)
-			}
-		default:
-			return nil, fmt.Errorf("conditional port input %q must be an integer", port.HostPortInput)
 		}
-		if hostPort < 1 || hostPort > 65535 {
-			return nil, fmt.Errorf("conditional port input %q must be between 1 and 65535", port.HostPortInput)
-		}
-		resolved = append(resolved, mcp.PortMapping{HostPort: hostPort, ContainerPort: port.ContainerPort})
+		resolved = append(resolved, mcp.PortMapping{HostPort: hostPort, ContainerPort: containerPort})
 	}
 	return resolved, nil
+}
+
+func findInput(inputs []catalog.Input, name string) *catalog.Input {
+	for i := range inputs {
+		if inputs[i].Name == name {
+			return &inputs[i]
+		}
+	}
+	return nil
+}
+
+func resolvePortInputValue(name string, raw any) (int, error) {
+	var port int
+	switch value := raw.(type) {
+	case int:
+		port = value
+	case int64:
+		port = int(value)
+		if int64(port) != value {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+		}
+		port = int(parsed)
+		if int64(port) != parsed {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	default:
+		return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("conditional port input %q must be between 1 and 65535", name)
+	}
+	return port, nil
 }
 
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (Result, error) {

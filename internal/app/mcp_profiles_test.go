@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,12 +18,17 @@ import (
 type providerTestRuntime struct {
 	keys  []state.Key
 	specs []mcp.RunSpec
+	url   string
 }
 
 func (r *providerTestRuntime) Start(_ context.Context, key state.Key, spec mcp.RunSpec) (mcp.Instance, error) {
 	r.keys = append(r.keys, key)
 	r.specs = append(r.specs, spec)
-	return mcp.Instance{Key: key, URL: "http://127.0.0.1/mcp", Status: "running", Ownership: "local"}, nil
+	url := r.url
+	if url == "" {
+		url = "http://127.0.0.1/mcp"
+	}
+	return mcp.Instance{Key: key, URL: url, Status: "running", Ownership: "local"}, nil
 }
 func (*providerTestRuntime) Stop(context.Context, state.Key) error        { return nil }
 func (*providerTestRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
@@ -170,5 +176,71 @@ func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	}
 	if len(configuredMCPs) != 2 || configuredMCPs[0].Key.Profile == configuredMCPs[1].Key.Profile {
 		t.Fatalf("configured MCP profiles = %#v (all profile records: %#v)", configuredMCPs, configured)
+	}
+}
+
+type authenticationTestRuntime struct {
+	providerTestRuntime
+	actions    []string
+	actionKeys []state.Key
+	stateDirs  []string
+	requests   []mcp.ActionRequest
+	results    []string
+}
+
+func (r *authenticationTestRuntime) Exec(_ context.Context, key state.Key, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	r.actions = append(r.actions, argv[len(argv)-1])
+	r.actionKeys = append(r.actionKeys, key)
+	var request mcp.ActionRequest
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	r.requests = append(r.requests, request)
+	r.stateDirs = append(r.stateDirs, request.StateDir)
+	if len(r.results) == 0 {
+		return []byte(`{}`), nil
+	}
+	result := r.results[0]
+	r.results = r.results[1:]
+	return []byte(result), nil
+}
+
+func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &authenticationTestRuntime{results: []string{`{"login_url":"https://login.example/device"}`}}
+	svc.Options.Runtime = runtime
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill, pkg.Skills, pkg.MCP = nil, nil, nil
+	definition := catalog.MCP{Name: "alpha", Image: "example/alpha:1", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}
+	pkg.MCPs = []catalog.MCP{definition}
+	pkg.Inputs = nil
+	ref := writeProfileForTest(t, svc, pkg.ID, "runtime", "")
+	result, err := svc.RunProfileMCP(context.Background(), "authenticate", ProfileRequest{Ref: ref}, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LoginURL != "https://login.example/device" || len(result.Instances) != 1 {
+		t.Fatalf("authenticate result = %#v", result)
+	}
+	if !reflect.DeepEqual(runtime.actions, []string{"authenticate"}) {
+		t.Fatalf("container actions = %#v", runtime.actions)
+	}
+	key, err := svc.Store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKey := mcpProfileKey(key, *pkg, definition)
+	if len(runtime.actionKeys) != 1 || runtime.actionKeys[0] != wantKey {
+		t.Fatalf("container action keys = %#v, want %#v", runtime.actionKeys, wantKey)
+	}
+	if len(runtime.stateDirs) != 1 || runtime.stateDirs[0] != "/state" {
+		t.Fatalf("auth state dirs = %#v", runtime.stateDirs)
+	}
+	for _, forbidden := range []string{"authentication_status", "cancel_authentication"} {
+		if _, err := svc.RunProfileMCP(context.Background(), forbidden, ProfileRequest{Ref: ref}, "alpha"); err == nil {
+			t.Fatalf("obsolete action %q remained available", forbidden)
+		}
 	}
 }

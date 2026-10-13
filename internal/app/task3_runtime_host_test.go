@@ -103,6 +103,37 @@ func TestStartConfigurationProfileResolvesConditionalPortsAndStateMount(t *testi
 	}
 }
 
+func TestConditionalSSOCallbackMapsSelectedPortOnHostAndContainer(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &providerTestRuntime{}
+	svc.Options.Runtime = runtime
+	minPort, maxPort := float64(1024), float64(65535)
+	pkg := catalog.Package{ID: "fixture", Dir: t.TempDir(), Inputs: []catalog.Input{
+		{Name: "auth_mode", Type: "choice", Options: []catalog.Choice{{Value: "sso"}, {Value: "api_token"}}},
+		{Name: "listen_port", Type: "integer", Min: &minPort, Max: &maxPort},
+		{Name: "callback_port", Type: "integer", Min: &minPort, Max: &maxPort, VisibleWhen: map[string]any{"auth_mode": "sso"}},
+	}, MCP: &catalog.MCP{
+		Name: "fixture", Image: "fixture", Transport: "streamable-http", HostPortInput: "listen_port", ContainerPort: 8765,
+		AdditionalPorts: []catalog.ConditionalPort{{HostPortInput: "callback_port", ContainerPortInput: "callback_port", When: map[string]any{"auth_mode": "sso"}}},
+	}}
+	key := state.Key{Source: "fixture", Package: "fixture", Target: "default", Profile: "sso-profile"}
+	values := map[string]any{"auth_mode": "sso", "callback_port": int64(8090), "listen_port": int64(8765)}
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.specs[0].AdditionalPorts; !reflect.DeepEqual(got, []mcp.PortMapping{{HostPort: 8090, ContainerPort: 8090}}) {
+		t.Fatalf("selected SSO callback mapping = %#v, want host/container 8090", got)
+	}
+	runtime.specs = nil
+	values["auth_mode"] = "api_token"
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.specs) != 1 || len(runtime.specs[0].AdditionalPorts) != 0 {
+		t.Fatalf("callback port was published outside SSO mode: %#v", runtime.specs)
+	}
+}
+
 func TestStartConfigurationProfileIgnoresUndeclaredHostInput(t *testing.T) {
 	svc, _, _ := fixture(t)
 	runtime := &providerTestRuntime{}

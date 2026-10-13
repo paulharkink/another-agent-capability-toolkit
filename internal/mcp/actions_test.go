@@ -238,8 +238,19 @@ func TestContainerActionUsesInjectedRuntimeExec(t *testing.T) {
 		t.Fatalf("container argv = %#v, want %#v", container.argv, want)
 	}
 	var request ActionRequest
-	if err := json.Unmarshal(container.stdin, &request); err != nil || request.ProtocolVersion != 1 || request.Action != "authenticate" {
+	if err := json.Unmarshal(container.stdin, &request); err != nil || request.ProtocolVersion != 1 || request.Action != "authenticate" || request.StateDir != "/state" {
 		t.Fatalf("container stdin request = %+v, %v", request, err)
+	}
+}
+
+func TestHostActionKeepsHostStateDirectory(t *testing.T) {
+	executor := &actionExec{output: `{}`}
+	runner := ActionRunner{Executor: executor}
+	if _, err := runner.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", StateDir: "/host/state"}); err != nil {
+		t.Fatal(err)
+	}
+	if executor.request.StateDir != "/host/state" {
+		t.Fatalf("host state_dir = %q", executor.request.StateDir)
 	}
 }
 
@@ -267,5 +278,18 @@ func TestContainerActionRedactsSecretFromLiveStderr(t *testing.T) {
 	}
 	if strings.Contains(logged, "private-secret") || !strings.Contains(logged, "[redacted]") {
 		t.Fatalf("live container diagnostic was not redacted: %q", logged)
+	}
+}
+
+func TestAuthenticateReturnsScrubbedLoginURLWithoutAuthState(t *testing.T) {
+	result, err := (&ActionRunner{Executor: &actionExec{output: `{"login_url":"https://login.example/device?token=private-secret"}`}}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate", Inputs: map[string]any{"token": "private-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LoginURL != "https://login.example/device?token=[redacted]" {
+		t.Fatalf("login URL was not scrubbed: %#v", result)
+	}
+	if _, err := (&ActionRunner{Executor: &actionExec{output: `{"status":"waiting_for_user","login_url":"https://login.example"}`}}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate"}); err == nil {
+		t.Fatal("superseded authentication status field accepted")
 	}
 }

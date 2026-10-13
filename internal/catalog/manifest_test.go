@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,75 @@ func TestInvalidPatternIncludesInputAndManifest(t *testing.T) {
 	_, err := Load(dir)
 	if err == nil || !strings.Contains(err.Error(), "name") || !strings.Contains(err.Error(), "package.toml") {
 		t.Fatalf("malformed pattern accepted or not identified: %v", err)
+	}
+}
+
+func TestManifestHealthPathValidation(t *testing.T) {
+	for _, path := range []string{"health", "//other.test/health", "https://other.test/health", "/health?token=x", "/health#fragment", "/../health"} {
+		t.Run(path, func(t *testing.T) {
+			dir := writeManifest(t, `schema_version = 1
+id = "health-path"
+name = "Health path"
+[mcp]
+name = "server"
+health_path = `+strconv.Quote(path)+`
+`)
+			if _, err := Load(dir); err == nil {
+				t.Fatalf("invalid health_path %q accepted", path)
+			}
+		})
+	}
+	dir := writeManifest(t, `schema_version = 1
+id = "health-path"
+name = "Health path"
+[mcp]
+name = "server"
+health_path = "/health"
+`)
+	pkg, err := Load(dir)
+	if err != nil || pkg.MCP == nil || pkg.MCP.HealthPath != "/health" {
+		t.Fatalf("valid health_path was not loaded: %#v, %v", pkg.MCP, err)
+	}
+}
+
+func TestConditionalPortsMayBindContainerPortToVisibleIntegerInput(t *testing.T) {
+	minPort, maxPort := float64(1), float64(65535)
+	base := Package{
+		SchemaVersion: 1, ID: "ports", Name: "Ports",
+		Inputs: []Input{
+			{Name: "auth_mode", Type: "choice", Options: []Choice{{Value: "sso"}, {Value: "token"}}},
+			{Name: "host_port", Type: "integer", Min: &minPort, Max: &maxPort},
+			{Name: "callback_port", Type: "integer", Min: &minPort, Max: &maxPort, VisibleWhen: map[string]any{"auth_mode": "sso"}},
+		},
+		MCP: &MCP{Name: "server", AdditionalPorts: []ConditionalPort{{
+			HostPortInput: "host_port", ContainerPortInput: "callback_port", When: map[string]any{"auth_mode": "sso"},
+		}}},
+	}
+	if err := Validate(base); err != nil {
+		t.Fatalf("valid input-bound conditional port rejected: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		edit func(*Package)
+	}{
+		{"fixed and dynamic container port", func(p *Package) { p.MCP.AdditionalPorts[0].ContainerPort = 8085 }},
+		{"container input is not integer", func(p *Package) { p.Inputs[2].Type = "string" }},
+		{"container input is hidden when condition matches", func(p *Package) { p.Inputs[2].VisibleWhen = map[string]any{"auth_mode": "token"} }},
+		{"container input range exceeds ports", func(p *Package) { value := float64(65536); p.Inputs[2].Max = &value }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := base
+			pkg.Inputs = append([]Input(nil), base.Inputs...)
+			port := *base.MCP
+			port.AdditionalPorts = append([]ConditionalPort(nil), base.MCP.AdditionalPorts...)
+			pkg.MCP = &port
+			tc.edit(&pkg)
+			if err := Validate(pkg); err == nil {
+				t.Fatal("invalid input-bound conditional port accepted")
+			}
+		})
 	}
 }
 
@@ -953,7 +1023,7 @@ func TestArgoCapabilityDeclaresAuthModesVersionAndReadOnlyDefault(t *testing.T) 
 			t.Errorf("%s must not be declared as an AACT action", action)
 		}
 	}
-	if len(mcp.AdditionalPorts) != 1 || mcp.AdditionalPorts[0].ContainerPort != 8085 || mcp.AdditionalPorts[0].HostPortInput != "callback_port" || mcp.AdditionalPorts[0].When["auth_mode"] != "sso" {
+	if len(mcp.AdditionalPorts) != 1 || mcp.AdditionalPorts[0].ContainerPort != 0 || mcp.AdditionalPorts[0].ContainerPortInput != "callback_port" || mcp.AdditionalPorts[0].HostPortInput != "callback_port" || mcp.AdditionalPorts[0].When["auth_mode"] != "sso" {
 		t.Fatalf("SSO callback port declaration = %#v", mcp.AdditionalPorts)
 	}
 }

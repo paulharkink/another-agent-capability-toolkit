@@ -29,6 +29,7 @@ type ActionRequest struct {
 	ReleaseImage    string         `json:"release_image,omitempty"`
 }
 type ActionResult struct {
+	LoginURL     string                      `json:"login_url,omitempty"`
 	AuthRequired bool                        `json:"auth_required"`
 	Diagnostic   string                      `json:"diagnostic,omitempty"`
 	Choices      map[string][]catalog.Choice `json:"choices,omitempty"`
@@ -86,6 +87,9 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	}
 	q.ProtocolVersion = 1
 	q.PackageDir = p.Dir
+	if cmd.Target == "container" {
+		q.StateDir = "/state"
+	}
 	b, e := json.Marshal(q)
 	if e != nil {
 		return ActionResult{}, e
@@ -163,6 +167,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 	}
 	result.Diagnostic = scrub(result.Diagnostic)
+	result.LoginURL = scrub(result.LoginURL)
 	return result, nil
 }
 

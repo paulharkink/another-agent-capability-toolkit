@@ -12,7 +12,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type diagnosticAuthExecutor struct {
@@ -65,7 +64,7 @@ func task2AuthProfile(t *testing.T, svc *Service) (string, state.Key) {
 	return agentID, state.Key{Source: "fixture", Package: "demo", Target: "default"}
 }
 
-func TestApplyProfileReportsAuthenticationCompleteOnlyAfterSuccessfulAction(t *testing.T) {
+func TestApplyProfileRegistersOnlyAfterSuccessfulAuthenticationAction(t *testing.T) {
 	svc, _, _ := fixture(t)
 	agentID, _ := task2AuthProfile(t, svc)
 	svc.Options.Runner = diagnosticAuthExecutor{}
@@ -73,8 +72,8 @@ func TestApplyProfileReportsAuthenticationCompleteOnlyAfterSuccessfulAction(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AuthenticationStatus != viewmodel.AuthenticationComplete || len(result.Changes) == 0 {
-		t.Fatalf("successful authentication and actual registration not reported distinctly: %+v", result)
+	if len(result.Changes) == 0 || len(result.Errors) > 0 {
+		t.Fatalf("successful authentication did not allow registration: %+v", result)
 	}
 }
 
@@ -93,7 +92,7 @@ func TestApplyProfileDoesNotInferAuthenticationFromSavedCredentialFile(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) == 0 {
+	if len(result.Errors) > 0 || len(result.Changes) == 0 {
 		t.Fatalf("saved credential presence was mistaken for completed authentication: %+v", result)
 	}
 }
@@ -146,7 +145,7 @@ func TestApplyProfileLegacyAuthRequiredStopsWithActionableIncompleteResult(t *te
 	svc.Options.Runner = exec
 	ref := writeProfileForTest(t, svc, "demo", "default", "")
 	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, ActiveInputGroups: map[string]string{"auth_method": "new_auth"}})
-	if err != nil || !result.Saved || result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) != 0 || len(result.Errors) == 0 {
+	if err != nil || !result.Saved || len(result.Changes) != 0 || len(result.Errors) == 0 {
 		t.Fatalf("legacy auth-required result claimed completion or lost action guidance: result=%+v err=%v", result, err)
 	}
 	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)

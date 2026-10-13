@@ -14,6 +14,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -910,20 +911,6 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			plugins[v] = true
 		}
 	}
-	authenticationRequired := map[string]bool{}
-	authenticationComplete := map[string]bool{}
-	for _, definition := range p.MCPDefinitions() {
-		if mcps[definition.Name] {
-			if _, hasAuth := definition.Actions["authenticate"]; hasAuth {
-				authenticationRequired[definition.Name] = true
-			}
-		}
-	}
-	if len(authenticationRequired) == 0 {
-		out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
-	} else {
-		out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-	}
 	if destIDs == nil {
 		settings, e := s.UISettings(ctx)
 		if e != nil {
@@ -1050,6 +1037,21 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil
+		containerAuthentication := definition.Actions["authenticate"].Target == "container"
+		var instance mcp.Instance
+		if containerAuthentication {
+			out.Step = "start"
+			reportOperationStep(ctx, out.Step)
+			instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			if err != nil {
+				var failure operationFailure
+				if errors.As(err, &failure) {
+					out.Step = failure.step
+				}
+				return out, err
+			}
+			urls[definition.Name] = instance.URL
+		}
 		if _, yes := definition.Actions["authenticate"]; yes {
 			changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
 			if len(changes) > 0 {
@@ -1061,57 +1063,80 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			if e != nil {
 				return out, e
 			}
-			if needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
+			if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
 				out.Step = "authenticate"
 				reportOperationStep(ctx, out.Step)
-				result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+				result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
 				if e != nil {
+					if containerAuthentication {
+						if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+							return out, saveErr
+						}
+						if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+							return out, clearErr
+						}
+					}
 					return out, e
 				}
-				if result.AuthRequired {
-					// Older providers may return the legacy auth-required marker
-					// without a diagnostic. Preserve that flow while retaining the
-					// pending method transition; always stop before registration can
-					// imply success.
-					if strings.TrimSpace(result.Diagnostic) != "" {
-						return out, errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
+				if result.AuthRequired && (!containerAuthentication || definition.HealthPath == "") {
+					diagnostic := strings.TrimSpace(result.Diagnostic)
+					if diagnostic != "" && !containerAuthentication {
+						return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
+					}
+					if containerAuthentication {
+						out.Errors = append(out.Errors, "authentication required")
 					}
 					out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
 					return out, nil
-				} else {
-					authenticationComplete[definition.Name] = true
-					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+				}
+				if result.LoginURL != "" {
+					reportOperationOutput(ctx, result.LoginURL)
+				}
+				if containerAuthentication && definition.HealthPath != "" {
+					headers, headerErr := profileRegistrationHeaders(definition, values)
+					if headerErr != nil {
+						return out, headerErr
+					}
+					healthHeaders := make(http.Header, len(headers))
+					for name, value := range headers {
+						healthHeaders.Set(name, value)
+					}
+					if e = mcp.WaitForAuthenticated(ctx, instance.URL, definition.HealthPath, healthHeaders); e != nil {
+						if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+							return out, saveErr
+						}
+						if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+							return out, clearErr
+						}
 						return out, e
 					}
-					remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-					if pendingErr != nil {
-						return out, pendingErr
-					}
-					if len(authenticationComplete) == len(authenticationRequired) && len(remaining) == 0 {
-						out.AuthenticationStatus = viewmodel.AuthenticationComplete
-					} else if len(remaining) > 0 {
-						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
-						return out, nil
-					}
+				}
+				if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+					return out, e
 				}
 			}
-		}
-		out.Step = "start"
-		reportOperationStep(ctx, out.Step)
-		instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
-		if e != nil {
-			var failure operationFailure
-			if errors.As(e, &failure) {
-				out.Step = failure.step
+			remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+			if pendingErr != nil {
+				return out, pendingErr
 			}
-			var authRequired authenticationRequiredFailure
-			if errors.As(e, &authRequired) {
-				out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+			if len(remaining) > 0 {
+				out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+				return out, nil
 			}
-			return out, e
 		}
-		urls[definition.Name] = instance.URL
+		if !containerAuthentication {
+			out.Step = "start"
+			reportOperationStep(ctx, out.Step)
+			instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			if startErr != nil {
+				var failure operationFailure
+				if errors.As(startErr, &failure) {
+					out.Step = failure.step
+				}
+				return out, startErr
+			}
+			urls[definition.Name] = instance.URL
+		}
 	}
 	record := func(row state.Installation) error {
 		out.Changes = append(out.Changes, row)
@@ -1431,13 +1456,25 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			out.Instances = []mcp.Instance{instance}
 		} else {
 			var result mcp.ActionResult
+			var instance mcp.Instance
+			var startErr error
+			if action == "authenticate" && definition.Actions[action].Target == "container" {
+				instance, startErr = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+				if startErr != nil {
+					return out, startErr
+				}
+				out.Instances = []mcp.Instance{instance}
+			}
 			imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, definition)
 			if choiceErr != nil {
 				return out, choiceErr
 			}
-			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
-			if err == nil && result.AuthRequired {
-				err = errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
+			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+			if err == nil {
+				out.LoginURL = result.LoginURL
+				if result.AuthRequired {
+					err = errors.New(authenticationRequiredMessage(cp.ID, result.Diagnostic))
+				}
 			}
 		}
 	default:

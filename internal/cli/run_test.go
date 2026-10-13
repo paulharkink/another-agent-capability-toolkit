@@ -68,6 +68,17 @@ func TestParseNamedExternalURLs(t *testing.T) {
 	}
 }
 
+func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
+	if !strings.Contains(usage, "authenticate") {
+		t.Fatal("MCP usage omits authenticate")
+	}
+	for _, action := range []string{"authentication_status", "cancel_authentication"} {
+		if strings.Contains(usage, action) {
+			t.Fatalf("obsolete MCP action %q remains in usage", action)
+		}
+	}
+}
+
 func TestParseEnvironmentDirectoryFlagAndLegacyAlias(t *testing.T) {
 	for _, flag := range []string{"--environment-directory", "--environment-root"} {
 		f, err := parse([]string{"install", "demo", flag, "/tmp/pack-envs"})
