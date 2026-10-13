@@ -3,7 +3,7 @@ FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c48
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py ./
+COPY server.py operation_inventory.json ./
 
 EXPOSE 8765
 ENTRYPOINT ["python", "/app/server.py"]

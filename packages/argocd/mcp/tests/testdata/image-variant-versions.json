@@ -1,0 +1,19 @@
+{
+  "checksum_source": "https://github.com/argoproj/argo-cd/releases/download/v{version}/cli_checksums.txt",
+  "versions": [
+    {
+      "version": "2.14.11",
+      "sha256": {
+        "amd64": "78438cfffeb56b34dae868c16154a481b177af68ee6fcb5e11730ae476a1b252",
+        "arm64": "209f976280ca649b5d33834c8c4438ea18e7776a59e5b587932ccf0db5742534"
+      }
+    },
+    {
+      "version": "3.2.0",
+      "sha256": {
+        "amd64": "b76ec97bedc59d1e1a0913d4fe3894d2f2a6f765e0cc1cabf362141636002051",
+        "arm64": "ed31089074b0bd16850b4d8941346e36ac1a5de77e682da8d8717b989ae80425"
+      }
+    }
+  ]
+}

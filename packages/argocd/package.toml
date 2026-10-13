@@ -5,6 +5,10 @@ name = "Argo CD"
 [skill]
 name = "argocd"
 
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+
 [[inputs]]
 name = "local_port"
 type = "integer"
