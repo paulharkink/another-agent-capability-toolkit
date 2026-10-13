@@ -491,6 +491,47 @@ def test_replacement_marker_write_failure_is_hard_error_before_login_and_preserv
     assert {name: (state / name).stat().st_mode & 0o777 for name in old_modes} == old_modes
 
 
+@pytest.mark.parametrize(
+    ("mode", "inputs"),
+    [
+        ("api_token", {}),
+        ("api_token", {"api_token": ""}),
+        ("username_password", {"username": "new-user"}),
+        ("username_password", {"username": "new-user", "password": ""}),
+    ],
+    ids=["missing-token", "empty-token", "missing-password", "empty-password"],
+)
+def test_missing_or_empty_credentials_marker_write_failure_is_hard_error_and_preserves_old_files(
+    tmp_path, monkeypatch, mode, inputs
+):
+    module = load_server()
+    req = request(tmp_path, mode, **inputs)
+    state = Path(req["state_dir"])
+    old_config, old_credentials = seed_previous_auth(state)
+    old_modes = {
+        "config": (state / "config").stat().st_mode & 0o777,
+        "credentials.json": (state / "credentials.json").stat().st_mode & 0o777,
+    }
+    worker_started = []
+
+    def fail_marker_write(*_args):
+        raise OSError("synthetic marker write failure")
+
+    def launch(_request):
+        worker_started.append(True)
+        return {"login_url": "https://login.example/device"}
+
+    monkeypatch.setattr(module, "_atomic_json", fail_marker_write)
+    monkeypatch.setattr(module, "launch_auth_worker", launch)
+    with pytest.raises(RuntimeError, match="Could not persist pending credential replacement"):
+        module.authenticate(req)
+
+    assert worker_started == []
+    assert (state / "config").read_bytes() == old_config
+    assert (state / "credentials.json").read_bytes() == old_credentials
+    assert {name: (state / name).stat().st_mode & 0o777 for name in old_modes} == old_modes
+
+
 def test_credential_replace_failure_rolls_back_promoted_config(tmp_path, monkeypatch):
     module = load_server()
     req = request(tmp_path, "username_password", username="synthetic-user", password="new-secret")
