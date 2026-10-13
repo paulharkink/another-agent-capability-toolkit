@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
 import pty
 import re
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -158,12 +160,20 @@ def run_cli(argv: list[str], *, env: dict[str, str]) -> subprocess.CompletedProc
 
 def _identity(state: Path, server: str, inputs: dict[str, Any], *,
               config_path: Path | None = None, token: str | None = None) -> bool:
-    env = os.environ.copy()
-    env["ARGOCD_CONFIG"] = str(config_path or state / "config")
+    env = _cli_environment(config_path or state / "config")
     if token:
         env["ARGOCD_AUTH_TOKEN"] = token
     result = run_cli([CLI, "account", "get-user-info", "--server", server, *_connection_args(inputs)], env=env)
     return result.returncode == 0
+
+
+def _cli_environment(config_path: Path, *, token: str | None = None) -> dict[str, str]:
+    """Build a CLI environment that cannot inherit ambient Argo CD auth/config overrides."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("ARGOCD_")}
+    env["ARGOCD_CONFIG"] = str(config_path)
+    if token:
+        env["ARGOCD_AUTH_TOKEN"] = token
+    return env
 
 
 def run_interactive_cli(mode: str, argv: list[str], *, env: dict[str, str], password: str | None,
@@ -325,8 +335,7 @@ def run_auth_worker(request: dict[str, Any], *,
         return event
 
     config = _candidate_config(state)
-    env = os.environ.copy()
-    env["ARGOCD_CONFIG"] = str(config)
+    env = _cli_environment(config)
     if mode == "sso":
         argv = [CLI, "login", "--server", server, "--sso", "--sso-port",
                 str(inputs.get("callback_port", 8085)), *_connection_args(inputs)]
@@ -353,25 +362,62 @@ def run_auth_worker(request: dict[str, Any], *,
         config.unlink(missing_ok=True)
 
 
+def _stop_owned_worker(process: subprocess.Popen) -> None:
+    """Stop a timed-out worker and its CLI child in the process group it created."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+
+
 def launch_auth_worker(request: dict[str, Any]) -> dict[str, str]:
     """Start an independent worker; return its one-time URL event without waiting for login."""
-    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "auth-worker"],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              start_new_session=True, close_fds=True)
-    assert process.stdin is not None and process.stdout is not None
-    process.stdin.write(json.dumps(request, separators=(",", ":")).encode() + b"\n")
-    process.stdin.close()
-    readable, _, _ = select.select([process.stdout], [], [], WORKER_HANDSHAKE_SECONDS)
-    if not readable:
-        process.stdout.close()
-        return {}
-    line = process.stdout.readline(4096)
-    process.stdout.close()
+    state = _state_dir(request)
+    lock_path = state / ".auth-worker.lock"
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(lock_path, 0o600)
+    process = None
+    worker_accepted = False
     try:
-        event = json.loads(line) if line else {}
-    except ValueError:
-        event = {}
-    return {"login_url": event["login_url"]} if isinstance(event, dict) and isinstance(event.get("login_url"), str) else {}
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"diagnostic": "Authentication is already running for this profile."}
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "auth-worker", str(lock_fd)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True, pass_fds=(lock_fd,),
+        )
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(json.dumps(request, separators=(",", ":")).encode() + b"\n")
+        process.stdin.close()
+        readable, _, _ = select.select([process.stdout], [], [], WORKER_HANDSHAKE_SECONDS)
+        if not readable:
+            process.stdout.close()
+            return {}
+        worker_accepted = True
+        line = process.stdout.readline(4096)
+        process.stdout.close()
+        try:
+            event = json.loads(line) if line else {}
+        except ValueError:
+            event = {}
+        return {"login_url": event["login_url"]} if isinstance(event, dict) and isinstance(event.get("login_url"), str) else {}
+    finally:
+        if process is not None and not worker_accepted:
+            _stop_owned_worker(process)
+        os.close(lock_fd)
 
 
 def authenticate(request: dict[str, Any]) -> dict[str, Any]:
@@ -433,7 +479,7 @@ def _read_worker_request() -> dict[str, Any]:
     return value
 
 
-def _worker_entry() -> None:
+def _worker_entry(lock_fd: int | None = None) -> None:
     try:
         request = _read_worker_request()
         emitted = False
@@ -457,6 +503,9 @@ def _worker_entry() -> None:
             sys.stdout.flush()
         except BrokenPipeError:
             pass
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def _run_action(action: str) -> None:
@@ -472,7 +521,8 @@ def _run_action(action: str) -> None:
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "auth-worker":
-        _worker_entry()
+        lock_fd = int(sys.argv[2]) if len(sys.argv) > 2 else None
+        _worker_entry(lock_fd)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "action":
         action = sys.argv[2] if len(sys.argv) > 2 else "unknown"

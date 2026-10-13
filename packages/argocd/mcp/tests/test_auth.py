@@ -527,6 +527,80 @@ def test_identity_probe_never_passes_login_only_skip_test_tls_flag(tmp_path, mon
     assert "--skip-test-tls" not in observed["argv"]
 
 
+def test_auth_worker_ignores_inherited_argocd_overrides_for_login_and_identity(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, "username_password", username="synthetic-user", password="synthetic-password")
+    monkeypatch.setenv("ARGOCD_AUTH_TOKEN", "ambient-token-must-not-authenticate")
+    monkeypatch.setenv("ARGOCD_OPTS", "--server ambient.example.test")
+    monkeypatch.setenv("ARGOCD_SERVER", "ambient.example.test")
+    observed = {}
+
+    def login(_mode, argv, *, env, password, on_login_url):
+        observed["login_env"] = env
+        Path(env["ARGOCD_CONFIG"]).write_text("new login session")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    def identity(_state, _server, _inputs, *, config_path=None, token=None):
+        observed["identity"] = (config_path, token)
+        return False
+
+    assert module.run_auth_worker(req, login_runner=login, identity_checker=identity) == {}
+    assert "ARGOCD_AUTH_TOKEN" not in observed["login_env"]
+    assert "ARGOCD_OPTS" not in observed["login_env"]
+    assert "ARGOCD_SERVER" not in observed["login_env"]
+    assert observed["identity"][1] is None
+    assert not (Path(req["state_dir"]) / "credentials.json").exists()
+
+
+def test_authenticate_reuses_active_worker_without_spawning_another(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, callback_port=8085)
+    lock_path = Path(req["state_dir"]) / ".auth-worker.lock"
+    lock_path.parent.mkdir(mode=0o700, parents=True)
+    lock_path.touch(mode=0o600)
+    held = open(lock_path, "r+")
+    module.fcntl.flock(held.fileno(), module.fcntl.LOCK_EX | module.fcntl.LOCK_NB)
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: pytest.fail("duplicate auth worker spawned"))
+    try:
+        assert module.authenticate(req) == {"diagnostic": "Authentication is already running for this profile."}
+    finally:
+        held.close()
+
+
+def test_worker_handshake_timeout_terminates_only_its_owned_process_group(tmp_path, monkeypatch):
+    module = load_server()
+    req = request(tmp_path, callback_port=8085)
+    state = Path(req["state_dir"])
+    state.mkdir(mode=0o700)
+    terminated = []
+
+    class SilentWorker:
+        pid = 424242
+        stdin = io.BytesIO()
+        stdout = io.BytesIO()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            terminated.append(self.pid)
+
+        def wait(self, timeout=None):
+            return 0
+
+    worker = SilentWorker()
+    killed_groups = []
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_a, **_k: worker)
+    monkeypatch.setattr(module.select, "select", lambda *_a, **_k: ([], [], []))
+    monkeypatch.setattr(module.os, "killpg", lambda pid, sig: killed_groups.append((pid, sig)))
+    monkeypatch.setattr(module, "WORKER_HANDSHAKE_SECONDS", 0)
+
+    assert module.launch_auth_worker(req) == {}
+    assert killed_groups == [(worker.pid, module.signal.SIGTERM)]
+    assert terminated == []
+    assert not list(state.glob("*.json"))
+
+
 def test_missing_and_invalid_auth_inputs_fail_without_mode_fallback(tmp_path, monkeypatch):
     module = load_server()
     monkeypatch.setattr(module, "launch_auth_worker", lambda *_a: pytest.fail("invalid inputs must not start a worker"))
