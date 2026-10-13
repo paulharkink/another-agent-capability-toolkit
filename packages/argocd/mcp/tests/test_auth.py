@@ -209,7 +209,9 @@ def test_one_shot_action_returns_url_then_synthetic_callback_completes_detached_
         callback.touch()
         deadline = time.monotonic() + 6
         saved = Path(req["state_dir"]) / "credentials.json"
-        while time.monotonic() < deadline and not saved.exists():
+        while time.monotonic() < deadline and (
+            not saved.exists() or json.loads(saved.read_text()).get("replacement_pending") is True
+        ):
             time.sleep(0.02)
         assert saved.exists()
         assert json.loads(saved.read_text()) == {
@@ -278,7 +280,10 @@ def test_auth_failure_expiry_and_invalid_credentials_preserve_previous_state(tmp
 
     assert module.run_auth_worker(req, login_runner=rejected_login, identity_checker=lambda *_a, **_k: False) == {}
     assert (state / "config").read_bytes() == old_config
-    assert (state / "credentials.json").read_bytes() == old_credentials
+    credentials_after_failure = json.loads((state / "credentials.json").read_text())
+    assert credentials_after_failure["api_token"] == "old-token"
+    assert credentials_after_failure["replacement_pending"] is True
+    assert (state / "credentials.json").stat().st_mode & 0o777 == 0o600
     assert module.is_authenticated(req, identity_checker=lambda *_a, **_k: False) is False
     assert not list(state.glob(".argocd-config-*"))
 
@@ -286,8 +291,79 @@ def test_auth_failure_expiry_and_invalid_credentials_preserve_previous_state(tmp
     token_state = Path(token_req["state_dir"])
     _, token_old = seed_previous_auth(token_state)
     assert module.run_auth_worker(token_req, identity_checker=lambda *_a, **_k: False) == {}
-    assert (token_state / "credentials.json").read_bytes() == token_old
+    credentials_after_failure = json.loads((token_state / "credentials.json").read_text())
+    assert credentials_after_failure["api_token"] == "old-token"
+    assert credentials_after_failure["replacement_pending"] is True
     assert module.is_authenticated(token_req, identity_checker=lambda *_a, **_k: False) is False
+
+
+@pytest.mark.parametrize("mode", ["api_token", "username_password"])
+def test_failed_replacement_login_makes_health_false_until_requested_login_succeeds(
+    tmp_path, monkeypatch, mode
+):
+    module = load_server()
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    old_credentials = {
+        "mode": mode,
+        "server": "argocd.example.test",
+        "connection": {
+            "grpc_web": False, "grpc_web_root_path": "", "plaintext": False, "insecure": False,
+        },
+    }
+    if mode == "api_token":
+        old_credentials["api_token"] = "valid-old-token"
+        req = request(tmp_path, mode, api_token="invalid-new-token")
+    else:
+        req = request(tmp_path, mode, username="new-user", password="invalid-new-password")
+    (state / "credentials.json").write_text(json.dumps(old_credentials))
+    (state / "config").write_text("valid old session")
+    monkeypatch.setattr(module, "STATE_DIR", state)
+    set_profile_env(monkeypatch, auth_mode=mode)
+    monkeypatch.setattr(module, "_identity", lambda *_args, **_kwargs: True)
+
+    if mode == "api_token":
+        assert module.run_auth_worker(req, identity_checker=lambda *_a, **_k: False) == {}
+    else:
+        def rejected_login(_mode, argv, *, env, password, on_login_url):
+            return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"rejected")
+
+        assert module.run_auth_worker(
+            req, login_runner=rejected_login, identity_checker=lambda *_a, **_k: False
+        ) == {}
+
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": False}
+    credentials_after_failure = json.loads((state / "credentials.json").read_text())
+    if mode == "api_token":
+        assert credentials_after_failure["api_token"] == "valid-old-token"
+    assert credentials_after_failure["replacement_pending"] is True
+    assert (state / "config").read_text() == "valid old session"
+    assert (state / "credentials.json").stat().st_mode & 0o777 == 0o600
+
+    # A fresh server process must keep reporting false from the protected marker.
+    restarted = load_server()
+    monkeypatch.setattr(restarted, "STATE_DIR", state)
+    monkeypatch.setattr(restarted, "_identity", lambda *_args, **_kwargs: True)
+    response = TestClient(restarted.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.json() == {"authenticated": False}
+
+    if mode == "api_token":
+        assert module.run_auth_worker(req, identity_checker=lambda *_a, **_k: True) == {}
+    else:
+        def successful_login(_mode, argv, *, env, password, on_login_url):
+            Path(env["ARGOCD_CONFIG"]).write_text("new valid session")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        assert module.run_auth_worker(
+            req, login_runner=successful_login, identity_checker=lambda *_a, **_k: True
+        ) == {}
+
+    response = TestClient(module.mcp.http_app(path="/mcp", transport="streamable-http")).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"authenticated": True}
+    assert "replacement_pending" not in json.loads((state / "credentials.json").read_text())
 
 
 def test_credential_promotion_failure_preserves_both_previous_files(tmp_path, monkeypatch):
@@ -303,7 +379,10 @@ def test_credential_promotion_failure_preserves_both_previous_files(tmp_path, mo
     monkeypatch.setattr(module, "_stage_json", lambda *_args: (_ for _ in ()).throw(OSError("synthetic disk failure")))
     assert module.run_auth_worker(req, login_runner=successful_login, identity_checker=lambda *_a, **_k: True) == {}
     assert (state / "config").read_bytes() == old_config
-    assert (state / "credentials.json").read_bytes() == old_credentials
+    credentials_after_failure = json.loads((state / "credentials.json").read_text())
+    assert credentials_after_failure["api_token"] == "old-token"
+    assert credentials_after_failure["replacement_pending"] is True
+    assert (state / "credentials.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_credential_replace_failure_rolls_back_promoted_config(tmp_path, monkeypatch):
@@ -317,20 +396,23 @@ def test_credential_replace_failure_rolls_back_promoted_config(tmp_path, monkeyp
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
     real_replace = module.os.replace
-    failed = False
+    credential_replacements = 0
 
     def fail_credentials_replace(source, destination):
-        nonlocal failed
-        if Path(destination) == state / "credentials.json" and not failed:
-            failed = True
-            raise OSError("synthetic replacement failure")
+        nonlocal credential_replacements
+        if Path(destination) == state / "credentials.json":
+            credential_replacements += 1
+            if credential_replacements == 2:
+                raise OSError("synthetic replacement failure")
         return real_replace(source, destination)
 
     monkeypatch.setattr(module.os, "replace", fail_credentials_replace)
     assert module.run_auth_worker(req, login_runner=successful_login, identity_checker=lambda *_a, **_k: True) == {}
-    assert failed
+    assert credential_replacements == 2
     assert (state / "config").read_bytes() == old_config
-    assert (state / "credentials.json").read_bytes() == old_credentials
+    credentials_after_failure = json.loads((state / "credentials.json").read_text())
+    assert credentials_after_failure["api_token"] == "old-token"
+    assert credentials_after_failure["replacement_pending"] is True
     assert not list(state.glob(".*backup-*"))
 
 

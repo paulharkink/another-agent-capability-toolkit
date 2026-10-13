@@ -555,6 +555,16 @@ def _credential_record(mode: str, server: str, inputs: dict[str, Any]) -> dict[s
     return record
 
 
+def _mark_replacement_pending(state: Path) -> None:
+    """Keep old private auth material while making health fail until replacement succeeds."""
+    credentials_path = state / "credentials.json"
+    record = _read_json(credentials_path)
+    if record is None:
+        return
+    record["replacement_pending"] = True
+    _atomic_json(credentials_path, record)
+
+
 def _stage_json(path: Path, value: dict[str, Any]) -> Path:
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     staged = Path(name)
@@ -626,6 +636,7 @@ def run_auth_worker(request: dict[str, Any], *,
                     emit: Callable[[dict[str, str]], None] | None = None) -> dict[str, str]:
     """Complete one login in the detached container worker and atomically save success."""
     state, server, inputs, mode = _auth_inputs(request)
+    _mark_replacement_pending(state)
     event: dict[str, str] = {}
     emitted = False
 
@@ -751,6 +762,8 @@ def is_authenticated(request: dict[str, Any], *,
         return False
     credentials = _read_json(state / "credentials.json")
     if not credentials or credentials.get("mode") != mode or credentials.get("server") != server:
+        return False
+    if credentials.get("replacement_pending") is True:
         return False
     saved_connection = credentials.get("connection", {})
     if not isinstance(saved_connection, dict) or _connection_scope(saved_connection) != _connection_scope(inputs):
