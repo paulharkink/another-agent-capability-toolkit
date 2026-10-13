@@ -70,7 +70,12 @@ func validateVariantPaths(root, dockerfile, contextDir string) error {
 }
 
 func imageVariantContextHash(root string) (string, error) {
-	var files []string
+	type contextEntry struct {
+		path string
+		mode os.FileMode
+		dir  bool
+	}
+	var entries []contextEntry
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -78,24 +83,38 @@ func imageVariantContextHash(root string) (string, error) {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("image variant context contains symlink %q", path)
 		}
-		if entry.IsDir() {
-			return nil
+		info, err := entry.Info()
+		if err != nil {
+			return err
 		}
-		if !entry.Type().IsRegular() {
+		if !entry.IsDir() && !info.Mode().IsRegular() {
 			return fmt.Errorf("image variant context contains unsupported file %q", path)
 		}
-		files = append(files, path)
+		entries = append(entries, contextEntry{path: path, mode: info.Mode().Perm(), dir: entry.IsDir()})
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(files)
+	sort.Slice(entries, func(i, j int) bool {
+		relI, _ := filepath.Rel(root, entries[i].path)
+		relJ, _ := filepath.Rel(root, entries[j].path)
+		return filepath.ToSlash(relI) < filepath.ToSlash(relJ)
+	})
 	h := sha256.New()
-	for _, path := range files {
-		rel, _ := filepath.Rel(root, path)
+	for _, entry := range entries {
+		rel, _ := filepath.Rel(root, entry.path)
+		kind := byte('f')
+		if entry.dir {
+			kind = 'd'
+		}
 		_, _ = h.Write([]byte(filepath.ToSlash(rel) + "\x00"))
-		data, err := os.ReadFile(path)
+		mode := uint16(entry.mode.Perm())
+		_, _ = h.Write([]byte{kind, byte(mode >> 8), byte(mode)})
+		if entry.dir {
+			continue
+		}
+		data, err := os.ReadFile(entry.path)
 		if err != nil {
 			return "", err
 		}

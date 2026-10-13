@@ -248,3 +248,51 @@ func TestImageVariantKeyChangesWhenDockerfileOutsideContextChanges(t *testing.T)
 		t.Fatal("Dockerfile content outside context reused the derived image tag")
 	}
 }
+
+func TestImageVariantCacheIdentityIncludesCopiedPermissions(t *testing.T) {
+	root := t.TempDir()
+	contextDir := filepath.Join(root, "context")
+	nested := filepath.Join(contextDir, "bin")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(nested, "helper")
+	if err := os.WriteFile(script, []byte("fixture"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := filepath.Join(root, "Dockerfile.variant")
+	if err := os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := imageVariantBuildContextHash(root, dockerfile, contextDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fileModeChanged, err := imageVariantBuildContextHash(root, dockerfile, contextDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == fileModeChanged {
+		t.Fatal("copied file permission change did not alter variant identity")
+	}
+	if err := os.Chmod(script, 0644); err != nil {
+		t.Fatal(err)
+	}
+	before, err = imageVariantBuildContextHash(root, dockerfile, contextDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	directoryModeChanged, err := imageVariantBuildContextHash(root, dockerfile, contextDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == directoryModeChanged {
+		t.Fatal("copied directory permission change did not alter variant identity")
+	}
+}
