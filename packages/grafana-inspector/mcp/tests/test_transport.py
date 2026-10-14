@@ -81,3 +81,40 @@ def test_tls_vendor_fixture_and_loopback_mcp_startup(tmp_path):
         process.terminate();stdout,stderr=process.communicate(timeout=5)
         fixture.shutdown();fixture.server_close();thread.join(2)
         assert process.returncode in (0,-15),stderr
+
+
+def test_session_cookie_without_credentials_keeps_http_service_available(tmp_path):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0)); mcp_port = listener.getsockname()[1]
+    target = tmp_path / "target.toml"
+    target.write_text(f'[mcp]\nlocal_port={mcp_port}\n[grafana]\nurl="https://grafana.example.test"\nauth_mode="session_cookie"\n')
+    auth_file = tmp_path / "missing-auth.json"
+    env = dict(os.environ, GRAFANA_CONFIG=str(target), GRAFANA_TARGET="fixture", GRAFANA_AUTH_FILE=str(auth_file), GRAFANA_AUTH_MODE="session_cookie", MCP_HTTP_PORT=str(mcp_port))
+    env.pop("GRAFANA_SESSION", None)
+    env.pop("OAUTH_REFRESH", None)
+    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[1] / "server.py")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            query = urllib.request.Request(f"http://127.0.0.1:{mcp_port}/mcp", data=json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}).encode(), headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"})
+            try:
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(query, timeout=1) as response:
+                    body = response.read().decode()
+                result = json.loads(next(line[6:] for line in body.splitlines() if line.startswith("data: "))) if body.startswith("event:") else json.loads(body)
+                tools = {tool["name"] for tool in result["result"]["tools"]}
+                assert "grafana_health" in tools
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0.0.1:{mcp_port}/health", timeout=1) as response:
+                    assert response.status == 200
+                    assert json.loads(response.read()) == {"authenticated": False}
+                return
+            except OSError:
+                time.sleep(0.05)
+        stdout, stderr = process.communicate(timeout=1) if process.poll() is not None else ("", "")
+        raise AssertionError(f"Grafana HTTP service did not start with missing session credentials; exit={process.returncode}, stdout={stdout!r}, stderr={stderr!r}")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            _, stderr = process.communicate(timeout=5)
+            assert process.returncode in (0, -15), stderr

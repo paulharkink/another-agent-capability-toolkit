@@ -131,6 +131,8 @@ def _session_expiry() -> int:
 
 
 def _rotate_session() -> None:
+    if CLIENT is None:
+        raise ValueError("Grafana session authentication is unavailable.")
     with SESSION_LOCK:
         parsed_url = urlparse(GRAFANA_URL)
         response = CLIENT.post(
