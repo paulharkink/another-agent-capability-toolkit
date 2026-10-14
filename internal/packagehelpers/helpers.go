@@ -511,32 +511,52 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 	if tenant == "" || subscription == "" {
 		return mcp.ActionResult{}, errors.New("Azure tenant_id and subscription_id are required")
 	}
-	spec.Env = map[string]string{"AZMCP_TRANSPORT": "sse", "AZMCP_PORT": "8084", "AZURE_CONFIG_DIR": "/state", "HOME": "/tmp"}
+	spec.Env = map[string]string{
+		"AZMCP_TRANSPORT": "sse", "AZMCP_PORT": "8084",
+		"AZURE_CONFIG_DIR": "/state", "HOME": "/tmp",
+		"AACT_AZURE_TENANT_ID": tenant, "AACT_AZURE_SUBSCRIPTION_ID": subscription,
+	}
 	spec.Args = []string{"server", "start"}
 	base := []string{"run", "--rm"}
 	if spec.User != "" {
 		base = append(base, "--user", spec.User)
 	}
-	base = append(base, "--mount", "type=bind,src="+q.StateDir+",dst=/state", "--env", "AZURE_CONFIG_DIR=/state", "--env", "HOME=/tmp", "--entrypoint", "az", spec.Image)
+	base = append(base, "--mount", "type=bind,src="+q.StateDir+",dst=/state",
+		"--env", "AZURE_CONFIG_DIR=/state", "--env", "HOME=/tmp",
+		"--env", "AACT_AZURE_TENANT_ID="+tenant,
+		"--env", "AACT_AZURE_SUBSCRIPTION_ID="+subscription,
+		"--entrypoint", "az", spec.Image)
 	call := func(a ...string) error {
 		_, err := h.command(ctx, append(append([]string{}, base...), a...), nil, nil, secrets)
+		return err
+	}
+	probeToken := func() error {
+		executor := h.Executor
+		if executor == nil {
+			executor = process.OSExecutor{}
+		}
+		accountArgs := append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "json")
+		accountOutput, err := executor.Run(ctx, append([]string{"docker"}, accountArgs...), "", nil, nil, nil)
+		if err != nil {
+			return errors.New("selected Azure subscription account is unavailable")
+		}
+		var account struct {
+			TenantID string `json:"tenantId"`
+		}
+		if json.Unmarshal(accountOutput, &account) != nil || !strings.EqualFold(account.TenantID, tenant) {
+			return errors.New("selected Azure subscription belongs to a different tenant")
+		}
+		tokenArgs := append(append([]string{}, base...), "account", "get-access-token",
+			"--subscription", subscription, "--output", "none")
+		_, err = executor.Run(ctx, append([]string{"docker"}, tokenArgs...), "", nil, nil, nil)
 		return err
 	}
 	if err := call("config", "set", "core.login_experience_v2=off"); err != nil {
 		return mcp.ActionResult{}, err
 	}
-	var probeOutput bytes.Buffer
-	_, probeErr := h.commandWithStderr(ctx, append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "none"), nil, nil, secrets, func(p []byte) { probeOutput.Write(p) })
-	if probeErr != nil {
-		output := strings.TrimSpace(probeOutput.String())
-		if !azureLoginRequired(output) {
-			if h.OnStderr != nil && probeOutput.Len() > 0 {
-				h.OnStderr(probeOutput.Bytes())
-			}
-			return mcp.ActionResult{}, probeErr
-		}
+	if err := probeToken(); err != nil {
 		if q.Action != "authenticate" || !q.Interactive {
-			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Azure CLI account probe requires authentication: " + output}, nil
+			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Selected Azure tenant and subscription credentials need authentication."}, nil
 		}
 		argv := append(append([]string{"docker"}, base...), "login", "--use-device-code", "--tenant", tenant, "--output", "none")
 		if h.Executor == nil {
@@ -556,16 +576,14 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 				h.OnStderr(out)
 			}
 		}
+		if err := probeToken(); err != nil {
+			return mcp.ActionResult{}, errors.New("Azure credentials could not obtain an access token for the selected tenant and subscription")
+		}
 	}
 	if err := call("account", "set", "--subscription", subscription, "--output", "none"); err != nil {
 		return mcp.ActionResult{}, err
 	}
 	return mcp.ActionResult{Runtime: spec}, nil
-}
-
-func azureLoginRequired(output string) bool {
-	message := strings.ToLower(output)
-	return strings.Contains(message, "az login") || strings.Contains(message, "not logged in")
 }
 
 type callbackProgress struct{ callback func([]byte) }
