@@ -50,9 +50,15 @@ TOKEN_FILE = os.environ.get("GRAFANA_API_TOKEN_FILE", "")
 AUTH_READ_ERROR = object()
 
 
-def _configured_api_token(auth: dict[str, Any]) -> str:
-    configured = Path(TOKEN_FILE).read_text().strip() if TOKEN_FILE else os.environ.get("GRAFANA_API_TOKEN", "")
-    return configured or auth.get("api_token", "")
+def _configured_api_token(auth: dict[str, Any], auth_mode: str | None = None) -> str:
+    if (AUTH_MODE if auth_mode is None else auth_mode) != "api_token":
+        return ""
+    environment_token = os.environ.get("GRAFANA_API_TOKEN", "")
+    if environment_token:
+        return environment_token
+    if TOKEN_FILE:
+        return Path(TOKEN_FILE).read_text().strip()
+    return auth.get("api_token", "")
 
 
 def _external_api_token_is_selected() -> bool:
@@ -75,9 +81,10 @@ def _fail_closed_auth(content: bytes | None | object) -> None:
 
     if _external_api_token_is_selected():
         return
+    auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or _AUTH.get("auth_mode") or PROFILE.auth_mode
     _AUTH = {}
     _AUTH_CONTENT = content
-    AUTH_MODE = os.environ.get("GRAFANA_AUTH_MODE") or PROFILE.auth_mode
+    AUTH_MODE = auth_mode
     GRAFANA_SESSION = ""
     GRAFANA_SESSION_EXPIRY = ""
     OAUTH_REFRESH = ""
@@ -187,8 +194,6 @@ def _reload_auth_if_changed() -> None:
         except OSError:
             _fail_closed_auth(AUTH_READ_ERROR)
             return
-        if content == _AUTH_CONTENT:
-            return
         try:
             auth = json.loads(content) if content is not None else {}
         except (UnicodeDecodeError, ValueError):
@@ -199,13 +204,17 @@ def _reload_auth_if_changed() -> None:
             return
 
         previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
-        auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or auth.get("auth_mode") or PROFILE.auth_mode
+        auth_unchanged = content == _AUTH_CONTENT
+        auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or (
+            AUTH_MODE if auth_unchanged else auth.get("auth_mode") or PROFILE.auth_mode
+        )
         grafana_session = auth.get("grafana_session", "")
         session_expiry = auth.get("session_expiry", "")
         oauth_refresh = auth.get("oauth_refresh", "")
         try:
-            api_token = _configured_api_token(auth)
+            api_token = _configured_api_token(auth, auth_mode)
         except OSError:
+            _fail_closed_auth(AUTH_READ_ERROR)
             return
         current = (auth_mode, grafana_session, session_expiry, oauth_refresh, api_token)
 

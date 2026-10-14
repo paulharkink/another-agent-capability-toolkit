@@ -119,7 +119,7 @@ def test_running_server_uses_auth_file_created_and_replaced_after_startup(tmp_pa
     monkeypatch.setenv("MCP_ENVIRONMENT", "test")
     monkeypatch.setenv("GRAFANA_AUTH_MODE", "session_cookie")
     monkeypatch.delenv("GRAFANA_API_TOKEN", raising=False)
-    monkeypatch.delenv("GRAFANA_API_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("GRAFANA_API_TOKEN_FILE", str(tmp_path / "irrelevant-missing-token"))
 
     spec = importlib.util.spec_from_file_location(
         "grafana_auth_reload_regression",
@@ -311,3 +311,185 @@ def test_health_rejects_malformed_is_anonymous_identity_flag(tmp_path, monkeypat
     assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
     identities[0] = {"id": 42, "login": "operator"}
     assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+
+
+def test_running_server_reloads_mounted_api_token_file_on_every_request(tmp_path, monkeypatch):
+    target = tmp_path / "target.toml"
+    target.write_text(
+        '[mcp]\nlocal_port=8765\n[grafana]\n'
+        'url="https://grafana.example.test"\nauth_mode="api_token"\n'
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"auth_mode":"api_token","api_token":"stale-auth-file-token"}')
+    token_path = tmp_path / "mounted-token"
+    token_path.write_text("first-valid-token\n")
+    auth_before = auth_path.read_bytes()
+    provider_requests = []
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = _Cookies()
+
+        def request(self, method, url, **kwargs):
+            path = url.removeprefix("https://grafana.example.test")
+            authorization = self.headers.get("Authorization")
+            provider_requests.append((method, path, authorization))
+            if authorization in {"Bearer first-valid-token", "Bearer replacement-valid-token"}:
+                payload = {"theme": "dark"} if path == "/api/user/preferences" else {"database": "ok"}
+                return _Response(200, payload)
+            return _Response(401, {"message": "unauthorized"})
+
+    requests = types.ModuleType("requests")
+    requests.Session = Session
+    requests.RequestException = Exception
+
+    class FastMCP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self):
+            return lambda function: function
+
+        def custom_route(self, *args, **kwargs):
+            return lambda function: function
+
+    fastmcp = types.ModuleType("fastmcp")
+    fastmcp.FastMCP = FastMCP
+    monkeypatch.setitem(sys.modules, "requests", requests)
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setenv("GRAFANA_CONFIG", str(target))
+    monkeypatch.setenv("GRAFANA_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("GRAFANA_API_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("GRAFANA_API_TOKEN", raising=False)
+    monkeypatch.delenv("GRAFANA_AUTH_MODE", raising=False)
+    monkeypatch.setenv("GRAFANA_TARGET", "sample")
+    monkeypatch.setenv("MCP_ENVIRONMENT", "test")
+
+    spec = importlib.util.spec_from_file_location(
+        "grafana_mounted_token_reload_regression", ROOT / "server.py"
+    )
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    assert server.CLIENT is not None
+    assert auth_path.read_bytes() == auth_before
+
+    def assert_health(authenticated):
+        response = asyncio.run(server.health(None))
+        assert json.loads(response.body) == {"authenticated": authenticated}
+
+    assert_health(True)
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer first-valid-token"),
+        ("GET", "/api/health", "Bearer first-valid-token"),
+    ]
+
+    token_path.write_text("invalid-token\n")
+    assert_health(False)
+    assert server.grafana_health() == {
+        "error": "Grafana rejected credentials (HTTP 401). Check the configured authentication method and credentials."
+    }
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer invalid-token"),
+        ("GET", "/api/health", "Bearer invalid-token"),
+    ]
+
+    token_path.write_text("replacement-valid-token\n")
+    assert_health(True)
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer replacement-valid-token"),
+        ("GET", "/api/health", "Bearer replacement-valid-token"),
+    ]
+
+    token_path.unlink()
+    before_missing = len(provider_requests)
+    assert_health(False)
+    assert server.grafana_health() == {"error": "Grafana authentication is unavailable."}
+    assert len(provider_requests) == before_missing
+
+    token_path.write_text("replacement-valid-token\n")
+    original_read_text = Path.read_text
+
+    def unreadable_token(path, *args, **kwargs):
+        if path == token_path:
+            raise PermissionError("private token details")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_token)
+    before_unreadable = len(provider_requests)
+    assert_health(False)
+    assert server.grafana_health() == {"error": "Grafana authentication is unavailable."}
+    assert len(provider_requests) == before_unreadable
+    monkeypatch.setattr(Path, "read_text", original_read_text)
+    assert_health(True)
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer replacement-valid-token"),
+        ("GET", "/api/health", "Bearer replacement-valid-token"),
+    ]
+    assert auth_path.read_bytes() == auth_before
+
+
+def test_environment_api_token_precedes_token_file_and_ignores_malformed_auth_json(tmp_path, monkeypatch):
+    target = tmp_path / "target.toml"
+    target.write_text(
+        '[mcp]\nlocal_port=8765\n[grafana]\n'
+        'url="https://grafana.example.test"\nauth_mode="api_token"\n'
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text("{malformed")
+    token_path = tmp_path / "mounted-token"
+    token_path.write_text("lower-priority-file-token")
+    provider_requests = []
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = _Cookies()
+
+        def request(self, method, url, **kwargs):
+            authorization = self.headers.get("Authorization")
+            provider_requests.append(authorization)
+            payload = {"theme": "dark"} if authorization == "Bearer explicit-env-token" else {"message": "unauthorized"}
+            return _Response(200 if authorization == "Bearer explicit-env-token" else 401, payload)
+
+    requests = types.ModuleType("requests")
+    requests.Session = Session
+    requests.RequestException = Exception
+
+    class FastMCP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self):
+            return lambda function: function
+
+        def custom_route(self, *args, **kwargs):
+            return lambda function: function
+
+    fastmcp = types.ModuleType("fastmcp")
+    fastmcp.FastMCP = FastMCP
+    monkeypatch.setitem(sys.modules, "requests", requests)
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setenv("GRAFANA_CONFIG", str(target))
+    monkeypatch.setenv("GRAFANA_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("GRAFANA_API_TOKEN_FILE", str(token_path))
+    monkeypatch.setenv("GRAFANA_API_TOKEN", "explicit-env-token")
+    monkeypatch.delenv("GRAFANA_AUTH_MODE", raising=False)
+    monkeypatch.setenv("GRAFANA_TARGET", "sample")
+    monkeypatch.setenv("MCP_ENVIRONMENT", "test")
+
+    spec = importlib.util.spec_from_file_location(
+        "grafana_env_token_precedence_regression", ROOT / "server.py"
+    )
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+    assert server.grafana_health()["health"] == {"theme": "dark"}
+    assert provider_requests == [
+        "Bearer explicit-env-token",
+        "Bearer explicit-env-token",
+    ]
