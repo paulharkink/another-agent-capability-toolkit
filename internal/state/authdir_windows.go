@@ -75,7 +75,7 @@ func authDirPrivacyState(path string) (string, error) {
 }
 
 func authDirIsPrivate(path string) (bool, error) {
-	state, err := authDirPrivacyState(path)
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return false, err
 	}
@@ -83,5 +83,33 @@ func authDirIsPrivate(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return state == fmt.Sprintf("%s:1:%s:%d:3:%x:%x", tokenUser.User.Sid.String(), tokenUser.User.Sid.String(), windows.ACCESS_ALLOWED_ACE_TYPE, windows.GENERIC_ALL, windows.SE_DACL_PROTECTED), nil
+	if sd == nil {
+		return false, fmt.Errorf("security descriptor is missing")
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return false, err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return false, err
+	}
+	if owner == nil || owner.String() != tokenUser.User.Sid.String() || dacl == nil || dacl.AceCount != 1 {
+		return false, nil
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return false, err
+	}
+	// GetNamedSecurityInfo returns a self-relative descriptor with other
+	// representation bits; only DACL protection determines inheritance here.
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return false, nil
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(dacl, 0, &ace); err != nil {
+		return false, err
+	}
+	aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+	return aceSID.String() == owner.String() && ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceFlags == windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE && ace.Mask == windows.GENERIC_ALL, nil
 }

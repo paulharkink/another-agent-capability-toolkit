@@ -30,6 +30,9 @@ type healthTransportError struct {
 
 func (e healthTransportError) Error() string { return "MCP health request failed: " + e.cause }
 func (e healthTransportError) Unwrap() error { return e.err }
+func (e healthTransportError) Is(target error) bool {
+	return target == syscall.ECONNREFUSED && errors.Is(e.err, wsaConnRefused)
+}
 
 func safeHealthTransportError(err error) error {
 	return healthTransportError{cause: safeHealthTransportCause(err), err: err}

@@ -165,6 +165,9 @@ func TestSafeHealthTransportCauseClassifiesWindowsConnectionRefused(t *testing.T
 	if !errors.Is(wrapped, wsaConnRefused) {
 		t.Fatalf("transport wrapper lost WSA error: %v", wrapped)
 	}
+	if !errors.Is(wrapped, syscall.ECONNREFUSED) {
+		t.Fatalf("transport wrapper lost canonical connection-refused cause: %v", wrapped)
+	}
 	var opErr *net.OpError
 	if !errors.As(wrapped, &opErr) {
 		t.Fatalf("transport wrapper lost net.OpError: %v", wrapped)

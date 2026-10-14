@@ -31,7 +31,8 @@ func TestProfileAuthStateDirectoryIsPrivateAndIsolated(t *testing.T) {
 	}
 	private, err := authDirIsPrivate(firstDir)
 	if err != nil || !private {
-		t.Fatalf("auth state directory is not private: %v", err)
+		state, stateErr := authDirPrivacyState(firstDir)
+		t.Fatalf("auth state directory is not private: private=%v state=%q stateErr=%v err=%v", private, state, stateErr, err)
 	}
 	if err := os.WriteFile(filepath.Join(firstDir, "session"), []byte("persisted"), 0600); err != nil {
 		t.Fatal(err)

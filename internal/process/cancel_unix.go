@@ -21,7 +21,7 @@ func configureChildProcessTree(cmd *exec.Cmd) {
 }
 
 func signalChildProcessTree(cmd *exec.Cmd, force bool) error {
-	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
+	if cmd == nil || cmd.Process == nil {
 		return os.ErrProcessDone
 	}
 	signal := syscall.SIGTERM

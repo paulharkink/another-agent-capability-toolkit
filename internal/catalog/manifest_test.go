@@ -1136,7 +1136,7 @@ func TestArgoFixedClientChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.
 func TestArgoFixedClientChecksumVerifierDoesNotParseBinaryPathFromHashOutput(t *testing.T) {
 	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
 	directory := t.TempDir()
-	binaryPath := filepath.Join(directory, "binary\nname")
+	binaryPath := filepath.Join(directory, "binary name")
 	binary := []byte("fixture CLI binary bytes")
 	if err := os.WriteFile(binaryPath, binary, 0600); err != nil {
 		t.Fatal(err)

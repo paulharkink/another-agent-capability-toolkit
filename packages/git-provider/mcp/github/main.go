@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
 
 func Run() int {
@@ -43,7 +41,7 @@ func Run() int {
 	go func() { serveDone <- server.ListenAndServe() }()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, process.ShutdownSignals()...)
+	signal.Notify(signals, wrapperShutdownSignals()...)
 	defer signal.Stop(signals)
 	select {
 	case <-childDone:
@@ -101,7 +99,7 @@ func startChild(args []string) (*exec.Cmd, <-chan error, error) {
 	child := exec.Command(args[0], args[1:]...)
 	child.Env = os.Environ()
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
-	process.ConfigureChildProcessTree(child)
+	configureWrapperChildProcessTree(child)
 	if err := child.Start(); err != nil {
 		return nil, nil, err
 	}
@@ -114,11 +112,11 @@ func stopChild(child *exec.Cmd, childDone <-chan error) {
 	if child == nil || child.Process == nil {
 		return
 	}
-	_ = process.SignalChildProcessTree(child, false)
+	_ = signalWrapperChildProcessTree(child, false)
 	select {
 	case <-childDone:
 	case <-time.After(5 * time.Second):
-		_ = process.SignalChildProcessTree(child, true)
+		_ = signalWrapperChildProcessTree(child, true)
 		<-childDone
 	}
 }
