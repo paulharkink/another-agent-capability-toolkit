@@ -362,6 +362,7 @@ class KubeconfigTests(unittest.TestCase):
             ({"status": {"userInfo": {"username": "system:anonymous", "groups": ["system:unauthenticated"]}}}, False),
             ({"status": {"userInfo": {"username": " system:anonymous ", "groups": ["system:authenticated"]}}}, False),
             ({"status": {"userInfo": {"username": "fixture-user", "groups": ["system:unauthenticated"]}}}, False),
+            ({"status": {"userInfo": {"username": "fixture-user", "groups": [" system:unauthenticated "]}}}, False),
         )
         client = TestClient(server.mcp.http_app(path="/mcp", transport="streamable-http"))
         for probe_result, expected in cases:
