@@ -166,11 +166,25 @@ func validGitHubInstallationRepositories(body []byte) bool {
 		return false
 	}
 	repositories, ok := object["repositories"]
-	if !ok || len(repositories) == 0 || repositories[0] != '[' {
+	if !ok {
 		return false
 	}
 	var entries []json.RawMessage
-	return json.Unmarshal(repositories, &entries) == nil
+	if err := json.Unmarshal(repositories, &entries); err != nil || entries == nil || totalCount < int64(len(entries)) {
+		return false
+	}
+	for _, entry := range entries {
+		var repository map[string]json.RawMessage
+		if err := json.Unmarshal(entry, &repository); err != nil || repository == nil {
+			return false
+		}
+		var id int64
+		rawID, ok := repository["id"]
+		if !ok || json.Unmarshal(rawID, &id) != nil || id <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func identityTarget(config Config, incoming *http.Request) (*url.URL, string, string, bool) {

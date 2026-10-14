@@ -80,6 +80,7 @@ func TestGitHubInstallationTokenUsesRepositoryMembershipProbe(t *testing.T) {
 	for _, body := range []string{
 		`{"total_count":0,"repositories":[]}`,
 		`{"total_count":1,"repositories":[{"id":42}]}`,
+		`{"total_count":2,"repositories":[{"id":42,"name":"repo","owner":{"login":"org"},"extra":true}]}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			var gotMethod, gotPath, gotAuthorization string
@@ -149,9 +150,19 @@ func TestGitHubInstallationTokenRejectsInvalidAndMalformedResponses(t *testing.T
 		{name: "missing total count", status: http.StatusOK, body: `{"repositories":[]}`},
 		{name: "negative total count", status: http.StatusOK, body: `{"total_count":-1,"repositories":[]}`},
 		{name: "fractional total count", status: http.StatusOK, body: `{"total_count":1.5,"repositories":[]}`},
+		{name: "count smaller than returned repositories", status: http.StatusOK, body: `{"total_count":0,"repositories":[{"id":1}]}`},
 		{name: "missing repositories", status: http.StatusOK, body: `{"total_count":0}`},
 		{name: "null repositories", status: http.StatusOK, body: `{"total_count":0,"repositories":null}`},
 		{name: "wrong repositories type", status: http.StatusOK, body: `{"total_count":0,"repositories":{}}`},
+		{name: "null repository", status: http.StatusOK, body: `{"total_count":1,"repositories":[null]}`},
+		{name: "string repository", status: http.StatusOK, body: `{"total_count":1,"repositories":["repo"]}`},
+		{name: "array repository", status: http.StatusOK, body: `{"total_count":1,"repositories":[[]]}`},
+		{name: "missing repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{}]}`},
+		{name: "boolean repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{"id":true}]}`},
+		{name: "zero repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{"id":0}]}`},
+		{name: "negative repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{"id":-1}]}`},
+		{name: "fractional repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{"id":1.5}]}`},
+		{name: "string repository id", status: http.StatusOK, body: `{"total_count":1,"repositories":[{"id":"1"}]}`},
 		{name: "message only", status: http.StatusOK, body: `{"message":"Not Found"}`},
 		{name: "malformed JSON", status: http.StatusOK, body: `{"total_count":0,"repositories":[]`},
 		{name: "non-object JSON", status: http.StatusOK, body: `[]`},
