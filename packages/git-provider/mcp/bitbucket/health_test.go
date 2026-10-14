@@ -2,10 +2,12 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -125,6 +127,78 @@ func TestGitHubHostNormalizationMatchesPinnedServer(t *testing.T) {
 			got, err := GitHubAPIBase(test.input)
 			if err != nil || got.String() != test.want {
 				t.Fatalf("GitHub API base = %v, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestGitHubHTTPHostRequiresPinnedExactLoopback(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+		valid bool
+	}{
+		{input: "http://LOCALHOST:8080/ignored", want: "http://LOCALHOST:8080/api/v3/", valid: true},
+		{input: "http://127.0.0.1:8080/ignored", want: "http://127.0.0.1:8080/api/v3/", valid: true},
+		{input: "http://[::1]:8080/ignored", want: "http://[::1]:8080/api/v3/", valid: true},
+		{input: "http://127.0.0.2:8080/ignored", valid: false},
+		{input: "http://127.0.1.1:8080/ignored", valid: false},
+		{input: "http://[0:0:0:0:0:0:0:1]:8080/ignored", valid: false},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			got, err := GitHubAPIBase(test.input)
+			if test.valid {
+				if err != nil || got.String() != test.want {
+					t.Fatalf("GitHub API base = %v, %v; want %q", got, err, test.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("GitHub API base = %q, want unsupported HTTP host", got)
+			}
+		})
+	}
+}
+
+func TestHealthRejectsNonExactLoopbackBeforeCredentialProbe(t *testing.T) {
+	for _, host := range []string{"127.0.0.2", "127.0.1.1", "[0:0:0:0:0:0:0:1]"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("HTTP_PROXY", "")
+			t.Setenv("HTTPS_PROXY", "")
+			t.Setenv("ALL_PROXY", "")
+			t.Setenv("http_proxy", "")
+			t.Setenv("https_proxy", "")
+			t.Setenv("all_proxy", "")
+			listener, err := net.Listen("tcp", net.JoinHostPort(strings.Trim(host, "[]"), "0"))
+			if err != nil {
+				t.Skipf("loopback address unavailable for local fake provider: %v", err)
+			}
+			var providerCalls atomic.Int32
+			provider := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				providerCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			provider.Listener = listener
+			provider.Start()
+			defer provider.Close()
+			_, port, err := net.SplitHostPort(listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+			defer upstream.Close()
+			providerURL := "http://" + net.JoinHostPort(strings.Trim(host, "[]"), port)
+			handler := New(Config{Provider: "github", UpstreamURL: upstream.URL, GitHubHost: providerURL})
+			request := httptest.NewRequest(http.MethodGet, "/health", nil)
+			request.Header.Set("Authorization", "Bearer test-only-token")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), false) {
+				t.Fatalf("health = %d %q, want unauthenticated", recorder.Code, recorder.Body.String())
+			}
+			if calls := providerCalls.Load(); calls != 0 {
+				t.Fatalf("insecure provider received %d credential probe requests", calls)
 			}
 		})
 	}
