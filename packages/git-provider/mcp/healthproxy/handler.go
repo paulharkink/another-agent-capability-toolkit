@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -161,8 +162,12 @@ func validGitHubInstallationRepositories(body []byte) bool {
 	if err := json.Unmarshal(body, &object); err != nil || object == nil {
 		return false
 	}
-	var totalCount int64
-	if raw, ok := object["total_count"]; !ok || json.Unmarshal(raw, &totalCount) != nil || totalCount < 0 {
+	rawTotalCount, ok := object["total_count"]
+	if !ok {
+		return false
+	}
+	totalCount, ok := new(big.Int).SetString(strings.TrimSpace(string(rawTotalCount)), 10)
+	if !ok || totalCount.Sign() < 0 {
 		return false
 	}
 	repositories, ok := object["repositories"]
@@ -170,7 +175,7 @@ func validGitHubInstallationRepositories(body []byte) bool {
 		return false
 	}
 	var entries []json.RawMessage
-	if err := json.Unmarshal(repositories, &entries); err != nil || entries == nil || totalCount < int64(len(entries)) {
+	if err := json.Unmarshal(repositories, &entries); err != nil || entries == nil || totalCount.Cmp(big.NewInt(int64(len(entries)))) < 0 {
 		return false
 	}
 	for _, entry := range entries {
@@ -178,9 +183,12 @@ func validGitHubInstallationRepositories(body []byte) bool {
 		if err := json.Unmarshal(entry, &repository); err != nil || repository == nil {
 			return false
 		}
-		var id int64
 		rawID, ok := repository["id"]
-		if !ok || json.Unmarshal(rawID, &id) != nil || id <= 0 {
+		if !ok {
+			return false
+		}
+		id, ok := new(big.Int).SetString(strings.TrimSpace(string(rawID)), 10)
+		if !ok || id.Sign() <= 0 {
 			return false
 		}
 	}
