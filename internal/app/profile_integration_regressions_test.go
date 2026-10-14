@@ -74,9 +74,13 @@ func TestProfileApplyGatesNoActionMCPOnDeclaredHealthPath(t *testing.T) {
 type profileActionResultExecutor struct {
 	output string
 	order  *[]string
+	calls  *int
 }
 
 func (e profileActionResultExecutor) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	if e.calls != nil {
+		(*e.calls)++
+	}
 	if e.order != nil {
 		*e.order = append(*e.order, "authenticate")
 	}
@@ -197,6 +201,114 @@ func TestProfileApplyGatesExternalMCPURLOnDeclaredHealthPath(t *testing.T) {
 	}
 	if len(runtime.keys) != 0 {
 		t.Fatalf("external MCP unexpectedly started locally: %#v", runtime.keys)
+	}
+}
+
+type externalProfileActionRuntime struct {
+	providerTestRuntime
+	actionCalls int
+}
+
+func (r *externalProfileActionRuntime) Exec(context.Context, state.Key, []string, []byte, func([]byte)) ([]byte, error) {
+	r.actionCalls++
+	return []byte(`{}`), nil
+}
+
+func TestProfileApplyExternalURLSkipsLocalActionsAndStarts(t *testing.T) {
+	for _, target := range []string{"none", "host", "container"} {
+		t.Run(target, func(t *testing.T) {
+			s, a, q := profileApplyFixture(t)
+			p := &s.Source.Catalog[0]
+			p.Skills, p.Skill, p.MCP = nil, nil, nil
+			definition := catalog.MCP{Name: "alpha", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}
+			if target != "none" {
+				definition.Actions = map[string]catalog.Command{
+					"prepare":      {Argv: []string{"prepare"}, Target: target},
+					"authenticate": {Argv: []string{"authenticate"}, Target: target},
+				}
+			}
+			p.MCPs = []catalog.MCP{definition}
+			p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
+			p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+			q.ItemIDs = []string{"set:alpha-only"}
+			q.Inputs = map[string]any{"label": "company", "enabled": true, "token": "fixture-token"}
+			q.Interactive = true
+			s.Options.Editor = func(_ context.Context, _ []catalog.Input, values map[string]any) (map[string]any, error) {
+				return values, nil
+			}
+
+			healthChecks, initializes, actionCalls := 0, 0, 0
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
+					t.Errorf("external request authorization = %q", got)
+				}
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/health":
+					healthChecks++
+					if healthChecks == 1 {
+						_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+						return
+					}
+					_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+					initializes++
+					_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+				default:
+					t.Errorf("unexpected external MCP request = %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer endpoint.Close()
+			q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
+			runtime := &externalProfileActionRuntime{}
+			s.Options.Runtime = runtime
+			s.Options.Runner = profileActionResultExecutor{output: `{}`, calls: &actionCalls}
+			a.inspect = func() {
+				if healthChecks != 2 || initializes != 1 {
+					t.Errorf("registration started before external health/protocol readiness: health=%d initialize=%d", healthChecks, initializes)
+				}
+			}
+
+			if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+				t.Fatal(err)
+			}
+			if healthChecks != 2 || initializes != 1 {
+				t.Fatalf("external health checks = %d, protocol initializes = %d; want false, true, then one initialize", healthChecks, initializes)
+			}
+			if actionCalls != 0 || runtime.actionCalls != 0 || len(runtime.keys) != 0 {
+				t.Fatalf("external apply ran local work: host actions=%d container actions=%d starts=%v", actionCalls, runtime.actionCalls, runtime.keys)
+			}
+		})
+	}
+}
+
+func TestProfileApplyExternalURLHealthFalsePreventsRegistration(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	healthChecks := 0
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("registration/protocol request before authentication: %s %s", r.Method, r.URL.Path)
+		}
+		healthChecks++
+		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+	}))
+	defer endpoint.Close()
+	q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
+	runtime := &providerTestRuntime{}
+	s.Options.Runtime = runtime
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	result, err := s.ApplyProfile(ctx, q)
+	if err == nil || (err != context.DeadlineExceeded && !strings.Contains(err.Error(), context.DeadlineExceeded.Error())) {
+		t.Fatalf("false external health response did not time out: result=%#v err=%v", result, err)
+	}
+	if healthChecks == 0 || len(a.calls) != 0 || len(runtime.keys) != 0 {
+		t.Fatalf("registration or local start proceeded while external health stayed false: health=%d calls=%v starts=%v", healthChecks, a.calls, runtime.keys)
 	}
 }
 

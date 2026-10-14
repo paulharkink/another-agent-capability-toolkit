@@ -848,6 +848,15 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			return out, invalid(errors.New("interactive editor is unavailable"))
 		}
 		prepare := selectedPrepareMCPs(p, values, items)
+		if len(q.ExternalURLs) > 0 {
+			localPrepare := prepare[:0]
+			for _, definition := range prepare {
+				if q.ExternalURLs[definition.Name] == "" {
+					localPrepare = append(localPrepare, definition)
+				}
+			}
+			prepare = localPrepare
+		}
 		seedInputs := append([]catalog.Input(nil), p.Inputs...)
 		if len(prepare) > 0 {
 			for i := range seedInputs {
@@ -1037,90 +1046,92 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				continue
 			}
 		}
-		cp := p
-		cp.MCP = &definition
-		cp.MCPs = nil
-		containerAuthentication := definition.Actions["authenticate"].Target == "container"
-		needsOwnedInstance := externalURL == ""
-		var instance mcp.Instance
-		if needsOwnedInstance && containerAuthentication {
-			out.Step = "start"
-			reportOperationStep(ctx, out.Step)
-			instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
-			if err != nil {
-				var failure operationFailure
-				if errors.As(err, &failure) {
-					out.Step = failure.step
-				}
-				return out, err
-			}
-			urls[definition.Name] = instance.URL
-		}
-		if _, yes := definition.Actions["authenticate"]; yes {
-			changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
-			if len(changes) > 0 {
-				if e := s.Store.UpdatePendingAuthInputGroups(key, child.ID(), changes); e != nil {
-					return out, e
-				}
-			}
-			pendingGroups, e := s.Store.PendingAuthInputGroups(key, child.ID())
-			if e != nil {
-				return out, e
-			}
-			if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
-				out.Step = "authenticate"
+		if externalURL == "" {
+			cp := p
+			cp.MCP = &definition
+			cp.MCPs = nil
+			containerAuthentication := definition.Actions["authenticate"].Target == "container"
+			needsOwnedInstance := externalURL == ""
+			var instance mcp.Instance
+			if needsOwnedInstance && containerAuthentication {
+				out.Step = "start"
 				reportOperationStep(ctx, out.Step)
-				result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
-				if e != nil {
-					if containerAuthentication {
-						if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
-							return out, saveErr
-						}
-						if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
-							return out, clearErr
-						}
+				instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+				if err != nil {
+					var failure operationFailure
+					if errors.As(err, &failure) {
+						out.Step = failure.step
 					}
+					return out, err
+				}
+				urls[definition.Name] = instance.URL
+			}
+			if _, yes := definition.Actions["authenticate"]; yes {
+				changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
+				if len(changes) > 0 {
+					if e := s.Store.UpdatePendingAuthInputGroups(key, child.ID(), changes); e != nil {
+						return out, e
+					}
+				}
+				pendingGroups, e := s.Store.PendingAuthInputGroups(key, child.ID())
+				if e != nil {
 					return out, e
 				}
-				if result.AuthRequired && definition.HealthPath == "" {
-					diagnostic := strings.TrimSpace(result.Diagnostic)
-					if diagnostic != "" && !containerAuthentication {
-						return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
+				if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
+					out.Step = "authenticate"
+					reportOperationStep(ctx, out.Step)
+					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+					if e != nil {
+						if containerAuthentication {
+							if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+								return out, saveErr
+							}
+							if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+								return out, clearErr
+							}
+						}
+						return out, e
 					}
-					if containerAuthentication {
-						out.Errors = append(out.Errors, "authentication required")
+					if result.AuthRequired && definition.HealthPath == "" {
+						diagnostic := strings.TrimSpace(result.Diagnostic)
+						if diagnostic != "" && !containerAuthentication {
+							return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
+						}
+						if containerAuthentication {
+							out.Errors = append(out.Errors, "authentication required")
+						}
+						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+						return out, nil
 					}
+					if result.LoginURL != "" {
+						reportOperationOutput(ctx, result.LoginURL)
+					}
+					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+						return out, e
+					}
+				}
+				remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+				if pendingErr != nil {
+					return out, pendingErr
+				}
+				if len(remaining) > 0 && definition.HealthPath == "" {
 					out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
 					return out, nil
 				}
-				if result.LoginURL != "" {
-					reportOperationOutput(ctx, result.LoginURL)
+			}
+			if needsOwnedInstance && !containerAuthentication {
+				out.Step = "start"
+				reportOperationStep(ctx, out.Step)
+				instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+				if startErr != nil {
+					var failure operationFailure
+					if errors.As(startErr, &failure) {
+						out.Step = failure.step
+					}
+					return out, startErr
 				}
-				if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-					return out, e
-				}
+				urls[definition.Name] = instance.URL
 			}
-			remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-			if pendingErr != nil {
-				return out, pendingErr
-			}
-			if len(remaining) > 0 && definition.HealthPath == "" {
-				out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
-				return out, nil
-			}
-		}
-		if needsOwnedInstance && !containerAuthentication {
-			out.Step = "start"
-			reportOperationStep(ctx, out.Step)
-			instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
-			if startErr != nil {
-				var failure operationFailure
-				if errors.As(startErr, &failure) {
-					out.Step = failure.step
-				}
-				return out, startErr
-			}
-			urls[definition.Name] = instance.URL
 		}
 		if definition.HealthPath != "" {
 			headers, headerErr := profileRegistrationHeaders(definition, values)
