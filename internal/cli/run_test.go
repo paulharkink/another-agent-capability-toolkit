@@ -156,7 +156,7 @@ func TestParseEnvironmentDirectoryFlagAndLegacyAlias(t *testing.T) {
 
 func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
 	cfg, _, _ := cliFixture(t)
-	for _, command := range []string{"set-environment-directory", "set-environment-root"} {
+	for _, command := range []string{"set-instance-directory", "set-profile-directory", "set-environment-directory", "set-environment-root"} {
 		t.Run(command, func(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "state")
 			environments := t.TempDir()
@@ -165,7 +165,7 @@ func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
 			if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
 				t.Fatalf("config command failed (%d): %s", code, errout.String())
 			}
-			if !strings.Contains(out.String(), "Profile configuration directory: "+environments) {
+			if !strings.Contains(out.String(), "Instance configuration directory: "+environments) {
 				t.Fatalf("output did not use pack terminology: %s", out.String())
 			}
 			data, err := os.ReadFile(filepath.Join(stateDir, "config-root"))
@@ -310,5 +310,30 @@ func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
 	cliOptions.OnStderr([]byte("BuildKit output\n"))
 	if got := cliDiagnostics.String(); got != "BuildKit output\n" {
 		t.Fatalf("CLI stderr = %q, want preserved diagnostic", got)
+	}
+}
+
+func TestParseInstanceFlagAndLegacyProfileAlias(t *testing.T) {
+	for _, flag := range []string{"--instance", "--profile"} {
+		f, err := parse([]string{"mcp", "status", "demo", flag, "work"})
+		if err != nil || f.instance != "work" {
+			t.Fatalf("%s not mapped to instance: flags=%+v err=%v", flag, f, err)
+		}
+	}
+}
+
+func TestCLIInstanceCreateUsesInstanceLedger(t *testing.T) {
+	cfg, stateDir, _ := cliFixture(t)
+	var out, errout bytes.Buffer
+	args := []string{"instance", "create", "demo", "work", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("instance create failed (%d): %s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "Created instance work") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "manager", "instances.json"))
+	if err != nil || !strings.Contains(string(data), "work") {
+		t.Fatalf("instance was not persisted: %s %v", data, err)
 	}
 }

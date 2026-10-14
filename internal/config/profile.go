@@ -15,6 +15,8 @@ type ProfileRef struct {
 	CapabilityID string `json:"capability_id"`
 	Name         string `json:"name"`
 }
+type InstanceRef = ProfileRef
+
 type Profile struct {
 	Ref              ProfileRef        `json:"ref"`
 	Path             string            `json:"path"`
@@ -23,6 +25,8 @@ type Profile struct {
 	InputPolicy      map[string]string `json:"input_policy,omitempty"`
 	ExpressionSource map[string]any    `json:"-"`
 }
+
+type Instance = Profile
 
 func profilePackage(pack Pack, capabilityID string) (catalog.Package, error) {
 	if !safeID.MatchString(capabilityID) || capabilityID == "." || capabilityID == ".." {
@@ -35,15 +39,19 @@ func profilePackage(pack Pack, capabilityID string) (catalog.Package, error) {
 	}
 	return catalog.Package{}, fmt.Errorf("Capability Pack %s has no capability %q", pack.ID, capabilityID)
 }
+func DiscoverInstances(pack Pack, capabilityID string) ([]Instance, error) {
+	return DiscoverProfiles(pack, capabilityID)
+}
+
 func DiscoverProfiles(pack Pack, capabilityID string) ([]Profile, error) {
 	if _, err := profilePackage(pack, capabilityID); err != nil {
 		return nil, err
 	}
-	if pack.ProfileRoot == "" {
+	if pack.instanceRoot() == "" {
 		return []Profile{}, nil
 	}
-	dir := filepath.Join(pack.ProfileRoot, capabilityID)
-	if err := contained(pack.ProfileRoot, dir); err != nil {
+	dir := filepath.Join(pack.instanceRoot(), capabilityID)
+	if err := contained(pack.instanceRoot(), dir); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
@@ -67,8 +75,14 @@ func DiscoverProfiles(pack Pack, capabilityID string) ([]Profile, error) {
 	}
 	return profiles, nil
 }
+func ValidInstanceName(name string) bool { return ValidProfileName(name) }
+
 func ValidProfileName(name string) bool {
 	return safeID.MatchString(name) && name != "." && name != ".."
+}
+
+func LoadInstance(pack Pack, capabilityID, name string) (Instance, error) {
+	return LoadProfile(pack, capabilityID, name)
 }
 
 func LoadProfile(pack Pack, capabilityID, name string) (Profile, error) {
@@ -77,22 +91,22 @@ func LoadProfile(pack Pack, capabilityID, name string) (Profile, error) {
 		return Profile{}, err
 	}
 	if !ValidProfileName(name) {
-		return Profile{}, fmt.Errorf("invalid profile name %q", name)
+		return Profile{}, fmt.Errorf("invalid instance name %q", name)
 	}
-	if pack.ProfileRoot == "" {
-		return Profile{}, fmt.Errorf("Capability Pack %s has no profile configuration directory", pack.ID)
+	if pack.instanceRoot() == "" {
+		return Profile{}, fmt.Errorf("Capability Pack %s has no instance configuration directory", pack.ID)
 	}
-	path := filepath.Join(pack.ProfileRoot, capabilityID, name+".toml")
-	if err := contained(pack.ProfileRoot, path); err != nil {
+	path := filepath.Join(pack.instanceRoot(), capabilityID, name+".toml")
+	if err := contained(pack.instanceRoot(), path); err != nil {
 		return Profile{}, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Profile{}, fmt.Errorf("profile %s: %w", path, err)
+		return Profile{}, fmt.Errorf("instance %s: %w", path, err)
 	}
 	raw := map[string]any{}
 	if err := toml.Unmarshal(data, &raw); err != nil {
-		return Profile{}, fmt.Errorf("profile %s: %w", path, err)
+		return Profile{}, fmt.Errorf("instance %s: %w", path, err)
 	}
 	expressionSource := cloneMap(raw)
 	evaluated, err := expressions.EvaluateTreeDeferringRoot(raw, expressions.DocumentEnvironment(raw), path, "inputs")
@@ -134,7 +148,7 @@ func ResolveExpressions(profile Profile, inputs map[string]any, defs []catalog.I
 	}
 	raw, ok := value.(map[string]any)
 	if !ok {
-		return Profile{}, fmt.Errorf("%s: profile must be a TOML table", profile.Path)
+		return Profile{}, fmt.Errorf("%s: instance must be a TOML table", profile.Path)
 	}
 	policy, err := parseInputPolicy(raw, profile.Path)
 	if err != nil {

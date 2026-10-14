@@ -156,3 +156,34 @@ func TestRemoveProfileClearsOnlyThatProfile(t *testing.T) {
 		t.Fatalf("wrong profile records after removal: %#v, %v", profiles, err)
 	}
 }
+
+func TestLegacyProfileLedgerMigratesToInstanceLedgerOnWrite(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(root, "manager", "profiles.json")
+	legacy := `{"version":1,"profiles":[{"key":{"source":"company","package":"cluster","target":"east"},"name":"East"}]}`
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Name != "East" {
+		t.Fatalf("legacy instance not readable: %+v, %v", instances, err)
+	}
+	if err := store.RecordInstance(InstanceRecord{Key: Key{Source: "company", Package: "cluster", Target: "west"}, Name: "West"}); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(root, "manager", "instances.json")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new instance ledger missing: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy ledger should be preserved during migration: %v", err)
+	}
+	got, err := store.Instances()
+	if err != nil || len(got) != 2 {
+		t.Fatalf("migrated instances lost: %+v, %v", got, err)
+	}
+}

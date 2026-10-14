@@ -246,7 +246,7 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 	}
 	if p.HasMCP() && !skillsOnly {
 		for _, profile := range packageMCPProfiles(p, values) {
-			if err := s.Store.RecordProfile(state.ProfileRecord{Key: mcpProfileKey(k, p, profile)}); err != nil {
+			if err := s.Store.RecordInstance(state.ProfileRecord{Key: mcpProfileKey(k, p, profile)}); err != nil {
 				return err
 			}
 		}

@@ -197,7 +197,7 @@ func (s *Service) UISettings(context.Context) (map[string]string, error) {
 	if s.Source.ManifestPath != "" {
 		catalogFile = filepath.Base(s.Source.ManifestPath)
 	}
-	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "catalog-file": catalogFile, "environment-root": s.Source.EnvironmentRoot, "environment_root": s.Source.EnvironmentRoot, "state-dir": s.Store.Root(), "image_source": "release"}
+	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "catalog-file": catalogFile, "instance-root": s.Source.InstanceRoot, "instance_root": s.Source.InstanceRoot, "environment-root": s.Source.InstanceRoot, "environment_root": s.Source.InstanceRoot, "state-dir": s.Store.Root()}
 	b, e := os.ReadFile(filepath.Join(s.Store.Root(), "manager", "settings.json"))
 	if os.IsNotExist(e) {
 		return out, nil
@@ -206,51 +206,13 @@ func (s *Service) UISettings(context.Context) (map[string]string, error) {
 		return nil, e
 	}
 	var settings struct {
-		Agents      []string `json:"agents"`
-		ImageSource string   `json:"image_source"`
+		Agents []string `json:"agents"`
 	}
 	if e = json.Unmarshal(b, &settings); e != nil {
 		return nil, e
 	}
 	out["default_agents"] = strings.Join(settings.Agents, ",")
-	out["image_source"] = settings.ImageSource
-	if out["image_source"] == "" {
-		out["image_source"] = "release"
-	}
 	return out, nil
-}
-
-// UISetMCPImageSource persists the manager-wide source for MCP images that
-// declare a prebuilt release image. Packages without one continue to build.
-func (s *Service) UISetMCPImageSource(ctx context.Context, source string) error {
-	if source != "release" && source != "local" {
-		return invalid(fmt.Errorf("MCP image source must be release or local"))
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	path := filepath.Join(s.Store.Root(), "manager", "settings.json")
-	return s.Store.WithLock(ctx, func() error {
-		settings := map[string]json.RawMessage{}
-		b, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		if err == nil {
-			if err := json.Unmarshal(b, &settings); err != nil {
-				return fmt.Errorf("read settings: %w", err)
-			}
-			if settings == nil {
-				return errors.New("settings must be a JSON object")
-			}
-		}
-		value, err := json.Marshal(source)
-		if err != nil {
-			return err
-		}
-		settings["image_source"] = value
-		return state.WriteJSON(path, settings)
-	})
 }
 
 // UISetDefaultAgents changes only the destinations proposed for future MCP setups.
@@ -348,23 +310,25 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 	if e != nil {
 		return "", e
 	}
-	if action == "set-environment-root" {
+	if action == "set-instance-root" || action == "set-environment-root" {
 		root, e := config.ResolvePath(target, filepath.Join(s.Source.Root, "aact.toml"))
 		if e != nil {
 			return "", e
 		}
 		info, e := os.Stat(root)
 		if e != nil || !info.IsDir() {
-			return "", fmt.Errorf("environment directory must be an existing directory: %s", root)
+			return "", fmt.Errorf("instance configuration directory must be an existing directory: %s", root)
 		}
 		e = s.Store.WithLock(ctx, func() error {
 			if e := state.WriteAtomic(filepath.Join(s.Store.Root(), "config-root"), []byte(root+"\n"), 0600); e != nil {
 				return e
 			}
+			svc.Source.InstanceRoot = root
 			svc.Source.EnvironmentRoot = root
+			svc.Source.ProfileRoot = root
 			return svc.rememberSource()
 		})
-		return "Environment directory: " + root, e
+		return "Instance directory: " + root, e
 	}
 	if action == "agent-info" {
 		kind, _, _ := strings.Cut(agentID, ":")

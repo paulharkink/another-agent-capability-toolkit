@@ -71,7 +71,7 @@ func mcpNameForStateKey(key state.Key) string {
 // observation visible, marked stale.
 func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
 	var snapshot viewmodel.ProfileSnapshot
-	configured, err := s.Store.Profiles()
+	configured, err := s.Store.Instances()
 	if err != nil {
 		return snapshot, err
 	}

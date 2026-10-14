@@ -12,7 +12,7 @@ func (s *Store) ResolveProfileKey(packID, capabilityID, profileName string) (Key
 	if packID == "" || capabilityID == "" || profileName == "" {
 		return Key{}, fmt.Errorf("Capability Pack, capability and profile names are required")
 	}
-	profiles, err := s.Profiles()
+	profiles, err := s.Instances()
 	if err != nil {
 		return Key{}, err
 	}

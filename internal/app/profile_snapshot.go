@@ -29,7 +29,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 	if err != nil {
 		return snapshot, err
 	}
-	records, err := s.Store.Profiles()
+	records, err := s.Store.Instances()
 	if err != nil {
 		return snapshot, err
 	}

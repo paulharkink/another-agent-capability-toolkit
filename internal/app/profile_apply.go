@@ -28,7 +28,7 @@ type AdapterProvider interface {
 	Adapter(string) (agents.Adapter, error)
 	Adapters() []agents.Adapter
 }
-type ProfileRequest struct {
+type InstanceRequest struct {
 	Ref                                  config.ProfileRef
 	Inputs                               map[string]any
 	ActiveInputGroups                    map[string]string
@@ -36,6 +36,8 @@ type ProfileRequest struct {
 	Interactive, SkillsOnly              bool
 	ExternalURLs                         map[string]string
 }
+
+type ProfileRequest = InstanceRequest
 
 func isDynamicChoice(input catalog.Input) bool {
 	switch input.Type {
@@ -127,7 +129,7 @@ func (s *Service) loadProfile(ref config.ProfileRef) (catalog.Package, config.Pr
 	if !errors.Is(err, os.ErrNotExist) {
 		return p, profile, key, invalid(err)
 	}
-	records, e := s.Store.Profiles()
+	records, e := s.Store.Instances()
 	if e != nil {
 		return p, profile, key, e
 	}
@@ -143,7 +145,7 @@ func (s *Service) profilesForCapability(id string) ([]config.Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	records, err := s.Store.Profiles()
+	records, err := s.Store.Instances()
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +166,7 @@ func (s *Service) profilesForCapability(id string) ([]config.Profile, error) {
 	slices.SortFunc(profiles, func(a, b config.Profile) int { return strings.Compare(a.Ref.Name, b.Ref.Name) })
 	return profiles, nil
 }
-func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) error {
+func (s *Service) CreateInstance(ctx context.Context, ref config.InstanceRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -190,8 +192,14 @@ func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) erro
 	if err != nil {
 		return err
 	}
-	return s.Store.WithLock(ctx, func() error { return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: ref.Name, Local: true}) })
+	return s.Store.WithLock(ctx, func() error {
+		return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: ref.Name, Local: true})
+	})
 }
+func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) error {
+	return s.CreateInstance(ctx, ref)
+}
+
 func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.Key, q ProfileRequest) (catalog.Package, config.Profile, map[string]any, map[string]any, error) {
 	known := map[string]bool{}
 	for _, d := range p.Inputs {
@@ -619,7 +627,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path})
 	}
-	records, _ := s.Store.Profiles()
+	records, _ := s.Store.Instances()
 	ids := q.ItemIDs
 	for _, r := range records {
 		if r.Key == key && r.Selection != nil && ids == nil {
@@ -813,7 +821,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	if err != nil {
 		return out, err
 	}
-	records, err := s.Store.Profiles()
+	records, err := s.Store.Instances()
 	if err != nil {
 		return out, err
 	}
@@ -1016,7 +1024,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 			return e
 		}
-		return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
+		return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
 	}()
 	if err != nil {
 		return out, err
@@ -1423,10 +1431,10 @@ func validateEndpointURL(value string) error {
 	return nil
 }
 
-func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
+func (s *Service) RemoveInstance(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
 	if ctx.Value(profileOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.RemoveProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			out, err = s.RemoveInstance(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
 			return err
 		})
 		return out, err
@@ -1467,6 +1475,12 @@ func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out view
 	out.Step = "complete"
 	return out, nil
 }
+
+// RemoveProfile is retained for callers built against the previous API name.
+func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (viewmodel.OperationResult, error) {
+	return s.RemoveInstance(ctx, q)
+}
+
 func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileRequest, mcpName string) (out Result, err error) {
 	if ctx.Value(profileOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
 		err = s.Store.WithLock(ctx, func() error {
