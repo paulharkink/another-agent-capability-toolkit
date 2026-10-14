@@ -122,9 +122,9 @@ def _kubectl(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> st
     return result.stdout
 
 
-def _kubectl_json(arguments: list[str]) -> dict[str, Any]:
+def _kubectl_json(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
     try:
-        value = json.loads(_kubectl(arguments))
+        value = json.loads(_kubectl(arguments, timeout=timeout))
     except json.JSONDecodeError:
         raise ValueError("Kubernetes returned invalid JSON.") from None
     if not isinstance(value, dict):

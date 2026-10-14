@@ -354,28 +354,36 @@ class KubeconfigTests(unittest.TestCase):
     def test_health_requires_a_non_anonymous_kubernetes_identity(self):
         valid_identity = {"status": {"userInfo": {"username": "fixture-user", "groups": ["system:authenticated"]}}}
         cases = (
-            (valid_identity, True),
-            (ValueError("expired secret-token"), False),
-            (ValueError("Forbidden"), False),
-            (json.JSONDecodeError("invalid json", "{", 0), False),
-            ({"status": {}}, False),
-            ({"status": {"userInfo": {"username": "system:anonymous", "groups": ["system:unauthenticated"]}}}, False),
-            ({"status": {"userInfo": {"username": " system:anonymous ", "groups": ["system:authenticated"]}}}, False),
-            ({"status": {"userInfo": {"username": "fixture-user", "groups": ["system:unauthenticated"]}}}, False),
-            ({"status": {"userInfo": {"username": "fixture-user", "groups": [" system:unauthenticated "]}}}, False),
+            (json.dumps(valid_identity), "", 0, True),
+            ("", "expired secret-token", 1, False),
+            ("", "Forbidden", 1, False),
+            ("{", "", 0, False),
+            (json.dumps({"status": {}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "system:anonymous", "groups": ["system:unauthenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": " system:anonymous ", "groups": ["system:authenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "fixture-user", "groups": ["system:unauthenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "fixture-user", "groups": [" system:unauthenticated "]}}}), "", 0, False),
         )
         client = TestClient(server.mcp.http_app(path="/mcp", transport="streamable-http"))
-        for probe_result, expected in cases:
-            with self.subTest(expected=expected, result=type(probe_result).__name__):
-                kwargs = {"side_effect": probe_result} if isinstance(probe_result, Exception) else {"return_value": probe_result}
-                with patch.object(server, "_kubectl_json", **kwargs) as probe:
+        for stdout, stderr, returncode, expected in cases:
+            with self.subTest(expected=expected, returncode=returncode):
+                completed = subprocess.CompletedProcess(
+                    args=["kubectl"], returncode=returncode, stdout=stdout, stderr=stderr
+                )
+                with patch.object(server.subprocess, "run", return_value=completed) as probe:
                     response = client.get("/health")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json(), {"authenticated": expected})
                 self.assertNotIn("fixture-user", response.text)
                 self.assertNotIn("Forbidden", response.text)
                 self.assertNotIn("secret-token", response.text)
-                probe.assert_called_once_with(["auth", "whoami", "--output=json"], timeout=10)
+                probe.assert_called_once_with(
+                    ["kubectl", "auth", "whoami", "--output=json"],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                    timeout=10,
+                )
 
 
 if __name__ == "__main__":
