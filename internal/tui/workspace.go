@@ -643,7 +643,7 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 	} else if len(ordered) > 0 {
 		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
 	}
-	if preview.ItemFieldName != "" {
+	if preview.ItemFieldName != "" && len(preview.Items) > 1 {
 		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
 	}
 	var agentFields []string

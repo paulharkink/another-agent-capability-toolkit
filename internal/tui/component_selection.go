@@ -76,14 +76,14 @@ func (m *Model) refreshComponentAvailability() {
 	}
 	m.form.SetHint(m.pendingSetupItemsField, hint)
 }
-func (m *Model) selectAllSkills() {
+func (m *Model) selectAllComponents() {
 	if m.pendingSetup == nil || m.form == nil || m.pendingSetupItemsField == "" {
 		return
 	}
 	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
 	ids := append([]string{}, selected...)
 	for _, item := range m.pendingSetup.Items {
-		if len(item.Skills) > 0 && !slices.Contains(ids, item.ID) {
+		if !slices.Contains(ids, item.ID) {
 			ids = append(ids, item.ID)
 		}
 	}
@@ -92,8 +92,8 @@ func (m *Model) selectAllSkills() {
 	}
 }
 func (m *Model) configureComponentActions() {
-	if m.form != nil && m.pendingSetupItemsField != "" {
-		m.form.SetSectionActionsID(sectionComponentsID, forms.FormAction{ID: "select-all-skills", Label: "Select all skills"})
+	if m.form != nil && m.pendingSetupItemsField != "" && m.pendingSetup != nil && len(m.pendingSetup.Items) > 1 {
+		m.form.SetSectionActionsID(sectionComponentsID, forms.FormAction{ID: "select-all-components", Label: "Select all components"})
 	}
 }
 

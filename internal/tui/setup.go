@@ -454,6 +454,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		preview.ItemFieldName = field
 		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
+		if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
+			values[field] = []string{preview.Items[0].ID}
+		}
 	}
 	replayValues := make(map[string]any, len(overrides))
 	for name, value := range overrides {

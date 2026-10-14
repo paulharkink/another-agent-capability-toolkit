@@ -399,8 +399,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if action, ok := msg.(forms.ActionMsg); ok && action.SectionID == sectionComponentsID && action.ID == "select-all-skills" {
-		m.selectAllSkills()
+	if action, ok := msg.(forms.ActionMsg); ok && action.SectionID == sectionComponentsID && action.ID == "select-all-components" {
+		m.selectAllComponents()
 		return m, nil
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
