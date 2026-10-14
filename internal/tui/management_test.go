@@ -86,7 +86,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Profiles:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instances:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {

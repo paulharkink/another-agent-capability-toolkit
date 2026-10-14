@@ -90,7 +90,7 @@ func (m *Model) contextRows() []contextRow {
 		for i, p := range m.profiles() {
 			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
 		}
-		rows = append(rows, contextRow{ID: "create-profile", Label: "Create another profile…", Kind: "create-profile"}, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
+		rows = append(rows, contextRow{ID: "create-profile", Label: "Create another instance…", Kind: "create-profile"}, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
 		return rows
 	}
 	if c.CatalogIndex < 0 {
@@ -723,7 +723,7 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.profileMode() {
-		return []homeMenuItem{{"Open selected profile", "parameters", ""}, {"Create another profile…", "create-profile", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
+		return []homeMenuItem{{"Open selected instance", "parameters", ""}, {"Create another instance…", "create-profile", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 	}
 	if m.home.Focus == ProfilesPane {
 		p, isProfile := m.selectedContextProfile()
@@ -1069,7 +1069,7 @@ func (m *Model) selectedDetail() string {
 	if m.home.Focus == ProfilesPane {
 		if p, ok := m.selectedContextProfile(); ok {
 			if p.Configuration != nil {
-				return c.Name + " · Profile " + p.Name + " · " + profileStatusSummary(*p.Configuration)
+				return c.Name + " · Instance " + p.Name + " · " + profileStatusSummary(*p.Configuration)
 			}
 			return fmt.Sprintf("%s / %s / %s / %s · %s · %s", p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target, p.Name, p.URL) + " · owner: " + p.Instance.Ownership
 		}
@@ -1220,7 +1220,7 @@ func (m *Model) homeView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	scope := " Capability Pack: " + m.settings["source"] + " · Profiles: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	scope := " Capability Pack: " + m.settings["source"] + " · Instances: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
 	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"

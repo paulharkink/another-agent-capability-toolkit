@@ -938,7 +938,7 @@ func (m *Model) managementView() tea.View {
 		return filepath.Base(path)
 	}
 	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
-	scope := " Capability Pack: " + m.settings["source"] + " · Profiles: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	scope := " Capability Pack: " + m.settings["source"] + " · Instances: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"

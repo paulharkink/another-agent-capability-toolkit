@@ -98,7 +98,7 @@ func TestHomeShowsCapabilityPackAndEnvironmentDirectory(t *testing.T) {
 	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capability Pack: one", "Profiles: environments"} {
+	for _, want := range []string{"Capability Pack: one", "Instances: environments"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home does not reveal %q:\n%s", want, view)
 		}
