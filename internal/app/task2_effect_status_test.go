@@ -73,8 +73,8 @@ func TestApplyProfileRegistersOnlyAfterSuccessfulAuthenticationAction(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Changes) == 0 || len(result.Errors) > 0 {
-		t.Fatalf("successful authentication did not allow registration: %+v", result)
+	if result.AuthenticationStatus != viewmodel.AuthenticationComplete || len(result.Changes) == 0 || len(result.Errors) > 0 {
+		t.Fatalf("successful authentication did not report completion and allow registration: %+v", result)
 	}
 }
 
