@@ -151,11 +151,14 @@ def _has_authenticated_identity() -> bool:
         return False
     username = user_info.get("username")
     groups = user_info.get("groups")
-    if not isinstance(username, str) or not username.strip() or not isinstance(groups, list):
+    if not isinstance(username, str) or not isinstance(groups, list):
+        return False
+    normalized_username = username.strip()
+    if not normalized_username:
         return False
     if any(not isinstance(group, str) for group in groups):
         return False
-    return username != "system:anonymous" and "system:unauthenticated" not in groups
+    return normalized_username != "system:anonymous" and "system:unauthenticated" not in groups
 
 
 @mcp.custom_route("/health", methods=["GET"])
