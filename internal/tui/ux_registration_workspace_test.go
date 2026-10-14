@@ -106,8 +106,8 @@ func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBa
 func TestUXRegistrationEndpointAndAgentDetailsAreIndependent(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
 	m.agentManagement = []viewmodel.AgentManagementRow{{ID: "codex", Name: "Codex", Detection: "installed", Home: "/tmp/codex-home", EffectiveConfigPath: "/tmp/codex-home/.codex/config.toml", WriteConfigPath: "/tmp/codex-home/.codex/config.toml"}}
-	if !strings.Contains(m.View().Content, "Detection: installed") {
-		t.Fatalf("agent destination details missing: %s", m.View().Content)
+	if strings.Contains(m.View().Content, "Detection: installed") || strings.Contains(m.View().Content, "Config path:") {
+		t.Fatalf("Agents section repeats detection or destination details already shown in Destinations: %s", m.View().Content)
 	}
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()

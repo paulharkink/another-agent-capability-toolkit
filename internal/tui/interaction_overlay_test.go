@@ -97,7 +97,7 @@ func TestInteractionCapabilityAgentListShowsScrollCues(t *testing.T) {
 	}
 }
 
-func TestInteractionCapabilityMouseWheelScrollsDestinationDetail(t *testing.T) {
+func TestInteractionCapabilityMouseWheelKeepsDestinationChoicesWithoutDuplicateDetails(t *testing.T) {
 	m, b := typedProfileFixture()
 	backend := openCapabilityProfileWorkspace(t, m, b, "foreign", "Agents")
 	backend.preview.Key = m.workspace.Key
@@ -107,14 +107,9 @@ func TestInteractionCapabilityMouseWheelScrollsDestinationDetail(t *testing.T) {
 	m.openSetupFormWithValues(backend.preview, nil)
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	m.View()
-	x, y, width, height, ok := m.setupOverlayBounds()
-	if !ok {
-		t.Fatal("setup workspace has no mouse hit region")
-	}
-	m.Update(tea.MouseWheelMsg{X: x + width - 4, Y: y + height/2, Button: tea.MouseWheelDown})
-	if view := m.View().Content; !strings.Contains(strings.ToLower(view), "↑ more") {
-		t.Fatalf("mouse wheel did not scroll the destination details:\n%s", view)
+	view := m.View().Content
+	if strings.Contains(view, "Detection:") || strings.Contains(view, "Config path:") {
+		t.Fatalf("Agents repeats details already shown with destination choices: %s", view)
 	}
 }
 

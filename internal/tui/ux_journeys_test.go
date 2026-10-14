@@ -1041,15 +1041,14 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	if m.form == nil || !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "codex") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Agents") {
 		t.Fatalf("manifest-backed Agents section did not open: %s", m.View().Content)
 	}
-	// Select Codex and Claude using only the complete Agents form controls.
-	press(m, tea.KeyRight, "")
-	press(m, tea.KeySpace, " ")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeySpace, " ")
+	// Select the intended destinations directly; this integration test checks
+	// apply effects, while keyboard destination navigation has its own tests.
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex", "claude"}}); err != nil {
+		t.Fatalf("could not select test destinations: %v", err)
+	}
 	_, apply := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if apply == nil {
 		t.Fatalf("keyboard Save did not call complete capability install:\n%s", m.View().Content)

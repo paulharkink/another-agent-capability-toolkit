@@ -152,10 +152,13 @@ func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 		t.Fatalf("Agents action did not select the one complete-binding workspace: registration=%+v form=%v workspace=%+v", m.registration, m.form != nil, m.workspace)
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capabilities", "Selected capability", "Agents", "No named agent destinations"} {
+	for _, want := range []string{"Capabilities", "Selected capability", "Agents"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("shared Agents workspace lacks %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "No named agent destinations") {
+		t.Fatalf("Agents section contains redundant destination prose: %s", view)
 	}
 	if m.workspace.Section != "Agents" {
 		t.Fatalf("Agents action did not retain the selected section: %q", m.workspace.Section)

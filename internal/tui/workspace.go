@@ -497,28 +497,20 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	}
 	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Profile))
 
-	agents := []string{}
+	agentNotes := []string{}
 	for _, destination := range workspaceDestinations(preview) {
-		state := "Not selected"
-		if destination.Selected {
-			state = "Selected for Save"
-		}
-		path := destinationDisplayPath(preview, destination)
-		agents = append(agents, destination.ID+" · "+state+" · "+path)
-		if destination.Detection != "" {
-			agents = append(agents, destination.ID+" · Detection: "+destination.Detection)
+		name := firstNonempty(destination.Name, destination.ID)
+		if strings.HasPrefix(strings.ToLower(destination.Detection), "failed") {
+			agentNotes = append(agentNotes, name+": "+destination.Detection)
 		}
 		if destination.Note != "" {
-			agents = append(agents, destination.ID+" · Note: "+destination.Note)
+			agentNotes = append(agentNotes, name+": "+destination.Note)
 		}
 		if destination.DisabledReason != "" {
-			agents = append(agents, destination.ID+" · Unavailable for new setup: "+destination.DisabledReason)
+			agentNotes = append(agentNotes, name+": "+destination.DisabledReason)
 		}
 	}
-	if len(agents) == 0 {
-		agents = []string{"No named agent destinations are available."}
-	}
-	m.form.SetSectionContentID(sectionAgentsID, agents)
+	m.form.SetSectionContentID(sectionAgentsID, agentNotes)
 
 	if preview.MCP {
 		runtime := []string{}
