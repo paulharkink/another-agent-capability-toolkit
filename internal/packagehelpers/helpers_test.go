@@ -18,6 +18,12 @@ type helperProcess struct {
 	Calls         [][]string
 	Requests      []mcp.ActionRequest
 	TokenFailures int
+	TokenError    error
+	TokenStderr   string
+	AccountError  error
+	AccountOutput string
+	TokenOutput   string
+	AccountStderr string
 	AccountTenant string
 	LoginTenant   string
 	AuthJSON      string
@@ -63,6 +69,17 @@ func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []
 		return nil, errors.New("pinned Azure CLI rejects --tenant and --subscription together")
 	}
 	if strings.Contains(joined, " account show ") {
+		if f.AccountStderr != "" && onStderr != nil {
+			onStderr([]byte(f.AccountStderr))
+		}
+		if f.AccountError != nil {
+			err := f.AccountError
+			f.AccountError, f.AccountStderr = nil, ""
+			return nil, err
+		}
+		if f.AccountOutput != "" {
+			return []byte(f.AccountOutput), nil
+		}
 		tenant := f.AccountTenant
 		if tenant == "" {
 			tenant = "tenant-fixture"
@@ -76,11 +93,17 @@ func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []
 		return nil, nil
 	}
 	if strings.Contains(joined, "account get-access-token") {
+		if f.TokenStderr != "" && onStderr != nil {
+			onStderr([]byte(f.TokenStderr))
+		}
+		if f.TokenError != nil {
+			return nil, f.TokenError
+		}
 		if f.TokenFailures > 0 {
 			f.TokenFailures--
-			return nil, errors.New("synthetic access token unavailable")
+			return nil, errors.New("exit status 1")
 		}
-		return nil, nil
+		return []byte(f.TokenOutput), nil
 	}
 	return nil, nil
 }
@@ -158,7 +181,7 @@ func TestGrafanaMissingAuthReturnsWithoutRuntimeAndUsesPrivateUser(t *testing.T)
 
 func TestAzureMissingCachedLoginNeverStartsDeviceFlowDuringPrepare(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
-	f := &helperProcess{TokenFailures: 1}
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account."}
 	h := Helper{Executor: f}
 	result, err := h.Run(context.Background(), "azure-inspector", q)
 	if err != nil {
@@ -214,7 +237,7 @@ func TestAzureExpiredOrWrongTenantCacheFallsThroughToInteractiveLogin(t *testing
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
 	q.Action = "authenticate"
 	q.Interactive = true
-	f := &helperProcess{TokenFailures: 1, AccountTenant: "tenant-selected", LoginTenant: "tenant-selected"}
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account.", AccountTenant: "tenant-selected", LoginTenant: "tenant-selected"}
 	result, err := (&Helper{Executor: f}).Run(context.Background(), "azure-inspector", q)
 	if err != nil || result.Runtime == nil {
 		t.Fatalf("interactive authenticate should recover unusable cached credentials: result=%+v err=%v", result, err)
@@ -281,7 +304,7 @@ func TestAzureExplicitDeviceFlowStreamsOnlyInteractiveAction(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
 	q.Action = "authenticate"
 	q.Interactive = true
-	f := &helperProcess{TokenFailures: 1}
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account."}
 	h := Helper{Executor: f}
 	result, err := h.Run(context.Background(), "azure-inspector", q)
 	if err != nil {
@@ -502,7 +525,7 @@ func TestClusterHelperPreservesProviderDiagnostic(t *testing.T) {
 
 func TestAzureUnusableTokenProbeIsDiagnosticAndNotPrimaryStderr(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
-	f := &helperProcess{TokenFailures: 1}
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account."}
 	var streamed bytes.Buffer
 	result, err := (&Helper{Executor: f, OnStderr: func(p []byte) { streamed.Write(p) }}).Run(context.Background(), "azure-inspector", q)
 	if err != nil {
@@ -518,7 +541,7 @@ func TestAzureUnusableTokenProbeIsDiagnosticAndNotPrimaryStderr(t *testing.T) {
 
 func TestAzureTokenProbeFailureDoesNotLeakCliOutput(t *testing.T) {
 	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-fixture", "subscription_id": "subscription-fixture"}})
-	f := &helperProcess{TokenFailures: 1}
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account. synthetic-secret"}
 	var streamed bytes.Buffer
 	result, err := (&Helper{Executor: f, OnStderr: func(p []byte) { streamed.Write(p) }}).Run(context.Background(), "azure-inspector", q)
 	if err != nil || !result.AuthRequired {
@@ -526,5 +549,129 @@ func TestAzureTokenProbeFailureDoesNotLeakCliOutput(t *testing.T) {
 	}
 	if streamed.Len() != 0 || strings.Contains(result.Diagnostic, "synthetic") {
 		t.Fatalf("token probe output must stay private: diagnostic=%q stderr=%q", result.Diagnostic, streamed.String())
+	}
+}
+
+func TestAzureCredentialRequiredProbeUsesExistingLoginPath(t *testing.T) {
+	for _, action := range []struct {
+		name        string
+		interactive bool
+		wantLogin   bool
+	}{
+		{name: "prepare", wantLogin: false},
+		{name: "authenticate", interactive: true, wantLogin: true},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
+			q.Action, q.Interactive = action.name, action.interactive
+			f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account.", AccountTenant: "tenant-selected", LoginTenant: "tenant-selected"}
+			result, err := (&Helper{Executor: f}).Run(context.Background(), "azure-inspector", q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action.wantLogin {
+				if result.Runtime == nil {
+					t.Fatalf("interactive credential recovery should succeed: %+v", result)
+				}
+			} else if !result.AuthRequired {
+				t.Fatalf("prepare should return existing AuthRequired result: %+v", result)
+			}
+			logins := 0
+			for _, args := range f.Calls {
+				if strings.Contains(strings.Join(args, " "), " login ") {
+					logins++
+				}
+			}
+			if action.wantLogin != (logins == 1) {
+				t.Fatalf("login calls=%d wantLogin=%v calls=%+v", logins, action.wantLogin, f.Calls)
+			}
+		})
+	}
+}
+
+func TestAzureCredentialRequiredAccountProbeUsesExistingLoginPath(t *testing.T) {
+	for _, action := range []struct {
+		name        string
+		interactive bool
+		wantLogin   bool
+	}{
+		{name: "prepare", wantLogin: false},
+		{name: "authenticate", interactive: true, wantLogin: true},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
+			q.Action, q.Interactive = action.name, action.interactive
+			f := &helperProcess{AccountError: errors.New("exit status 1"), AccountStderr: "Please run 'az login' to setup account.", AccountTenant: "tenant-selected", LoginTenant: "tenant-selected"}
+			result, err := (&Helper{Executor: f}).Run(context.Background(), "azure-inspector", q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action.wantLogin {
+				if result.Runtime == nil {
+					t.Fatalf("interactive credential recovery should succeed: %+v", result)
+				}
+			} else if !result.AuthRequired {
+				t.Fatalf("prepare should return existing AuthRequired result: %+v", result)
+			}
+			logins := 0
+			for _, args := range f.Calls {
+				if strings.Contains(strings.Join(args, " "), " login ") {
+					logins++
+				}
+			}
+			if action.wantLogin != (logins == 1) {
+				t.Fatalf("login calls=%d wantLogin=%v calls=%+v", logins, action.wantLogin, f.Calls)
+			}
+		})
+	}
+}
+
+func TestAzureOperationalProbeErrorsDoNotRequestLogin(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		accountOutput string
+		accountError  error
+		tokenError    error
+		tokenStderr   string
+	}{
+		{name: "docker launch error", accountError: errors.New(`exec: "docker": executable file not found in $PATH`)},
+		{name: "malformed account metadata", accountOutput: `{"tenantId":`},
+		{name: "missing tenant metadata", accountOutput: `{}`},
+		{name: "invalid subscription", tokenError: errors.New("exit status 1"), tokenStderr: "The subscription 'subscription-selected' doesn't exist."},
+		{name: "non-login CLI error", tokenError: errors.New("exit status 1"), tokenStderr: "ERROR: unrecognized arguments: --output none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
+			q.Action, q.Interactive = "authenticate", true
+			f := &helperProcess{AccountTenant: "tenant-selected", AccountError: tc.accountError, AccountOutput: tc.accountOutput, TokenError: tc.tokenError, TokenStderr: tc.tokenStderr}
+			result, err := (&Helper{Executor: f}).Run(context.Background(), "azure-inspector", q)
+			if err == nil || result.AuthRequired {
+				t.Fatalf("operational probe failure should be a safe hard error: result=%+v err=%v", result, err)
+			}
+			for _, args := range f.Calls {
+				if strings.Contains(strings.Join(args, " "), " login ") {
+					t.Fatalf("operational probe error must not trigger login: %+v", f.Calls)
+				}
+			}
+		})
+	}
+}
+
+func TestAzureTokenProbeSuppressesTokenOutput(t *testing.T) {
+	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
+	f := &helperProcess{AccountTenant: "tenant-selected", TokenOutput: "secret-access-token"}
+	var streamed bytes.Buffer
+	result, err := (&Helper{Executor: f, OnStderr: func(p []byte) { streamed.Write(p) }}).Run(context.Background(), "azure-inspector", q)
+	if err != nil || result.Runtime == nil {
+		t.Fatalf("valid credentials should prepare: result=%+v err=%v", result, err)
+	}
+	for _, args := range f.Calls {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "account get-access-token") && !strings.Contains(joined, "--output none") {
+			t.Fatalf("token probe must suppress token output: %q", joined)
+		}
+	}
+	if strings.Contains(result.Diagnostic, "secret-access-token") || strings.Contains(streamed.String(), "secret-access-token") {
+		t.Fatalf("token output leaked: result=%+v stderr=%q", result, streamed.String())
 	}
 }

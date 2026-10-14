@@ -535,26 +535,48 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 		if executor == nil {
 			executor = process.OSExecutor{}
 		}
+		// Probe stderr is kept private: it is used only to distinguish a missing
+		// login from an operational Azure CLI or Docker failure.
+		var probeStderr bytes.Buffer
+		capture := func(p []byte) { _, _ = probeStderr.Write(p) }
 		accountArgs := append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "json")
-		accountOutput, err := executor.Run(ctx, append([]string{"docker"}, accountArgs...), "", nil, nil, nil)
+		accountOutput, err := executor.Run(ctx, append([]string{"docker"}, accountArgs...), "", nil, nil, capture)
 		if err != nil {
-			return errors.New("selected Azure subscription account is unavailable")
+			if azureLoginRequired(probeStderr.String()) {
+				return errAzureLoginRequired
+			}
+			return errors.New("Azure subscription account probe failed")
 		}
 		var account struct {
 			TenantID string `json:"tenantId"`
 		}
-		if json.Unmarshal(accountOutput, &account) != nil || !strings.EqualFold(account.TenantID, tenant) {
-			return errors.New("selected Azure subscription belongs to a different tenant")
+		if json.Unmarshal(accountOutput, &account) != nil {
+			return errors.New("Azure subscription account metadata is malformed")
+		}
+		if account.TenantID == "" {
+			return errors.New("Azure subscription account metadata is missing tenantId")
+		}
+		if !strings.EqualFold(account.TenantID, tenant) {
+			return errAzureLoginRequired
 		}
 		tokenArgs := append(append([]string{}, base...), "account", "get-access-token",
 			"--subscription", subscription, "--output", "none")
-		_, err = executor.Run(ctx, append([]string{"docker"}, tokenArgs...), "", nil, nil, nil)
-		return err
+		_, err = executor.Run(ctx, append([]string{"docker"}, tokenArgs...), "", nil, nil, capture)
+		if err == nil {
+			return nil
+		}
+		if azureLoginRequired(probeStderr.String()) {
+			return errAzureLoginRequired
+		}
+		return errors.New("Azure access-token probe failed")
 	}
 	if err := call("config", "set", "core.login_experience_v2=off"); err != nil {
 		return mcp.ActionResult{}, err
 	}
 	if err := probeToken(); err != nil {
+		if !errors.Is(err, errAzureLoginRequired) {
+			return mcp.ActionResult{}, err
+		}
 		if q.Action != "authenticate" || !q.Interactive {
 			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Selected Azure tenant and subscription credentials need authentication."}, nil
 		}
@@ -577,6 +599,9 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 			}
 		}
 		if err := probeToken(); err != nil {
+			if !errors.Is(err, errAzureLoginRequired) {
+				return mcp.ActionResult{}, err
+			}
 			return mcp.ActionResult{}, errors.New("Azure credentials could not obtain an access token for the selected tenant and subscription")
 		}
 	}
@@ -584,6 +609,25 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 		return mcp.ActionResult{}, err
 	}
 	return mcp.ActionResult{Runtime: spec}, nil
+}
+
+var errAzureLoginRequired = errors.New("Azure login is required")
+
+func azureLoginRequired(stderr string) bool {
+	message := strings.ToLower(stderr)
+	for _, phrase := range []string{
+		"please run 'az login'",
+		"please run \"az login\"",
+		"not logged in",
+		"login required",
+		"authentication required",
+		"authentication is required",
+	} {
+		if strings.Contains(message, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 type callbackProgress struct{ callback func([]byte) }
