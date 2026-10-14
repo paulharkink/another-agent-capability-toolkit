@@ -57,41 +57,33 @@ def _configured_api_token(auth: dict[str, Any], auth_mode: str | None = None) ->
     if environment_token:
         return environment_token
     if TOKEN_FILE:
-        return Path(TOKEN_FILE).read_text().strip()
+        try:
+            return Path(TOKEN_FILE).read_text().strip()
+        except OSError:
+            # A selected file may be mounted after startup or temporarily
+            # unavailable during replacement. Keep the HTTP service alive and
+            # fail closed until the selected source becomes readable again.
+            return ""
     return auth.get("api_token", "")
 
 
-def _external_api_token_is_selected() -> bool:
-    if AUTH_MODE != "api_token":
-        return False
-    if os.environ.get("GRAFANA_API_TOKEN", ""):
-        return True
-    if TOKEN_FILE:
-        try:
-            return bool(Path(TOKEN_FILE).read_text().strip())
-        except OSError:
-            return False
-    return False
-
-
 def _fail_closed_auth(content: bytes | None | object) -> None:
-    """Discard file-backed credentials after an unreadable or invalid auth file."""
+    """Discard file-backed credentials and refresh the selected external source."""
     global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
     global OAUTH_REFRESH, API_TOKEN, CLIENT
 
-    if _external_api_token_is_selected():
-        return
-    auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or _AUTH.get("auth_mode") or PROFILE.auth_mode
+    previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or AUTH_MODE or PROFILE.auth_mode
     _AUTH = {}
     _AUTH_CONTENT = content
     AUTH_MODE = auth_mode
     GRAFANA_SESSION = ""
     GRAFANA_SESSION_EXPIRY = ""
     OAUTH_REFRESH = ""
-    try:
-        API_TOKEN = _configured_api_token(_AUTH)
-    except OSError:
-        API_TOKEN = ""
+    API_TOKEN = _configured_api_token(_AUTH, auth_mode)
+    current = (auth_mode, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    if current == previous:
+        return
     try:
         CLIENT = _session()
     except (TypeError, ValueError):

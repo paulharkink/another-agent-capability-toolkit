@@ -94,6 +94,9 @@ def test_running_server_uses_auth_file_created_and_replaced_after_startup(tmp_pa
                     return _Response(200, {"database": "ok"})
             return _Response(401, {"message": "unauthorized"})
 
+        def post(self, url, **kwargs):
+            return self.request("POST", url, **kwargs)
+
     requests = types.ModuleType("requests")
     requests.Session = Session
     requests.RequestException = Exception
@@ -188,6 +191,22 @@ def test_running_server_uses_auth_file_created_and_replaced_after_startup(tmp_pa
     assert_fail_closed()
     _write_auth_with_existing_helper(tmp_path, "current-session")
     assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+
+    # The existing helper persists a replacement session atomically. A rejected
+    # replacement must never fall back to the previously valid principal.
+    _write_auth_with_existing_helper(tmp_path, "invalid-replacement-session")
+    rejected = asyncio.run(server.health(None))
+    assert json.loads(rejected.body) == {"authenticated": False}
+    tool_result = server.grafana_health()
+    assert tool_result == {
+        "error": "Grafana rejected credentials (HTTP 401). Check the configured authentication method and credentials."
+    }
+    assert provider_requests[-4:] == [
+        ("GET", "/api/user", "invalid-replacement-session"),
+        ("POST", "/api/user/auth-tokens/rotate", "invalid-replacement-session"),
+        ("GET", "/api/health", "invalid-replacement-session"),
+        ("POST", "/api/user/auth-tokens/rotate", "invalid-replacement-session"),
+    ]
 
     # An explicit environment token remains authoritative over malformed file data.
     monkeypatch.setenv("GRAFANA_AUTH_MODE", "api_token")
@@ -335,7 +354,12 @@ def test_running_server_reloads_mounted_api_token_file_on_every_request(tmp_path
             path = url.removeprefix("https://grafana.example.test")
             authorization = self.headers.get("Authorization")
             provider_requests.append((method, path, authorization))
-            if authorization in {"Bearer first-valid-token", "Bearer replacement-valid-token"}:
+            if authorization in {
+                "Bearer first-valid-token",
+                "Bearer replacement-valid-token",
+                "Bearer malformed-auth-rotation-token",
+                "Bearer unreadable-auth-rotation-token",
+            }:
                 payload = {"theme": "dark"} if path == "/api/user/preferences" else {"database": "ok"}
                 return _Response(200, payload)
             return _Response(401, {"message": "unauthorized"})
@@ -429,7 +453,107 @@ def test_running_server_reloads_mounted_api_token_file_on_every_request(tmp_path
         ("GET", "/api/user/preferences", "Bearer replacement-valid-token"),
         ("GET", "/api/health", "Bearer replacement-valid-token"),
     ]
-    assert auth_path.read_bytes() == auth_before
+
+    # A broken inactive auth.json must not pin the previous mounted token.
+    auth_path.write_text("{broken")
+    token_path.write_text("malformed-auth-rotation-token\n")
+    assert_health(True)
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer malformed-auth-rotation-token"),
+        ("GET", "/api/health", "Bearer malformed-auth-rotation-token"),
+    ]
+
+    # The same precedence applies when auth.json cannot be read at all.
+    token_path.write_text("unreadable-auth-rotation-token\n")
+    original_read_bytes = Path.read_bytes
+
+    def unreadable_inactive_auth(path):
+        if path == auth_path:
+            raise PermissionError("private auth details")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable_inactive_auth)
+    assert_health(True)
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests[-2:] == [
+        ("GET", "/api/user/preferences", "Bearer unreadable-auth-rotation-token"),
+        ("GET", "/api/health", "Bearer unreadable-auth-rotation-token"),
+    ]
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+
+    assert auth_path.read_bytes() == b"{broken"
+
+
+def test_missing_mounted_api_token_at_startup_keeps_server_available_and_recovers(tmp_path, monkeypatch):
+    target = tmp_path / "target.toml"
+    target.write_text(
+        '[mcp]\nlocal_port=8765\n[grafana]\n'
+        'url="https://grafana.example.test"\nauth_mode="api_token"\n'
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"auth_mode":"api_token","api_token":"stale-auth-file-token"}')
+    token_path = tmp_path / "mounted-token"
+    provider_requests = []
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = _Cookies()
+
+        def request(self, method, url, **kwargs):
+            path = url.removeprefix("https://grafana.example.test")
+            authorization = self.headers.get("Authorization")
+            provider_requests.append((method, path, authorization))
+            if authorization == "Bearer appeared-token":
+                payload = {"theme": "dark"} if path == "/api/user/preferences" else {"database": "ok"}
+                return _Response(200, payload)
+            return _Response(401, {"message": "unauthorized"})
+
+    requests = types.ModuleType("requests")
+    requests.Session = Session
+    requests.RequestException = Exception
+
+    class FastMCP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self):
+            return lambda function: function
+
+        def custom_route(self, *args, **kwargs):
+            return lambda function: function
+
+    fastmcp = types.ModuleType("fastmcp")
+    fastmcp.FastMCP = FastMCP
+    monkeypatch.setitem(sys.modules, "requests", requests)
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setenv("GRAFANA_CONFIG", str(target))
+    monkeypatch.setenv("GRAFANA_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("GRAFANA_API_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("GRAFANA_API_TOKEN", raising=False)
+    monkeypatch.delenv("GRAFANA_AUTH_MODE", raising=False)
+    monkeypatch.setenv("GRAFANA_TARGET", "sample")
+    monkeypatch.setenv("MCP_ENVIRONMENT", "test")
+
+    spec = importlib.util.spec_from_file_location(
+        "grafana_missing_mounted_token_startup_regression", ROOT / "server.py"
+    )
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    assert server.CLIENT is None
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": False}
+    assert server.grafana_health() == {"error": "Grafana authentication is unavailable."}
+    assert provider_requests == []
+
+    token_path.write_text("appeared-token\n")
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+    assert server.grafana_health()["health"] == {"database": "ok"}
+    assert provider_requests == [
+        ("GET", "/api/user/preferences", "Bearer appeared-token"),
+        ("GET", "/api/health", "Bearer appeared-token"),
+    ]
 
 
 def test_environment_api_token_precedes_token_file_and_ignores_malformed_auth_json(tmp_path, monkeypatch):
