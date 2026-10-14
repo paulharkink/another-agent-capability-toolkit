@@ -2,6 +2,7 @@ package healthproxy
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,6 +121,10 @@ func TestGitHubHostNormalizationMatchesPinnedServer(t *testing.T) {
 		{input: "https://code.example.test:8443/ignored/base", want: "https://code.example.test:8443/api/v3/"},
 		{input: "https://[::1]:8443/ignored/base", want: "https://[::1]:8443/api/v3/"},
 		{input: "https://GHE.COM", want: "https://GHE.COM/api/v3/"},
+		{input: "http://localhost:8443/ignored/base", want: "http://localhost:8443/api/v3/"},
+		{input: "http://LOCALHOST:8443/ignored/base", want: "http://LOCALHOST:8443/api/v3/"},
+		{input: "http://127.0.0.1:8443/ignored/base", want: "http://127.0.0.1:8443/api/v3/"},
+		{input: "http://[::1]:8443/ignored/base", want: "http://[::1]:8443/api/v3/"},
 	} {
 		t.Run(test.input, func(t *testing.T) {
 			got, err := GitHubAPIBase(test.input)
@@ -127,6 +132,60 @@ func TestGitHubHostNormalizationMatchesPinnedServer(t *testing.T) {
 				t.Fatalf("GitHub API base = %v, %v; want %q", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestGitHubHTTPRequiresExactPinnedLoopbackHosts(t *testing.T) {
+	for _, host := range []string{
+		"127.0.0.2",
+		"127.1",
+		"127.0.1.1",
+		"0:0:0:0:0:0:0:1",
+	} {
+		t.Run(host, func(t *testing.T) {
+			got, err := GitHubAPIBase("http://" + net.JoinHostPort(host, "8443") + "/ignored/base")
+			if err == nil || got != nil {
+				t.Fatalf("GitHub API base = %v, %v; want unsupported host", got, err)
+			}
+		})
+	}
+}
+
+func TestGitHubHTTPRejectsLoopbackAliasBeforeSendingCredentials(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("cannot bind exact loopback alias for no-probe assertion: %v", err)
+	}
+	var providerRequests int
+	provider := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerRequests++
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("rejected GitHub host received credentials: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	provider.Listener = listener
+	provider.Start()
+	defer provider.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := New(Config{
+		Provider: "github", UpstreamURL: upstream.URL,
+		GitHubHost: "http://" + listener.Addr().String() + "/ignored/base",
+	})
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Header.Set("Authorization", "Bearer selected-secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), false) {
+		t.Fatalf("health = %d %q, want unauthenticated", recorder.Code, recorder.Body.String())
+	}
+	if providerRequests != 0 {
+		t.Fatalf("rejected GitHub host received %d credential probe(s)", providerRequests)
 	}
 }
 

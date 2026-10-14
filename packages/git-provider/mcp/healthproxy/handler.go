@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -42,10 +41,7 @@ func GitHubAPIBase(host string) (*url.URL, error) {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return nil, errors.New("GitHub host is unsupported")
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, errors.New("GitHub host is unsupported")
-	}
-	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+	if err := requireSecureScheme(u); err != nil {
 		return nil, errors.New("GitHub host is unsupported")
 	}
 	hostname := u.Hostname()
@@ -62,12 +58,16 @@ func GitHubAPIBase(host string) (*url.URL, error) {
 	}
 }
 
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
+func requireSecureScheme(u *url.URL) error {
+	if u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+		return nil
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return errors.New("GitHub host is unsupported")
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func New(config Config) http.Handler {
