@@ -44,12 +44,13 @@ type RunSpec struct {
 	RegistrationName string            `json:"registration_name,omitempty"`
 	// Host is retained for actions and saved specs written before bind and
 	// advertised endpoint addressing were separated.
-	Host            string        `json:"host"`
-	HostPort        int           `json:"host_port"`
-	ContainerPort   int           `json:"container_port"`
-	AdditionalPorts []PortMapping `json:"additional_ports,omitempty"`
-	Transport       string        `json:"transport"`
-	EndpointPath    string        `json:"endpoint_path"`
+	Host                string        `json:"host"`
+	HostPort            int           `json:"host_port"`
+	ContainerPort       int           `json:"container_port"`
+	AdditionalPorts     []PortMapping `json:"additional_ports,omitempty"`
+	Transport           string        `json:"transport"`
+	EndpointPath        string        `json:"endpoint_path"`
+	DeferProtocolHealth bool          `json:"-"`
 }
 type Instance struct {
 	Key          state.Key `json:"key"`
@@ -525,8 +526,10 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			}
 			out := instance(old)
 			out.Ownership = "local"
-			if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
-				return out, fmt.Errorf("existing MCP health check failed: %w", e)
+			if !s.DeferProtocolHealth {
+				if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+					return out, fmt.Errorf("existing MCP health check failed: %w", e)
+				}
 			}
 			if out, e = r.recordAction(k, out, "start"); e != nil {
 				return out, fmt.Errorf("MCP state recording failed: %w", e)
@@ -648,8 +651,10 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	}
 	createdID = strings.TrimSpace(string(b))
 	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
-	if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
-		return out, fmt.Errorf("MCP health check failed: %w", e)
+	if !s.DeferProtocolHealth {
+		if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+			return out, fmt.Errorf("MCP health check failed: %w", e)
+		}
 	}
 	if out, e = r.recordAction(k, out, "start"); e != nil {
 		return out, fmt.Errorf("MCP state recording failed: %w", e)

@@ -383,15 +383,19 @@ func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t
 	q.ItemIDs = []string{"set:alpha-only"}
 	healthChecks := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("health path = %q", r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			healthChecks++
+			if healthChecks == 1 {
+				_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		default:
+			t.Errorf("unexpected MCP health request: %s %s", r.Method, r.URL.Path)
 		}
-		healthChecks++
-		if healthChecks == 1 {
-			_, _ = fmt.Fprint(w, `{"authenticated":false}`)
-			return
-		}
-		_, _ = fmt.Fprint(w, `{"authenticated":true}`)
 	}))
 	defer server.Close()
 	runtime := &authenticationTestRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, results: []string{`{"login_url":"https://login.example/device"}`}}

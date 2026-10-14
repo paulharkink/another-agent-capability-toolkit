@@ -1027,22 +1027,26 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			continue
 		}
 		child := mcpProfileKey(key, p, definition)
-		if url := q.ExternalURLs[definition.Name]; url != "" {
-			if e := validateEndpointURL(url); e != nil {
+		externalURL := q.ExternalURLs[definition.Name]
+		if externalURL != "" {
+			if e := validateEndpointURL(externalURL); e != nil {
 				return out, invalid(e)
 			}
-			urls[definition.Name] = url
-			continue
+			urls[definition.Name] = externalURL
+			if definition.HealthPath == "" {
+				continue
+			}
 		}
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil
 		containerAuthentication := definition.Actions["authenticate"].Target == "container"
+		needsOwnedInstance := externalURL == ""
 		var instance mcp.Instance
-		if containerAuthentication {
+		if needsOwnedInstance && containerAuthentication {
 			out.Step = "start"
 			reportOperationStep(ctx, out.Step)
-			instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 			if err != nil {
 				var failure operationFailure
 				if errors.As(err, &failure) {
@@ -1078,7 +1082,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 					}
 					return out, e
 				}
-				if result.AuthRequired && (!containerAuthentication || definition.HealthPath == "") {
+				if result.AuthRequired && definition.HealthPath == "" {
 					diagnostic := strings.TrimSpace(result.Diagnostic)
 					if diagnostic != "" && !containerAuthentication {
 						return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
@@ -1092,25 +1096,6 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if result.LoginURL != "" {
 					reportOperationOutput(ctx, result.LoginURL)
 				}
-				if containerAuthentication && definition.HealthPath != "" {
-					headers, headerErr := profileRegistrationHeaders(definition, values)
-					if headerErr != nil {
-						return out, headerErr
-					}
-					healthHeaders := make(http.Header, len(headers))
-					for name, value := range headers {
-						healthHeaders.Set(name, value)
-					}
-					if e = mcp.WaitForAuthenticated(ctx, instance.URL, definition.HealthPath, healthHeaders); e != nil {
-						if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
-							return out, saveErr
-						}
-						if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
-							return out, clearErr
-						}
-						return out, e
-					}
-				}
 				if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
 					return out, e
 				}
@@ -1119,15 +1104,15 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			if pendingErr != nil {
 				return out, pendingErr
 			}
-			if len(remaining) > 0 {
+			if len(remaining) > 0 && definition.HealthPath == "" {
 				out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
 				return out, nil
 			}
 		}
-		if !containerAuthentication {
+		if needsOwnedInstance && !containerAuthentication {
 			out.Step = "start"
 			reportOperationStep(ctx, out.Step)
-			instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 			if startErr != nil {
 				var failure operationFailure
 				if errors.As(startErr, &failure) {
@@ -1136,6 +1121,31 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				return out, startErr
 			}
 			urls[definition.Name] = instance.URL
+		}
+		if definition.HealthPath != "" {
+			headers, headerErr := profileRegistrationHeaders(definition, values)
+			if headerErr != nil {
+				return out, headerErr
+			}
+			healthHeaders := make(http.Header, len(headers))
+			for name, value := range headers {
+				healthHeaders.Set(name, value)
+			}
+			if e := mcp.WaitForAuthenticated(ctx, urls[definition.Name], definition.HealthPath, healthHeaders); e != nil {
+				if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+					return out, saveErr
+				}
+				if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+					return out, clearErr
+				}
+				return out, e
+			}
+			if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
+				return out, fmt.Errorf("MCP health check failed: %w", e)
+			}
+			if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+				return out, e
+			}
 		}
 	}
 	record := func(row state.Installation) error {

@@ -9,6 +9,36 @@ import (
 	"time"
 )
 
+func TestHealthWithHeadersRejectsRedirectWithoutForwardingCredentials(t *testing.T) {
+	forwarded := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("Authorization") != ""
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	err := HealthWithHeaders(context.Background(), redirect.URL, "streamable-http", http.Header{"Authorization": []string{"Bearer private-token"}})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 302") {
+		t.Fatalf("redirect response = %v, want HTTP 302 readiness error", err)
+	}
+	if forwarded {
+		t.Fatal("credential header was forwarded to redirect target")
+	}
+}
+
+func TestHealthWithHeadersRejectsUnauthorizedInitialize(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	defer server.Close()
+	if err := HealthWithHeaders(context.Background(), server.URL, "streamable-http", nil); err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("unauthorized initialize result = %v, want HTTP 401 error", err)
+	}
+}
+
 func TestHealthPathMustBeAbsolutePathWithoutURLComponents(t *testing.T) {
 	for _, path := range []string{"", "health", "//evil.test/health", "https://evil.test/health", "/health?token=x", "/health#fragment", "/../health", "/foo/..", "/%2e%2e/health"} {
 		t.Run(path, func(t *testing.T) {

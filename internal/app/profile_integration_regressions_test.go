@@ -3,14 +3,293 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestProfileApplyGatesNoActionMCPOnDeclaredHealthPath(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}}
+	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true, "token": "fixture-token"}
+
+	checks, initializes := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			checks++
+			if checks == 1 {
+				_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+			initializes++
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		default:
+			t.Errorf("unexpected request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	runtime := &providerTestRuntime{url: server.URL + "/mcp"}
+	s.Options.Runtime = runtime
+	a.inspect = func() {
+		if checks != 2 {
+			t.Errorf("registration started after %d health checks, want false then true", checks)
+		}
+		if initializes != 1 {
+			t.Errorf("registration started after %d initialize requests, want final protocol readiness", initializes)
+		}
+	}
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 2 || initializes != 1 {
+		t.Fatalf("health checks = %d, initialize requests = %d; want false, true, then one initialize", checks, initializes)
+	}
+	if len(runtime.specs) != 1 || !runtime.specs[0].DeferProtocolHealth {
+		t.Fatalf("runtime spec did not defer initialize readiness for auth gate: %+v", runtime.specs)
+	}
+}
+
+type profileActionResultExecutor struct {
+	output string
+	order  *[]string
+}
+
+func (e profileActionResultExecutor) Run(_ context.Context, _ []string, _ string, _ []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	if e.order != nil {
+		*e.order = append(*e.order, "authenticate")
+	}
+	return []byte(e.output), nil
+}
+
+type orderedProfileRuntime struct {
+	providerTestRuntime
+	order *[]string
+}
+
+func (r *orderedProfileRuntime) Start(ctx context.Context, key state.Key, spec mcp.RunSpec) (mcp.Instance, error) {
+	if r.order != nil {
+		*r.order = append(*r.order, "start")
+	}
+	return r.providerTestRuntime.Start(ctx, key, spec)
+}
+
+func TestProfileApplyGatesHostAuthenticationActionOnDeclaredHealthPath(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer ", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "host"},
+	}}}
+	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true, "token": "fixture-token"}
+
+	checks, initializes := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
+			t.Errorf("request authorization = %q", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			checks++
+			if checks == 1 {
+				_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+			initializes++
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		default:
+			t.Errorf("unexpected request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	var order []string
+	runtime := &orderedProfileRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, order: &order}
+	s.Options.Runtime = runtime
+	s.Options.Runner = profileActionResultExecutor{output: `{"auth_required":true,"diagnostic":"stale CLI status","login_url":"https://login.example/device"}`, order: &order}
+	a.inspect = func() {
+		if checks != 2 || initializes != 1 {
+			t.Errorf("registration began before health/protocol readiness: health=%d initialize=%d", checks, initializes)
+		}
+	}
+
+	var progress []viewmodel.OperationProgress
+	ctx := viewmodel.WithOperationProgress(context.Background(), func(event viewmodel.OperationProgress) { progress = append(progress, event) })
+	result, err := s.ApplyProfile(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Changes) == 0 {
+		t.Fatalf("health endpoint did not authorize registration: %#v", result)
+	}
+	if !reflect.DeepEqual(order, []string{"authenticate", "start"}) {
+		t.Fatalf("host action/start order = %#v", order)
+	}
+	if len(progress) == 0 || !strings.Contains(fmt.Sprint(progress), "https://login.example/device") {
+		t.Fatalf("login URL was not retained: %#v", progress)
+	}
+}
+
+func TestProfileApplyGatesExternalMCPURLOnDeclaredHealthPath(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	healthChecks := 0
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			healthChecks++
+			if healthChecks == 1 {
+				_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		default:
+			t.Errorf("unexpected external MCP request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer endpoint.Close()
+	q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	runtime := &providerTestRuntime{}
+	s.Options.Runtime = runtime
+	a.inspect = func() {
+		if len(runtime.keys) != 0 {
+			t.Errorf("external MCP unexpectedly started locally: %#v", runtime.keys)
+		}
+	}
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if healthChecks != 2 {
+		t.Fatalf("external health checks = %d, want false then true", healthChecks)
+	}
+	if len(runtime.keys) != 0 {
+		t.Fatalf("external MCP unexpectedly started locally: %#v", runtime.keys)
+	}
+}
+
+func TestProfileApplyExternalURLWithoutHealthPathKeepsLegacySkip(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "host"},
+	}}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	q.ExternalURLs = map[string]string{"alpha": "https://external.example/mcp"}
+	var order []string
+	s.Options.Runner = profileActionResultExecutor{output: `{}`, order: &order}
+	runtime := &providerTestRuntime{}
+	s.Options.Runtime = runtime
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 0 || len(runtime.keys) != 0 {
+		t.Fatalf("external URL without health path changed legacy flow: actions=%v starts=%v", order, runtime.keys)
+	}
+}
+
+func TestProfileApplyDoesNotRegisterWhileDeclaredHealthPathRemainsFalse(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health"}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("unexpected request before authentication: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+	}))
+	defer server.Close()
+	runtime := &providerTestRuntime{url: server.URL + "/mcp"}
+	s.Options.Runtime = runtime
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	result, err := s.ApplyProfile(ctx, q)
+	if err == nil || (err != context.DeadlineExceeded && !strings.Contains(err.Error(), context.DeadlineExceeded.Error())) {
+		t.Fatalf("false health response did not time out: result=%#v err=%v", result, err)
+	}
+	if len(a.calls) != 0 {
+		t.Fatalf("registration proceeded while health stayed false: %#v", a.calls)
+	}
+}
+
+func TestProfileWithoutPrepareHonorsImageSourceSelection(t *testing.T) {
+	for _, source := range []string{"release", "local"} {
+		t.Run(source, func(t *testing.T) {
+			s, _, q := profileApplyFixture(t)
+			p := &s.Source.Catalog[0]
+			p.MCPs = p.MCPs[:1]
+			p.MCPs[0].Image = "aact/alpha:local"
+			p.MCPs[0].BuildContext = "./docker"
+			p.MCPs[0].ReleaseImage = "ghcr.io/example/alpha:v{aact_version}"
+			p.MCPs[0].Actions = nil
+			p.Dir = t.TempDir()
+			if err := os.MkdirAll(filepath.Join(p.Dir, "docker"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.UISetMCPImageSource(context.Background(), source); err != nil {
+				t.Fatal(err)
+			}
+			oldVersion := versioninfo.Version
+			versioninfo.Version = "1.2.3"
+			t.Cleanup(func() { versioninfo.Version = oldVersion })
+			runtime := &providerTestRuntime{}
+			s.Options.Runtime = runtime
+
+			if _, err := s.RunProfileMCP(context.Background(), "start", q, "alpha"); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.specs) != 1 {
+				t.Fatalf("runtime specs = %#v", runtime.specs)
+			}
+			got := runtime.specs[0]
+			if source == "release" && (got.Image != "ghcr.io/example/alpha:v1.2.3" || got.BuildContext != "") {
+				t.Fatalf("release selection was ignored: %+v", got)
+			}
+			if source == "local" && (got.Image != "" || got.BuildContext != filepath.Join(p.Dir, "docker")) {
+				t.Fatalf("source selection did not use the configured build context: %+v", got)
+			}
+		})
+	}
+}
 
 type releasePrepareExecutor struct{ request mcp.ActionRequest }
 

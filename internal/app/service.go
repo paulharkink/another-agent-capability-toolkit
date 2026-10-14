@@ -395,7 +395,7 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (Result, erro
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
-func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool, deferProtocolHealth ...bool) (mcp.Instance, error) {
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
@@ -467,21 +467,26 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	case int:
 		spec.HostPort = port
 	}
-	if _, ok := p.MCP.Actions["prepare"]; ok {
+	_, hasPrepare := p.MCP.Actions["prepare"]
+	imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
+	if choiceErr != nil {
+		step := "start"
+		if hasPrepare {
+			step = "prepare"
+		}
+		return mcp.Instance{}, operationFailure{step: step, err: choiceErr}
+	}
+	preserveImageSelection := false
+	if imageSource == "release" {
+		spec.Image = releaseImage
+		spec.BuildContext = ""
+		preserveImageSelection = true
+	} else if p.MCP.BuildContext != "" {
+		spec.Image = ""
+		preserveImageSelection = true
+	}
+	if hasPrepare {
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
-		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
-		if choiceErr != nil {
-			return mcp.Instance{}, operationFailure{step: "prepare", err: choiceErr}
-		}
-		preserveImageSelection := false
-		if imageSource == "release" {
-			spec.Image = releaseImage
-			spec.BuildContext = ""
-			preserveImageSelection = true
-		} else if p.MCP.BuildContext != "" {
-			spec.Image = ""
-			preserveImageSelection = true
-		}
 		selectedImage := spec.Image
 		selectedBuildContext := spec.BuildContext
 		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
@@ -506,6 +511,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
 	}
+	spec.DeferProtocolHealth = p.MCP.HealthPath != "" && len(deferProtocolHealth) > 0 && deferProtocolHealth[0]
 	stateMount := mcp.Mount{Source: stateDir, Destination: "/state", ReadOnly: false}
 	for i := 0; i < len(spec.Mounts); {
 		if spec.Mounts[i].Destination == stateMount.Destination {

@@ -211,7 +211,7 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 	svc.Options.Runtime = runtime
 	pkg := &svc.Source.Catalog[0]
 	pkg.Skill, pkg.Skills, pkg.MCP = nil, nil, nil
-	definition := catalog.MCP{Name: "alpha", Image: "example/alpha:1", Actions: map[string]catalog.Command{
+	definition := catalog.MCP{Name: "alpha", Image: "example/alpha:1", HealthPath: "/health", Actions: map[string]catalog.Command{
 		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
 	}}
 	pkg.MCPs = []catalog.MCP{definition}
@@ -223,6 +223,9 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 	}
 	if result.LoginURL != "https://login.example/device" || len(result.Instances) != 1 {
 		t.Fatalf("authenticate result = %#v", result)
+	}
+	if len(runtime.specs) != 1 || runtime.specs[0].DeferProtocolHealth {
+		t.Fatalf("direct authenticate unexpectedly deferred normal runtime readiness: %+v", runtime.specs)
 	}
 	if !reflect.DeepEqual(runtime.actions, []string{"authenticate"}) {
 		t.Fatalf("container actions = %#v", runtime.actions)

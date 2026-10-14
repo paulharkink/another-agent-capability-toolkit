@@ -58,6 +58,17 @@ func TestSecretEnvNotLogged(t *testing.T) {
 	}
 }
 
+func TestStartDefersInitialProtocolProbeWhenRunSpecRequestsIt(t *testing.T) {
+	r, f, k := testRuntime(t)
+	r.SkipHealth = false
+	f.f = absent
+	spec := unhealthySpec(t)
+	spec.DeferProtocolHealth = true
+	if _, err := r.Start(context.Background(), k, spec); err != nil {
+		t.Fatalf("deferred start unexpectedly ran protocol initialize: %v", err)
+	}
+}
+
 func TestDockerListReconstructsNamedMCPKeyAndOwnership(t *testing.T) {
 	r, f, key := testRuntime(t)
 	key.MCP = "secondary"
