@@ -31,8 +31,8 @@ func TestProfileAuthStateDirectoryIsPrivateAndIsolated(t *testing.T) {
 	}
 	private, err := authDirIsPrivate(firstDir)
 	if err != nil || !private {
-		state, stateErr := authDirPrivacyState(firstDir)
-		t.Fatalf("auth state directory is not private: private=%v state=%q stateErr=%v err=%v", private, state, stateErr, err)
+		diagnostic, diagnosticErr := authDirPrivacyDiagnosticForTest(firstDir)
+		t.Fatalf("auth state directory is not private: private=%v diagnostic=%q diagnosticErr=%v err=%v", private, diagnostic, diagnosticErr, err)
 	}
 	if err := os.WriteFile(filepath.Join(firstDir, "session"), []byte("persisted"), 0600); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,8 @@ func TestEnsureAuthDirReadOnlyPreservesExistingPermissions(t *testing.T) {
 	}
 	after, err := authDirPrivacyState(path)
 	if err != nil || after != before {
-		t.Fatalf("read-only EnsureAuthDir changed auth directory security: before %q, after %q, error %v", before, after, err)
+		diagnostic, diagnosticErr := authDirPrivacyDiagnosticForTest(path)
+		t.Fatalf("read-only EnsureAuthDir changed auth directory security: unchanged=%t diagnostic=%q diagnosticErr=%v error=%v", after == before, diagnostic, diagnosticErr, err)
 	}
 }
 
