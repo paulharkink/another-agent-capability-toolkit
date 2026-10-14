@@ -614,14 +614,13 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 var errAzureLoginRequired = errors.New("Azure login is required")
 
 func azureLoginRequired(stderr string) bool {
-	message := strings.ToLower(stderr)
+	message := strings.ToLower(strings.Join(strings.Fields(stderr), " "))
+	message = strings.NewReplacer("'", "", `"`, "", "`", "").Replace(message)
 	for _, phrase := range []string{
-		"please run 'az login'",
-		"please run \"az login\"",
-		"not logged in",
-		"login required",
-		"authentication required",
-		"authentication is required",
+		"to re-authenticate, please run: az login",
+		"run the command below to authenticate interactively; additional arguments may be added as needed: az logout az login",
+		"does not exist in msal token cache. run az login",
+		"interactive authentication is needed. please run: az login",
 	} {
 		if strings.Contains(message, phrase) {
 			return true
