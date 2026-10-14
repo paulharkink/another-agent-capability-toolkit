@@ -14,7 +14,7 @@ import (
 func componentForm(t *testing.T) *Model {
 	m, _ := profileHomeFixture(t)
 	preview := viewmodel.SetupPreview{Key: m.profiles()[0].Key, PackageName: "Guidance", PackRoot: "/pack", Items: []catalog.InstallationItem{{ID: "skill:one", Label: "One", Skills: []string{"one"}}, {ID: "skill:two", Label: "Two", Skills: []string{"two"}}, {ID: "set:api", Label: "API", Skills: []string{"api"}, MCPs: []string{"server"}}, {ID: "plugin:native", Label: "Native", Plugins: []string{"native"}}}, SelectedItemIDs: []string{"skill:one", "skill:two", "set:api"}, Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true, Features: agents.FeatureSet{Skills: true, MCPs: true}}, {ID: "absent", DisabledReason: "Not installed"}}, Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "enabled", Type: "boolean"}, Value: false, HasValue: true, Editable: true}}}
-	m.workspace = &workspaceState{Key: preview.Key, Reference: m.packProfileRequest(preview.Key).Ref, Active: true}
+	m.workspace = &workspaceState{Key: preview.Key, InstanceRef: m.packInstanceRequest(preview.Key).Ref, Active: true}
 	m.openSetupForm(preview)
 	return m
 }
@@ -31,10 +31,10 @@ func TestComponentSelectionKeyboardAndSelectAll(t *testing.T) {
 	if slices.Contains(ids, "skill:one") || !slices.Contains(ids, "skill:two") {
 		t.Fatalf("toggle changed unrelated items: %v", ids)
 	}
-	m.Update(forms.ActionMsg{SectionID: "tool:components", ID: "select-all-skills"})
+	m.Update(forms.ActionMsg{SectionID: "tool:components", ID: "select-all-components"})
 	ids, _ = m.form.Values()[m.pendingSetupItemsField].([]string)
-	if !slices.Contains(ids, "skill:one") || slices.Contains(ids, "plugin:native") {
-		t.Fatalf("Select all skills changed plugin choice: %v", ids)
+	if !slices.Contains(ids, "skill:one") || !slices.Contains(ids, "plugin:native") {
+		t.Fatalf("Select all components omitted a component: %v", ids)
 	}
 }
 func TestAdapterFeatureSelectionUnavailableChoice(t *testing.T) {
@@ -88,5 +88,19 @@ func TestPluginChoiceRequiresEverySelectedDestinationSupport(t *testing.T) {
 	p := viewmodel.SetupPreview{Items: []catalog.InstallationItem{{ID: "plugin:native", Plugins: []string{"native"}}}, PluginDefinitions: []catalog.Plugin{{Name: "native", Format: "claude-code"}}, Destinations: []viewmodel.SetupDestination{{ID: "a", Features: agents.FeatureSet{PluginFormats: []string{"claude-code"}}}, {ID: "b", Features: agents.FeatureSet{Skills: true}}}}
 	if choices := componentOptions(p, []string{"a", "b"}); len(choices) != 1 || choices[0].DisabledReason == "" {
 		t.Fatalf("incompatible mixed destination offered: %v", choices)
+	}
+}
+func TestSingleComponentIsAutoSelectedAndHidden(t *testing.T) {
+	m := componentForm(t)
+	preview := *m.pendingSetup
+	preview.Items = preview.Items[:1]
+	preview.SelectedItemIDs = nil
+	m.openSetupForm(preview)
+	if m.form.HasSectionID(sectionComponentsID) {
+		t.Fatal("single component still has a redundant Components section")
+	}
+	ids, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+	if len(ids) != 1 || ids[0] != "skill:one" {
+		t.Fatalf("single component was not selected automatically: %v", ids)
 	}
 }

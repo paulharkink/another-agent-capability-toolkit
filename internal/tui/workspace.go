@@ -54,7 +54,7 @@ const (
 // the invoking layer and profile observation beside the target draft so later
 // route handling can restore Back without losing the parent selection.
 type workspaceState struct {
-	Reference         config.ProfileRef
+	InstanceRef       config.InstanceRef
 	Key               state.Key
 	Section           string
 	SectionID         string
@@ -65,16 +65,16 @@ type workspaceState struct {
 	Installed         bool
 	ObservedOnly      bool
 	Preview           *viewmodel.SetupPreview
-	Profile           *viewmodel.Profile
-	ProfileSnapshot   *viewmodel.ProfileSnapshot
+	Instance          *viewmodel.Instance
+	InstanceSnapshot  *viewmodel.InstanceSnapshot
 	Draft             map[string]any
 }
 
 func (m *Model) refreshObservedWorkspaceFacts() {
-	if m.workspace == nil || !m.workspace.ObservedOnly || m.workspace.Profile == nil || m.form == nil {
+	if m.workspace == nil || !m.workspace.ObservedOnly || m.workspace.Instance == nil || m.form == nil {
 		return
 	}
-	profile := m.workspace.Profile
+	profile := m.workspace.Instance
 	key := m.workspace.Key
 	registered := "none observed"
 	if len(profile.RegisteredAgents) > 0 {
@@ -134,16 +134,24 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	if preview.CredentialNote != "" {
 		lines = append(lines, splitDisplayLine("Credential note: "+preview.CredentialNote, inner)...)
 	}
-	if preview.ProfilePath != "" {
-		lines = append(lines, "Profile: "+preview.Key.Target, "Pack profile TOML (read-only): "+preview.ProfilePath)
+	instancePath := preview.InstancePath
+	if instancePath == "" {
+		instancePath = preview.ProfilePath
+	}
+	if instancePath != "" {
+		lines = append(lines, "Instance: "+preview.Key.Target, "Pack instance TOML (read-only): "+instancePath)
 	} else if preview.TargetPath != "" {
 		lines = append(lines, "Environment: "+preview.Key.Environment+" · Target: "+preview.Key.Target, "Exact TOML: "+preview.TargetPath)
 	} else if preview.Key.Environment != "" && preview.Key.Target != "" && preview.Key.Target != "default" {
 		lines = append(lines, "Selected preset: "+preview.Key.Environment+" / "+preview.Key.Target)
 	}
-	if preview.ProfileTOML != "" {
-		lines = append(lines, "Read-only profile TOML")
-		for _, line := range strings.Split(strings.TrimSuffix(preview.ProfileTOML, "\n"), "\n") {
+	instanceTOML := preview.InstanceTOML
+	if instanceTOML == "" {
+		instanceTOML = preview.ProfileTOML
+	}
+	if instanceTOML != "" {
+		lines = append(lines, "Read-only instance TOML")
+		for _, line := range strings.Split(strings.TrimSuffix(instanceTOML, "\n"), "\n") {
 			lines = append(lines, splitDisplayLine(line, inner)...)
 		}
 	} else if preview.TargetTOML != "" {
@@ -199,7 +207,7 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	return lines
 }
 
-func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, profile *viewmodel.Profile) []string {
+func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, profile *viewmodel.Instance) []string {
 	configuration := "not saved"
 	if preview.Configured {
 		configuration = "saved"
@@ -230,7 +238,7 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 	return lines
 }
 
-func workspaceProfileInformationLines(profile *viewmodel.Profile) []string {
+func workspaceProfileInformationLines(profile *viewmodel.Instance) []string {
 	if profile == nil {
 		return nil
 	}
@@ -276,26 +284,25 @@ func nonempty(value, fallback string) string {
 	return value
 }
 
-func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
+func (m *Model) instanceForMCPName(name string) *viewmodel.Instance {
 	if m.workspace == nil {
 		return nil
 	}
-	if m.workspace.Reference.CapabilityID != "" {
-		for _, p := range m.capabilityProfiles[m.workspace.Key.Package].Profiles {
+	if m.workspace.InstanceRef.CapabilityID != "" {
+		for _, p := range m.capabilityInstances[m.workspace.Key.Package].Instances {
 			if p.Key != m.workspace.Key {
 				continue
 			}
 			for _, r := range p.MCPs {
 				if r.MCPID == name {
-					return configurationRuntimeProfile(p, r, m.workspace.Preview)
+					return configurationRuntimeInstance(p, r, m.workspace.Preview)
 				}
 			}
 		}
 	}
 	key := m.workspace.Key
-	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
-		for i := range snapshot.Profiles {
-			profile := snapshot.Profiles[i]
+	if snapshot := m.workspace.InstanceSnapshot; snapshot != nil {
+		for _, profile := range runtimeInstances(snapshot) {
 			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target && profile.Key.MCP == name {
 				copy := profile
 				return &copy
@@ -304,35 +311,35 @@ func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
 	}
 	for _, instance := range m.mcps {
 		if instance.Key.Source == key.Source && instance.Key.Package == key.Package && instance.Key.Environment == key.Environment && instance.Key.Target == key.Target && instance.Key.MCP == name {
-			return &viewmodel.Profile{Key: instance.Key, Name: instance.Name, URL: instance.URL, RuntimeStatus: instance.Status, Ownership: instance.Ownership}
+			return &viewmodel.Instance{Key: instance.Key, Name: instance.Name, URL: instance.URL, RuntimeStatus: instance.Status, Ownership: instance.Ownership}
 		}
 	}
-	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == name {
-		copy := *m.workspace.Profile
+	if m.workspace.Instance != nil && m.workspace.Instance.Key.MCP == name {
+		copy := *m.workspace.Instance
 		return &copy
 	}
-	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == "" && m.workspace.Preview != nil && len(m.workspace.Preview.MCPDefinitions) == 1 {
-		copy := *m.workspace.Profile
+	if m.workspace.Instance != nil && m.workspace.Instance.Key.MCP == "" && m.workspace.Preview != nil && len(m.workspace.Preview.MCPDefinitions) == 1 {
+		copy := *m.workspace.Instance
 		copy.Key.MCP = name
 		return &copy
 	}
 	return nil
 }
 
-func (m *Model) legacyWorkspaceMCP() *viewmodel.Profile {
+func (m *Model) legacyWorkspaceMCP() *viewmodel.Instance {
 	if m.workspace == nil {
 		return nil
 	}
 	key := m.workspace.Key
-	if m.workspace.Profile != nil {
-		profile := *m.workspace.Profile
+	if m.workspace.Instance != nil {
+		profile := *m.workspace.Instance
 		if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
 			return &profile
 		}
 	}
-	matches := []viewmodel.Profile{}
-	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
-		for _, profile := range snapshot.Profiles {
+	matches := []viewmodel.Instance{}
+	if snapshot := m.workspace.InstanceSnapshot; snapshot != nil {
+		for _, profile := range runtimeInstances(snapshot) {
 			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
 				matches = append(matches, profile)
 			}
@@ -367,9 +374,9 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			m.output = "Choose a specific MCP under Runtime to view its logs."
 			return true, nil
 		}
-		var profile *viewmodel.Profile
+		var profile *viewmodel.Instance
 		if len(m.workspace.Preview.MCPDefinitions) == 1 {
-			profile = m.profileForMCPName(m.workspace.Preview.MCPDefinitions[0].Name)
+			profile = m.instanceForMCPName(m.workspace.Preview.MCPDefinitions[0].Name)
 		} else {
 			profile = m.legacyWorkspaceMCP()
 		}
@@ -378,7 +385,7 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			return true, nil
 		}
 		m.workspace.cacheDraft(m.form.Values())
-		return true, m.openProfileLogs(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		return true, m.openProfileLogs(InstanceRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 	case "s", "x":
 		shortcut := strings.ToLower(stroke)
 		if shortcut == "s" {
@@ -387,43 +394,43 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			}
 			definitions := m.workspace.Preview.MCPDefinitions
 			if len(definitions) > 1 {
-				parent := m.workspace.Profile
-				row := ProfileRow{}
+				parent := m.workspace.Instance
+				row := InstanceRow{}
 				if parent != nil {
-					row = ProfileRow{Key: parent.Key, Profile: parent, URL: parent.URL, Status: parent.RuntimeStatus}
+					row = InstanceRow{Key: parent.Key, Instance: parent, URL: parent.URL, Status: parent.RuntimeStatus}
 				}
-				if reason := m.profileActionReason(row, "s"); reason != "" {
+				if reason := m.instanceActionReason(row, "s"); reason != "" {
 					m.output = reason
 					return true, nil
 				}
 				m.output = "Choose a specific MCP under Runtime to start it."
 				return true, nil
 			}
-			profile := (*viewmodel.Profile)(nil)
+			profile := (*viewmodel.Instance)(nil)
 			mcpName := ""
 			if len(definitions) == 1 {
 				mcpName = definitions[0].Name
-				profile = m.profileForMCPName(mcpName)
+				profile = m.instanceForMCPName(mcpName)
 			} else {
 				profile = m.legacyWorkspaceMCP()
 				if profile != nil {
 					mcpName = profile.Key.MCP
 				}
 			}
-			if profile == nil && m.workspace.Profile != nil {
-				parent := *m.workspace.Profile
+			if profile == nil && m.workspace.Instance != nil {
+				parent := *m.workspace.Instance
 				profile = &parent
 			}
-			row := ProfileRow{}
+			row := InstanceRow{}
 			if profile != nil {
-				row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+				row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 			}
-			if reason := m.profileActionReason(row, "s"); reason != "" {
+			if reason := m.instanceActionReason(row, "s"); reason != "" {
 				m.output = reason
 				return true, nil
 			}
-			if m.profileError != nil {
-				m.output = "Runtime observation failed: " + m.profileError.Error() + "; refresh this target before starting it."
+			if m.instanceError != nil {
+				m.output = "Runtime observation failed: " + m.instanceError.Error() + "; refresh this target before starting it."
 				return true, nil
 			}
 			if mcpName == "" && len(definitions) > 0 {
@@ -438,10 +445,10 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			return true, nil
 		}
 		definition := catalog.MCP{}
-		var profile *viewmodel.Profile
+		var profile *viewmodel.Instance
 		if len(m.workspace.Preview.MCPDefinitions) == 1 {
 			definition = m.workspace.Preview.MCPDefinitions[0]
-			profile = m.profileForMCPName(definition.Name)
+			profile = m.instanceForMCPName(definition.Name)
 		} else {
 			profile = m.legacyWorkspaceMCP()
 			if profile != nil {
@@ -452,7 +459,7 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			m.output = "No locally owned MCP runtime is available to stop."
 			return true, nil
 		}
-		reason := m.profileActionReason(ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}, shortcut)
+		reason := m.instanceActionReason(InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}, shortcut)
 		if reason != "" {
 			m.output = reason
 			return true, nil
@@ -492,33 +499,25 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 		}
 	}
-	if m.workspace.Profile != nil {
-		m.workspace.Profile.Key = preview.Key
+	if m.workspace.Instance != nil {
+		m.workspace.Instance.Key = preview.Key
 	}
-	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Profile))
+	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Instance))
 
-	agents := []string{}
+	agentNotes := []string{}
 	for _, destination := range workspaceDestinations(preview) {
-		state := "Not selected"
-		if destination.Selected {
-			state = "Selected for Save"
-		}
-		path := destinationDisplayPath(preview, destination)
-		agents = append(agents, destination.ID+" · "+state+" · "+path)
-		if destination.Detection != "" {
-			agents = append(agents, destination.ID+" · Detection: "+destination.Detection)
+		name := firstNonempty(destination.Name, destination.ID)
+		if strings.HasPrefix(strings.ToLower(destination.Detection), "failed") {
+			agentNotes = append(agentNotes, name+": "+destination.Detection)
 		}
 		if destination.Note != "" {
-			agents = append(agents, destination.ID+" · Note: "+destination.Note)
+			agentNotes = append(agentNotes, name+": "+destination.Note)
 		}
 		if destination.DisabledReason != "" {
-			agents = append(agents, destination.ID+" · Unavailable for new setup: "+destination.DisabledReason)
+			agentNotes = append(agentNotes, name+": "+destination.DisabledReason)
 		}
 	}
-	if len(agents) == 0 {
-		agents = []string{"No named agent destinations are available."}
-	}
-	m.form.SetSectionContentID(sectionAgentsID, agents)
+	m.form.SetSectionContentID(sectionAgentsID, agentNotes)
 
 	if preview.MCP {
 		runtime := []string{}
@@ -531,7 +530,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 		}
 		for _, definition := range definitions {
-			profile := m.profileForMCPName(definition.Name)
+			profile := m.instanceForMCPName(definition.Name)
 			if len(preview.MCPDefinitions) == 0 {
 				profile = m.legacyWorkspaceMCP()
 			}
@@ -545,15 +544,15 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 			runtime = append(runtime, label+" · status: "+status+" · ownership: "+owner+" · endpoint: "+endpoint)
 			startProfile := profile
-			if startProfile == nil && m.workspace.Profile != nil {
-				parent := *m.workspace.Profile
+			if startProfile == nil && m.workspace.Instance != nil {
+				parent := *m.workspace.Instance
 				startProfile = &parent
 			}
-			startRow := ProfileRow{}
+			startRow := InstanceRow{}
 			if startProfile != nil {
-				startRow = ProfileRow{Key: startProfile.Key, Profile: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
+				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
-			startDisabled := m.profileActionReason(startRow, "s")
+			startDisabled := m.instanceActionReason(startRow, "s")
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if profile != nil && profile.CanStop {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
@@ -578,7 +577,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	}
 	information := workspaceInformationLines(preview, m.form.SectionContentWidth())
 	if preview.MCP {
-		if profileInformation := workspaceProfileInformationLines(m.workspace.Profile); len(profileInformation) > 0 {
+		if profileInformation := workspaceProfileInformationLines(m.workspace.Instance); len(profileInformation) > 0 {
 			information = append(profileInformation, information...)
 		}
 	}
@@ -612,6 +611,14 @@ func formSectionFields(sections []forms.FormSection, title string) []string {
 	return nil
 }
 
+func setupComponentCount(items []catalog.InstallationItem) int {
+	count := 0
+	for _, item := range items {
+		count += len(item.Skills) + len(item.MCPs) + len(item.Plugins)
+	}
+	return count
+}
+
 func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input, destinationField string) []forms.FormSection {
 	known := make(map[string]bool, len(defs))
 	ordered := make([]string, 0, len(defs))
@@ -643,7 +650,7 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 	} else if len(ordered) > 0 {
 		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
 	}
-	if preview.ItemFieldName != "" {
+	if preview.ItemFieldName != "" && setupComponentCount(preview.Items) > 1 {
 		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
 	}
 	var agentFields []string

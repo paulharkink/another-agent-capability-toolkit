@@ -105,7 +105,7 @@ func (s *Service) removeProfileFixture(ctx context.Context, q InstallRequest) (R
 	if len(remaining) == 0 {
 		items = []string{}
 	}
-	result, err := s.ApplyProfile(ctx, ProfileRequest{Ref: ref, ItemIDs: items, DestinationIDs: remaining})
+	result, err := s.ApplyInstance(ctx, InstanceRequest{Ref: ref, ItemIDs: items, DestinationIDs: remaining})
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
@@ -114,7 +114,7 @@ func (s *Service) previewProfileFixture(ctx context.Context, q viewmodel.SetupRe
 	if ref.CapabilityID == "" {
 		ref = profileRefForFixture(s, q.SourceID, q.PackageID, "")
 	}
-	return s.PreviewProfile(ctx, ProfileRequest{Ref: ref})
+	return s.PreviewInstance(ctx, InstanceRequest{Ref: ref})
 }
 
 func (s *Service) applyProfileFixtureUI(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {

@@ -86,7 +86,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Profiles:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instances:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -133,11 +133,11 @@ func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
 	delete(m.settings, "environment_root")
 	m.settings["environment-root"] = "/actual/environments"
 	m.navigate("Environments")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Instance configuration directory:") || !strings.Contains(view, "/actual/environments") {
 		t.Fatalf("Environments omitted canonical root: %s", view)
 	}
 	m.navigate("Settings")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Instance configuration directory:") || !strings.Contains(view, "/actual/environments") {
 		t.Fatalf("Settings omitted canonical root: %s", view)
 	}
 	m.editEnvironmentRoot()
@@ -151,7 +151,7 @@ func TestSavedProfileDoesNotBecomeSetupTarget(t *testing.T) {
 	m := New(b).(*Model)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.Update(m.Init()())
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
@@ -335,7 +335,7 @@ func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 // This catches treating a saved profile as proof that an environment TOML exists.
 func TestEnvironmentsShowsNoFileAndSeparatesSavedTargets(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "company", Target: "production"}, Name: "production"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "company", Target: "production"}, Name: "production"}}}
 	m.navigate("Environments")
 	view := m.View().Content
 	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "Pack: team · Environment: company") || !strings.Contains(view, "Saved · Pack: team") {
@@ -432,7 +432,7 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 // This catches private and public Capability Packs being collapsed into one environment.
 func TestEnvironmentBrowserKeepsCapabilityPackIdentity(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "public", Package: "inspect", Environment: "dev", Target: "one"}},
 		{Key: state.Key{Source: "company", Package: "inspect", Environment: "dev", Target: "two"}},
 	}}
@@ -544,7 +544,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatal("Environment directory editor did not open as a management overlay")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose profile configuration directory") {
+	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose instance configuration directory") {
 		t.Fatalf("editor replaced its management origin or lost its task title:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc cancel") || strings.Contains(view, "Esc back") {
@@ -554,7 +554,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatalf("overlay changed terminal height: %d", got)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
-	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose profile configuration directory") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose instance configuration directory") {
 		t.Fatal("resize discarded the management editor overlay")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -679,7 +679,7 @@ func TestHelpVisibleBackControlIsClickable(t *testing.T) {
 // This catches Help reopening the environment browser at a different target.
 func TestHelpRestoresEnvironmentPaneAndSelection(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
@@ -693,11 +693,11 @@ func TestHelpRestoresEnvironmentPaneAndSelection(t *testing.T) {
 // This catches stale target-pane indexes after an environment disappears on refresh.
 func TestEnvironmentRefreshClampsRemovedSelection(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{}
 	press(m, tea.KeyDown, "")
 	if m.management.EnvironmentIndex != 0 || !strings.Contains(m.View().Content, "No environment file") {
 		t.Fatal("removed environment did not clamp selection")

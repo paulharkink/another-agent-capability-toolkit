@@ -68,7 +68,7 @@ token_header = "${ base64encode(\"${inputs.username}:${inputs.token}\") }"
 	}
 	profile := config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: p.ID, Name: "default"}}
 	request := ProfileRequest{Inputs: map[string]any{"handle": "Ada", "token": "key"}}
-	resolved, _, values, _, err := s.profileValues(p, profile, key, request)
+	resolved, _, values, _, err := s.instanceValues(p, profile, key, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestProfileValuesEvaluateNestedConfigKeyExpressions(t *testing.T) {
 		"config": "${ inputs.folder }/settings.toml", "label": "kept",
 	}}
 	profile := config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: p.ID, Name: "default"}, Path: profilePath, Raw: raw, ExpressionSource: raw}
-	_, resolvedProfile, values, _, err := s.profileValues(*p, profile, key, ProfileRequest{Inputs: map[string]any{"selection": true, "port_value": int64(8123), "folder": folder}})
+	_, resolvedProfile, values, _, err := s.instanceValues(*p, profile, key, ProfileRequest{Inputs: map[string]any{"selection": true, "port_value": int64(8123), "folder": folder}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ destination = "SKILL.md"
 		t.Fatal(err)
 	}
 	profile := config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: p.ID, Name: "default"}}
-	resolved, _, values, _, err := s.profileValues(p, profile, key, ProfileRequest{
+	resolved, _, values, _, err := s.instanceValues(p, profile, key, ProfileRequest{
 		Inputs: map[string]any{"email": "alice", "token": "secret"},
 	})
 	if err != nil {

@@ -56,17 +56,17 @@ func (e setupProgressEmitter) emit(progress viewmodel.OperationProgress) {
 func (m *Model) beginSetup(sourceID, packageID, environment, target string) tea.Cmd {
 	for _, capability := range m.capabilities() {
 		if capability.Source == sourceID && capability.Package == packageID {
-			m.openProfileCreation(capability)
+			m.openInstanceCreation(capability)
 			return nil
 		}
 	}
-	m.output = "Select a Capability Pack capability before creating a profile."
+	m.output = "Select a Capability Pack capability before creating an instance."
 	return nil
 }
 
 func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSection string) tea.Cmd {
 	if request.Ref.PackID == "" || request.Ref.CapabilityID == "" || request.Ref.Name == "" {
-		m.output = "Choose a Capability Pack profile to open its workspace. Environment targets are not operational profiles."
+		m.output = "Choose a Capability Pack instance to open its workspace. Environment targets are not operational instances."
 		return nil
 	}
 	backend, ok := m.backend.(setupBackend)
@@ -81,9 +81,9 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	}
 	m.retryOperation = func() tea.Cmd { return m.openTargetWorkspace(request, selectedSection) }
 	workspace := &workspaceState{
-		Reference: request.Ref, Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
+		InstanceRef: request.Ref, Key: key, Section: selectedSection, InvokingView: m.view, Active: true,
 		InvokingSelection: m.workspaceInvokingSelection(), Draft: priorDraft,
-		Profile: m.profileForWorkspace(key), ProfileSnapshot: copyProfileSnapshot(m.profileSnapshot),
+		Instance: m.instanceForWorkspace(key), InstanceSnapshot: copyInstanceSnapshot(m.instanceSnapshot),
 	}
 	switch selectedSection {
 	case "Overview":
@@ -97,7 +97,7 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	case "Information":
 		workspace.SectionID = sectionInformationID
 	}
-	workspace.Existing = workspace.Profile != nil || m.targetHasSavedRecord(key)
+	workspace.Existing = workspace.Instance != nil || m.targetHasSavedRecord(key)
 	workspace.Installed = m.targetHasInstallRecord(key)
 	m.workspace = workspace
 	m.home.Modal = nil
@@ -139,13 +139,13 @@ func (m *Model) targetHasInstallRecord(key state.Key) bool {
 	return false
 }
 
-func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
-	if _, ok := m.backend.(capabilityProfilesBackend); ok {
-		for _, p := range m.capabilityProfiles[key.Package].Profiles {
+func (m *Model) instanceForWorkspace(key state.Key) *viewmodel.Instance {
+	if m.instanceMode() {
+		for _, p := range capabilityInstanceRows(m.capabilityInstances[key.Package]) {
 			if p.Key == key {
 				if len(p.MCPs) == 1 {
-					profile := configurationRuntimeProfile(p, p.MCPs[0], nil)
-					if saved := exactProfileSnapshot(m.profileSnapshot, key); saved != nil {
+					profile := configurationRuntimeInstance(p, p.MCPs[0], nil)
+					if saved := exactInstanceSnapshot(m.instanceSnapshot, key); saved != nil {
 						profile.URL = saved.URL
 						profile.Transport = saved.Transport
 						profile.RuntimeStatus = saved.RuntimeStatus
@@ -171,11 +171,11 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 		}
 	}
 
-	if m.profileSnapshot != nil {
-		var projected *viewmodel.Profile
+	if m.instanceSnapshot != nil {
+		var projected *viewmodel.Instance
 		matches := 0
-		for index := range m.profileSnapshot.Profiles {
-			profile := m.profileSnapshot.Profiles[index]
+		for index := range m.instanceSnapshot.Profiles {
+			profile := m.instanceSnapshot.Profiles[index]
 			if profile.Key == key {
 				profile.RegisteredAgents = append([]string(nil), profile.RegisteredAgents...)
 				return &profile
@@ -192,7 +192,7 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 			return projected
 		}
 	}
-	profile := &viewmodel.Profile{Key: key, RuntimeStatus: "unknown", Ownership: "unknown"}
+	profile := &viewmodel.Instance{Key: key, RuntimeStatus: "unknown", Ownership: "unknown"}
 	for _, installation := range m.inventory {
 		if installation.Key == key && installation.Component == "mcp" && installation.AgentID != "" {
 			profile.RegisteredAgents = append(profile.RegisteredAgents, installation.AgentID)
@@ -206,10 +206,10 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 	}
 	for _, candidate := range m.profiles() {
 		if candidate.Key == key {
-			if candidate.Profile != nil {
-				return candidate.Profile
+			if candidate.Instance != nil {
+				return candidate.Instance
 			}
-			profile := &viewmodel.Profile{Key: key, Name: candidate.Name, URL: candidate.URL, RuntimeStatus: candidate.Status, Ownership: candidate.Instance.Ownership}
+			profile := &viewmodel.Instance{Key: key, Name: candidate.Name, URL: candidate.URL, RuntimeStatus: candidate.Status, Ownership: candidate.Instance.Ownership}
 			if profile.Ownership == "local" {
 				switch strings.ToLower(profile.RuntimeStatus) {
 				case "never-started", "missing", "exited":
@@ -234,7 +234,7 @@ func (m *Model) profileForWorkspace(key state.Key) *viewmodel.Profile {
 	return nil
 }
 
-func exactProfileSnapshot(snapshot *viewmodel.ProfileSnapshot, key state.Key) *viewmodel.Profile {
+func exactInstanceSnapshot(snapshot *viewmodel.InstanceSnapshot, key state.Key) *viewmodel.Instance {
 	if snapshot == nil {
 		return nil
 	}
@@ -248,12 +248,12 @@ func exactProfileSnapshot(snapshot *viewmodel.ProfileSnapshot, key state.Key) *v
 	return nil
 }
 
-func copyProfileSnapshot(snapshot *viewmodel.ProfileSnapshot) *viewmodel.ProfileSnapshot {
+func copyInstanceSnapshot(snapshot *viewmodel.InstanceSnapshot) *viewmodel.InstanceSnapshot {
 	if snapshot == nil {
 		return nil
 	}
 	copySnapshot := *snapshot
-	copySnapshot.Profiles = append([]viewmodel.Profile(nil), snapshot.Profiles...)
+	copySnapshot.Profiles = append([]viewmodel.Instance(nil), snapshot.Profiles...)
 	for index := range copySnapshot.Profiles {
 		copySnapshot.Profiles[index].RegisteredAgents = append([]string(nil), snapshot.Profiles[index].RegisteredAgents...)
 	}
@@ -454,6 +454,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		preview.ItemFieldName = field
 		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
+		if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
+			values[field] = []string{preview.Items[0].ID}
+		}
 	}
 	replayValues := make(map[string]any, len(overrides))
 	for name, value := range overrides {
@@ -619,12 +622,12 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 		m.output = "Unified setup service unavailable"
 		return nil
 	}
-	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Preview != nil && workspace.Preview.MCP && m.profileError != nil {
+	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Preview != nil && workspace.Preview.MCP && m.instanceError != nil {
 		m.output = "Runtime observation failed; refresh this target before applying an MCP configuration."
 		return nil
 	}
-	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Profile != nil && workspace.Profile.Ownership != "local" && strings.TrimSpace(workspace.Profile.URL) == "" {
-		m.output = nonempty(workspace.Profile.StartDisabledReason, "Cannot safely apply configuration: runtime ownership is unknown and no observed endpoint is available.")
+	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Instance != nil && workspace.Instance.Ownership != "local" && strings.TrimSpace(workspace.Instance.URL) == "" {
+		m.output = nonempty(workspace.Instance.StartDisabledReason, "Cannot safely apply configuration: runtime ownership is unknown and no observed endpoint is available.")
 		return nil
 	}
 	preview := *m.pendingSetup
@@ -669,7 +672,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		for _, definition := range preview.MCPDefinitions {
-			profile := m.profileForMCPName(definition.Name)
+			profile := m.instanceForMCPName(definition.Name)
 			if profile == nil || profile.Ownership == "local" || strings.TrimSpace(profile.URL) != "" {
 				continue
 			}
@@ -701,7 +704,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 		}
 	}
 	request := viewmodel.SetupInstallRequest{
-		SetupRequest: m.packProfileRequest(preview.Key),
+		SetupRequest: m.packInstanceRequest(preview.Key),
 		Inputs:       inputs, ActiveInputGroups: activeGroups, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
 	}
 	if m.pendingSetupItemsField != "" {
@@ -710,12 +713,12 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 		copy(request.ItemIDs, items)
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
-		var profiles []viewmodel.Profile
-		if workspace.ProfileSnapshot != nil {
-			profiles = workspace.ProfileSnapshot.Profiles
+		var profiles []viewmodel.Instance
+		if workspace.InstanceSnapshot != nil {
+			profiles = workspace.InstanceSnapshot.Profiles
 		}
-		if len(profiles) == 0 && workspace.Profile != nil {
-			profiles = []viewmodel.Profile{*workspace.Profile}
+		if len(profiles) == 0 && workspace.Instance != nil {
+			profiles = []viewmodel.Instance{*workspace.Instance}
 		}
 		packageDef := catalog.Package{}
 		for _, candidate := range m.catalog {
@@ -836,7 +839,7 @@ func setupTargetLabel(key state.Key) string {
 	} else if key.Package != "" {
 		parts = append(parts, key.Package)
 	}
-	// Profile references reuse the legacy Target storage slot for identity.
+	// Instance references reuse the legacy Target storage slot for identity.
 	// Keep that compatibility detail out of user-facing operation progress.
 	if key.Environment == "" && key.Source != "" && key.Target != "" {
 		parts = append(parts, "Profile "+key.Target)

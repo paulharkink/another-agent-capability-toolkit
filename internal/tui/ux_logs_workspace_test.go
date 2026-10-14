@@ -20,7 +20,7 @@ func TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs(t *testing.T)
 		t.Fatalf("logs were requested without a running instance: cmd=%v actions=%v", cmd, logs.actions)
 	}
 	if m.home.Modal == nil || m.home.Modal.Kind != "logs" || !strings.Contains(strings.Join(m.home.Modal.Rows, "\n"), "No MCP container has been created for this target") {
-		t.Fatalf("missing actionable empty state: %+v profile=%+v output=%q", m.home.Modal, p.Profile, m.output)
+		t.Fatalf("missing actionable empty state: %+v profile=%+v output=%q", m.home.Modal, p.Instance, m.output)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestUXClosingLogsCancelsPendingFetch(t *testing.T) {
 	b := &blockingLogsBackend{profileBackend: base, started: make(chan struct{}), canceled: make(chan struct{})}
 	m.backend = b
 	p := m.profiles()[0]
-	p.Profile.Ownership = "local"
-	p.Profile.RuntimeStatus = "running"
+	p.Instance.Ownership = "local"
+	p.Instance.RuntimeStatus = "running"
 	p.Instance.Ownership = "local"
 	p.Status = "running"
 	cmd := m.openProfileLogs(p)

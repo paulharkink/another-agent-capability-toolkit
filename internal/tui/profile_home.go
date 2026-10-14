@@ -12,23 +12,36 @@ import (
 	"strings"
 )
 
-type capabilityProfilesBackend interface {
-	UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityProfileSnapshot, error)
-	UICreateProfile(context.Context, config.ProfileRef) error
+type capabilityInstancesBackend interface {
+	UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateInstance(context.Context, config.InstanceRef) error
 }
+type capabilityProfilesBackend interface {
+	UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateProfile(context.Context, config.InstanceRef) error
+}
+
+func capabilityInstanceRows(snapshot viewmodel.CapabilityInstanceSnapshot) []viewmodel.CapabilityInstance {
+	if snapshot.Instances != nil {
+		return snapshot.Instances
+	}
+	return snapshot.Profiles
+}
+
 type packSettingsBackend interface {
 	PackSettings(context.Context) (map[string]string, error)
 }
-type profileCreatedMsg struct {
-	ref config.ProfileRef
+type instanceCreatedMsg struct {
+	ref config.InstanceRef
 	err error
 }
 
-func (m *Model) profileMode() bool {
-	_, ok := m.backend.(capabilityProfilesBackend)
-	return ok && (m.workspace == nil || m.workspace.Reference.CapabilityID != "")
+func (m *Model) instanceMode() bool {
+	_, modern := m.backend.(capabilityInstancesBackend)
+	_, legacy := m.backend.(capabilityProfilesBackend)
+	return (modern || legacy) && (m.workspace == nil || m.workspace.InstanceRef.CapabilityID != "")
 }
-func profileStatusSummary(p viewmodel.CapabilityProfile) string {
+func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
 	skills, skillTotal, registered, registrationTotal := 0, 0, 0, 0
 	for _, c := range p.Components {
 		switch c.Kind {
@@ -57,7 +70,7 @@ func profileStatusSummary(p viewmodel.CapabilityProfile) string {
 	return strings.Join(parts, " · ")
 }
 
-func profileComponentStatusText(c viewmodel.ComponentStatus) string {
+func instanceComponentStatusText(c viewmodel.ComponentStatus) string {
 	status := c.Status
 	if c.Kind == "mcp" && status == "installed" {
 		status = "registered"
@@ -70,7 +83,7 @@ func profileComponentStatusText(c viewmodel.ComponentStatus) string {
 	return agents.DisplayName(c.AgentID) + " · " + c.Kind + " · " + c.Name + " · " + status
 }
 
-func profileConfigurationDetails(row ProfileRow) []string {
+func instanceConfigurationDetails(row InstanceRow) []string {
 	profile := row.Configuration
 	if profile == nil {
 		return nil
@@ -80,38 +93,38 @@ func profileConfigurationDetails(row ProfileRow) []string {
 		rows = append(rows, profile.ConfigError)
 	}
 	for _, component := range profile.Components {
-		rows = append(rows, profileComponentStatusText(component))
+		rows = append(rows, instanceComponentStatusText(component))
 	}
 	return rows
 }
 
-func (m *Model) openProfileCreation(c CapabilityRow) {
-	ref := config.ProfileRef{PackID: c.Source, CapabilityID: c.Package}
-	m.creatingProfile = &ref
+func (m *Model) openInstanceCreation(c CapabilityRow) {
+	ref := config.InstanceRef{PackID: c.Source, CapabilityID: c.Package}
+	m.creatingInstance = &ref
 	m.workspace = nil
 	m.pendingSetup = nil
 	m.home.Modal = nil
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Profile name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
-	m.form.SetTitle("Create another profile · " + c.Name)
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
+	m.form.SetTitle("Create another instance · " + c.Name)
 }
-func (m *Model) packProfileRequest(key state.Key) viewmodel.SetupRequest {
-	return viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
+	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
 }
 
-func configurationRuntimeProfile(p viewmodel.CapabilityProfile, r viewmodel.RuntimeStatus, preview *viewmodel.SetupPreview) *viewmodel.Profile {
+func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.RuntimeStatus, preview *viewmodel.SetupPreview) *viewmodel.Instance {
 	key := p.Key
 	if preview != nil && len(preview.MCPDefinitions) > 1 {
 		for _, d := range preview.MCPDefinitions {
 			if d.Name == r.MCPID {
 				if d.EnabledInput != "" || d.TokenInput != "" || d.TokenFileInput != "" || d.TokenEnvInput != "" || d.TokenHeader != "" || d.TokenContainerEnv != "" || len(d.Args) > 0 || len(d.EnvInputs) > 0 || len(d.SecretEnvInputs) > 0 {
-					key.Profile = d.Name
+					key.MCPDefinition = d.Name
 				} else {
 					key.MCP = d.Name
 				}
 			}
 		}
 	}
-	row := &viewmodel.Profile{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
+	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
 	row.CanStart = !r.Stale && r.Ownership == "local" && (r.Status == "stopped" || r.Status == "missing" || r.Status == "exited" || r.Status == "never-started")
 	row.CanStop = !r.Stale && r.Ownership == "local" && r.Status == "running"
 	for _, c := range p.Components {
@@ -122,8 +135,11 @@ func configurationRuntimeProfile(p viewmodel.CapabilityProfile, r viewmodel.Runt
 	return row
 }
 
+type configurationInstanceRunBackend interface {
+	UIConfigurationInstanceRun(context.Context, string, config.InstanceRef, string) (string, error)
+}
 type configurationProfileRunBackend interface {
-	UIConfigurationProfileRun(context.Context, string, config.ProfileRef, string) (string, error)
+	UIConfigurationProfileRun(context.Context, string, config.InstanceRef, string) (string, error)
 }
 
 type packAgentManagementBackend interface {

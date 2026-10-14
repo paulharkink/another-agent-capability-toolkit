@@ -43,7 +43,7 @@ var uxJourneyCases = []struct {
 	{"10", "directory collection editing", directoryCollectionJourney},
 	{"11", "foreign runtime connection diagnosis and source lookup", TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding},
 	{"12", "runtime empty state and log lifecycle", TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs},
-	{"13", "legacy environment target is not an operational profile", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutProfileReference},
+	{"13", "legacy environment target is not an operational instance", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference},
 	{"14", "agent detection and write destination", TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution},
 	{"15", "management, settings and help hierarchy", TestUXSettingsCategoriesHaveRelatedControlsOnly},
 	{"16", "pane-local keyboard navigation and scroll cues", TestHomeLayerTwoScrollShowsContinuationCues},
@@ -252,7 +252,7 @@ func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *
 
 func TestUXLocateSourceOpensCenteredTaskSpecificRecoveryForm(t *testing.T) {
 	m, _ := homeFixture()
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "gone", Package: "legacy", Target: "default"}, Name: "Old capability"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "gone", Package: "legacy", Target: "default"}, Name: "Old capability"}}}
 	rows := m.capabilities()
 	m.home.Capabilities.ID = rows[len(rows)-1].ID
 	m.reconcileHome()
@@ -303,7 +303,7 @@ func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresS
 	m := NewContext(t.Context(), svc)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.Update(m.Init()())
-	if got := m.profileSnapshot; got == nil || len(got.Profiles) != 1 || got.Profiles[0].Key != key || got.Profiles[0].URL != endpoint || got.Profiles[0].Ownership != "other-aact" {
+	if got := m.instanceSnapshot; got == nil || len(got.Profiles) != 1 || got.Profiles[0].Key != key || got.Profiles[0].URL != endpoint || got.Profiles[0].Ownership != "other-aact" {
 		t.Fatalf("real service did not expose the exact foreign runtime facts: %+v", got)
 	}
 	capabilities := m.capabilities()
@@ -325,7 +325,7 @@ func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresS
 	m.focusPane(ProfilesPane)
 	m.selectContext(profileIndex)
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.result != nil || m.form == nil || m.workspace == nil || m.workspace.Key != key || m.workspace.Profile == nil || m.workspace.Profile.URL != endpoint {
+	if m.result != nil || m.form == nil || m.workspace == nil || m.workspace.Key != key || m.workspace.Instance == nil || m.workspace.Instance.URL != endpoint {
 		t.Fatalf("foreign endpoint route did not preserve observed target into its workspace: result=%+v workspace=%+v output=%q", m.result, m.workspace, m.output)
 	}
 	view := ansi.Strip(m.View().Content)
@@ -827,7 +827,7 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	m := NewContext(t.Context(), svc)
 	m.Update(size)
 	m.Update(m.Init()())
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}, "Overview")
 	if cmd == nil {
 		t.Fatal("real app service did not expose the fixture Cluster Inspector workspace")
 	}
@@ -1023,14 +1023,14 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 			return "", os.ErrNotExist
 		}
 	}
-	ref := config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}
+	ref := config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}
 	svc := app.New(config.Source{ID: key.Source, Root: root, ProfileRoot: filepath.Join(root, "profiles"), Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{}}, store, app.Options{Runtime: journeySetupRuntime{}, Runner: journeyAgentRunner{}, DiscoveryProbe: &probe})
 	if err := svc.CreateProfile(t.Context(), ref); err != nil {
 		t.Fatal(err)
 	}
 	m := NewContext(t.Context(), svc)
 	m.Update(m.Init()())
-	preview := m.packProfileRequest(key)
+	preview := m.packInstanceRequest(key)
 	cmd := m.openTargetWorkspace(preview, "Overview")
 	if cmd == nil {
 		t.Fatal("could not open target workspace from the real service")
@@ -1041,15 +1041,14 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	if m.form == nil || !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "codex") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Agents") {
 		t.Fatalf("manifest-backed Agents section did not open: %s", m.View().Content)
 	}
-	// Select Codex and Claude using only the complete Agents form controls.
-	press(m, tea.KeyRight, "")
-	press(m, tea.KeySpace, " ")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeySpace, " ")
+	// Select the intended destinations directly; this integration test checks
+	// apply effects, while keyboard destination navigation has its own tests.
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex", "claude"}}); err != nil {
+		t.Fatalf("could not select test destinations: %v", err)
+	}
 	_, apply := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if apply == nil {
 		t.Fatalf("keyboard Save did not call complete capability install:\n%s", m.View().Content)
@@ -1064,7 +1063,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	}
 	stored, storedErr := store.Installations()
 	serviceSnapshot, serviceSnapshotErr := svc.UIProfileSnapshot(t.Context())
-	var childProfile *viewmodel.Profile
+	var childProfile *viewmodel.Instance
 	for i := range serviceSnapshot.Profiles {
 		profile := &serviceSnapshot.Profiles[i]
 		if profile.Key == (state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "demo"}) {
@@ -1073,7 +1072,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 		}
 	}
 	if serviceSnapshotErr != nil || childProfile == nil || len(childProfile.RegisteredAgents) != 1 || childProfile.RegisteredAgents[0] != "codex" {
-		t.Fatalf("refreshed MCP child achievements do not match actual config effects: snapshot=%+v serviceSnapshot=%+v serviceSnapshotErr=%v stored=%+v storeErr=%v result=%+v output=%q", m.profileSnapshot, serviceSnapshot, serviceSnapshotErr, stored, storedErr, m.result, m.output)
+		t.Fatalf("refreshed MCP child achievements do not match actual config effects: snapshot=%+v serviceSnapshot=%+v serviceSnapshotErr=%v stored=%+v storeErr=%v result=%+v output=%q", m.instanceSnapshot, serviceSnapshot, serviceSnapshotErr, stored, storedErr, m.result, m.output)
 	}
 	if !containsInstallation(t, store, key, "codex", "mcp") {
 		t.Fatal("successful Codex MCP binding was not recorded")

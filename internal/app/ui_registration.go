@@ -17,7 +17,7 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 		return viewmodel.OperationResult{}, picker.ErrCancelled
 	}
 	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return viewmodel.OperationResult{}, errors.New("profile reference (Capability Pack, capability, and profile) is required")
+		return viewmodel.OperationResult{}, errors.New("instance reference (Capability Pack, capability, and instance) is required")
 	}
 	for _, id := range q.AgentIDs {
 		kind, _, _ := strings.Cut(id, ":")

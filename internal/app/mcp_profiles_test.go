@@ -55,13 +55,13 @@ func TestPackageMCPProfilesHonorsOptionalProviderInputs(t *testing.T) {
 func TestMCPProfileKeysSeparateProfilesAndPreserveLegacyKeys(t *testing.T) {
 	base := state.Key{Source: "source", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
 	legacy := catalog.Package{MCPs: []catalog.MCP{{Name: "inspector"}}}
-	if got := mcpProfileKey(base, legacy, legacy.MCPs[0]); got.MCP != "inspector" || got.Profile != "" {
+	if got := mcpDefinitionKey(base, legacy, legacy.MCPs[0]); got.MCP != "inspector" || got.MCPDefinition != "" {
 		t.Fatalf("legacy MCP child key changed: %#v", got)
 	}
 	p := catalog.Package{MCPs: []catalog.MCP{{Name: "github", EnabledInput: "github_enabled"}, {Name: "gitlab", EnabledInput: "gitlab_enabled"}}}
-	github := mcpProfileKey(base, p, p.MCPs[0])
-	gitlab := mcpProfileKey(base, p, p.MCPs[1])
-	if github.Profile != "github" || gitlab.Profile != "gitlab" || github.ID() == gitlab.ID() {
+	github := mcpDefinitionKey(base, p, p.MCPs[0])
+	gitlab := mcpDefinitionKey(base, p, p.MCPs[1])
+	if github.MCPDefinition != "github" || gitlab.MCPDefinition != "gitlab" || github.ID() == gitlab.ID() {
 		t.Fatalf("provider profiles not separated: github=%#v gitlab=%#v", github, gitlab)
 	}
 }
@@ -121,7 +121,7 @@ func TestRunProfileMCPStartAppliesContainerArgsEnvironmentAndSecret(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.specs) != 1 || runtime.keys[0] != mcpProfileKey(key, *pkg, mcpProfile) || runtime.specs[0].HostPort != 18821 || !reflect.DeepEqual(runtime.specs[0].Args, []string{"--http"}) || runtime.specs[0].Env["API_URL"] != "https://bitbucket.example/api" || runtime.specs[0].SecretEnv["TOKEN"] != "secret-token" {
+	if len(runtime.specs) != 1 || runtime.keys[0] != mcpDefinitionKey(key, *pkg, mcpProfile) || runtime.specs[0].HostPort != 18821 || !reflect.DeepEqual(runtime.specs[0].Args, []string{"--http"}) || runtime.specs[0].Env["API_URL"] != "https://bitbucket.example/api" || runtime.specs[0].SecretEnv["TOKEN"] != "secret-token" {
 		t.Fatalf("profile runtime launch was incomplete: keys=%#v specs=%#v", runtime.keys, runtime.specs)
 	}
 }
@@ -149,7 +149,7 @@ func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.keys) != 2 || runtime.keys[0].Profile != "github" || runtime.keys[1].Profile != "bitbucket" {
+	if len(runtime.keys) != 2 || runtime.keys[0].MCPDefinition != "github" || runtime.keys[1].MCPDefinition != "bitbucket" {
 		t.Fatalf("started profiles = %#v", runtime.keys)
 	}
 	skillCount, mcpCount := 0, 0
@@ -170,11 +170,11 @@ func TestInstallRunsEnabledProviderProfilesAndInstallsSkillOnce(t *testing.T) {
 	}
 	var configuredMCPs []state.ProfileRecord
 	for _, record := range configured {
-		if record.Key.Profile != "" {
+		if record.Key.MCPDefinition != "" {
 			configuredMCPs = append(configuredMCPs, record)
 		}
 	}
-	if len(configuredMCPs) != 2 || configuredMCPs[0].Key.Profile == configuredMCPs[1].Key.Profile {
+	if len(configuredMCPs) != 2 || configuredMCPs[0].Key.MCPDefinition == configuredMCPs[1].Key.MCPDefinition {
 		t.Fatalf("configured MCP profiles = %#v (all profile records: %#v)", configuredMCPs, configured)
 	}
 }
@@ -234,7 +234,7 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantKey := mcpProfileKey(key, *pkg, definition)
+	wantKey := mcpDefinitionKey(key, *pkg, definition)
 	if len(runtime.actionKeys) != 1 || runtime.actionKeys[0] != wantKey {
 		t.Fatalf("container action keys = %#v, want %#v", runtime.actionKeys, wantKey)
 	}

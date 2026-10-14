@@ -24,7 +24,7 @@ func startHomeSetup(m *Model) {
 	if !ok {
 		return
 	}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: capability.Source, CapabilityID: capability.Package, Name: "test-profile"}}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: capability.Source, CapabilityID: capability.Package, Name: "test-profile"}}, "Overview")
 	if cmd != nil {
 		m.Update(cmd())
 	}

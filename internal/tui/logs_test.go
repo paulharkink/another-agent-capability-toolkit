@@ -29,14 +29,14 @@ func openLogAction(t *testing.T, m *Model) tea.Cmd {
 		profileIndex = 0
 	}
 	p := m.profiles()[profileIndex]
-	if p.Profile != nil && p.Profile.Ownership == "local" {
-		p.Profile.RuntimeStatus = "running"
+	if p.Instance != nil && p.Runtime.Ownership == "local" {
+		p.Instance.RuntimeStatus = "running"
 		p.Status = "running"
-		p.Instance.Ownership = "local"
-		if m.profileSnapshot != nil {
-			for i := range m.profileSnapshot.Profiles {
-				if m.profileSnapshot.Profiles[i].Key == p.Key {
-					m.profileSnapshot.Profiles[i].RuntimeStatus = "running"
+		p.Runtime.Ownership = "local"
+		if m.instanceSnapshot != nil {
+			for i := range m.instanceSnapshot.Profiles {
+				if m.instanceSnapshot.Profiles[i].Key == p.Key {
+					m.instanceSnapshot.Profiles[i].RuntimeStatus = "running"
 				}
 			}
 		}
@@ -51,7 +51,7 @@ func openLogAction(t *testing.T, m *Model) tea.Cmd {
 	}
 	m.backend = &logWorkspaceBackend{logProfileBackend: base, setup: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, profileIndex)
-	cmd := m.openTargetWorkspace(m.packProfileRequest(p.Key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Overview")
 	if cmd == nil {
 		t.Fatalf("target workspace did not open for logs target %+v", p.Key)
 	}
@@ -75,7 +75,7 @@ func (b *logWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.S
 
 func (b *logProfileBackend) UIRun(_ context.Context, action, source, packageID, profile, _, environment, target string) (string, error) {
 	b.actions = append(b.actions, action)
-	b.key = state.Key{Source: source, Package: packageID, Profile: profile, Environment: environment, Target: target}
+	b.key = state.Key{Source: source, Package: packageID, MCPDefinition: profile, Environment: environment, Target: target}
 	return b.logs, b.err
 }
 
@@ -262,8 +262,8 @@ func TestWorkspaceStartAndStopUseRuntimeActions(t *testing.T) {
 			m.busy = false
 			m.workspace.Section = "Overview"
 			m.form.SelectSection("Overview")
-			m.workspace.Profile.CanStart = tc.shortcut == "s"
-			m.workspace.Profile.CanStop = tc.shortcut == "x"
+			m.workspace.Instance.CanStart = tc.shortcut == "s"
+			m.workspace.Instance.CanStop = tc.shortcut == "x"
 			_, operation := m.workspaceOverviewAction(tc.shortcut)
 			if operation == nil {
 				t.Fatalf("workspace %s did not submit an operation", tc.shortcut)
@@ -334,7 +334,7 @@ func TestPauseResumeReplacementIgnoresIntentionalCancellation(t *testing.T) {
 	m.backend = backend
 	key := base.snapshot.Profiles[0].Key
 	m.selectPane(ProfilesPane, 0)
-	setup := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+	setup := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(setup())
 	_, firstFetch := m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
 	if firstFetch == nil {

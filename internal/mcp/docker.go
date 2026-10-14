@@ -201,8 +201,8 @@ func labels(k state.Key, s RunSpec) map[string]string {
 	if s.RegistrationName != "" {
 		result["aact.registration_name"] = s.RegistrationName
 	}
-	if k.Profile != "" {
-		result["aact.profile"] = k.Profile
+	if k.MCPDefinition != "" {
+		result["aact.mcp_definition"] = k.MCPDefinition
 	}
 	if k.MCP != "" {
 		result["aact.mcp"] = k.MCP
@@ -421,7 +421,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	}
 	registrationName := s.RegistrationName
 	if strings.TrimSpace(registrationName) == "" {
-		registrationName = strings.Join([]string{k.Package, k.Environment, k.Target, k.Profile, k.MCP}, " ")
+		registrationName = strings.Join([]string{k.Package, k.Environment, k.Target, k.MCPDefinition, k.MCP}, " ")
 	}
 	s.RegistrationName = registrationName
 	name, err := containerNameForRegistration(registrationName)
@@ -724,10 +724,15 @@ func (e redactingExecutor) Run(ctx context.Context, a []string, cwd string, in [
 func instance(d dockerInfo) Instance {
 	l := d.Config.Labels
 	s := d.State.Status
+	mcpDefinition := l["aact.mcp_definition"]
+	if mcpDefinition == "" {
+		// Containers created before the key discriminator rename used this label.
+		mcpDefinition = l["aact.profile"]
+	}
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], Profile: l["aact.profile"]}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
 	instances, err := r.List(ctx)

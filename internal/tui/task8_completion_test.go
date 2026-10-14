@@ -65,9 +65,9 @@ func TestTask8CompletionCountsOnlySelectedEligibleWork(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m, msg := homeFixture()
-			msg.capabilityProfiles = map[string]viewmodel.CapabilityProfileSnapshot{
+			msg.capabilityInstances = map[string]viewmodel.CapabilityProfileSnapshot{
 				"inspect": {Profiles: []viewmodel.CapabilityProfile{{
-					Ref:                  config.ProfileRef{Name: "prod"},
+					Ref:                  config.InstanceRef{Name: "prod"},
 					Key:                  state.Key{Source: "one", Package: "inspect", Target: "prod"},
 					CompletionScopeKnown: true, CompletionScopeRelevant: true,
 					SelectedComponents:   tc.selected,
@@ -90,9 +90,9 @@ func TestTask8CompletionCountsOnlySelectedEligibleWork(t *testing.T) {
 
 func TestTask8UnknownCompletionScopeDoesNotClaimCompletion(t *testing.T) {
 	m, msg := homeFixture()
-	msg.capabilityProfiles = map[string]viewmodel.CapabilityProfileSnapshot{
+	msg.capabilityInstances = map[string]viewmodel.CapabilityProfileSnapshot{
 		"inspect": {Profiles: []viewmodel.CapabilityProfile{{
-			Ref:                     config.ProfileRef{Name: "prod"},
+			Ref:                     config.InstanceRef{Name: "prod"},
 			CompletionScopeRelevant: true, CompletionScopeError: "preview unavailable",
 			Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "guide", Status: "installed"}},
 		}}},
@@ -113,23 +113,23 @@ func TestTask8CompleteProfileDoesNotMaskOtherSelectedWork(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, msg := homeFixture()
-			msg.capabilityProfiles = map[string]viewmodel.CapabilityProfileSnapshot{
+			msg.capabilityInstances = map[string]viewmodel.CapabilityProfileSnapshot{
 				"inspect": {Profiles: []viewmodel.CapabilityProfile{
 					{
-						Ref: config.ProfileRef{Name: "complete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
+						Ref: config.InstanceRef{Name: "complete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
 						SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}},
 						SelectedDestinations: []string{"codex"}, EligibleDestinations: []string{"codex"},
 						Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "guide", Status: "installed"}},
 					},
 					{
-						Ref: config.ProfileRef{Name: "incomplete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
+						Ref: config.InstanceRef{Name: "incomplete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
 						SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}},
 						SelectedDestinations: []string{"opencode"}, EligibleDestinations: []string{"opencode"},
 						Components: []viewmodel.ComponentStatus{{AgentID: "opencode", Kind: "skill", Name: "guide", Status: tc.status}},
 					},
 					// A newly created profile with no selected work is not a
 					// reason to dilute a capability's resolved completion.
-					{Ref: config.ProfileRef{Name: "new"}, CompletionScopeKnown: true},
+					{Ref: config.InstanceRef{Name: "new"}, CompletionScopeKnown: true},
 				}},
 			}
 			m.Update(msg)

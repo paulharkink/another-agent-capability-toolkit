@@ -39,16 +39,16 @@ aact install PACKAGE --agent AGENT       Install skill and register its MCP
 aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
 aact mcp list|status [--json]             Show MCPs from every Capability Pack
-aact mcp start|stop|logs|prepare|authenticate CAPABILITY --profile NAME [--mcp SERVER]
-aact profile create CAPABILITY NAME
+aact mcp start|stop|logs|prepare|authenticate CAPABILITY --instance NAME [--mcp SERVER]
+aact instance create CAPABILITY NAME
 aact agents | settings                   Show supported agents / configuration
-aact config set-profile-directory PATH  Save a default profile configuration directory
-aact config set-image-source release|local  Select prebuilt release images or local Docker builds
+aact config set-instance-directory PATH  Save a default instance configuration directory
+aact config set-image-source release|local  Select MCP image source
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
-Flags: --config PATH --state-dir PATH --profile-directory PATH
+Flags: --config PATH --state-dir PATH --instance-directory PATH
        (legacy alias: --environment-root PATH)
-       --profile NAME --mcp SERVER --item ITEM --agent-home [AGENT=]PATH
+       --instance NAME --mcp SERVER --item ITEM --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
        --external-url URL|NAME=URL --mcp NAME --skills-only --update-source --json --help --version
 
@@ -111,7 +111,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 0
 	}
 	if f.environment != "" || f.target != "" {
-		fmt.Fprintln(errOut, "--environment and --target are no longer selection levels; use --profile NAME from the Capability Pack profile directory")
+		fmt.Fprintln(errOut, "--environment and --target are no longer selection levels; use --instance NAME from the Capability Pack instance directory")
 		return 2
 	}
 	migrating := len(f.args) > 0 && f.args[0] == "migrate"
@@ -155,7 +155,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, e)
 			return 2
 		}
-		src, e = config.WithEnvironmentRoot(src, root)
+		src, e = config.WithInstanceRoot(src, root)
 		if e != nil {
 			fmt.Fprintln(errOut, e)
 			return 2
@@ -193,6 +193,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				fmt.Fprintln(out, value.Message)
 			}
 		case app.Result:
+			if value.LoginURL != "" {
+				fmt.Fprintln(out, value.LoginURL)
+			}
 			for _, r := range value.Changes {
 				fmt.Fprintf(out, "%s %s: %s\n", r.AgentID, r.Component, r.Destination)
 			}
@@ -201,9 +204,6 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 			if value.Logs != "" {
 				fmt.Fprint(out, value.Logs)
-			}
-			if value.LoginURL != "" {
-				fmt.Fprintln(out, value.LoginURL)
 			}
 			if value.Message != "" {
 				fmt.Fprintln(out, value.Message)
@@ -258,8 +258,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	case "config":
-		if len(f.args) != 3 || (f.args[1] != "set-profile-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root" && f.args[1] != "set-image-source") {
-			fmt.Fprintln(errOut, "usage: aact config set-profile-directory PATH | aact config set-image-source release|local")
+		if len(f.args) != 3 || (f.args[1] != "set-instance-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root" && f.args[1] != "set-image-source") {
+			fmt.Fprintln(errOut, "usage: aact config set-instance-directory PATH | aact config set-image-source release|local")
 			return 2
 		}
 		if f.args[1] == "set-image-source" {
@@ -269,21 +269,21 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(out, "MCP image source:", f.args[2])
 			return 0
 		}
-		message, e := svc.UIRun(ctx, "set-environment-root", "", "", "", "", "", f.args[2])
+		message, e := svc.UIRun(ctx, "set-instance-root", "", "", "", "", "", f.args[2])
 		if e != nil {
 			return fail(e)
 		}
-		fmt.Fprintln(out, strings.ReplaceAll(message, "Environment directory:", "Profile configuration directory:"))
+		fmt.Fprintln(out, strings.ReplaceAll(message, "Instance directory:", "Instance configuration directory:"))
 		return 0
-	case "profile":
+	case "instance":
 		if len(f.args) != 4 || f.args[1] != "create" {
-			fmt.Fprintln(errOut, "usage: aact profile create CAPABILITY NAME")
+			fmt.Fprintln(errOut, "usage: aact instance create CAPABILITY NAME")
 			return 2
 		}
-		if e := svc.CreateProfile(ctx, config.ProfileRef{PackID: src.ID, CapabilityID: f.args[2], Name: f.args[3]}); e != nil {
+		if e := svc.CreateInstance(ctx, config.InstanceRef{PackID: src.ID, CapabilityID: f.args[2], Name: f.args[3]}); e != nil {
 			return fail(e)
 		}
-		fmt.Fprintln(out, "Created profile", f.args[3])
+		fmt.Fprintln(out, "Created instance", f.args[3])
 		return 0
 	case "install", "apply", "uninstall":
 		if len(f.args) != 2 {
@@ -319,13 +319,13 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 		}
 		svc.Options.AgentScopes = scopes
-		ref := config.ProfileRef{PackID: src.ID, CapabilityID: f.args[1], Name: f.profile}
+		ref := config.InstanceRef{PackID: src.ID, CapabilityID: f.args[1], Name: f.instance}
 		if ref.Name == "" && f.args[0] != "uninstall" {
 			profiles, err := config.DiscoverProfiles(src.CapabilityPack(), ref.CapabilityID)
 			if err != nil {
 				return fail(err)
 			}
-			records, err := store.Profiles()
+			records, err := store.Instances()
 			if err != nil {
 				return fail(err)
 			}
@@ -345,7 +345,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					return fail(&app.InvalidInput{Err: err})
 				}
 				ref.Name = "default"
-				if err := svc.CreateProfile(ctx, ref); err != nil {
+				if err := svc.CreateInstance(ctx, ref); err != nil {
 					return fail(err)
 				}
 			}
@@ -361,12 +361,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				}
 			}
 		}
-		q := app.ProfileRequest{Ref: ref, Inputs: inputs, ItemIDs: f.items, DestinationIDs: f.agents, Interactive: f.interactive, SkillsOnly: f.skillsOnly, ExternalURLs: urls}
+		q := app.InstanceRequest{Ref: ref, Inputs: inputs, ItemIDs: f.items, DestinationIDs: f.agents, Interactive: f.interactive, SkillsOnly: f.skillsOnly, ExternalURLs: urls}
 		var r viewmodel.OperationResult
 		if f.args[0] == "uninstall" {
-			r, e = svc.RemoveProfile(ctx, q)
+			r, e = svc.RemoveInstance(ctx, q)
 		} else {
-			r, e = svc.ApplyProfile(ctx, q)
+			r, e = svc.ApplyInstance(ctx, q)
 		}
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
@@ -397,7 +397,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		r, e := svc.RunProfileMCP(ctx, action, app.ProfileRequest{Ref: config.ProfileRef{PackID: src.ID, CapabilityID: p, Name: f.profile}, Inputs: inputs, Interactive: f.interactive}, f.mcp)
+		r, e := svc.RunInstanceMCP(ctx, action, app.InstanceRequest{Ref: config.InstanceRef{PackID: src.ID, CapabilityID: p, Name: f.instance}, Inputs: inputs, Interactive: f.interactive}, f.mcp)
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
 		}

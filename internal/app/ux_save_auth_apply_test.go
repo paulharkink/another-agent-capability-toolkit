@@ -570,7 +570,7 @@ func TestPendingCredentialTransitionSurvivesAuthRequiredResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := mcpProfileKey(key, *pkg, *pkg.MCP)
+	child := mcpDefinitionKey(key, *pkg, *pkg.MCP)
 	pending, err := store.PendingAuthInputGroups(key, child.ID())
 	if err != nil || pending["auth_mode"] != "auth_source" {
 		t.Fatalf("unresolved auth transition was cleared: %#v, %v", pending, err)
@@ -600,7 +600,7 @@ func TestPendingCredentialTransitionsAreIsolatedAcrossMCPChildren(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, definition := range definitions {
-		child := mcpProfileKey(key, *pkg, definition)
+		child := mcpDefinitionKey(key, *pkg, definition)
 		if err := os.MkdirAll(store.AuthDir(child), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -613,8 +613,8 @@ func TestPendingCredentialTransitionsAreIsolatedAcrossMCPChildren(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "selected child auth failed") {
 		t.Fatalf("second child failure not returned: %v", err)
 	}
-	alpha := mcpProfileKey(key, *pkg, definitions[0])
-	beta := mcpProfileKey(key, *pkg, definitions[1])
+	alpha := mcpDefinitionKey(key, *pkg, definitions[0])
+	beta := mcpDefinitionKey(key, *pkg, definitions[1])
 	alphaPending, err := store.PendingAuthInputGroups(key, alpha.ID())
 	if err != nil {
 		t.Fatal(err)

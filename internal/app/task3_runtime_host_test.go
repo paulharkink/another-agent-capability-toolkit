@@ -21,7 +21,7 @@ func TestStartConfigurationProfileUsesDeclaredRuntimeHostInputs(t *testing.T) {
 		BindIPInput: "docker_interface", AdvertisedHostInput: "client_dns_name", EndpointPath: "/mcp",
 	}}
 	key := state.Key{Source: "fixture", Package: "fixture", Target: "default"}
-	_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, map[string]any{
+	_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, map[string]any{
 		"listen_port": int64(8765), "docker_interface": "127.0.0.2", "client_dns_name": "mcp.example.test",
 	}, false)
 	if err != nil {
@@ -49,17 +49,17 @@ func TestStartConfigurationProfileResolvesConditionalPortsAndStateMount(t *testi
 		Name: "fixture", Image: "fixture", Transport: "streamable-http", HostPortInput: "listen_port", ContainerPort: 80,
 		AdditionalPorts: []catalog.ConditionalPort{{ContainerPort: 7443, HostPortInput: "callback_port", When: map[string]any{"network_enabled": true}}},
 	}}
-	key := state.Key{Source: "fixture", Package: "fixture", Target: "default", Profile: "sso-profile"}
+	key := state.Key{Source: "fixture", Package: "fixture", Target: "default", MCPDefinition: "sso-profile"}
 	values := map[string]any{"mode": "sso", "callback_enabled": true, "callback_port": json.Number("17443"), "listen_port": int64(8765)}
 	values["network_enabled"] = true
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, values, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.specs) != 1 {
 		t.Fatalf("runtime start count = %d", len(runtime.specs))
 	}
 	got := runtime.specs[0]
-	wantKey := state.Key{Source: key.Source, Package: key.Package, Target: key.Target, Profile: key.Profile}
+	wantKey := state.Key{Source: key.Source, Package: key.Package, Target: key.Target, MCPDefinition: key.MCPDefinition}
 	wantMount := mcp.Mount{Source: svc.Store.AuthDir(wantKey), Destination: "/state", ReadOnly: false}
 	if !reflect.DeepEqual(got.AdditionalPorts, []mcp.PortMapping{{HostPort: 17443, ContainerPort: 7443}}) {
 		t.Fatalf("conditional mappings = %#v", got.AdditionalPorts)
@@ -70,7 +70,7 @@ func TestStartConfigurationProfileResolvesConditionalPortsAndStateMount(t *testi
 	runtime.specs = nil
 	values["mode"] = "token" // the port input is hidden, although the port condition matches
 	values["callback_enabled"] = false
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, values, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.specs) != 1 || len(runtime.specs[0].AdditionalPorts) != 0 {
@@ -80,7 +80,7 @@ func TestStartConfigurationProfileResolvesConditionalPortsAndStateMount(t *testi
 	values["mode"] = "sso" // the input is visible, although the port condition does not match
 	values["callback_enabled"] = true
 	values["network_enabled"] = false
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, values, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.specs) != 1 || len(runtime.specs[0].AdditionalPorts) != 0 {
@@ -94,7 +94,7 @@ func TestStartConfigurationProfileResolvesConditionalPortsAndStateMount(t *testi
 		{"mode": "sso", "network_enabled": true, "callback_enabled": true, "callback_port": "not-a-port", "listen_port": int64(8765)},
 	} {
 		runtime.specs = nil
-		if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, invalid, false); err == nil {
+		if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, invalid, false); err == nil {
 			t.Fatalf("invalid conditional port values accepted: %#v", invalid)
 		}
 		if len(runtime.specs) != 0 {
@@ -116,9 +116,9 @@ func TestConditionalSSOCallbackMapsSelectedPortOnHostAndContainer(t *testing.T) 
 		Name: "fixture", Image: "fixture", Transport: "streamable-http", HostPortInput: "listen_port", ContainerPort: 8765,
 		AdditionalPorts: []catalog.ConditionalPort{{HostPortInput: "callback_port", ContainerPortInput: "callback_port", When: map[string]any{"auth_mode": "sso"}}},
 	}}
-	key := state.Key{Source: "fixture", Package: "fixture", Target: "default", Profile: "sso-profile"}
+	key := state.Key{Source: "fixture", Package: "fixture", Target: "default", MCPDefinition: "sso-profile"}
 	values := map[string]any{"auth_mode": "sso", "callback_port": int64(8090), "listen_port": int64(8765)}
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, values, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := runtime.specs[0].AdditionalPorts; !reflect.DeepEqual(got, []mcp.PortMapping{{HostPort: 8090, ContainerPort: 8090}}) {
@@ -126,7 +126,7 @@ func TestConditionalSSOCallbackMapsSelectedPortOnHostAndContainer(t *testing.T) 
 	}
 	runtime.specs = nil
 	values["auth_mode"] = "api_token"
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, values, false); err != nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, values, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.specs) != 1 || len(runtime.specs[0].AdditionalPorts) != 0 {
@@ -143,7 +143,7 @@ func TestStartConfigurationProfileIgnoresUndeclaredHostInput(t *testing.T) {
 		EndpointPath: "/mcp",
 	}}
 	key := state.Key{Source: "fixture", Package: "fixture", Target: "default"}
-	_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, map[string]any{
+	_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, map[string]any{
 		"listen_port": int64(8765), "host": "mcp.undeclared.example.test",
 	}, false)
 	if err != nil {

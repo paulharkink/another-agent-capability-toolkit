@@ -19,12 +19,39 @@ import (
 )
 
 type Key struct {
-	Source      string `json:"source"`
-	Package     string `json:"package"`
-	Environment string `json:"environment"`
-	Target      string `json:"target"`
-	MCP         string `json:"mcp,omitempty"`
-	Profile     string `json:"profile,omitempty"`
+	Source        string `json:"source"`
+	Package       string `json:"package"`
+	Environment   string `json:"environment"`
+	Target        string `json:"target"`
+	MCP           string `json:"mcp,omitempty"`
+	MCPDefinition string `json:"mcp_definition,omitempty"`
+}
+
+func (k *Key) UnmarshalJSON(data []byte) error {
+	type keyAlias Key
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	hasMCPDefinition := false
+	for name := range fields {
+		if strings.EqualFold(name, "mcp_definition") {
+			hasMCPDefinition = true
+			break
+		}
+	}
+	var decoded struct {
+		keyAlias
+		LegacyProfile string `json:"profile,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*k = Key(decoded.keyAlias)
+	if k.MCPDefinition == "" && !hasMCPDefinition {
+		k.MCPDefinition = decoded.LegacyProfile
+	}
+	return nil
 }
 
 func (k Key) ID() string {
@@ -32,8 +59,8 @@ func (k Key) ID() string {
 	if k.MCP != "" {
 		parts = append(parts, k.MCP)
 	}
-	if k.Profile != "" {
-		parts = append(parts, k.Profile)
+	if k.MCPDefinition != "" {
+		parts = append(parts, k.MCPDefinition)
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:])

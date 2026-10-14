@@ -123,7 +123,7 @@ func TestApplyProfileReportsRemovedMCPAfterFailedReplacementAndRetries(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := mcpProfileKey(key, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
+	child := mcpDefinitionKey(key, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
 	old := state.Installation{Key: child, AgentID: a.ID(), AgentKind: a.ID(), Component: "mcp", Destination: filepath.Join(a.home, "codex", "config.toml"), RegistrationName: registrationName(child), URL: "http://original.example/mcp", Mode: "registration"}
 	if err := s.Store.Record(old); err != nil {
 		t.Fatal(err)
@@ -455,7 +455,7 @@ func TestReconfiguredProfileAuthFailurePreservesSavedStateAndReportsAuthRequired
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := mcpProfileKey(key, *p, p.MCPs[0])
+	child := mcpDefinitionKey(key, *p, p.MCPs[0])
 	oldRegistration := state.Installation{Key: child, AgentID: a.ID(), AgentKind: a.ID(), Component: "mcp", Destination: filepath.Join(a.home, "mcp", "alpha"), RegistrationName: "alpha", URL: "http://old.example/mcp"}
 	if err := s.Store.Record(oldRegistration); err != nil {
 		t.Fatal(err)

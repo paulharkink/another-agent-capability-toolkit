@@ -95,19 +95,19 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	t.Fatal("codex destination missing")
 }
 
-func TestPublicSetupOperationsRequireProfileReference(t *testing.T) {
+func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 	svc, _, _ := fixture(t)
-	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("preview without a profile reference: %v", err)
+	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("preview without an instance reference: %v", err)
 	}
-	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("install without a profile reference: %v", err)
+	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("install without an instance reference: %v", err)
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("public install without a profile reference: %v", err)
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("public install without an instance reference: %v", err)
 	}
-	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("public uninstall without a profile reference: %v", err)
+	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("public uninstall without an instance reference: %v", err)
 	}
 }
 
@@ -134,7 +134,7 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	profilePath := filepath.Join(svc.Source.ProfileRoot, "demo", "production.toml")
-	if got.Key != key || got.ProfilePath != profilePath || got.PackRoot != svc.Source.Root || len(got.Inputs) != 5 {
+	if got.Key != key || got.InstancePath != profilePath || got.ProfilePath != profilePath || got.PackRoot != svc.Source.Root || len(got.Inputs) != 5 {
 		t.Fatalf("preview identity or fields: %#v", got)
 	}
 	wants := []struct {
@@ -608,7 +608,7 @@ func TestUISetupPreviewRegistrationNameFallbackRequiresMatchingUnambiguousRows(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			mcpKey := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+			mcpKey := mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 			for _, row := range tc.rows {
 				sibling := row.Key.MCP
 				row.Key = mcpKey

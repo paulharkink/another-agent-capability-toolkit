@@ -18,7 +18,7 @@ func openAgentMetadataWorkspace(t *testing.T, setup *setupBackendFixture, previe
 	backend := &capabilityProfileBackend{Backend: profile, profile: profile, setup: setup, preview: preview}
 	m.backend = backend
 	m.Update(m.load()())
-	request := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "foreign"}}
+	request := viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "team-source", CapabilityID: "plain", Name: "foreign"}}
 	cmd := m.openTargetWorkspace(request, "Agents")
 	if cmd == nil {
 		t.Fatal("could not open manifest-backed complete-binding workspace")

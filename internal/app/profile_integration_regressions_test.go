@@ -498,7 +498,7 @@ func TestProfileReusesDeclaredCredentialsWithUnchangedSource(t *testing.T) {
 	q.Inputs = map[string]any{"source_file": filepath.Join(t.TempDir(), "deleted-original")}
 	key, _ := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
 	s.Store.SaveAnswers(key, q.Inputs)
-	child := mcpProfileKey(key, *p, p.MCPs[0])
+	child := mcpDefinitionKey(key, *p, p.MCPs[0])
 	os.MkdirAll(s.Store.AuthDir(child), 0700)
 	os.WriteFile(filepath.Join(s.Store.AuthDir(child), "credential.bin"), []byte("managed-fixture"), 0600)
 	runner := &countingPrepareExecutor{}

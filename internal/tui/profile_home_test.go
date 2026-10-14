@@ -15,13 +15,13 @@ import (
 type packProfileBackend struct {
 	setupBackendFixture
 	profiles map[string]viewmodel.CapabilityProfileSnapshot
-	created  []config.ProfileRef
+	created  []config.InstanceRef
 }
 
 func (b *packProfileBackend) UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityProfileSnapshot, error) {
 	return b.profiles, nil
 }
-func (b *packProfileBackend) UICreateProfile(_ context.Context, ref config.ProfileRef) error {
+func (b *packProfileBackend) UICreateProfile(_ context.Context, ref config.InstanceRef) error {
 	b.created = append(b.created, ref)
 	return nil
 }
@@ -32,9 +32,9 @@ func (b *packProfileBackend) UISetupPreview(_ context.Context, q viewmodel.Setup
 func profileHomeFixture(t *testing.T) (*Model, *packProfileBackend) {
 	t.Helper()
 	m, msg := homeFixture()
-	b := &packProfileBackend{profiles: map[string]viewmodel.CapabilityProfileSnapshot{"inspect": {Profiles: []viewmodel.CapabilityProfile{{Ref: config.ProfileRef{PackID: "one", CapabilityID: "inspect", Name: "ota"}, Key: state.Key{Source: "one", Package: "inspect", Target: "ota"}, ConfigStatus: "configured", MCPs: []viewmodel.RuntimeStatus{{MCPID: "server", Status: "stopped", Ownership: "local"}}}, {Ref: config.ProfileRef{PackID: "one", CapabilityID: "inspect", Name: "prod"}, Key: state.Key{Source: "one", Package: "inspect", Target: "prod"}, ConfigStatus: "needs-input"}}}, "plain": {}}}
+	b := &packProfileBackend{profiles: map[string]viewmodel.CapabilityProfileSnapshot{"inspect": {Profiles: []viewmodel.CapabilityProfile{{Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "ota"}, Key: state.Key{Source: "one", Package: "inspect", Target: "ota"}, ConfigStatus: "configured", MCPs: []viewmodel.RuntimeStatus{{MCPID: "server", Status: "stopped", Ownership: "local"}}}, {Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "prod"}, Key: state.Key{Source: "one", Package: "inspect", Target: "prod"}, ConfigStatus: "needs-input"}}}, "plain": {}}}
 	m.backend = b
-	msg.capabilityProfiles = b.profiles
+	msg.capabilityInstances = b.profiles
 	m.Update(msg)
 	return m, b
 }
@@ -64,7 +64,7 @@ func TestProfileHomeImmediateProfilesAndLayerNavigation(t *testing.T) {
 func TestPackWorkspaceDoesNotTreatConfigSummaryAsRuntime(t *testing.T) {
 	m, _ := profileHomeFixture(t)
 	row := m.profiles()[0]
-	runtime := m.profileForWorkspace(row.Key)
+	runtime := m.instanceForWorkspace(row.Key)
 	if runtime == nil || runtime.RuntimeStatus != "stopped" || runtime.Ownership != "local" {
 		t.Fatalf("configuration row used as runtime: %+v", runtime)
 	}
@@ -79,11 +79,11 @@ func TestPackWorkspaceMergesOnlyExactSavedRegistrationFacts(t *testing.T) {
 	m, _ := profileHomeFixture(t)
 	first := state.Key{Source: "one", Package: "inspect", Target: "ota"}
 	other := state.Key{Source: "one", Package: "inspect", Target: "prod"}
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: first, Name: "ota", RuntimeStatus: "never-started", Ownership: "local", URL: "http://127.0.0.1:8765/ota", RegisteredAgents: []string{"codex"}, CanStart: true},
 		{Key: other, Name: "prod", RuntimeStatus: "never-started", Ownership: "local", URL: "http://127.0.0.1:8765/prod", RegisteredAgents: []string{"claude"}},
 	}}
-	got := m.profileForWorkspace(first)
+	got := m.instanceForWorkspace(first)
 	if got == nil || got.URL != "http://127.0.0.1:8765/ota" || strings.Join(got.RegisteredAgents, ",") != "codex" {
 		t.Fatalf("exact saved registration facts were lost: %+v", got)
 	}
@@ -100,8 +100,18 @@ func TestProfileHomeSkillOnlyAndNoSyntheticProfile(t *testing.T) {
 	m.home.Capabilities.ID = ""
 	m.reconcileHome()
 	rows := m.contextRows()
-	if len(rows) != 2 || rows[0].Kind != "create-profile" {
-		t.Fatalf("%+v", rows)
+	if len(rows) != 2 || rows[0].Kind != "configure" || rows[0].Label != capabilitySetupLabel() {
+		t.Fatalf("skill-only capability must offer setup without a synthetic instance: %+v", rows)
+	}
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
+	cmd := m.openContextRow()
+	if cmd == nil {
+		t.Fatal("skill-only setup action did not open its setup preview")
+	}
+	m.Update(cmd())
+	if m.form == nil || m.workspace == nil {
+		t.Fatal("skill-only setup action did not open the setup form")
 	}
 	v := m.View().Content
 	for _, bad := range []string{"Environment directory", "Related MCP profiles", "Without an environment", "Set up another target"} {
@@ -139,7 +149,7 @@ func TestProfileCreationCancelAndAccept(t *testing.T) {
 
 func TestProfileModeCanRenderLegacyStateOnlyCapabilityRows(t *testing.T) {
 	m, _ := profileHomeFixture(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "legacy", Package: "old", Target: "prod"}, Name: "prod", RuntimeStatus: "stopped"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "legacy", Package: "old", Target: "prod"}, Name: "prod", RuntimeStatus: "stopped"}}}
 	m.home.Capabilities.Index = len(m.catalog)
 	m.home.Capabilities.ID = "legacy\x00old"
 	_ = m.homeView()
@@ -147,7 +157,7 @@ func TestProfileModeCanRenderLegacyStateOnlyCapabilityRows(t *testing.T) {
 
 func TestProfileHomeLabelsUnmanagedComponentInventory(t *testing.T) {
 	component := viewmodel.ComponentStatus{AgentID: "opencode", Kind: "skill", Name: "guide", Status: "installed", Managed: false}
-	if got := profileComponentStatusText(component); got != "OpenCode · skill · guide · installed · unmanaged" {
+	if got := instanceComponentStatusText(component); got != "OpenCode · skill · guide · installed · unmanaged" {
 		t.Fatalf("unmanaged status = %q", got)
 	}
 }
@@ -160,28 +170,28 @@ func TestProfileHomeLabelsInstalledSkillAndRegisteredMCP(t *testing.T) {
 		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "skill", Name: "field-guide", Status: "installed", Managed: true}, "OpenCode · skill · field-guide · installed"},
 		{viewmodel.ComponentStatus{AgentID: "opencode", Kind: "mcp", Name: "map-server", Status: "installed", Managed: true}, "OpenCode · mcp · map-server · registered"},
 	} {
-		if got := profileComponentStatusText(tc.component); got != tc.want {
+		if got := instanceComponentStatusText(tc.component); got != tc.want {
 			t.Errorf("component status = %q, want %q", got, tc.want)
 		}
 	}
 }
 
 func TestProfileHomeSkipsMissingConfigurationDetails(t *testing.T) {
-	if got := profileConfigurationDetails(ProfileRow{}); len(got) != 0 {
+	if got := instanceConfigurationDetails(ProfileRow{}); len(got) != 0 {
 		t.Fatalf("missing configuration details = %+v", got)
 	}
 }
 
 type savedOnlyTransitionBackend struct {
 	*packProfileBackend
-	snapshot viewmodel.ProfileSnapshot
+	snapshot viewmodel.InstanceSnapshot
 }
 
 func (b *savedOnlyTransitionBackend) UICatalog(context.Context) ([]catalog.Package, error) {
 	return nil, nil
 }
 
-func (b *savedOnlyTransitionBackend) UIProfileSnapshot(context.Context) (viewmodel.ProfileSnapshot, error) {
+func (b *savedOnlyTransitionBackend) UIProfileSnapshot(context.Context) (viewmodel.InstanceSnapshot, error) {
 	return b.snapshot, nil
 }
 
@@ -190,7 +200,7 @@ func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.
 	key := state.Key{Source: "home", Package: "cluster-inspector", Target: "pms15"}
 	backendAfterDiscard := &savedOnlyTransitionBackend{
 		packProfileBackend: backend,
-		snapshot:           viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: key, Name: "pms15", RuntimeStatus: "stopped"}}},
+		snapshot:           viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: key, Name: "pms15", RuntimeStatus: "stopped"}}},
 	}
 	m.backend = backendAfterDiscard
 	m.home.Capabilities.Index = 0
@@ -200,7 +210,7 @@ func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.
 		t.Fatal(err)
 	}
 	m.workspace = &workspaceState{
-		Reference:    config.ProfileRef{PackID: "one", CapabilityID: "inspect", Name: "ota"},
+		InstanceRef:  config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "ota"},
 		Key:          state.Key{Source: "one", Package: "inspect", Target: "ota"},
 		InvokingView: "Workspace",
 		Active:       true,

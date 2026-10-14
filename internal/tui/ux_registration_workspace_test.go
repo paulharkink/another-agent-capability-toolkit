@@ -28,10 +28,10 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 		t.Fatal("Enter on the foreign target did not open its workspace")
 	}
 	m.Update(cmd())
-	if m.form == nil || m.workspace == nil || m.workspace.Profile == nil {
+	if m.form == nil || m.workspace == nil || m.workspace.Instance == nil {
 		t.Fatalf("foreign target workspace did not load: %s", m.View().Content)
 	}
-	if m.workspace.Profile.Ownership != "other-aact" || !strings.Contains(m.View().Content, "http://127.0.0.1:8765/mcp") {
+	if m.workspace.Instance.Ownership != "other-aact" || !strings.Contains(m.View().Content, "http://127.0.0.1:8765/mcp") {
 		t.Fatalf("foreign endpoint/ownership facts missing from Overview: %s", m.View().Content)
 	}
 	m.form.SelectSectionID(sectionAgentsID)
@@ -60,7 +60,7 @@ type registrationWorkspaceBackend struct {
 	*setupBackendFixture
 }
 
-func (b *registrationWorkspaceBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
+func (b *registrationWorkspaceBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.InstanceSnapshot, error) {
 	return b.profileBackend.UIProfileSnapshot(ctx)
 }
 func (b *registrationWorkspaceBackend) UIConfigureRegistrations(ctx context.Context, request viewmodel.RegistrationRequest) (viewmodel.OperationResult, error) {
@@ -106,8 +106,8 @@ func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBa
 func TestUXRegistrationEndpointAndAgentDetailsAreIndependent(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
 	m.agentManagement = []viewmodel.AgentManagementRow{{ID: "codex", Name: "Codex", Detection: "installed", Home: "/tmp/codex-home", EffectiveConfigPath: "/tmp/codex-home/.codex/config.toml", WriteConfigPath: "/tmp/codex-home/.codex/config.toml"}}
-	if !strings.Contains(m.View().Content, "Detection: installed") {
-		t.Fatalf("agent destination details missing: %s", m.View().Content)
+	if strings.Contains(m.View().Content, "Detection: installed") || strings.Contains(m.View().Content, "Config path:") {
+		t.Fatalf("Agents section repeats detection or destination details already shown in Destinations: %s", m.View().Content)
 	}
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()

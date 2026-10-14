@@ -123,7 +123,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		return "", os.ErrNotExist
 	}
 	service := app.New(source, store, app.Options{DiscoveryProbe: &probe})
-	if err := service.CreateProfile(t.Context(), config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}); err != nil {
+	if err := service.CreateProfile(t.Context(), config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}); err != nil {
 		t.Fatal(err)
 	}
 	docker := &emptyDockerPS{}
@@ -145,16 +145,16 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		}
 	}
 
-	request := m.packProfileRequest(key)
+	request := m.packInstanceRequest(key)
 	cmd := m.openTargetWorkspace(request, "Overview")
 	if cmd == nil {
 		t.Fatal("actual package target did not open a setup workspace")
 	}
 	m.Update(cmd())
-	if m.workspace == nil || m.workspace.Profile == nil {
+	if m.workspace == nil || m.workspace.Instance == nil {
 		t.Fatalf("persisted registration did not produce the target profile: %+v", m.workspace)
 	}
-	profile := m.workspace.Profile
+	profile := m.workspace.Instance
 	if profile.URL != endpoint || profile.Ownership != "local" || profile.RuntimeStatus != "never-started" || !profile.CanStart {
 		t.Fatalf("saved localhost registration was mistaken for an external runtime: %+v", profile)
 	}
@@ -234,7 +234,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatal("observed foreign runtime target did not open its workspace")
 	}
 	foreignModel.Update(foreignWorkspace())
-	foreignProfile := foreignModel.workspace.Profile
+	foreignProfile := foreignModel.workspace.Instance
 	if foreignProfile == nil || foreignProfile.Ownership != "other-aact" || foreignProfile.RuntimeStatus != "running" || foreignProfile.CanStart {
 		t.Fatalf("observed foreign runtime was not guarded despite its loopback registration: %+v", foreignProfile)
 	}
@@ -242,8 +242,8 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if !strings.Contains(foreignView, "Save and apply") || strings.Contains(foreignView, "Build and start MCP") {
 		t.Fatalf("foreign runtime lost capability configuration or exposed a lifecycle shortcut:\n%s", foreignView)
 	}
-	foreignRow := ProfileRow{Key: foreignProfile.Key, Profile: foreignProfile, URL: foreignProfile.URL, Status: foreignProfile.RuntimeStatus}
-	if reason := foreignModel.profileActionReason(foreignRow, "s"); reason == "" {
+	foreignRow := ProfileRow{Key: foreignProfile.Key, Instance: foreignProfile, URL: foreignProfile.URL, Status: foreignProfile.RuntimeStatus}
+	if reason := foreignModel.instanceActionReason(foreignRow, "s"); reason == "" {
 		t.Fatal("foreign runtime lifecycle controls were not disabled")
 	}
 }

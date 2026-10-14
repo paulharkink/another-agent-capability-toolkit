@@ -251,9 +251,9 @@ func TestProfileKeyKeepsLegacyIDsAndSeparatesProfiles(t *testing.T) {
 	base := Key{Source: "catalog", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
 	legacyID := base.ID()
 	withGitHub := base
-	withGitHub.Profile = "github"
+	withGitHub.MCPDefinition = "github"
 	withGitLab := base
-	withGitLab.Profile = "gitlab"
+	withGitLab.MCPDefinition = "gitlab"
 	if legacyID == "" || withGitHub.ID() == legacyID || withGitLab.ID() == legacyID {
 		t.Fatalf("profile IDs must be distinct from legacy key: legacy=%q github=%q gitlab=%q", legacyID, withGitHub.ID(), withGitLab.ID())
 	}

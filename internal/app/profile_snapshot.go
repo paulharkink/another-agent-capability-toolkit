@@ -15,8 +15,9 @@ import (
 	"time"
 )
 
-func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (snapshot viewmodel.CapabilityProfileSnapshot, err error) {
-	snapshot.Profiles = []viewmodel.CapabilityProfile{}
+func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (snapshot viewmodel.CapabilityInstanceSnapshot, err error) {
+	snapshot.Instances = []viewmodel.CapabilityInstance{}
+	snapshot.Profiles = []viewmodel.CapabilityInstance{}
 	snapshot.Errors = []string{}
 	if err = ctx.Err(); err != nil {
 		return snapshot, err
@@ -25,11 +26,11 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 	if err != nil {
 		return snapshot, err
 	}
-	profiles, err := s.profilesForCapability(capabilityID)
+	configuredInstances, err := s.instancesForCapability(capabilityID)
 	if err != nil {
 		return snapshot, err
 	}
-	records, err := s.Store.Profiles()
+	records, err := s.Store.Instances()
 	if err != nil {
 		return snapshot, err
 	}
@@ -37,17 +38,17 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 	if err != nil {
 		return snapshot, err
 	}
-	var instances []mcp.Instance
+	var runtimes []mcp.Instance
 	var runtimeErr error
 	if p.HasMCP() {
-		instances, runtimeErr = s.Options.Runtime.List(ctx)
+		runtimes, runtimeErr = s.Options.Runtime.List(ctx)
 		s.observationMu.Lock()
 		if runtimeErr != nil {
-			instances = nil
+			runtimes = nil
 			snapshot.ObservedAt = s.lastObservedAt
 			snapshot.Errors = append(snapshot.Errors, runtimeErr.Error())
 		} else {
-			s.lastInstances = append([]mcp.Instance(nil), instances...)
+			s.lastInstances = append([]mcp.Instance(nil), runtimes...)
 			s.lastObservedAt = time.Now()
 			snapshot.ObservedAt = s.lastObservedAt
 		}
@@ -56,29 +57,31 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 		snapshot.ObservedAt = time.Now()
 	}
 	registry := s.adapterRegistry()
-	for _, profile := range profiles {
-		row := viewmodel.CapabilityProfile{Ref: profile.Ref, Origin: "local", ConfigStatus: "configured", Components: []viewmodel.ComponentStatus{}, MCPs: []viewmodel.RuntimeStatus{}}
-		if profile.Path != "" {
+	for _, instance := range configuredInstances {
+		row := viewmodel.CapabilityInstance{Ref: instance.Ref, Origin: "local", ConfigStatus: "configured", Components: []viewmodel.ComponentStatus{}, MCPs: []viewmodel.RuntimeStatus{}}
+		if instance.Path != "" {
 			row.Origin = "pack"
 		}
-		key, e := s.Store.ResolveProfileKey(s.Source.ID, p.ID, profile.Ref.Name)
+		key, e := s.Store.ResolveInstanceKey(s.Source.ID, p.ID, instance.Ref.Name)
 		row.Key = key
 		row.CompletionScopeRelevant = completionScopeRelevant(key, records, rows)
 		if e != nil {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = e.Error()
 			row.CompletionScopeError = e.Error()
+			snapshot.Instances = append(snapshot.Instances, row)
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
-		if profile.Error != "" {
+		if instance.Error != "" {
 			row.ConfigStatus = "invalid"
-			row.ConfigError = profile.Error
-			row.CompletionScopeError = profile.Error
+			row.ConfigError = instance.Error
+			row.CompletionScopeError = instance.Error
+			snapshot.Instances = append(snapshot.Instances, row)
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
-		_, _, values, _, e := s.profileValues(p, profile, key, ProfileRequest{})
+		_, _, values, _, e := s.instanceValues(p, instance, key, InstanceRequest{})
 		if e != nil {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = e.Error()
@@ -107,7 +110,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			}
 		}
 		if e == nil {
-			s.populateCompletionScope(ctx, p, profile.Ref, key, values, records, managed, &row)
+			s.populateCompletionScope(ctx, p, instance.Ref, key, values, records, managed, &row)
 		}
 		if len(destinations) == 0 && !hasDestinationSelection {
 			for _, a := range registry.Adapters() {
@@ -164,7 +167,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 				add("skill", skill.Name, skill.Name)
 			}
 			for _, definition := range packageMCPProfiles(p, values) {
-				child := mcpProfileKey(key, p, definition)
+				child := mcpDefinitionKey(key, p, definition)
 				name, nerr := declaredRegistrationName(definition, child, values)
 				if nerr != nil {
 					snapshot.Errors = append(snapshot.Errors, nerr.Error())
@@ -184,7 +187,7 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			}
 		}
 		for _, definition := range p.MCPDefinitions() {
-			child := mcpProfileKey(key, p, definition)
+			child := mcpDefinitionKey(key, p, definition)
 			runtime := viewmodel.RuntimeStatus{MCPID: definition.Name, Status: "stopped", Ownership: "local", ObservedAt: snapshot.ObservedAt, Stale: runtimeErr != nil}
 			if definition.EnabledInput != "" && values[definition.EnabledInput] != true {
 				runtime.Status = "disabled"
@@ -199,15 +202,15 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 				}
 			}
 			matches := []mcp.Instance{}
-			for _, instance := range instances {
-				if instance.Key == child || (registeredURL != "" && instance.URL == registeredURL) {
-					matches = append(matches, instance)
+			for _, runtimeInstance := range runtimes {
+				if runtimeInstance.Key == child || (registeredURL != "" && runtimeInstance.URL == registeredURL) {
+					matches = append(matches, runtimeInstance)
 				}
 			}
 			if len(matches) > 1 {
 				runtime.Status = "conflict"
 				runtime.Ownership = "unknown"
-				runtime.Error = fmt.Sprintf("%d runtimes claim this profile MCP", len(matches))
+				runtime.Error = fmt.Sprintf("%d runtimes claim this instance MCP", len(matches))
 			} else if len(matches) == 1 {
 				runtime.Status = matches[0].Status
 				runtime.Ownership = matches[0].Ownership
@@ -222,17 +225,23 @@ func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (sna
 			}
 			row.MCPs = append(row.MCPs, runtime)
 		}
+		snapshot.Instances = append(snapshot.Instances, row)
 		snapshot.Profiles = append(snapshot.Profiles, row)
 	}
 	return snapshot, nil
+}
+
+// ProfileSnapshot is retained for callers of the former selected-instance API.
+func (s *Service) ProfileSnapshot(ctx context.Context, capabilityID string) (viewmodel.CapabilityProfileSnapshot, error) {
+	return s.InstanceSnapshot(ctx, capabilityID)
 }
 
 // populateCompletionScope resolves intended work independently from the
 // observed component facts. PreviewProfile is read-only; its Selected flag can
 // reflect already-achieved state for persisted selections, so saved intent is
 // read from the profile ledger whenever it exists.
-func (s *Service) populateCompletionScope(ctx context.Context, p catalog.Package, ref config.ProfileRef, key state.Key, values map[string]any, records []state.ProfileRecord, managed []state.Installation, row *viewmodel.CapabilityProfile) {
-	preview, err := s.PreviewProfile(ctx, ProfileRequest{Ref: ref})
+func (s *Service) populateCompletionScope(ctx context.Context, p catalog.Package, ref config.InstanceRef, key state.Key, values map[string]any, records []state.ProfileRecord, managed []state.Installation, row *viewmodel.CapabilityProfile) {
+	preview, err := s.PreviewInstance(ctx, InstanceRequest{Ref: ref})
 	if err != nil {
 		row.CompletionScopeError = err.Error()
 		return

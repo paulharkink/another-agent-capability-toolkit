@@ -48,10 +48,10 @@ type = "directory"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Key.Source != "remembered" || preview.PackRoot != root || preview.ProfilePath != filepath.Join(root, "environments", "demo", "blue.toml") || preview.ProfileTOML != profileTOML {
+	if preview.Key.Source != "remembered" || preview.PackRoot != root || preview.ProfilePath != filepath.Join(root, "instances", "demo", "blue.toml") || preview.ProfileTOML != profileTOML {
 		t.Fatalf("preview mixed process cwd with remembered source: key=%+v root=%q path=%q TOML=%q", preview.Key, preview.PackRoot, preview.ProfilePath, preview.ProfileTOML)
 	}
-	if len(preview.Inputs) != 1 || preview.Inputs[0].Value != filepath.Join(root, "environments", "source") {
+	if len(preview.Inputs) != 1 || preview.Inputs[0].Value != filepath.Join(root, "instances", "source") {
 		t.Fatalf("resolved value did not use remembered profile TOML location: %+v", preview.Inputs)
 	}
 	result, err := remembered.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{"all"}, Inputs: map[string]any{"repository": preview.Inputs[0].Value}})
