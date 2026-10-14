@@ -249,8 +249,10 @@ async def health(request: Request) -> JSONResponse:
                 and user.get("isAnonymous") is not True
             )
         else:
-            _get("/api/datasources")
-            authenticated = True
+            preferences = _get("/api/user/preferences")
+            authenticated = isinstance(preferences, dict) and any(
+                isinstance(preferences.get(field), str) for field in ("theme", "timezone")
+            )
     except Exception:
         authenticated = False
     return JSONResponse({"authenticated": authenticated})

@@ -24,16 +24,21 @@ def test_tls_vendor_fixture_and_loopback_mcp_startup(tmp_path):
     cert=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(days=1)).not_valid_after(now+datetime.timedelta(days=1)).add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]),critical=False).add_extension(x509.BasicConstraints(ca=True,path_length=None),critical=True).sign(key,hashes.SHA256()))
     certfile=tmp_path/"ca.pem";keyfile=tmp_path/"key.pem"
     certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM));keyfile.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
-    calls=[];auth_status=[401]
+    calls=[];preferences_status=[401]
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             calls.append(self.path)
             assert self.headers.get("Authorization")=="Bearer synthetic-token"
             assert not self.headers.get("Cookie")
-            if self.path!="/api/datasources":self.send_error(404);return
-            if auth_status[0] != 200:
-                self.send_error(auth_status[0]);return
-            body=b'[]';self.send_response(200);self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
+            if self.path=="/api/datasources":
+                body=b'[]'
+            elif self.path=="/api/user/preferences":
+                if preferences_status[0] != 200:
+                    self.send_error(preferences_status[0]);return
+                body=b'{"theme":"dark","timezone":"browser"}'
+            else:
+                self.send_error(404);return
+            self.send_response(200);self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
         def log_message(self,*args):pass
     fixture=HTTPServer(("127.0.0.1",0),Handler)
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(certfile,keyfile)
@@ -60,12 +65,12 @@ def test_tls_vendor_fixture_and_loopback_mcp_startup(tmp_path):
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0.0.1:{mcp_port}/health", timeout=1) as response:
                     assert response.status == 200
                     assert json.loads(response.read()) == {"authenticated": False}
-                assert calls==["/api/datasources", "/api/datasources"]
-                auth_status[0]=200
+                assert calls==["/api/datasources", "/api/user/preferences"]
+                preferences_status[0]=200
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0.0.1:{mcp_port}/health", timeout=1) as response:
                     assert response.status == 200
                     assert json.loads(response.read()) == {"authenticated": True}
-                assert calls==["/api/datasources", "/api/datasources", "/api/datasources"]
+                assert calls==["/api/datasources", "/api/user/preferences", "/api/user/preferences"]
                 return
             except OSError as error:
                 last_error=repr(error)
