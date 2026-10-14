@@ -16,6 +16,8 @@ from typing import Any, Iterator
 
 import psycopg
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from config import ClusterProfile, DatabaseProfile, TenantProfile, load_profile, materialize_kubeconfig, validate_selections
 
@@ -136,6 +138,30 @@ def _require_session() -> dict[str, str] | None:
     except ValueError:
         return _error("No valid Kubernetes session is available. Start and authenticate this cluster-inspector profile, then retry.")
     return None
+
+
+def _has_authenticated_identity() -> bool:
+    try:
+        identity = _kubectl_json(["auth", "whoami", "--output=json"], timeout=10)
+    except Exception:
+        return False
+    status = identity.get("status")
+    user_info = status.get("userInfo") if isinstance(status, dict) else None
+    if not isinstance(user_info, dict):
+        return False
+    username = user_info.get("username")
+    groups = user_info.get("groups")
+    if not isinstance(username, str) or not username.strip() or not isinstance(groups, list):
+        return False
+    if any(not isinstance(group, str) for group in groups):
+        return False
+    return username != "system:anonymous" and "system:unauthenticated" not in groups
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Report whether the configured Kubernetes identity probe succeeds."""
+    return JSONResponse({"authenticated": _has_authenticated_identity()})
 
 
 def _database_connections() -> dict[str, TenantProfile]:

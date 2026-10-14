@@ -1,10 +1,12 @@
 import base64
+import json
 import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from starlette.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -348,6 +350,30 @@ class KubeconfigTests(unittest.TestCase):
         with __import__("tempfile").TemporaryDirectory() as directory:
             path = config.write_auth_file(Path(directory) / "auth", "secret")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_health_requires_a_non_anonymous_kubernetes_identity(self):
+        valid_identity = {"status": {"userInfo": {"username": "fixture-user", "groups": ["system:authenticated"]}}}
+        cases = (
+            (valid_identity, True),
+            (ValueError("expired secret-token"), False),
+            (ValueError("Forbidden"), False),
+            (json.JSONDecodeError("invalid json", "{", 0), False),
+            ({"status": {}}, False),
+            ({"status": {"userInfo": {"username": "system:anonymous", "groups": ["system:unauthenticated"]}}}, False),
+            ({"status": {"userInfo": {"username": "fixture-user", "groups": ["system:unauthenticated"]}}}, False),
+        )
+        client = TestClient(server.mcp.http_app(path="/mcp", transport="streamable-http"))
+        for probe_result, expected in cases:
+            with self.subTest(expected=expected, result=type(probe_result).__name__):
+                kwargs = {"side_effect": probe_result} if isinstance(probe_result, Exception) else {"return_value": probe_result}
+                with patch.object(server, "_kubectl_json", **kwargs) as probe:
+                    response = client.get("/health")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"authenticated": expected})
+                self.assertNotIn("fixture-user", response.text)
+                self.assertNotIn("Forbidden", response.text)
+                self.assertNotIn("secret-token", response.text)
+                probe.assert_called_once_with(["auth", "whoami", "--output=json"], timeout=10)
 
 
 if __name__ == "__main__":

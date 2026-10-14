@@ -28,6 +28,7 @@ class GrafanaTargetTests(unittest.TestCase):
             class FastMCP:
                 def __init__(self, *args, **kwargs): pass
                 def tool(self): return lambda function: function
+                def custom_route(self, *args, **kwargs): return lambda function: function
             fastmcp.FastMCP = FastMCP
             spec = importlib.util.spec_from_file_location("grafana_pod_mode_test", Path(__file__).resolve().parents[1] / "server.py")
             module = importlib.util.module_from_spec(spec)
@@ -57,6 +58,7 @@ class GrafanaTargetTests(unittest.TestCase):
             class FastMCP:
                 def __init__(self, *args, **kwargs): pass
                 def tool(self): return lambda function: function
+                def custom_route(self, *args, **kwargs): return lambda function: function
             fastmcp.FastMCP = FastMCP
             spec = importlib.util.spec_from_file_location("grafana_native_session_server_test", Path(__file__).resolve().parents[1] / "server.py")
             module = importlib.util.module_from_spec(spec)
@@ -180,6 +182,9 @@ class GrafanaTargetTests(unittest.TestCase):
                     pass
 
                 def tool(self):
+                    return lambda function: function
+
+                def custom_route(self, *args, **kwargs):
                     return lambda function: function
 
             fastmcp.FastMCP = FastMCP

@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 TARGET_CONFIG = os.environ.get("GRAFANA_CONFIG", "/config/target.toml")
 TARGET = os.environ.get("GRAFANA_TARGET", "target")
@@ -111,7 +113,10 @@ def _session() -> requests.Session:
     return client
 
 
-CLIENT = _session()
+try:
+    CLIENT = _session()
+except ValueError:
+    CLIENT = None
 SESSION_LOCK = threading.Lock()
 
 
@@ -194,6 +199,8 @@ def _bootstrap_session() -> None:
 
 
 def _request(method: str, path: str, parameters: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> Any:
+    if CLIENT is None:
+        raise ValueError("Grafana authentication is unavailable.")
     if AUTH_MODE == "session_cookie":
         _rotate_before_expiry()
     response = CLIENT.request(
@@ -223,6 +230,30 @@ def _get(path: str, parameters: dict[str, Any] | None = None) -> Any:
 
 def _validate_api_token() -> None:
     _get("/api/datasources")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Report whether the currently selected Grafana identity is authorized."""
+    try:
+        if AUTH_MODE == "session_cookie":
+            user = _get("/api/user")
+            authenticated = (
+                isinstance(user, dict)
+                and isinstance(user.get("id"), int)
+                and not isinstance(user.get("id"), bool)
+                and user["id"] > 0
+                and isinstance(user.get("login"), str)
+                and bool(user["login"].strip())
+                and user["login"].strip().casefold() != "anonymous"
+                and user.get("isAnonymous") is not True
+            )
+        else:
+            _get("/api/datasources")
+            authenticated = True
+    except Exception:
+        authenticated = False
+    return JSONResponse({"authenticated": authenticated})
 
 
 def _post(path: str, parameters: dict[str, Any], payload: dict[str, Any]) -> Any:
@@ -382,13 +413,14 @@ if __name__ == "__main__":
     if AUTH_MODE == "session_cookie":
         try:
             _bootstrap_session()
-        except (requests.RequestException, ValueError) as error:
-            raise SystemExit(f"Grafana target session rotation failed during startup: {error}") from error
-        threading.Thread(target=_rotation_worker, name="grafana-session-rotation", daemon=True).start()
+        except (requests.RequestException, ValueError):
+            print("Grafana session authentication is unavailable; health checks will report false.", flush=True)
+        else:
+            threading.Thread(target=_rotation_worker, name="grafana-session-rotation", daemon=True).start()
     else:
         try:
             _validate_api_token()
-        except (requests.RequestException, ValueError) as error:
-            raise SystemExit(f"Grafana API token validation failed: {error}") from error
+        except (requests.RequestException, ValueError):
+            print("Grafana API authentication is unavailable; health checks will report false.", flush=True)
     hosts = ["localhost", "127.0.0.1", *[item.strip() for item in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if item.strip()]]
     mcp.run(transport="http", host=os.environ.get("MCP_HTTP_BIND_HOST", "0.0.0.0"), port=int(os.environ.get("MCP_HTTP_PORT", "8765")), path="/mcp", stateless_http=True, host_origin_protection=True, allowed_hosts=hosts)
