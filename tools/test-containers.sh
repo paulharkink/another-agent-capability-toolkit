@@ -5,6 +5,13 @@ cd "$root"
 # These images and tests use only synthetic local credentials/fixtures.
 docker build -f packages/_shared/Dockerfile.test -t aact/shared:test packages/_shared
 docker run --rm -v "$root/packages/_shared:/port:ro" aact/shared:test
+builds=$(go run ./cmd/mcp-release-builds -root "$root" -version test)
+while IFS="$(printf '\t')" read -r package profile context release_image; do
+  [ -n "$package" ] || continue
+  docker build -f "$context/Dockerfile" -t "aact/$package-$profile:test-release" "$context"
+done <<EOF_BUILDS
+$(printf '%s\n' "$builds" | jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv')
+EOF_BUILDS
 for package in cluster-inspector grafana-inspector; do
   docker build -t "aact/$package:test-runtime" "packages/$package/mcp"
   docker build -f "packages/$package/mcp/Dockerfile.test" --build-arg "RUNTIME_IMAGE=aact/$package:test-runtime" -t "aact/$package:test" "packages/$package/mcp"

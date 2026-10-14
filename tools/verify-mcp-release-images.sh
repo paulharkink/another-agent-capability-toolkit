@@ -14,8 +14,11 @@ manifest_file="$(mktemp)"
 error_file="$(mktemp)"
 trap 'rm -f "$manifest_file" "$error_file"' EXIT
 
-for package in azure-inspector cluster-inspector grafana-inspector argocd; do
-  package_name="${package}-mcp"
+builds="$(go run ./cmd/mcp-release-builds -root . -version "${release_tag#v}")"
+while IFS=$'\t' read -r package profile context release_image; do
+  [[ -n "$package" ]] || continue
+  image_name="${release_image##*/}"
+  package_name="${image_name%:*}"
   image="ghcr.io/${repository_lower}/${package_name}:${release_tag}"
   encoded_package="${repository_name}%2F${package_name}"
 
@@ -45,4 +48,4 @@ for package in azure-inspector cluster-inspector grafana-inspector argocd; do
   fi
 
   echo "Verified public ${image} with linux/amd64 and linux/arm64 manifests."
-done
+done < <(jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv' <<< "$builds")

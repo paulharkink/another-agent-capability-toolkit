@@ -21,12 +21,12 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		t.Fatal(err)
 	}
 	releasePipeline := text + "\n" + string(manifestPublisher)
-	for _, required := range []string{"for dockerfile in packages/*/mcp/Dockerfile", `context="$(dirname "$dockerfile")"`, "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
+	for _, required := range []string{"go run ./cmd/mcp-release-builds", "jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv'", "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("release workflow missing package-context/release contract %q", required)
 		}
 	}
-	if strings.Contains(text, "docker buildx build .") || strings.Contains(text, "docker buildx build ..") || strings.Contains(text, "${package}-mcp:latest") {
+	if strings.Contains(text, "for dockerfile in packages/*/mcp/Dockerfile") || strings.Contains(text, "docker buildx build .") || strings.Contains(text, "docker buildx build ..") || strings.Contains(text, "${package}-mcp:latest") {
 		t.Fatal("release workflow uses a repository-wide context or mutable latest tag")
 	}
 	if !strings.Contains(text, "args: release --skip=publish --clean") || !strings.Contains(text, "args: release --clean") {
@@ -35,24 +35,56 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 	if !strings.Contains(text, "Could not inspect GHCR visibility") || !strings.Contains(text, "Set the package visibility to Public") {
 		t.Fatal("release workflow must explain how to recover when GHCR visibility cannot be verified")
 	}
-	dockerfiles, err := filepath.Glob(filepath.Join(root, "packages", "*", "mcp", "Dockerfile"))
-	if err != nil || len(dockerfiles) == 0 {
-		t.Fatalf("expected bundled MCP build contexts, got %v (%v)", dockerfiles, err)
+	builds, err := catalog.DiscoverMCPReleaseBuilds(filepath.Join(root, "packages"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, dockerfile := range dockerfiles {
-		packageDir := filepath.Dir(filepath.Dir(dockerfile))
-		pkg, err := catalog.Load(packageDir)
+	want := map[string]bool{
+		"argocd/argocd":                       false,
+		"azure-inspector/azure-inspector":     false,
+		"cluster-inspector/cluster-inspector": false,
+		"git-provider/github":                 false,
+		"git-provider/gitlab":                 false,
+		"git-provider/bitbucket":              false,
+		"grafana-inspector/grafana-inspector": false,
+	}
+	if len(builds) != len(want) {
+		t.Fatalf("expected %d declared MCP image profiles, got %d: %#v", len(want), len(builds), builds)
+	}
+	for _, build := range builds {
+		key := build.PackageID + "/" + build.Profile
+		if _, ok := want[key]; !ok {
+			t.Errorf("unexpected MCP image profile %q", key)
+		}
+		want[key] = true
+		pkg, err := catalog.Load(filepath.Join(root, "packages", strings.SplitN(build.PackageID, "/", 2)[0]))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if pkg.MCP == nil || filepath.Clean(filepath.Join(packageDir, pkg.MCP.BuildContext)) != filepath.Dir(dockerfile) {
-			t.Errorf("%s does not declare its own exact MCP build context", pkg.ID)
+		packageDir := filepath.Join(root, "packages", strings.SplitN(build.PackageID, "/", 2)[0])
+		buildContext := filepath.Clean(filepath.Join(packageDir, build.BuildContext))
+		if _, err := os.Stat(filepath.Join(buildContext, "Dockerfile")); err != nil {
+			t.Errorf("%s profile %s Dockerfile is missing: %v", build.PackageID, build.Profile, err)
 		}
-		if !strings.Contains(pkg.MCP.ReleaseImage, ":v{aact_version}") {
-			t.Errorf("%s release image is not version pinned: %q", pkg.ID, pkg.MCP.ReleaseImage)
+		profileFound := false
+		for _, profile := range pkg.MCPProfiles() {
+			if profile.Name == build.Profile {
+				profileFound = true
+				if profile.ReleaseImage != build.ReleaseImage || !strings.Contains(profile.ReleaseImage, ":v{aact_version}") {
+					t.Errorf("%s profile %s release image is not version pinned: %q", build.PackageID, build.Profile, profile.ReleaseImage)
+				}
+			}
 		}
-		if !strings.Contains(releasePipeline, "${package}-mcp") || !strings.Contains(releasePipeline, "${image}:v${version}") || !strings.Contains(releasePipeline, "org.opencontainers.image.source") {
-			t.Errorf("workflow does not version and label the image for %s", pkg.ID)
+		if !profileFound {
+			t.Errorf("%s discovery returned undeclared profile %s", build.PackageID, build.Profile)
+		}
+		if !strings.Contains(releasePipeline, "${package}-${profile}.txt") || !strings.Contains(releasePipeline, "${image}:v${version}") || !strings.Contains(releasePipeline, "org.opencontainers.image.source") {
+			t.Errorf("workflow does not version and label the image for %s", key)
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("missing expected MCP image profile %q", key)
 		}
 	}
 	if !strings.Contains(text, "needs: prepare-release") || !strings.Contains(text, "needs: [prepare-release, build-mcp-amd64, build-mcp-arm64]") ||
@@ -218,7 +250,8 @@ func TestAssetsOnlyRecoveryValidatesExistingImagesAndSkipsImagePublishing(t *tes
 	}
 	verifyText := string(verifier)
 	for _, required := range []string{
-		"azure-inspector cluster-inspector grafana-inspector",
+		"go run ./cmd/mcp-release-builds",
+		"jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv'",
 		"AACT_RELEASE_TAG",
 		"gh api",
 		"visibility",
