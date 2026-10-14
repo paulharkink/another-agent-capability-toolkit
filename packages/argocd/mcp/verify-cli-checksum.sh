@@ -35,7 +35,9 @@ if ! expected_hash=$(awk -v selected="$asset_name" '
   exit 1
 fi
 
-actual_hash=$(sha256sum "$binary_path" | awk '{print tolower($1)}')
+# Hash stdin so sha256sum's filename escaping cannot corrupt the parsed digest
+# for native Windows paths passed through a POSIX shell.
+actual_hash=$(sha256sum < "$binary_path" | awk '{print tolower($1)}')
 if [ "$actual_hash" != "$expected_hash" ]; then
   echo "SHA-256 mismatch for $asset_name" >&2
   exit 1

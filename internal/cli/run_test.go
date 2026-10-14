@@ -129,7 +129,7 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 		t.Fatalf("authenticate output = %q, want returned login URL", got.output)
 	}
 	calls, err := os.ReadFile(filepath.Join(root, "calls"))
-	if err != nil || string(calls) != "x\n" {
+	if err != nil || strings.ReplaceAll(string(calls), "\r\n", "\n") != "x\n" {
 		t.Fatalf("authenticate action invocations = %q, %v; want exactly one", calls, err)
 	}
 }

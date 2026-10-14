@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +100,74 @@ func TestHealthWithHeadersRejectsUnauthorizedInitialize(t *testing.T) {
 	defer server.Close()
 	if err := HealthWithHeaders(context.Background(), server.URL, "streamable-http", nil); err == nil || !strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("unauthorized initialize result = %v, want HTTP 401 error", err)
+	}
+}
+
+func TestHealthSSEUsesEndpointEventAndReadsInitializeResponse(t *testing.T) {
+	posted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/sse":
+			if r.Header.Get("X-Profile-Token") != "profile-secret" {
+				t.Errorf("SSE request omitted profile header")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "event: endpoint\ndata: /messages?sessionId=fixture\n\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-posted:
+			case <-r.Context().Done():
+			case <-time.After(time.Second):
+				t.Error("initialize was not posted before the SSE stream closed")
+				return
+			}
+			_, _ = io.WriteString(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}\n\n")
+			w.(http.Flusher).Flush()
+		case r.Method == http.MethodPost && r.URL.Path == "/messages" && r.URL.Query().Get("sessionId") == "fixture":
+			if r.Header.Get("X-Profile-Token") != "profile-secret" {
+				t.Errorf("initialize POST omitted profile header")
+			}
+			if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Errorf("initialize content type = %q", got)
+			}
+			var request struct {
+				Method string `json:"method"`
+				ID     int    `json:"id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode initialize request: %v", err)
+			} else if request.Method != "initialize" || request.ID != 1 {
+				t.Errorf("initialize request = %+v", request)
+			}
+			close(posted)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Errorf("unexpected SSE health request: %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	err := HealthWithHeaders(context.Background(), server.URL+"/sse", "sse", http.Header{"X-Profile-Token": []string{"profile-secret"}})
+	if err != nil {
+		t.Fatalf("legacy SSE health check failed: %v", err)
+	}
+}
+
+func TestSafeHealthTransportCauseClassifiesWindowsConnectionRefused(t *testing.T) {
+	const wsaConnRefused syscall.Errno = 10061
+	err := &net.OpError{Op: "dial", Net: "tcp", Err: wsaConnRefused}
+	if got := safeHealthTransportCause(err); got != "connection refused" {
+		t.Fatalf("safe transport cause = %q, want connection refused", got)
+	}
+	wrapped := safeHealthTransportError(err)
+	if !errors.Is(wrapped, wsaConnRefused) {
+		t.Fatalf("transport wrapper lost WSA error: %v", wrapped)
+	}
+	var opErr *net.OpError
+	if !errors.As(wrapped, &opErr) {
+		t.Fatalf("transport wrapper lost net.OpError: %v", wrapped)
 	}
 }
 

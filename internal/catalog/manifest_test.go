@@ -1132,3 +1132,23 @@ func TestArgoFixedClientChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.
 		})
 	}
 }
+
+func TestArgoFixedClientChecksumVerifierDoesNotParseBinaryPathFromHashOutput(t *testing.T) {
+	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
+	directory := t.TempDir()
+	binaryPath := filepath.Join(directory, "binary\nname")
+	binary := []byte("fixture CLI binary bytes")
+	if err := os.WriteFile(binaryPath, binary, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(binary)
+	checksumsPath := filepath.Join(directory, "cli_checksums.txt")
+	if err := os.WriteFile(checksumsPath, []byte(hex.EncodeToString(digest[:])+"  argocd-linux-amd64\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", helper, checksumsPath, "argocd-linux-amd64", binaryPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("checksum verifier rejected an existing binary whose path requires sha256sum escaping: %v: %s", err, output)
+	}
+}

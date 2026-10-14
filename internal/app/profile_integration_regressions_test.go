@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -297,24 +298,35 @@ func TestProfileApplyExternalURLHealthFalsePreventsRegistration(t *testing.T) {
 	q.ItemIDs = []string{"set:alpha-only"}
 	q.Inputs = map[string]any{"label": "company", "enabled": true}
 	healthChecks := 0
+	firstProbe := make(chan struct{})
+	var firstProbeOnce sync.Once
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/health" {
 			t.Errorf("registration/protocol request before authentication: %s %s", r.Method, r.URL.Path)
 		}
 		healthChecks++
 		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+		w.(http.Flusher).Flush()
+		firstProbeOnce.Do(func() { close(firstProbe) })
 	}))
 	defer endpoint.Close()
 	q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
 	runtime := &providerTestRuntime{}
 	s.Options.Runtime = runtime
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		select {
+		case <-firstProbe:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	result, err := s.ApplyProfile(ctx, q)
-	if err == nil || (err != context.DeadlineExceeded && !strings.Contains(err.Error(), context.DeadlineExceeded.Error())) {
-		t.Fatalf("false external health response did not time out: result=%#v err=%v", result, err)
+	if err == nil {
+		t.Fatalf("false external health response did not stop on cancellation: result=%#v err=%v", result, err)
 	}
-	if healthChecks == 0 || len(a.calls) != 0 || len(runtime.keys) != 0 {
+	if healthChecks != 1 || len(a.calls) != 0 || len(runtime.keys) != 0 {
 		t.Fatalf("registration or local start proceeded while external health stayed false: health=%d calls=%v starts=%v", healthChecks, a.calls, runtime.keys)
 	}
 }

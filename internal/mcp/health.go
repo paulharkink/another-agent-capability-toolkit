@@ -20,6 +20,7 @@ import (
 const (
 	healthWaitLimit = 5 * time.Minute
 	healthBodyLimit = 64 << 10
+	wsaConnRefused  = syscall.Errno(10061)
 )
 
 type healthTransportError struct {
@@ -43,7 +44,7 @@ func safeHealthTransportCause(err error) string {
 	if errors.As(err, &dnsErr) {
 		return "DNS lookup failed"
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, wsaConnRefused) {
 		return "connection refused"
 	}
 	if errors.Is(err, syscall.ENETUNREACH) {
@@ -118,22 +119,54 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 		}
 		scanner := bufio.NewScanner(response.Body)
 		scanner.Buffer(make([]byte, 4096), 1<<20)
-		var data []string
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				if initializeResponse([]byte(strings.Join(data, "\n"))) {
-					return nil
+		var messagesEndpoint string
+		for {
+			event, data, eventErr := readSSEEvent(scanner)
+			if eventErr != nil {
+				if errors.Is(eventErr, io.EOF) && scanner.Err() != nil {
+					return scanner.Err()
 				}
-				data = nil
-			} else if strings.HasPrefix(line, "data:") {
-				data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+				return errors.New("MCP SSE endpoint event missing")
+			}
+			if event == "endpoint" {
+				messagesEndpoint, err = resolveSSEMessageEndpoint(response.Request.URL, strings.Join(data, "\n"))
+				if err != nil {
+					return err
+				}
+				break
 			}
 		}
-		if err := scanner.Err(); err != nil {
-			return err
+		postRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesEndpoint, bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"aact","version":"0.1"}}}`))
+		if err != nil {
+			return errors.New("could not create MCP SSE initialize request")
 		}
-		return errors.New("MCP initialize returned invalid response")
+		postRequest.Header.Set("Content-Type", "application/json")
+		postRequest.Header.Set("Accept", "application/json, text/event-stream")
+		for name, values := range headers {
+			for _, value := range values {
+				postRequest.Header.Add(name, value)
+			}
+		}
+		postResponse, err := client.Do(postRequest)
+		if err != nil {
+			return safeHealthTransportError(err)
+		}
+		postResponse.Body.Close()
+		if postResponse.StatusCode < http.StatusOK || postResponse.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("MCP SSE initialize HTTP %d", postResponse.StatusCode)
+		}
+		for {
+			_, data, eventErr := readSSEEvent(scanner)
+			if eventErr != nil {
+				if errors.Is(eventErr, io.EOF) && scanner.Err() != nil {
+					return scanner.Err()
+				}
+				return errors.New("MCP initialize returned invalid response")
+			}
+			if initializeResponse([]byte(strings.Join(data, "\n"))) {
+				return nil
+			}
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -143,6 +176,41 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 		return errors.New("MCP initialize returned invalid response")
 	}
 	return nil
+}
+
+func readSSEEvent(scanner *bufio.Scanner) (string, []string, error) {
+	var event string
+	var data []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if event != "" || len(data) != 0 {
+				return event, data, nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", nil, err
+	}
+	return "", nil, io.EOF
+}
+
+func resolveSSEMessageEndpoint(streamURL *url.URL, eventData string) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(eventData))
+	if err != nil || endpoint == nil || endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawFragment != "" {
+		return "", errors.New("MCP SSE endpoint event contained an invalid message URL")
+	}
+	target := streamURL.ResolveReference(endpoint)
+	if !strings.EqualFold(target.Scheme, streamURL.Scheme) || !strings.EqualFold(target.Host, streamURL.Host) || target.User != nil {
+		return "", errors.New("MCP SSE message endpoint must stay on the stream origin")
+	}
+	return target.String(), nil
 }
 
 func initializeResponse(data []byte) bool {

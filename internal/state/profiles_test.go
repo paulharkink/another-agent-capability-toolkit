@@ -29,12 +29,9 @@ func TestProfileAuthStateDirectoryIsPrivateAndIsolated(t *testing.T) {
 	if firstDir == secondDir {
 		t.Fatalf("distinct profiles share auth state directory %q", firstDir)
 	}
-	info, err := os.Stat(firstDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0700 {
-		t.Fatalf("auth state directory permissions = %04o, want 0700", info.Mode().Perm())
+	private, err := authDirIsPrivate(firstDir)
+	if err != nil || !private {
+		t.Fatalf("auth state directory is not private: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(firstDir, "session"), []byte("persisted"), 0600); err != nil {
 		t.Fatal(err)
@@ -84,15 +81,16 @@ func TestEnsureAuthDirReadOnlyPreservesExistingPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readonly.EnsureAuthDir(key); err != ErrReadOnly {
-		t.Fatalf("EnsureAuthDir error = %v, want ErrReadOnly", err)
-	}
-	info, err := os.Stat(path)
+	before, err := authDirPrivacyState(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0755 {
-		t.Fatalf("read-only EnsureAuthDir changed permissions to %04o", info.Mode().Perm())
+	if _, err := readonly.EnsureAuthDir(key); err != ErrReadOnly {
+		t.Fatalf("EnsureAuthDir error = %v, want ErrReadOnly", err)
+	}
+	after, err := authDirPrivacyState(path)
+	if err != nil || after != before {
+		t.Fatalf("read-only EnsureAuthDir changed auth directory security: before %q, after %q, error %v", before, after, err)
 	}
 }
 

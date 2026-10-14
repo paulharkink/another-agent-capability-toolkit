@@ -9,8 +9,9 @@ import (
 	"os/signal"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
 
 func Run() int {
@@ -42,7 +43,7 @@ func Run() int {
 	go func() { serveDone <- server.ListenAndServe() }()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(signals, process.ShutdownSignals()...)
 	defer signal.Stop(signals)
 	select {
 	case <-childDone:
@@ -100,7 +101,7 @@ func startChild(args []string) (*exec.Cmd, <-chan error, error) {
 	child := exec.Command(args[0], args[1:]...)
 	child.Env = os.Environ()
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	process.ConfigureChildProcessTree(child)
 	if err := child.Start(); err != nil {
 		return nil, nil, err
 	}
@@ -113,11 +114,11 @@ func stopChild(child *exec.Cmd, childDone <-chan error) {
 	if child == nil || child.Process == nil {
 		return
 	}
-	_ = syscall.Kill(-child.Process.Pid, syscall.SIGTERM)
+	_ = process.SignalChildProcessTree(child, false)
 	select {
 	case <-childDone:
 	case <-time.After(5 * time.Second):
-		_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+		_ = process.SignalChildProcessTree(child, true)
 		<-childDone
 	}
 }

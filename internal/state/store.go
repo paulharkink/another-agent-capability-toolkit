@@ -434,7 +434,7 @@ func (s *Store) EnsureAuthDir(k Key) (string, error) {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(path, 0700); err != nil {
+	if err := secureAuthDir(path); err != nil {
 		return "", err
 	}
 	return path, nil
