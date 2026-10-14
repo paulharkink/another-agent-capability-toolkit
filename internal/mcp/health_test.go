@@ -2,12 +2,74 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestWaitForAuthenticatedTransportFailureIncludesSafeCause(t *testing.T) {
+	privateURL := "http://user-secret:password-secret@example.test/private-path-secret?token=query-secret"
+	privateHeader := "header-secret"
+	transportErr := &url.Error{
+		Op:  "Get",
+		URL: privateURL,
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+	}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("X-Profile-Token") != privateHeader {
+			t.Errorf("health request omitted profile header")
+		}
+		return nil, transportErr
+	})}
+	err := waitForAuthenticated(context.Background(), client, "http://example.test/instance-path-secret?instance-query-secret", "/health", http.Header{"X-Profile-Token": []string{privateHeader}}, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("transport error = %v, want safe connection refused diagnostic", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("transport error lost its underlying cause: %v", err)
+	}
+	for _, marker := range []string{"user-secret", "password-secret", "private-path-secret", "query-secret", "header-secret", "instance-path-secret", "instance-query-secret"} {
+		if strings.Contains(err.Error(), marker) {
+			t.Fatalf("transport error leaked sensitive marker %q: %v", marker, err)
+		}
+	}
+}
+
+func TestHealthWithHeadersTransportFailureSanitizesURL(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "http://user-secret:password-secret@" + address + "/private-path-secret?token=query-secret"
+	err = HealthWithHeaders(context.Background(), endpoint, "streamable-http", http.Header{"X-Profile-Token": []string{"header-secret"}})
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("health error = %v, want safe connection refused diagnostic", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("health error lost its underlying cause: %v", err)
+	}
+	for _, marker := range []string{"user-secret", "password-secret", "private-path-secret", "query-secret", "header-secret"} {
+		if strings.Contains(err.Error(), marker) {
+			t.Fatalf("health error leaked sensitive marker %q: %v", marker, err)
+		}
+	}
+}
 
 func TestHealthWithHeadersRejectsRedirectWithoutForwardingCredentials(t *testing.T) {
 	forwarded := false

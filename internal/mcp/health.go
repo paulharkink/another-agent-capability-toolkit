@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,6 +21,51 @@ const (
 	healthWaitLimit = 5 * time.Minute
 	healthBodyLimit = 64 << 10
 )
+
+type healthTransportError struct {
+	cause string
+	err   error
+}
+
+func (e healthTransportError) Error() string { return "MCP health request failed: " + e.cause }
+func (e healthTransportError) Unwrap() error { return e.err }
+
+func safeHealthTransportError(err error) error {
+	return healthTransportError{cause: safeHealthTransportCause(err), err: err}
+}
+
+func safeHealthTransportCause(err error) string {
+	var networkErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr.Timeout()) {
+		return "request timed out"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "DNS lookup failed"
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return "connection refused"
+	}
+	if errors.Is(err, syscall.ENETUNREACH) {
+		return "network unreachable"
+	}
+	if errors.Is(err, syscall.EHOSTUNREACH) {
+		return "host unreachable"
+	}
+	if errors.Is(err, syscall.ECONNRESET) {
+		return "connection reset"
+	}
+	var certificateErr *tls.CertificateVerificationError
+	var recordErr tls.RecordHeaderError
+	if errors.As(err, &certificateErr) || errors.As(err, &recordErr) {
+		return "TLS handshake failed"
+	}
+	var operationErr *net.OpError
+	if errors.As(err, &operationErr) {
+		return "network connection failed"
+	}
+	return "request failed"
+}
 
 // Health checks MCP protocol initialization readiness. Authentication health
 // is a separate package-declared signal handled by WaitForAuthenticated.
@@ -58,7 +106,7 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return safeHealthTransportError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -175,7 +223,7 @@ func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL,
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return errors.New("MCP health request failed")
+			return safeHealthTransportError(err)
 		}
 		if response.StatusCode != http.StatusOK {
 			response.Body.Close()
