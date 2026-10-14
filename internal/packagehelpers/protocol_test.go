@@ -33,7 +33,7 @@ func TestExecuteActionPreservesProfilePackInLegacyTargetContext(t *testing.T) {
 			request := mcp.ActionRequest{
 				ProtocolVersion: 1,
 				Action:          "authenticate",
-				Profile:         profile,
+				Instance:        profile,
 				Target: config.Target{
 					Environment: tc.targetEnvironment,
 					Name:        "old-target",

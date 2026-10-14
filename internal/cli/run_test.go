@@ -97,9 +97,9 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 	}
 	stateDir := filepath.Join(root, "state")
 	var out, errOut bytes.Buffer
-	profileArgs := []string{"profile", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
-	if code := Run(context.Background(), profileArgs, nil, &out, &errOut); code != 0 {
-		t.Fatalf("profile creation failed (%d): %s", code, errOut.String())
+	instanceArgs := []string{"instance", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), instanceArgs, nil, &out, &errOut); code != 0 {
+		t.Fatalf("instance creation failed (%d): %s", code, errOut.String())
 	}
 	out.Reset()
 	errOut.Reset()
@@ -110,7 +110,7 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 		output, err string
 	}
 	done := make(chan result, 1)
-	args := []string{"mcp", "authenticate", "demo", "--profile", "default", "--config", cfg, "--state-dir", stateDir}
+	args := []string{"mcp", "authenticate", "demo", "--instance", "default", "--config", cfg, "--state-dir", stateDir}
 	go func() {
 		var commandOut, commandErr bytes.Buffer
 		code := Run(ctx, args, nil, &commandOut, &commandErr)
@@ -135,6 +135,9 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 }
 
 func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
+	if !strings.Contains(usage, "set-image-source release|local") {
+		t.Fatal("top-level usage omits supported image-source configuration")
+	}
 	if !strings.Contains(usage, "authenticate") {
 		t.Fatal("MCP usage omits authenticate")
 	}
@@ -142,6 +145,21 @@ func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
 		if strings.Contains(usage, action) {
 			t.Fatalf("obsolete MCP action %q remains in usage", action)
 		}
+	}
+}
+
+func TestCLIRejectsReservedProfileCommandAndFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "demo", "--profile", "default"},
+		{"install", "demo", "--profile-directory", "/tmp/instances"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Fatalf("legacy profile spelling was accepted: %v", args)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"profile", "create", "demo", "default"}, nil, &out, &errOut); code == 0 {
+		t.Fatal("reserved profile command was accepted")
 	}
 }
 
@@ -154,9 +172,9 @@ func TestParseEnvironmentDirectoryFlagAndLegacyAlias(t *testing.T) {
 	}
 }
 
-func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
+func TestCLIConfigUsesInstanceDirectoryAndRetainsEnvironmentAliases(t *testing.T) {
 	cfg, _, _ := cliFixture(t)
-	for _, command := range []string{"set-instance-directory", "set-profile-directory", "set-environment-directory", "set-environment-root"} {
+	for _, command := range []string{"set-instance-directory", "set-environment-directory", "set-environment-root"} {
 		t.Run(command, func(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "state")
 			environments := t.TempDir()
@@ -313,11 +331,11 @@ func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
 	}
 }
 
-func TestParseInstanceFlagAndLegacyProfileAlias(t *testing.T) {
-	for _, flag := range []string{"--instance", "--profile"} {
-		f, err := parse([]string{"mcp", "status", "demo", flag, "work"})
+func TestParseInstanceFlag(t *testing.T) {
+	for _, args := range [][]string{{"mcp", "status", "demo", "--instance", "work"}} {
+		f, err := parse(args)
 		if err != nil || f.instance != "work" {
-			t.Fatalf("%s not mapped to instance: flags=%+v err=%v", flag, f, err)
+			t.Fatalf("--instance not mapped: flags=%+v err=%v", f, err)
 		}
 	}
 }

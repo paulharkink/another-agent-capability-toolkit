@@ -14,7 +14,7 @@ import (
 func componentForm(t *testing.T) *Model {
 	m, _ := profileHomeFixture(t)
 	preview := viewmodel.SetupPreview{Key: m.profiles()[0].Key, PackageName: "Guidance", PackRoot: "/pack", Items: []catalog.InstallationItem{{ID: "skill:one", Label: "One", Skills: []string{"one"}}, {ID: "skill:two", Label: "Two", Skills: []string{"two"}}, {ID: "set:api", Label: "API", Skills: []string{"api"}, MCPs: []string{"server"}}, {ID: "plugin:native", Label: "Native", Plugins: []string{"native"}}}, SelectedItemIDs: []string{"skill:one", "skill:two", "set:api"}, Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true, Features: agents.FeatureSet{Skills: true, MCPs: true}}, {ID: "absent", DisabledReason: "Not installed"}}, Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "enabled", Type: "boolean"}, Value: false, HasValue: true, Editable: true}}}
-	m.workspace = &workspaceState{Key: preview.Key, Reference: m.packProfileRequest(preview.Key).Ref, Active: true}
+	m.workspace = &workspaceState{Key: preview.Key, InstanceRef: m.packInstanceRequest(preview.Key).Ref, Active: true}
 	m.openSetupForm(preview)
 	return m
 }

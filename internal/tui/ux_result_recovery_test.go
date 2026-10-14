@@ -440,8 +440,8 @@ func TestUXProfileActionsUseObservedOwnerAndRuntimeStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			row := ProfileRow{Profile: &viewmodel.Profile{Ownership: tc.owner, RuntimeStatus: tc.status}}
-			if got := m.profileActionReason(row, tc.action); !strings.Contains(got, tc.want) {
+			row := ProfileRow{Instance: &viewmodel.Instance{Ownership: tc.owner, RuntimeStatus: tc.status}}
+			if got := m.instanceActionReason(row, tc.action); !strings.Contains(got, tc.want) {
 				t.Fatalf("reason=%q, want it to contain %q", got, tc.want)
 			}
 		})
@@ -489,13 +489,13 @@ func TestUXWorkspaceConnectionFailureActionsStayInForegroundOverActiveForm(t *te
 	backend := &unreachableConnectionBackend{registrationWorkspaceBackend: base}
 	m.backend = backend
 	key := profile.snapshot.Profiles[1].Key
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Connection")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Connection")
 	m.Update(cmd())
 	if m.form == nil {
 		t.Fatal("workspace form did not open")
 	}
 	form := m.form
-	row := ProfileRow{Profile: &profile.snapshot.Profiles[1], Key: key, URL: profile.snapshot.Profiles[1].URL}
+	row := ProfileRow{Instance: &profile.snapshot.Profiles[1], Key: key, URL: profile.snapshot.Profiles[1].URL}
 	m.Update(m.checkProfileConnection(row)())
 	if m.result == nil || !m.result.Failed || !strings.Contains(ansi.Strip(m.View().Content), "connection refused") {
 		t.Fatalf("connection error did not become foreground result: result=%+v output=%q", m.result, m.output)

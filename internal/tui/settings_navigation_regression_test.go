@@ -67,7 +67,7 @@ func TestCapabilityPackScopeUsesConsistentNames(t *testing.T) {
 	}
 	m.selected = 0
 	details := strings.Join(m.managementSettingsDetails(), "\n")
-	for _, expected := range []string{"Capability Pack ID:", "Capability Pack directory:", "Catalog TOML:", "Profile configuration directory:", "<Capability Pack>/environments", "external directory"} {
+	for _, expected := range []string{"Capability Pack ID:", "Capability Pack directory:", "Catalog TOML:", "Instance configuration directory:", "<Capability Pack>/instances", "external directory"} {
 		if !strings.Contains(details, expected) {
 			t.Errorf("Capability Pack settings omit %q:\n%s", expected, details)
 		}

@@ -87,7 +87,7 @@ func (r *snapshotRuntime) List(context.Context) ([]mcp.Instance, error) { return
 func TestObservedProfileRuntimeOwnershipConflictAndStale(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	k, _ := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
-	child := mcpProfileKey(k, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
+	child := mcpDefinitionKey(k, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
 	r := &snapshotRuntime{instances: []mcp.Instance{{Key: child, Status: "running", Ownership: "other-aact", URL: "http://localhost:9001/mcp"}}}
 	s.Options.Runtime = r
 	snap, err := s.ProfileSnapshot(context.Background(), "demo")

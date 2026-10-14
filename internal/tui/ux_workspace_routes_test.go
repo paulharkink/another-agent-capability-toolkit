@@ -40,7 +40,7 @@ func TestUXProfileBackedConfiguredTargetEnterOpensItsExactWorkspace(t *testing.T
 	m, _ := homeFixture()
 	m.backend = &workspaceRouteBackend{}
 	key := state.Key{Source: "one", Package: "inspect", Target: "live"}
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: key, Name: "Live runtime", RuntimeStatus: "running", Ownership: "local", URL: "http://localhost:8765/mcp"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: key, Name: "Live runtime", RuntimeStatus: "running", Ownership: "local", URL: "http://localhost:8765/mcp"}}}
 	m.reconcileHome()
 	rows := m.contextRows()
 	profileRow := -1
@@ -142,7 +142,7 @@ func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 	setup := &workspaceRouteBackend{}
 	m.backend = profileWorkspaceBackend{profileBackend: m.backend.(*profileBackend), workspaceRouteBackend: setup}
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
 	if m.form == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "Configure agent destinations") {
 		t.Fatalf("Overview does not offer the shared Agents action:\n%s", ansi.Strip(m.View().Content))
@@ -165,22 +165,22 @@ func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
 	}
 }
 
-func TestUXEnvironmentTargetRequiresProfileReference(t *testing.T) {
+func TestUXEnvironmentTargetRequiresInstanceReference(t *testing.T) {
 	backend := &workspaceRouteBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	request := viewmodel.SetupRequest{SourceID: "team", PackageID: "inspect", Environment: "prod", Target: "live"}
 	if cmd := m.openTargetWorkspace(request, "Overview"); cmd != nil {
-		t.Fatal("environment-shaped request reached profile setup")
+		t.Fatal("environment-shaped request reached instance setup")
 	}
-	if m.form != nil || m.workspace != nil || !strings.Contains(strings.ToLower(m.output), "profile") {
-		t.Fatalf("missing ProfileRef was not rejected with a clear message: workspace=%+v form=%v output=%q", m.workspace, m.form != nil, m.output)
+	if m.form != nil || m.workspace != nil || !strings.Contains(strings.ToLower(m.output), "instance") {
+		t.Fatalf("missing InstanceRef was not rejected with a clear message: workspace=%+v form=%v output=%q", m.workspace, m.form != nil, m.output)
 	}
 }
 
 func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T) {
 	preview := viewmodel.SetupPreview{Key: state.Key{Source: "team", Package: "git-provider", Target: "prod"}, Configured: true, MCP: true}
-	profile := &viewmodel.Profile{
+	profile := &viewmodel.Instance{
 		Key: preview.Key, RuntimeStatus: "running", Ownership: "unknown", URL: "https://mcp.example.test/mcp",
 		ObservedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC), ObservationStale: true,
 		RegisteredAgents: []string{"codex"},
@@ -208,7 +208,7 @@ func TestUXOverviewHasNoApplyActionAndBottomSaveSubmitsCurrentConfiguration(t *t
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
 	view := ansi.Strip(m.form.View().Content)
 	if strings.Contains(view, "Save and apply · configure agents") || strings.Contains(strings.ToLower(view), "build, start, register") || !strings.Contains(view, "Save and apply") {
@@ -235,13 +235,13 @@ func TestUXOverviewApplyCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
 
 	activate := func(dismiss bool) {
 		t.Helper()
 		if m.form == nil {
-			cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+			cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 			if cmd == nil {
 				t.Fatal("workspace could not be reopened after the previous successful result")
 			}
@@ -275,7 +275,7 @@ func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "skill-only", Environment: "dev", Target: "default"}
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
 	view := ansi.Strip(m.form.View().Content)
 	for _, forbidden := range []string{"MCP runtime", "Build and start MCP", "Stop MCP", "build, start, register"} {

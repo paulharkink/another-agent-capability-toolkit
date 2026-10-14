@@ -68,7 +68,7 @@ func TestInstallationStatusRequiresOneCompleteTargetAndDestinationBinding(t *tes
 	c := CapabilityRow{Source: "one", Package: "inspect", Skill: true, MCP: true, MCPNames: []string{"alpha", "beta"}}
 	partialProfile := state.Key{Source: "one", Package: "inspect", Target: "prod"}
 	completeProfile := state.Key{Source: "one", Package: "inspect", Target: "local"}
-	msg.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: partialProfile, Name: "prod", RuntimeStatus: "never-started", Ownership: "local"},
 		{Key: completeProfile, Name: "local", RuntimeStatus: "never-started", Ownership: "local"},
 	}}

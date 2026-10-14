@@ -93,8 +93,8 @@ func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
 	}
 	m.reconcileHome()
 	cmd := m.homeOperation("parameters")
-	if cmd != nil || m.creatingProfile == nil || m.creatingProfile.PackID != "one" || m.creatingProfile.CapabilityID != "plain" {
-		t.Fatalf("skill-only capability did not enter source-only profile creation: ref=%+v cmd=%v", m.creatingProfile, cmd != nil)
+	if cmd != nil || m.creatingInstance == nil || m.creatingInstance.PackID != "one" || m.creatingInstance.CapabilityID != "plain" {
+		t.Fatalf("skill-only capability did not enter source-only profile creation: ref=%+v cmd=%v", m.creatingInstance, cmd != nil)
 	}
 	if m.home.Modal != nil {
 		t.Fatalf("profile creation opened an environment target chooser: %+v", m.home.Modal)
@@ -198,11 +198,11 @@ func TestRuntimeControlsAddressTheSelectedManifestMCPChild(t *testing.T) {
 	backend := &multiMCPRuntimeBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "local", CanStart: true, CanStop: true},
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "local", CanStop: true},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
@@ -237,8 +237,8 @@ func TestMissingNamedChildInheritsParentOwnershipForLifecycleGuards(t *testing.T
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 			parentKey := state.Key{Source: "one", Package: "bundle", Target: "staging"}
-			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: parentKey, Name: "Bundle", RuntimeStatus: "running", Ownership: test.owner, URL: "https://parent.example/mcp"}}}
-			open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+			m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: parentKey, Name: "Bundle", RuntimeStatus: "running", Ownership: test.owner, URL: "https://parent.example/mcp"}}}
+			open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}
@@ -271,11 +271,11 @@ func TestRuntimeConnectionCheckUsesExactManifestMCPChild(t *testing.T) {
 	backend := &multiMCPRuntimeBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "foreign", URL: "https://alpha.example/mcp", Transport: "streamable-http"},
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "foreign", URL: "https://beta.example/mcp", Transport: "sse"},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
@@ -310,12 +310,12 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 			key := state.Key{Source: "one", Package: "bundle", Target: "staging"}
-			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+			m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 				{Key: key, Name: "Bundle", Ownership: "local", URL: "http://127.0.0.1:7777/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "alpha"}, Name: "Alpha", Ownership: "other-aact", URL: "https://alpha.example/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "beta"}, Name: "Beta", Ownership: test.betaOwner},
 			}}
-			open := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+			open := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}

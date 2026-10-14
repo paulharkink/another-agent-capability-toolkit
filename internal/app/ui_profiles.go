@@ -32,20 +32,20 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 		if instance.Ownership != "local" {
 			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
 		}
-		result, err := source.RunProfileMCP(ctx, "logs", profileRequestForStateKey(key), mcpNameForStateKey(key))
+		result, err := source.RunInstanceMCP(ctx, "logs", instanceRequestForStateKey(key), mcpNameForStateKey(key))
 		return result.Logs, err
 	}
 	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
 }
 
-// UIProfileRun performs a lifecycle action for one observed MCP child profile.
+// UIInstanceRun performs a lifecycle action for one observed MCP child definition.
 // The child key is preserved so a named MCP action never affects a sibling.
-func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
+func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Key) (string, error) {
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
 	}
-	result, err := source.RunProfileMCP(ctx, action, profileRequestForStateKey(key), mcpNameForStateKey(key))
+	result, err := source.RunInstanceMCP(ctx, action, instanceRequestForStateKey(key), mcpNameForStateKey(key))
 	if err != nil {
 		return "", err
 	}
@@ -55,22 +55,26 @@ func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key
 	return result.Message, nil
 }
 
-func profileRequestForStateKey(key state.Key) ProfileRequest {
-	return ProfileRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
+	return s.UIInstanceRun(ctx, action, key)
+}
+
+func instanceRequestForStateKey(key state.Key) InstanceRequest {
+	return InstanceRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
 }
 
 func mcpNameForStateKey(key state.Key) string {
 	if key.MCP != "" {
 		return key.MCP
 	}
-	return key.Profile
+	return key.MCPDefinition
 }
 
-// UIProfileSnapshot merges configured profiles and registrations with a Docker
+// UIInstanceSnapshot merges configured instances and registrations with a Docker
 // observation. A Docker failure leaves configured rows and the last successful
 // observation visible, marked stale.
-func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
-	var snapshot viewmodel.ProfileSnapshot
+func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSnapshot, error) {
+	var snapshot viewmodel.InstanceSnapshot
 	configured, err := s.Store.Instances()
 	if err != nil {
 		return snapshot, err
@@ -99,16 +103,16 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 	s.observationMu.Unlock()
 	snapshot.ObservationStale = stale
 
-	byKey := map[state.Key]*viewmodel.Profile{}
-	add := func(k state.Key) *viewmodel.Profile {
+	byKey := map[state.Key]*viewmodel.Instance{}
+	add := func(k state.Key) *viewmodel.Instance {
 		if profile := byKey[k]; profile != nil {
 			return profile
 		}
-		profile := &viewmodel.Profile{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
+		profile := &viewmodel.Instance{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
 		if k.Source == s.Source.ID {
 			for _, packageInfo := range s.Source.Catalog {
 				if packageInfo.ID == k.Package {
-					profileName := k.Profile
+					profileName := k.MCPDefinition
 					if profileName == "" {
 						profileName = k.MCP
 					}
@@ -233,10 +237,11 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 			}
 		}
 		sort.Strings(profile.RegisteredAgents)
+		snapshot.Instances = append(snapshot.Instances, *profile)
 		snapshot.Profiles = append(snapshot.Profiles, *profile)
 	}
-	sort.Slice(snapshot.Profiles, func(i, j int) bool {
-		a, b := snapshot.Profiles[i].Key, snapshot.Profiles[j].Key
+	sort.Slice(snapshot.Instances, func(i, j int) bool {
+		a, b := snapshot.Instances[i].Key, snapshot.Instances[j].Key
 		if a.Source != b.Source {
 			return a.Source < b.Source
 		}
@@ -248,5 +253,11 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		}
 		return a.Target < b.Target
 	})
+	snapshot.Profiles = append([]viewmodel.Instance(nil), snapshot.Instances...)
 	return snapshot, nil
+}
+
+// UIProfileSnapshot is retained for callers of the former selected-instance API.
+func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
+	return s.UIInstanceSnapshot(ctx)
 }

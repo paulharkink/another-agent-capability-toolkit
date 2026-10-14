@@ -102,7 +102,7 @@ func TestActionUsesProfileAsLegacyTargetContext(t *testing.T) {
 		InputPolicy: map[string]string{"auth_mode": "default"},
 	}
 	_, err := (&ActionRunner{Executor: f}).Run(context.Background(), actionPackage(), ActionRequest{
-		Action: "authenticate", Profile: profile,
+		Action: "authenticate", Instance: profile,
 		Inputs: map[string]any{"grafana_session": "current-session", "session_expiry": "current-expiry"},
 	})
 	if err != nil {

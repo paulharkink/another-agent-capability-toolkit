@@ -19,7 +19,7 @@ import (
 type profileBackend struct {
 	snapshotErr error
 	fixtureBackend
-	snapshot     viewmodel.ProfileSnapshot
+	snapshot     viewmodel.InstanceSnapshot
 	request      *viewmodel.RegistrationRequest
 	legacyCalled bool
 	result       viewmodel.OperationResult
@@ -36,7 +36,7 @@ func (b *profileBackend) UIMCPs(context.Context) ([]mcp.Instance, error) {
 	b.legacyCalled = true
 	return nil, errors.New("legacy inventory must not be used")
 }
-func (b *profileBackend) UIProfileSnapshot(context.Context) (viewmodel.ProfileSnapshot, error) {
+func (b *profileBackend) UIProfileSnapshot(context.Context) (viewmodel.InstanceSnapshot, error) {
 	return b.snapshot, b.snapshotErr
 }
 func (b *profileBackend) UIConfigureRegistrations(_ context.Context, q viewmodel.RegistrationRequest) (viewmodel.OperationResult, error) {
@@ -66,7 +66,7 @@ func (b *capabilityProfileBackend) UICatalog(ctx context.Context) ([]catalog.Pac
 func (b *capabilityProfileBackend) UIMCPs(ctx context.Context) ([]mcp.Instance, error) {
 	return b.profile.UIMCPs(ctx)
 }
-func (b *capabilityProfileBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
+func (b *capabilityProfileBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.InstanceSnapshot, error) {
 	return b.profile.UIProfileSnapshot(ctx)
 }
 func (b *capabilityProfileBackend) CheckConnection(ctx context.Context, url, transport string) viewmodel.ConnectionObservation {
@@ -112,7 +112,7 @@ func openCapabilityProfileWorkspace(t *testing.T, m *Model, profile *profileBack
 	}
 	m.backend = backend
 	m.Update(m.load()())
-	request := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: target}}
+	request := viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "team-source", CapabilityID: "plain", Name: target}}
 	cmd := m.openTargetWorkspace(request, section)
 	if cmd == nil {
 		t.Fatalf("could not open complete capability workspace for target %q", target)
@@ -150,7 +150,7 @@ func TestCheckConnectionActionObservesSelectedEndpoint(t *testing.T) {
 	_ = backend
 }
 func typedProfileFixture() (*Model, *profileBackend) {
-	b := &profileBackend{snapshot: viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	b := &profileBackend{snapshot: viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "team-source", Package: "plain", Target: "saved"}, Name: "saved", RuntimeStatus: "never-started", Ownership: "local", CanStart: true},
 		{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, Name: "foreign", RuntimeStatus: "running", Ownership: "other-aact", URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", RegisteredAgents: []string{"claude"}, CanConfigureRegistrations: true, StartDisabledReason: "Owned by another installation", StopDisabledReason: "Owned by another installation"},
 		{Key: state.Key{Source: "another-source", Package: "plain", Target: "unrelated"}, RuntimeStatus: "running"},
@@ -178,7 +178,7 @@ func openProfileAction(t *testing.T, m *Model, label string, mouse bool) tea.Cmd
 	}
 	m.backend = &registrationWorkspaceBackend{Backend: b, profileBackend: b, setupBackendFixture: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, index)
-	cmd := m.openTargetWorkspace(m.packProfileRequest(profile.Key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(profile.Key), "Overview")
 	if cmd == nil {
 		t.Fatalf("target workspace did not open for exact key %+v", profile.Key)
 	}
@@ -237,8 +237,8 @@ func TestTypedProfilesIncludeSavedAndForeignRows(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected only related saved and foreign profiles, got %#v", rows)
 	}
-	if rows[1].Profile.Ownership != "other-aact" {
-		t.Fatalf("foreign ownership was lost: %#v", rows[1].Profile)
+	if rows[1].Instance.Ownership != "other-aact" {
+		t.Fatalf("foreign ownership was lost: %#v", rows[1].Instance)
 	}
 	view := m.View().Content
 	for _, word := range []string{"never-started", "running"} {

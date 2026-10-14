@@ -126,7 +126,7 @@ func (s *Service) mcpImageChoice(ctx context.Context, definition catalog.MCP) (s
 }
 
 type InstallRequest struct {
-	Ref                          config.ProfileRef
+	Ref                          config.InstanceRef
 	Package, Environment, Target string
 	Agents                       []agents.Environment
 	Inputs                       map[string]any
@@ -138,7 +138,7 @@ type InstallRequest struct {
 	UpdateSource                 bool
 }
 type MCPRequest struct {
-	Ref                                           config.ProfileRef
+	Ref                                           config.InstanceRef
 	Action, Package, Environment, Target, Profile string
 	MCP                                           string
 	Inputs                                        map[string]any
@@ -246,7 +246,7 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 	}
 	if p.HasMCP() && !skillsOnly {
 		for _, profile := range packageMCPProfiles(p, values) {
-			if err := s.Store.RecordInstance(state.ProfileRecord{Key: mcpProfileKey(k, p, profile)}); err != nil {
+			if err := s.Store.RecordInstance(state.ProfileRecord{Key: mcpDefinitionKey(k, p, profile)}); err != nil {
 				return err
 			}
 		}
@@ -284,8 +284,8 @@ func registrationName(k state.Key) string {
 	if k.Target != "default" {
 		parts = append(parts, k.Target)
 	}
-	if k.Profile != "" {
-		parts = append(parts, k.Profile)
+	if k.MCPDefinition != "" {
+		parts = append(parts, k.MCPDefinition)
 	} else if k.MCP != "" {
 		parts = append(parts, k.MCP)
 	}
@@ -319,8 +319,8 @@ func operationTarget(k state.Key) string {
 		target = "default"
 	}
 	identity := k.Source + "/" + k.Package
-	if k.Profile != "" {
-		identity += " profile " + k.Profile
+	if k.MCPDefinition != "" {
+		identity += " profile " + k.MCPDefinition
 	} else if k.MCP != "" {
 		identity += " MCP " + k.MCP
 	}
@@ -341,13 +341,13 @@ func (s *Service) ownedEnvironment(e agents.Environment, rows []state.Installati
 }
 func (s *Service) Install(ctx context.Context, q InstallRequest) (Result, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return Result{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
 	destinations := make([]string, 0, len(q.Agents))
 	for _, agent := range q.Agents {
 		destinations = append(destinations, agent.ID)
 	}
-	result, err := s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ResetInputs: q.ResetInputs, DestinationIDs: destinations, SkillsOnly: q.SkillsOnly, Interactive: q.Interactive, ExternalURLs: q.ExternalURLs})
+	result, err := s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ResetInputs: q.ResetInputs, DestinationIDs: destinations, SkillsOnly: q.SkillsOnly, Interactive: q.Interactive, ExternalURLs: q.ExternalURLs})
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
@@ -356,7 +356,7 @@ func (s *Service) Install(ctx context.Context, q InstallRequest) (Result, error)
 func (s *Service) validateRegistrationNames(p catalog.Package, definitions []catalog.MCP, key state.Key, values map[string]any, destinations []agents.Environment) error {
 	used := map[string]string{}
 	for _, definition := range definitions {
-		child := mcpProfileKey(key, p, definition)
+		child := mcpDefinitionKey(key, p, definition)
 		name, err := declaredRegistrationName(definition, child, values)
 		if err != nil {
 			return err
@@ -372,7 +372,7 @@ func (s *Service) validateRegistrationNames(p catalog.Package, definitions []cat
 	}
 	for _, env := range destinations {
 		for _, definition := range definitions {
-			child := mcpProfileKey(key, p, definition)
+			child := mcpDefinitionKey(key, p, definition)
 			name, _ := declaredRegistrationName(definition, child, values)
 			for _, row := range rows {
 				if row.Component != "mcp" || row.AgentID != env.ID || filepath.Clean(row.Destination) != filepath.Clean(env.ConfigPath) || row.RegistrationName != name {
@@ -389,13 +389,13 @@ func (s *Service) validateRegistrationNames(p catalog.Package, definitions []cat
 }
 func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (Result, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return Result{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	result, err := s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, ItemIDs: []string{}, DestinationIDs: []string{}})
+	result, err := s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, ItemIDs: []string{}, DestinationIDs: []string{}})
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
-func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool, deferProtocolHealth ...bool) (mcp.Instance, error) {
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Instance, k state.Key, values map[string]any, interactive bool, deferProtocolHealth ...bool) (mcp.Instance, error) {
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
@@ -489,7 +489,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
 		selectedImage := spec.Image
 		selectedBuildContext := spec.BuildContext
-		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Instance: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 		if e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}
@@ -606,7 +606,7 @@ func resolvePortInputValue(name string, raw any) (int, error) {
 
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (Result, error) {
 	if q.Action != "list" && q.Action != "status" && (q.Ref.CapabilityID == "" || q.Ref.Name == "") {
-		return Result{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.RunProfileMCP(ctx, q.Action, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, Interactive: q.Interactive}, q.MCP)
+	return s.RunInstanceMCP(ctx, q.Action, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, Interactive: q.Interactive}, q.MCP)
 }

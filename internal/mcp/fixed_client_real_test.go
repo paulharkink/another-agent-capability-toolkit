@@ -153,7 +153,7 @@ func TestArgoFixedClientStandardImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "source", Profile: unique, MCP: "source"}
+	sourceKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "source", MCPDefinition: unique, MCP: "source"}
 	sourceImage := "aact/" + sourceKey.ID()[:24] + ":local"
 	ownedImages = append(ownedImages, sourceImage, releaseStyleImage)
 	sourceSpec := fixedArgoRunSpec(mcpRoot, "", sourceHostPort, store.Root(), "aact-argocd-fixed-"+unique+"-source")
@@ -187,7 +187,7 @@ func TestArgoFixedClientStandardImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	releaseKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "release", Profile: unique, MCP: "release"}
+	releaseKey := state.Key{Source: "argocd-fixed-test", Package: "argocd", Target: "release", MCPDefinition: unique, MCP: "release"}
 	releaseSpec := fixedArgoRunSpec("", releaseStyleImage, releaseHostPort, store.Root(), "aact-argocd-fixed-"+unique+"-release")
 	releaseInstance, err := runtime.Start(ctx, releaseKey, releaseSpec)
 	if err != nil {

@@ -36,13 +36,16 @@ type agentManagementBackend interface {
 	UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
 	UIAgentConfig(context.Context, string, string) (string, error)
 }
+type instanceRunBackend interface {
+	UIInstanceRun(context.Context, string, state.Key) (string, error)
+}
 type profileRunBackend interface {
 	UIProfileRun(context.Context, string, state.Key) (string, error)
 }
 type Model struct {
 	pendingSetupItemsField     string
-	capabilityProfiles         map[string]viewmodel.CapabilityProfileSnapshot
-	creatingProfile            *config.ProfileRef
+	capabilityInstances        map[string]viewmodel.CapabilityInstanceSnapshot
+	creatingInstance           *config.InstanceRef
 	home                       homeState
 	backend                    Backend
 	ctx                        context.Context
@@ -51,8 +54,8 @@ type Model struct {
 	catalog                    []catalog.Package
 	inventory                  []state.Installation
 	mcps                       []mcp.Instance
-	profileSnapshot            *viewmodel.ProfileSnapshot
-	profileError               error
+	instanceSnapshot           *viewmodel.InstanceSnapshot
+	instanceError              error
 	inventoryError             error
 	environmentSnapshot        *viewmodel.EnvironmentSnapshot
 	environmentError           error
@@ -98,13 +101,13 @@ type Model struct {
 }
 type operation struct{ action, source, packageID, agent, environment, target, mcp, profile string }
 type loadedMsg struct {
-	capabilityProfiles  map[string]viewmodel.CapabilityProfileSnapshot
+	capabilityInstances map[string]viewmodel.CapabilityInstanceSnapshot
 	catalog             []catalog.Package
 	inventory           []state.Installation
 	inventoryError      error
 	mcps                []mcp.Instance
-	profileSnapshot     *viewmodel.ProfileSnapshot
-	profileError        error
+	instanceSnapshot    *viewmodel.InstanceSnapshot
+	instanceError       error
 	environmentSnapshot *viewmodel.EnvironmentSnapshot
 	environmentError    error
 	agents              []string
@@ -162,22 +165,26 @@ func (m *Model) load() tea.Cmd {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if profiles, ok := backend.(capabilityProfilesBackend); ok {
-			msg.capabilityProfiles, e = profiles.UICapabilityProfiles(ctx)
-			if legacy, ok := backend.(profileSnapshotBackend); ok {
-				snapshot, err := legacy.UIProfileSnapshot(ctx)
-				if err == nil {
-					msg.profileSnapshot = &snapshot
-				}
-			}
-		} else if profileBackend, ok := backend.(profileSnapshotBackend); ok {
-			snapshot, err := profileBackend.UIProfileSnapshot(ctx)
+		if profiles, ok := backend.(capabilityInstancesBackend); ok {
+			msg.capabilityInstances, e = profiles.UICapabilityInstances(ctx)
+		} else if legacy, ok := backend.(capabilityProfilesBackend); ok {
+			msg.capabilityInstances, e = legacy.UICapabilityProfiles(ctx)
+		}
+		if modern, ok := backend.(instanceSnapshotBackend); ok {
+			snapshot, err := modern.UIInstanceSnapshot(ctx)
 			e = err
-			msg.profileError = err
+			msg.instanceError = err
 			if err == nil {
-				msg.profileSnapshot = &snapshot
+				msg.instanceSnapshot = &snapshot
 			}
-		} else {
+		} else if legacy, ok := backend.(profileSnapshotBackend); ok {
+			snapshot, err := legacy.UIProfileSnapshot(ctx)
+			e = err
+			msg.instanceError = err
+			if err == nil {
+				msg.instanceSnapshot = &snapshot
+			}
+		} else if _, ok := backend.(capabilityInstancesBackend); !ok {
 			msg.mcps, e = backend.UIMCPs(ctx)
 		}
 		if e != nil {
@@ -198,7 +205,7 @@ func (m *Model) load() tea.Cmd {
 				errs = append(errs, e)
 			}
 		}
-		if environmentBackend, ok := backend.(environmentBrowserBackend); ok && !m.profileMode() {
+		if environmentBackend, ok := backend.(environmentBrowserBackend); ok && !m.instanceMode() {
 			snapshot, err := environmentBackend.UIEnvironmentSnapshot(ctx)
 			msg.environmentError = err
 			if err == nil {
@@ -404,39 +411,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
-		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Profile != nil {
-			profile := m.workspace.Profile
-			return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Instance != nil {
+			profile := m.workspace.Instance
+			return m, m.checkProfileConnection(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 		}
 		parts := strings.SplitN(action.ID, ":", 2)
 		if len(parts) == 2 {
 			if parts[0] == "check-connection" {
-				if profile := m.profileForMCPName(parts[1]); profile != nil {
-					return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				if profile := m.instanceForMCPName(parts[1]); profile != nil {
+					return m, m.checkProfileConnection(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 				}
 				return m, nil
 			}
 			if parts[0] == "logs" {
-				if profile := m.profileForMCPName(parts[1]); profile != nil {
-					return m, m.openProfileLogs(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				if profile := m.instanceForMCPName(parts[1]); profile != nil {
+					return m, m.openProfileLogs(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 				}
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
-				profile := m.profileForMCPName(parts[1])
-				if profile == nil && m.workspace.Profile != nil {
-					parent := *m.workspace.Profile
+				profile := m.instanceForMCPName(parts[1])
+				if profile == nil && m.workspace.Instance != nil {
+					parent := *m.workspace.Instance
 					profile = &parent
 				}
-				row := ProfileRow{}
+				row := InstanceRow{}
 				if profile != nil {
-					row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
 				guardAction := "s"
 				if parts[0] == "stop" {
 					guardAction = "x"
 				}
-				if reason := m.profileActionReason(row, guardAction); reason != "" {
+				if reason := m.instanceActionReason(row, guardAction); reason != "" {
 					m.output = reason
 					return m, nil
 				}
@@ -642,7 +649,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSetupField = ""
 			m.pendingDefaultAgents = false
 			m.pendingMCPImageSource = false
-			m.creatingProfile = nil
+			m.creatingInstance = nil
 			m.workspace = nil
 			m.output = "Cancelled"
 			return m, nil
@@ -653,13 +660,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = e.Error()
 			return m, nil
 		}
-		if m.creatingProfile != nil {
-			ref := *m.creatingProfile
+		if m.creatingInstance != nil {
+			ref := *m.creatingInstance
 			ref.Name, _ = values["name"].(string)
-			m.creatingProfile = nil
-			m.action = "create profile"
+			m.creatingInstance = nil
+			m.action = "create instance"
 			return m, func() tea.Msg {
-				return profileCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
+				if modern, ok := m.backend.(capabilityInstancesBackend); ok {
+					return instanceCreatedMsg{ref: ref, err: modern.UICreateInstance(m.ctx, ref)}
+				}
+				return instanceCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
 			}
 		}
 		if m.pendingRegistration != nil {
@@ -744,7 +754,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
 			return m, m.fetchLogs(msg.session)
 		}
-	case profileCreatedMsg:
+	case instanceCreatedMsg:
 		if msg.err != nil {
 			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create profile"})
 			return m, nil
@@ -761,7 +771,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.retryOperation = nil
-		if m.workspace != nil && m.workspace.Reference.CapabilityID != "" {
+		if m.workspace != nil && m.workspace.InstanceRef.CapabilityID != "" {
 			m.workspace.Key = msg.preview.Key
 		}
 		m.openSetupForm(msg.preview)
@@ -773,7 +783,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
 			title = "Configure · " + name
 		}
-		if m.profileMode() {
+		if m.instanceMode() {
 			title += " · Profile " + msg.preview.Key.Target
 		} else if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
@@ -881,19 +891,19 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 	if m.action == "load" {
 		m.busy = false
 	}
-	m.capabilityProfiles = msg.capabilityProfiles
+	m.capabilityInstances = msg.capabilityInstances
 	m.catalog = msg.catalog
 	m.inventory = msg.inventory
 	m.inventoryError = msg.inventoryError
 	m.mcps = msg.mcps
-	m.profileError = msg.profileError
+	m.instanceError = msg.instanceError
 	m.environmentError = msg.environmentError
 	m.environmentSnapshot = msg.environmentSnapshot
-	if msg.profileSnapshot != nil {
-		m.profileSnapshot = msg.profileSnapshot
+	if msg.instanceSnapshot != nil {
+		m.instanceSnapshot = msg.instanceSnapshot
 		if m.workspace != nil {
-			m.workspace.ProfileSnapshot = copyProfileSnapshot(m.profileSnapshot)
-			m.workspace.Profile = m.profileForWorkspace(m.workspace.Key)
+			m.workspace.InstanceSnapshot = copyInstanceSnapshot(m.instanceSnapshot)
+			m.workspace.Instance = m.instanceForWorkspace(m.workspace.Key)
 			if m.workspace.ObservedOnly {
 				m.refreshObservedWorkspaceFacts()
 			} else if m.workspace.Preview != nil && m.form != nil {
@@ -1181,7 +1191,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 					m.output = "External registrations support status; use profile Actions to configure registrations."
 					return nil
 				}
-				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.Profile}
+				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.MCPDefinition}
 				return m.run(op)
 			}
 		}
@@ -1275,14 +1285,18 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.profileMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
-			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.ProfileRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
+		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+			output, err = instanceBackend.UIConfigurationInstanceRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
+		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
 		} else if op.mcp != "" || op.profile != "" {
-			profileBackend, ok := backend.(profileRunBackend)
-			if !ok {
+			if instanceBackend, ok := backend.(instanceRunBackend); ok {
+				output, err = instanceBackend.UIInstanceRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, MCPDefinition: op.profile})
+			} else if profileBackend, ok := backend.(profileRunBackend); ok {
+				output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, MCPDefinition: op.profile})
+			} else {
 				return operationMsg{origin: origin, err: errors.New("backend does not support MCP-specific runtime actions"), target: op.target}
 			}
-			output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, Profile: op.profile})
 		} else {
 			output, err = backend.UIRun(ctx, op.action, op.source, op.packageID, op.profile, op.agent, op.environment, op.target)
 		}

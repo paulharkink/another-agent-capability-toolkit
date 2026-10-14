@@ -12,8 +12,8 @@ func TestProfileAuthStateDirectoryIsPrivateAndIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := Key{Source: "company", Package: "connector", Target: "east", Profile: "sso"}
-	second := Key{Source: "company", Package: "connector", Target: "east", Profile: "token"}
+	first := Key{Source: "company", Package: "connector", Target: "east", MCPDefinition: "sso"}
+	second := Key{Source: "company", Package: "connector", Target: "east", MCPDefinition: "token"}
 	firstExistingDir := store.AuthDir(first)
 	if err := os.MkdirAll(firstExistingDir, 0755); err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestEnsureAuthDirReadOnlyDoesNotCreateDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "company", Package: "connector", Target: "east", Profile: "new"}
+	key := Key{Source: "company", Package: "connector", Target: "east", MCPDefinition: "new"}
 	path := store.AuthDir(key)
 	if _, err := store.EnsureAuthDir(key); err != ErrReadOnly {
 		t.Fatalf("EnsureAuthDir error = %v, want ErrReadOnly", err)
@@ -72,7 +72,7 @@ func TestEnsureAuthDirReadOnlyPreservesExistingPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "company", Package: "connector", Target: "east", Profile: "existing"}
+	key := Key{Source: "company", Package: "connector", Target: "east", MCPDefinition: "existing"}
 	path := writable.AuthDir(key)
 	if err := os.MkdirAll(path, 0755); err != nil {
 		t.Fatal(err)
@@ -140,8 +140,8 @@ func TestRemoveProfileClearsOnlyThatProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	github := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", Profile: "github"}}
-	bitbucket := ProfileRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", Profile: "bitbucket"}}
+	github := InstanceRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", MCPDefinition: "github"}}
+	bitbucket := InstanceRecord{Key: Key{Source: "company", Package: "git-provider", Environment: "sample-env", Target: "work", MCPDefinition: "bitbucket"}}
 	if err := store.RecordProfile(github); err != nil {
 		t.Fatal(err)
 	}

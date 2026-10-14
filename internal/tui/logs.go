@@ -21,25 +21,25 @@ type profileLogsBackend interface {
 type logPollMsg struct{ session uint64 }
 
 // openProfileLogs asks the existing service for a bounded, read-only snapshot.
-func (m *Model) openProfileLogs(p ProfileRow) tea.Cmd {
+func (m *Model) openProfileLogs(p InstanceRow) tea.Cmd {
 	m.cancelLogFetch()
-	if reason := m.profileActionReason(p, "l"); reason != "" {
+	if reason := m.instanceActionReason(p, "l"); reason != "" {
 		m.output = reason
 		return nil
 	}
-	if p.Profile != nil {
-		if p.Profile.ObservationStale {
+	if p.Instance != nil {
+		if p.Instance.ObservationStale {
 			m.logSession++
 			m.home.Modal = &modalState{Kind: "logs", Label: p.Name, Rows: []string{"Runtime observation is stale.", "Refresh the target status before viewing logs."}}
 			return nil
 		}
-		if p.Profile.RuntimeStatus != "running" {
+		if p.Instance.RuntimeStatus != "running" {
 			label := p.Name
 			if label == "" {
 				label = p.Key.Package + " / " + p.Key.Target
 			}
 			message := "No MCP container has been created for this target. Configure this target, then use Start from its workspace before opening logs."
-			if p.Profile.RuntimeStatus == "missing" || p.Profile.RuntimeStatus == "exited" {
+			if p.Instance.RuntimeStatus == "missing" || p.Instance.RuntimeStatus == "exited" {
 				message = "No MCP container is currently running for this target. Use Start from its workspace before opening logs."
 			}
 			m.logSession++
@@ -79,7 +79,7 @@ func (m *Model) fetchLogs(_ uint64) tea.Cmd {
 		if logs, ok := backend.(profileLogsBackend); ok {
 			content, err = logs.UIProfileLogs(ctx, key)
 		} else {
-			content, err = backend.UIRun(ctx, "logs", key.Source, key.Package, key.Profile, "", key.Environment, key.Target)
+			content, err = backend.UIRun(ctx, "logs", key.Source, key.Package, key.MCPDefinition, "", key.Environment, key.Target)
 		}
 		return logsMsg{label: label, content: content, err: err, session: session}
 	}

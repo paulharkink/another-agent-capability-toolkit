@@ -39,8 +39,10 @@ type SetupDestination struct {
 }
 
 type SetupPreview struct {
-	ItemFieldName                                     string
-	PluginDefinitions                                 []catalog.Plugin
+	ItemFieldName                              string
+	PluginDefinitions                          []catalog.Plugin
+	InstancePath, InstanceTOML, InstanceOrigin string
+	// Profile fields are compatibility aliases for existing backend callers.
 	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
 	Items                                             []catalog.InstallationItem
 	SelectedItemIDs, ValidationIssues                 []string

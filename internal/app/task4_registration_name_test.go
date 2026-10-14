@@ -37,7 +37,7 @@ func TestStartConfigurationProfilePassesResolvedRegistrationNameToRuntime(t *tes
 			svc.Options.Runtime = runtime
 			pkg := catalog.Package{ID: "fixture", Dir: t.TempDir(), MCP: &tc.definition}
 			key := state.Key{Source: "fixture", Package: "fixture", Environment: "dev", Target: "default"}
-			_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, tc.values, false)
+			_, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, tc.values, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,7 +56,7 @@ func TestStartConfigurationProfileRejectsEmptyDeclaredRegistrationName(t *testin
 		Name: "service", RegistrationNameInput: "public_label", Image: "fixture", HostPortInput: "port", ContainerPort: 80,
 	}}
 	key := state.Key{Source: "fixture", Package: "fixture", Environment: "dev", Target: "default"}
-	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Profile{}, key, map[string]any{"public_label": "", "port": int64(8765)}, false); err == nil {
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, config.Instance{}, key, map[string]any{"public_label": "", "port": int64(8765)}, false); err == nil {
 		t.Fatal("empty declared registration name started a runtime")
 	}
 	if len(runtime.specs) != 0 {
@@ -91,7 +91,7 @@ func TestRunProfileMCPPassesSelectedMCPRegistrationNameToRuntime(t *testing.T) {
 	if len(runtime.specs) != 1 || runtime.specs[0].RegistrationName != "Second MCP" {
 		t.Fatalf("selected MCP registration name was not passed to runtime: %#v", runtime.specs)
 	}
-	if len(runtime.keys) != 1 || runtime.keys[0].MCP != "second" || runtime.keys[0].Profile != "" {
+	if len(runtime.keys) != 1 || runtime.keys[0].MCP != "second" || runtime.keys[0].MCPDefinition != "" {
 		t.Fatalf("selected MCP key changed: %#v", runtime.keys)
 	}
 	if !reflect.DeepEqual(runtime.specs[0].Args, []string(nil)) {

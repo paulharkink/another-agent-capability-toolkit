@@ -94,7 +94,7 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m.Update(m.Init()())
 	key := state.Key{Source: source.ID, Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"}
-	request := m.packProfileRequest(key)
+	request := m.packInstanceRequest(key)
 	cmd := m.openTargetWorkspace(request, "Overview")
 	if cmd == nil {
 		t.Fatal("actual source did not open the target workspace")
@@ -103,8 +103,8 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	if m.pendingSetup == nil || m.pendingSetup.Key != key || m.pendingSetup.TargetPath != filepath.Join(sourceRoot, "environments", "home", "cluster-inspector", "target-a.toml") {
 		t.Fatalf("workspace did not load the exact read-only target-a target: %+v", m.pendingSetup)
 	}
-	if m.workspace.Profile != nil {
-		t.Fatalf("fresh environment target unexpectedly acquired runtime ownership: %+v", m.workspace.Profile)
+	if m.workspace.Instance != nil {
+		t.Fatalf("fresh environment target unexpectedly acquired runtime ownership: %+v", m.workspace.Instance)
 	}
 	if !strings.Contains(ansi.Strip(m.form.View().Content), "build, start, register") {
 		t.Fatalf("fresh real target has no visible build/start action:\n%s", ansi.Strip(m.form.View().Content))

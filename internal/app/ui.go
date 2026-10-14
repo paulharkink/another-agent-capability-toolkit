@@ -197,7 +197,7 @@ func (s *Service) UISettings(context.Context) (map[string]string, error) {
 	if s.Source.ManifestPath != "" {
 		catalogFile = filepath.Base(s.Source.ManifestPath)
 	}
-	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "catalog-file": catalogFile, "instance-root": s.Source.InstanceRoot, "instance_root": s.Source.InstanceRoot, "environment-root": s.Source.InstanceRoot, "environment_root": s.Source.InstanceRoot, "state-dir": s.Store.Root()}
+	out := map[string]string{"source": s.Source.ID, "checkout": s.Source.Root, "catalog-file": catalogFile, "instance-root": s.Source.InstanceRoot, "instance_root": s.Source.InstanceRoot, "environment-root": s.Source.InstanceRoot, "environment_root": s.Source.InstanceRoot, "state-dir": s.Store.Root(), "image_source": "release"}
 	b, e := os.ReadFile(filepath.Join(s.Store.Root(), "manager", "settings.json"))
 	if os.IsNotExist(e) {
 		return out, nil
@@ -206,12 +206,16 @@ func (s *Service) UISettings(context.Context) (map[string]string, error) {
 		return nil, e
 	}
 	var settings struct {
-		Agents []string `json:"agents"`
+		Agents      []string `json:"agents"`
+		ImageSource string   `json:"image_source"`
 	}
 	if e = json.Unmarshal(b, &settings); e != nil {
 		return nil, e
 	}
 	out["default_agents"] = strings.Join(settings.Agents, ",")
+	if settings.ImageSource != "" {
+		out["image_source"] = settings.ImageSource
+	}
 	return out, nil
 }
 
@@ -299,7 +303,7 @@ func (s *Service) UISourceLabels(context.Context) (map[string]string, error) {
 	}
 	return labels, nil
 }
-func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profile, agentID, environment, target string) (string, error) {
+func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, instance, agentID, environment, target string) (string, error) {
 	if action == "locate-source" {
 		if err := s.UILocateSource(ctx, sourceID, target); err != nil {
 			return "", err
@@ -347,8 +351,8 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 	}
 	var out Result
 	if action == "install" || action == "uninstall" {
-		if profile == "" {
-			return "", invalid(errors.New("profile reference is required for capability install or uninstall"))
+		if instance == "" {
+			return "", invalid(errors.New("instance reference is required for capability install or uninstall"))
 		}
 		destinations := []string{}
 		for _, id := range strings.Split(agentID, ",") {
@@ -358,20 +362,20 @@ func (s *Service) UIRun(ctx context.Context, action, sourceID, packageID, profil
 			}
 			destinations = append(destinations, id)
 		}
-		request := ProfileRequest{Ref: config.ProfileRef{PackID: sourceID, CapabilityID: packageID, Name: profile}, DestinationIDs: destinations}
+		request := InstanceRequest{Ref: config.InstanceRef{PackID: sourceID, CapabilityID: packageID, Name: instance}, DestinationIDs: destinations}
 		if action == "install" {
-			result, applyErr := svc.ApplyProfile(ctx, request)
+			result, applyErr := svc.ApplyInstance(ctx, request)
 			out = Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}
 			e = applyErr
 		} else {
 			request.ItemIDs = []string{}
 			request.DestinationIDs = []string{}
-			result, applyErr := svc.ApplyProfile(ctx, request)
+			result, applyErr := svc.ApplyInstance(ctx, request)
 			out = Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}
 			e = applyErr
 		}
 	} else {
-		out, e = svc.MCP(ctx, MCPRequest{Action: action, Ref: config.ProfileRef{PackID: sourceID, CapabilityID: packageID, Name: profile}, MCP: "", Interactive: false})
+		out, e = svc.MCP(ctx, MCPRequest{Action: action, Ref: config.InstanceRef{PackID: sourceID, CapabilityID: packageID, Name: instance}, MCP: "", Interactive: false})
 	}
 	if out.Logs != "" {
 		return out.Logs, e
@@ -495,4 +499,34 @@ func (s *Service) Sources() ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+func (s *Service) UISetMCPImageSource(ctx context.Context, source string) error {
+	if source != "release" && source != "local" {
+		return invalid(fmt.Errorf("MCP image source must be release or local"))
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path := filepath.Join(s.Store.Root(), "manager", "settings.json")
+	return s.Store.WithLock(ctx, func() error {
+		settings := map[string]json.RawMessage{}
+		b, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil {
+			if err := json.Unmarshal(b, &settings); err != nil {
+				return fmt.Errorf("read settings: %w", err)
+			}
+			if settings == nil {
+				return errors.New("settings must be a JSON object")
+			}
+		}
+		value, err := json.Marshal(source)
+		if err != nil {
+			return err
+		}
+		settings["image_source"] = value
+		return state.WriteJSON(path, settings)
+	})
 }

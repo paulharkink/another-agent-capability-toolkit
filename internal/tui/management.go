@@ -120,8 +120,8 @@ func (m *Model) selectedAgentManagement() (viewmodel.AgentManagementRow, bool) {
 
 func (m *Model) agentRegistrations(id string) []string {
 	seen := map[string]bool{}
-	if m.profileSnapshot != nil {
-		for _, p := range m.profileSnapshot.Profiles {
+	if m.instanceSnapshot != nil {
+		for _, p := range m.instanceSnapshot.Profiles {
 			for _, registered := range p.RegisteredAgents {
 				if registered == id {
 					seen[p.Key.Source+" / "+p.Key.Package+" / "+p.Key.Environment+" / "+p.Key.Target] = true
@@ -178,8 +178,8 @@ func (m *Model) environmentEntries() []environmentEntry {
 		entries = append(entries, *actual[name])
 	}
 	byName := map[string]map[string]bool{}
-	if m.profileSnapshot != nil {
-		for _, p := range m.profileSnapshot.Profiles {
+	if m.instanceSnapshot != nil {
+		for _, p := range m.instanceSnapshot.Profiles {
 			if p.Key.Environment == "" {
 				continue
 			}
@@ -778,7 +778,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				return m.beginSetup(capability.Source, capability.Package, "", "")
 			}
 			target := selected.TargetDefs[m.management.TargetIndex]
-			return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: target.SourceID, CapabilityID: target.PackageID, Name: target.Name}}, "Overview")
+			return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: target.SourceID, CapabilityID: target.PackageID, Name: target.Name}}, "Overview")
 		}
 		if entries[i] == "Environment directory" || entries[i] == "Edit environment directory" {
 			m.management.Modal = ""
@@ -803,8 +803,8 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
 	m.management.FormOverlay = true
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Profile configuration directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
-	m.form.SetTitle("Capability Pack · Choose profile configuration directory")
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Instance configuration directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
+	m.form.SetTitle("Capability Pack · Choose instance configuration directory")
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
@@ -868,7 +868,7 @@ func (m *Model) managementSettingsRows() []string {
 func (m *Model) managementSettingsDetails() []string {
 	switch m.selected {
 	case 0:
-		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not configured"), "Profiles usually live in <Capability Pack>/environments/<capability>/<profile>.toml; choose an external directory to keep them elsewhere.", "[ Change profile directory… ]"}
+		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not configured"), "Instances usually live in <Capability Pack>/instances/<capability>/<instance>.toml; choose an external directory to keep them elsewhere.", "[ Change instance directory… ]"}
 	case 1:
 		lines := []string{"Agent defaults", "Default named agents affect future MCP installations only.", "Existing registrations are unchanged.", "Skill-only installations use All — ~/.agents/skills."}
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
@@ -878,11 +878,11 @@ func (m *Model) managementSettingsDetails() []string {
 	case 2:
 		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
 	case 3:
-		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	case 4:
 		return []string{"MCP images", "Use the version-pinned GHCR image when a capability declares one. Capabilities without a release image continue to build locally.", "Current source: " + nonempty(m.settings["image_source"], "release (default)"), "[ Change MCP image source… ]"}
 	default:
-		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	}
 }
 
@@ -1320,7 +1320,7 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
-	root := " Profile configuration directory: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
+	root := " Instance configuration directory: " + m.environmentRoot() + " · saved instances are separate from TOML files"
 	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
 		root = " Invalid TOML: " + selected.Errors[m.management.TargetIndex]
 	}

@@ -149,7 +149,7 @@ func TestApplyProfileLegacyAuthRequiredStopsWithActionableIncompleteResult(t *te
 	if err != nil || !result.Saved || result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) != 0 || len(result.Errors) == 0 {
 		t.Fatalf("legacy auth-required result claimed completion or lost action guidance: result=%+v err=%v", result, err)
 	}
-	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	child := mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	pending, readErr := store.PendingAuthInputGroups(key, child.ID())
 	if readErr != nil || pending["auth_method"] != "new_auth" {
 		t.Fatalf("incomplete method transition was cleared: pending=%#v err=%v", pending, readErr)
@@ -171,7 +171,7 @@ func TestApplyProfileDoesNotConfirmAuthenticationWhileAnotherPendingGroupRemains
 	}); err != nil {
 		t.Fatal(err)
 	}
-	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	child := mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	if err := store.UpdatePendingAuthInputGroups(key, child.ID(), map[string]string{"tenant_method": "old_tenant"}); err != nil {
 		t.Fatal(err)
 	}

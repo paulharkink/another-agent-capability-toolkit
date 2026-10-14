@@ -47,7 +47,7 @@ func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequ
 	out.Changes = []state.Installation{}
 	out.Errors = []string{}
 	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return out, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return out, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
 	if q.Ref.PackID != s.Source.ID {
 		source, sourceErr := s.forSource(q.Ref.PackID)

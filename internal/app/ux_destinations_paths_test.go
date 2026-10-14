@@ -220,7 +220,7 @@ func TestUXProfileOverrideIsExplained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	key = mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	customPath := filepath.Join(customHome, ".config", "opencode", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: customHome, Component: "mcp", Destination: customPath}); err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	key = mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	recordedPath := filepath.Join(nativeHome, "profile-config", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: nativeHome, Component: "mcp", Destination: recordedPath}); err != nil {
 		t.Fatal(err)

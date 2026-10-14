@@ -216,7 +216,7 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 				t.Fatal("selected foreign profile did not open its target workspace")
 			}
 			m.Update(open())
-			if m.workspace == nil || m.workspace.Key != foreignKey || m.workspace.Profile == nil || m.workspace.Profile.URL != "http://127.0.0.1:8765/mcp" {
+			if m.workspace == nil || m.workspace.Key != foreignKey || m.workspace.Instance == nil || m.workspace.Instance.URL != "http://127.0.0.1:8765/mcp" {
 				t.Fatalf("explicitly selected foreign target facts changed: %+v", m.workspace)
 			}
 			capabilityBackend := openCapabilityProfileWorkspace(t, m, profiles, "foreign", "Agents")
@@ -285,8 +285,8 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 	item := catalog.InstallationItem{ID: "set:starter", Label: "starter", Skills: []string{"field-guide"}, MCPs: []string{"map-server"}}
 	loaded.catalog[0].Skill = &catalog.Skill{Name: item.Skills[0]}
 	loaded.catalog[0].MCP = &catalog.MCP{Name: item.MCPs[0]}
-	loaded.capabilityProfiles = map[string]viewmodel.CapabilityProfileSnapshot{"inspect": {Profiles: []viewmodel.CapabilityProfile{{
-		Ref: config.ProfileRef{Name: "default"}, Key: state.Key{Source: "one", Package: "inspect", Target: "default"},
+	loaded.capabilityInstances = map[string]viewmodel.CapabilityProfileSnapshot{"inspect": {Profiles: []viewmodel.CapabilityProfile{{
+		Ref: config.InstanceRef{Name: "default"}, Key: state.Key{Source: "one", Package: "inspect", Target: "default"},
 		CompletionScopeKnown: true, CompletionScopeRelevant: true,
 		SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: item.Skills[0]}, {Kind: "mcp", Name: item.MCPs[0]}},
 		SelectedDestinations: []string{"opencode"}, EligibleDestinations: []string{"opencode"},
@@ -299,7 +299,7 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 			t.Fatalf("capability status does not render %q from the selected manifest components:\n%s", want, statusView)
 		}
 	}
-	loaded.capabilityProfiles["inspect"].Profiles[0].Components[1].Status = "installed"
+	loaded.capabilityInstances["inspect"].Profiles[0].Components[1].Status = "installed"
 	m.Update(loaded)
 	completeView := ansi.Strip(m.View().Content)
 	for _, want := range []string{"Installation · AACT records: Installed", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: registered"} {
@@ -307,7 +307,7 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 			t.Fatalf("complete selected component status does not render %q:\n%s", want, completeView)
 		}
 	}
-	loaded.capabilityProfiles["inspect"].Profiles[0].Components[1].Status = "absent"
+	loaded.capabilityInstances["inspect"].Profiles[0].Components[1].Status = "absent"
 	m.Update(loaded)
 	m.openSetupForm(viewmodel.SetupPreview{
 		Key:         state.Key{Source: "team", Package: "inspect", Target: "default"},
@@ -398,10 +398,10 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
 	m.catalog[0].MCP = &catalog.MCP{Transport: "streamable-http"}
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "company", Target: "production"}, RuntimeStatus: "never-started", Ownership: "local"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "company", Target: "production"}, RuntimeStatus: "never-started", Ownership: "local"}}}
 	m.reconcileHome()
 	m.focusPane(ProfilesPane)
-	key := m.profileSnapshot.Profiles[0].Key
+	key := m.instanceSnapshot.Profiles[0].Key
 	for index, row := range m.contextRows() {
 		if row.Kind == "profile" && row.Key == key {
 			m.selectContext(index)
@@ -413,7 +413,7 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 		t.Fatal("Edit parameters did not request the shared workspace")
 	}
 	m.Update(cmd())
-	if b.previewRequest != (m.packProfileRequest(key)) || m.form == nil || m.form.SectionTitle() != "Overview" {
+	if b.previewRequest != (m.packInstanceRequest(key)) || m.form == nil || m.form.SectionTitle() != "Overview" {
 		t.Fatalf("wrong profile target or missing shared editor: %+v section=%q form=%v", b.previewRequest, func() string {
 			if m.form == nil {
 				return ""
@@ -428,14 +428,14 @@ func TestCapabilitySetupUsesExplicitPackProfile(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}, "Overview")
 	if cmd == nil {
 		t.Fatal("opening an explicit pack profile did not start setup")
 	}
 	m.Update(cmd())
-	want := viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}
+	want := viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "team-source", CapabilityID: "plain", Name: "target-a"}}
 	if b.previewRequest != want {
-		t.Fatalf("capability setup did not pass selected ProfileRef: got %+v, want %+v", b.previewRequest, want)
+		t.Fatalf("capability setup did not pass selected InstanceRef: got %+v, want %+v", b.previewRequest, want)
 	}
 }
 

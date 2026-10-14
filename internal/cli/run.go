@@ -43,6 +43,7 @@ aact mcp start|stop|logs|prepare|authenticate CAPABILITY --instance NAME [--mcp 
 aact instance create CAPABILITY NAME
 aact agents | settings                   Show supported agents / configuration
 aact config set-instance-directory PATH  Save a default instance configuration directory
+aact config set-image-source release|local  Select MCP image source
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
 Flags: --config PATH --state-dir PATH --instance-directory PATH
@@ -110,7 +111,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 0
 	}
 	if f.environment != "" || f.target != "" {
-		fmt.Fprintln(errOut, "--environment and --target are no longer selection levels; use --instance NAME from the Capability Pack instance directory (legacy alias: --profile)")
+		fmt.Fprintln(errOut, "--environment and --target are no longer selection levels; use --instance NAME from the Capability Pack instance directory")
 		return 2
 	}
 	migrating := len(f.args) > 0 && f.args[0] == "migrate"
@@ -192,6 +193,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				fmt.Fprintln(out, value.Message)
 			}
 		case app.Result:
+			if value.LoginURL != "" {
+				fmt.Fprintln(out, value.LoginURL)
+			}
 			for _, r := range value.Changes {
 				fmt.Fprintf(out, "%s %s: %s\n", r.AgentID, r.Component, r.Destination)
 			}
@@ -254,9 +258,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	case "config":
-		if len(f.args) != 3 || (f.args[1] != "set-instance-directory" && f.args[1] != "set-profile-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root") {
-			fmt.Fprintln(errOut, "usage: aact config set-instance-directory PATH")
+		if len(f.args) != 3 || (f.args[1] != "set-instance-directory" && f.args[1] != "set-environment-directory" && f.args[1] != "set-environment-root" && f.args[1] != "set-image-source") {
+			fmt.Fprintln(errOut, "usage: aact config set-instance-directory PATH | aact config set-image-source release|local")
 			return 2
+		}
+		if f.args[1] == "set-image-source" {
+			if e := svc.UISetMCPImageSource(ctx, f.args[2]); e != nil {
+				return fail(e)
+			}
+			fmt.Fprintln(out, "MCP image source:", f.args[2])
+			return 0
 		}
 		message, e := svc.UIRun(ctx, "set-instance-root", "", "", "", "", "", f.args[2])
 		if e != nil {
@@ -355,7 +366,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if f.args[0] == "uninstall" {
 			r, e = svc.RemoveInstance(ctx, q)
 		} else {
-			r, e = svc.ApplyProfile(ctx, q)
+			r, e = svc.ApplyInstance(ctx, q)
 		}
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
@@ -386,7 +397,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				return 2
 			}
 		}
-		r, e := svc.RunProfileMCP(ctx, action, app.InstanceRequest{Ref: config.InstanceRef{PackID: src.ID, CapabilityID: p, Name: f.instance}, Inputs: inputs, Interactive: f.interactive}, f.mcp)
+		r, e := svc.RunInstanceMCP(ctx, action, app.InstanceRequest{Ref: config.InstanceRef{PackID: src.ID, CapabilityID: p, Name: f.instance}, Inputs: inputs, Interactive: f.interactive}, f.mcp)
 		if emitErr := emit(r); emitErr != nil {
 			return fail(emitErr)
 		}

@@ -142,7 +142,7 @@ func achievedComponentDestinations(draft *setupRetryDraft, result *viewmodel.Ope
 			case "mcp":
 				name := row.Key.MCP
 				if name == "" {
-					name = row.Key.Profile
+					name = row.Key.MCPDefinition
 				}
 				if name == "" && len(draft.preview.MCPDefinitions) == 1 {
 					name = draft.preview.MCPDefinitions[0].Name

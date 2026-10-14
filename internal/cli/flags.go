@@ -11,7 +11,7 @@ type flags struct {
 	args, agents, homes                                                       []string
 	sets                                                                      map[string][]string
 	externalURLs                                                              map[string]string
-	config, envroot, state, environment, target, instance, profile, url, mcp  string
+	config, envroot, state, environment, target, instance, url, mcp           string
 	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
 }
 
@@ -45,7 +45,7 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--item", "--instance-directory", "--profile-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--profile", "--external-url", "--mcp", "--agent", "--agent-home", "--set":
+		case "--item", "--instance-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--external-url", "--mcp", "--agent", "--agent-home", "--set":
 			if !has {
 				n++
 				if n == len(args) {
@@ -61,7 +61,7 @@ func parse(args []string) (flags, error) {
 				f.items = append(f.items, value)
 			case "--config":
 				f.config = value
-			case "--instance-directory", "--profile-directory", "--environment-directory", "--environment-root":
+			case "--instance-directory", "--environment-directory", "--environment-root":
 				f.envroot = value
 			case "--state-dir":
 				f.state = value
@@ -69,9 +69,8 @@ func parse(args []string) (flags, error) {
 				f.environment = value
 			case "--target":
 				f.target = value
-			case "--instance", "--profile":
+			case "--instance":
 				f.instance = value
-				f.profile = value
 			case "--external-url":
 				if name, endpoint, named := strings.Cut(value, "="); named && name != "" && !strings.Contains(name, "://") {
 					if f.externalURLs == nil {
@@ -106,7 +105,7 @@ func parse(args []string) (flags, error) {
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--item" && name != "--instance-directory" && name != "--profile-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--profile" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" {
+		if has && name != "--item" && name != "--instance-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}

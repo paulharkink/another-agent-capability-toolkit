@@ -43,7 +43,7 @@ func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewm
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
 	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
-	msg.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
+	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(msg)
 	return m, msg
@@ -194,7 +194,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		key := state.Key{Source: "one", Package: "inspect", Target: fmt.Sprintf("target-%02d", i)}
 		msg.mcps = append(msg.mcps, mcp.Instance{Key: key, Status: "running"})
-		msg.profileSnapshot.Profiles = append(msg.profileSnapshot.Profiles, viewmodel.Profile{Key: key, Name: key.Target, RuntimeStatus: "running", Ownership: "local"})
+		msg.instanceSnapshot.Profiles = append(msg.instanceSnapshot.Profiles, viewmodel.Instance{Key: key, Name: key.Target, RuntimeStatus: "running", Ownership: "local"})
 	}
 	m.Update(msg)
 	press(m, tea.KeyEnter, "")
@@ -214,7 +214,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 		t.Fatal("resize/refresh lost selection")
 	}
 	msg.mcps = msg.mcps[:len(msg.mcps)-1]
-	msg.profileSnapshot.Profiles = msg.profileSnapshot.Profiles[:len(msg.profileSnapshot.Profiles)-1]
+	msg.instanceSnapshot.Profiles = msg.instanceSnapshot.Profiles[:len(msg.instanceSnapshot.Profiles)-1]
 	m.Update(msg)
 	if m.home.Context.Index != lastProfileRow-1 || !strings.Contains(m.output, "removed") {
 		t.Fatal("deleted selected profile not explained", m.View().Content)
@@ -410,8 +410,8 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
-	msg.profileSnapshot.Profiles[0].Ownership = "other-aact"
-	msg.profileSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
+	msg.instanceSnapshot.Profiles[0].Ownership = "other-aact"
+	msg.instanceSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
 	m.Update(msg)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)

@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-// ResolveProfileKey preserves existing identity evidence. Hash-only answer
+// ResolveInstanceKey preserves existing identity evidence. Hash-only answer
 // files cannot be reverse-mapped and are never guessed or rewritten.
-func (s *Store) ResolveProfileKey(packID, capabilityID, profileName string) (Key, error) {
-	if packID == "" || capabilityID == "" || profileName == "" {
-		return Key{}, fmt.Errorf("Capability Pack, capability and profile names are required")
+func (s *Store) ResolveInstanceKey(packID, capabilityID, instanceName string) (Key, error) {
+	if packID == "" || capabilityID == "" || instanceName == "" {
+		return Key{}, fmt.Errorf("Capability Pack, capability and instance names are required")
 	}
 	profiles, err := s.Instances()
 	if err != nil {
@@ -29,11 +29,11 @@ func (s *Store) ResolveProfileKey(packID, capabilityID, profileName string) (Key
 	}
 	matched := map[Key]bool{}
 	for _, key := range keys {
-		if key.Source != packID || key.Package != capabilityID || key.Target != profileName {
+		if key.Source != packID || key.Package != capabilityID || key.Target != instanceName {
 			continue
 		}
 		key.MCP = ""
-		key.Profile = ""
+		key.MCPDefinition = ""
 		matched[key] = true
 	}
 	if len(matched) > 1 {
@@ -42,10 +42,15 @@ func (s *Store) ResolveProfileKey(packID, capabilityID, profileName string) (Key
 			details = append(details, fmt.Sprintf("%s/%s (%s)", key.Environment, key.Target, key.ID()))
 		}
 		sort.Strings(details)
-		return Key{}, fmt.Errorf("ambiguous existing state for profile %s/%s/%s: %s; repair the conflicting records explicitly", packID, capabilityID, profileName, strings.Join(details, ", "))
+		return Key{}, fmt.Errorf("ambiguous existing state for instance %s/%s/%s: %s; repair the conflicting records explicitly", packID, capabilityID, instanceName, strings.Join(details, ", "))
 	}
 	for key := range matched {
 		return key, nil
 	}
-	return Key{Source: packID, Package: capabilityID, Target: profileName}, nil
+	return Key{Source: packID, Package: capabilityID, Target: instanceName}, nil
+}
+
+// ResolveProfileKey is retained for source compatibility.
+func (s *Store) ResolveProfileKey(packID, capabilityID, name string) (Key, error) {
+	return s.ResolveInstanceKey(packID, capabilityID, name)
 }

@@ -83,9 +83,9 @@ func (s *Service) withOperationProgress(ctx context.Context, observer func(viewm
 // changing installed state. Values retain the source of their winning layer.
 func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return viewmodel.SetupPreview{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return viewmodel.SetupPreview{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.PreviewProfile(ctx, ProfileRequest{Ref: q.Ref})
+	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
 }
 
 func currentUserHome() string {
@@ -112,7 +112,7 @@ func (s *Service) discoveryProbe() agents.DiscoveryProbe {
 // checkbox values. For example, dbms.*.tenants.* yields dbms/tenant IDs.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return viewmodel.OperationResult{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
+	return s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
 }

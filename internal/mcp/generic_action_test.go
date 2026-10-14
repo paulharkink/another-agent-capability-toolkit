@@ -18,8 +18,8 @@ func TestGenericActionProfileAndFileCredentials(t *testing.T) {
 	f := &actionExec{output: `{}`}
 	p := actionPackage()
 	profile := config.Profile{Ref: config.ProfileRef{PackID: "company", CapabilityID: "neutral", Name: "production"}}
-	_, err := (&ActionRunner{Executor: f}).Run(context.Background(), p, ActionRequest{Action: "authenticate", Profile: profile, Inputs: map[string]any{"credential_path": "/secret/file"}})
-	if err != nil || f.calls != 1 || f.request.Profile.Ref != profile.Ref {
+	_, err := (&ActionRunner{Executor: f}).Run(context.Background(), p, ActionRequest{Action: "authenticate", Instance: profile, Inputs: map[string]any{"credential_path": "/secret/file"}})
+	if err != nil || f.calls != 1 || f.request.Instance.Ref != profile.Ref {
 		t.Fatalf("request=%+v err=%v", f.request, err)
 	}
 	b, _ := json.Marshal(f.request)

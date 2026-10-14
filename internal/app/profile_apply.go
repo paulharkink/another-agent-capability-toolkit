@@ -22,14 +22,14 @@ import (
 	"strings"
 )
 
-type profileOperationLockKey struct{}
+type instanceOperationLockKey struct{}
 
 type AdapterProvider interface {
 	Adapter(string) (agents.Adapter, error)
 	Adapters() []agents.Adapter
 }
 type InstanceRequest struct {
-	Ref                                  config.ProfileRef
+	Ref                                  config.InstanceRef
 	Inputs                               map[string]any
 	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
@@ -37,6 +37,8 @@ type InstanceRequest struct {
 	ExternalURLs                         map[string]string
 }
 
+// ProfileRequest remains as a source-compatibility alias for callers compiled
+// against the previous selected-instance API.
 type ProfileRequest = InstanceRequest
 
 func isDynamicChoice(input catalog.Input) bool {
@@ -95,53 +97,53 @@ func (s *Service) agentScope(id string) agents.Scope {
 	}
 	return agents.Scope{ID: id}
 }
-func (s *Service) loadProfile(ref config.ProfileRef) (catalog.Package, config.Profile, state.Key, error) {
+func (s *Service) loadInstance(ref config.InstanceRef) (catalog.Package, config.Instance, state.Key, error) {
 	p, err := s.packageByID(ref.CapabilityID)
 	if err != nil {
-		return p, config.Profile{}, state.Key{}, err
+		return p, config.Instance{}, state.Key{}, err
 	}
 	if ref.PackID != "" && ref.PackID != s.Source.ID {
-		return p, config.Profile{}, state.Key{}, invalid(fmt.Errorf("Capability Pack %q is not selected", ref.PackID))
+		return p, config.Instance{}, state.Key{}, invalid(fmt.Errorf("Capability Pack %q is not selected", ref.PackID))
 	}
 	ref.PackID = s.Source.ID
 	if ref.Name == "" {
-		profiles, err := s.profilesForCapability(p.ID)
+		instances, err := s.instancesForCapability(p.ID)
 		if err != nil {
-			return p, config.Profile{}, state.Key{}, err
+			return p, config.Instance{}, state.Key{}, err
 		}
-		if len(profiles) != 1 {
+		if len(instances) != 1 {
 			names := []string{}
-			for _, pr := range profiles {
+			for _, pr := range instances {
 				names = append(names, pr.Ref.Name)
 			}
-			return p, config.Profile{}, state.Key{}, invalid(fmt.Errorf("select a profile for %s (available: %s); create another profile if none exist", p.ID, strings.Join(names, ", ")))
+			return p, config.Instance{}, state.Key{}, invalid(fmt.Errorf("select an instance for %s (available: %s); create another instance if none exist", p.ID, strings.Join(names, ", ")))
 		}
-		ref.Name = profiles[0].Ref.Name
+		ref.Name = instances[0].Ref.Name
 	}
-	key, err := s.Store.ResolveProfileKey(s.Source.ID, p.ID, ref.Name)
+	key, err := s.Store.ResolveInstanceKey(s.Source.ID, p.ID, ref.Name)
 	if err != nil {
-		return p, config.Profile{}, key, err
+		return p, config.Instance{}, key, err
 	}
-	profile, err := config.LoadProfile(s.Source.CapabilityPack(), p.ID, ref.Name)
+	instance, err := config.LoadInstance(s.Source.CapabilityPack(), p.ID, ref.Name)
 	if err == nil {
-		return p, profile, key, nil
+		return p, instance, key, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return p, profile, key, invalid(err)
+		return p, instance, key, invalid(err)
 	}
 	records, e := s.Store.Instances()
 	if e != nil {
-		return p, profile, key, e
+		return p, instance, key, e
 	}
 	for _, record := range records {
 		if record.Key == key && record.Local {
-			return p, config.Profile{Ref: ref, Raw: map[string]any{}}, key, nil
+			return p, config.Instance{Ref: ref, Raw: map[string]any{}}, key, nil
 		}
 	}
-	return p, profile, key, invalid(err)
+	return p, instance, key, invalid(err)
 }
-func (s *Service) profilesForCapability(id string) ([]config.Profile, error) {
-	profiles, err := config.DiscoverProfiles(s.Source.CapabilityPack(), id)
+func (s *Service) instancesForCapability(id string) ([]config.Instance, error) {
+	instances, err := config.DiscoverInstances(s.Source.CapabilityPack(), id)
 	if err != nil {
 		return nil, err
 	}
@@ -150,57 +152,57 @@ func (s *Service) profilesForCapability(id string) ([]config.Profile, error) {
 		return nil, err
 	}
 	for _, r := range records {
-		if r.Key.Source != s.Source.ID || r.Key.Package != id || !r.Local || r.Key.MCP != "" || r.Key.Profile != "" {
+		if r.Key.Source != s.Source.ID || r.Key.Package != id || !r.Local || r.Key.MCP != "" || r.Key.MCPDefinition != "" {
 			continue
 		}
 		found := false
-		for _, p := range profiles {
+		for _, p := range instances {
 			if p.Ref.Name == r.Key.Target {
 				found = true
 			}
 		}
 		if !found {
-			profiles = append(profiles, config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: id, Name: r.Key.Target}, Raw: map[string]any{}})
+			instances = append(instances, config.Instance{Ref: config.InstanceRef{PackID: s.Source.ID, CapabilityID: id, Name: r.Key.Target}, Raw: map[string]any{}})
 		}
 	}
-	slices.SortFunc(profiles, func(a, b config.Profile) int { return strings.Compare(a.Ref.Name, b.Ref.Name) })
-	return profiles, nil
+	slices.SortFunc(instances, func(a, b config.Instance) int { return strings.Compare(a.Ref.Name, b.Ref.Name) })
+	return instances, nil
 }
 func (s *Service) CreateInstance(ctx context.Context, ref config.InstanceRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if ref.PackID != "" && ref.PackID != s.Source.ID {
-		return invalid(errors.New("select this Capability Pack before creating a profile"))
+		return invalid(errors.New("select this Capability Pack before creating an instance"))
 	}
 	if _, err := s.packageByID(ref.CapabilityID); err != nil {
 		return err
 	}
-	if !config.ValidProfileName(ref.Name) {
-		return invalid(fmt.Errorf("invalid profile name %q", ref.Name))
+	if !config.ValidInstanceName(ref.Name) {
+		return invalid(fmt.Errorf("invalid instance name %q", ref.Name))
 	}
-	existing, err := s.profilesForCapability(ref.CapabilityID)
+	existing, err := s.instancesForCapability(ref.CapabilityID)
 	if err != nil {
 		return err
 	}
 	for _, p := range existing {
 		if p.Ref.Name == ref.Name {
-			return invalid(fmt.Errorf("profile %q already exists", ref.Name))
+			return invalid(fmt.Errorf("instance %q already exists", ref.Name))
 		}
 	}
-	key, err := s.Store.ResolveProfileKey(s.Source.ID, ref.CapabilityID, ref.Name)
+	key, err := s.Store.ResolveInstanceKey(s.Source.ID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		return err
 	}
 	return s.Store.WithLock(ctx, func() error {
-		return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: ref.Name, Local: true})
+		return s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: ref.Name, Local: true})
 	})
 }
-func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) error {
+func (s *Service) CreateProfile(ctx context.Context, ref config.InstanceRef) error {
 	return s.CreateInstance(ctx, ref)
 }
 
-func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.Key, q ProfileRequest) (catalog.Package, config.Profile, map[string]any, map[string]any, error) {
+func (s *Service) instanceValues(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
 	known := map[string]bool{}
 	for _, d := range p.Inputs {
 		known[d.Name] = true
@@ -528,17 +530,17 @@ func invalidIf(err error) error {
 	}
 	return nil
 }
-func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmodel.SetupPreview, error) {
+func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewmodel.SetupPreview, error) {
 	if err := ctx.Err(); err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	p, pr, values, inherited, err := s.profileValues(p, pr, key, q)
+	p, pr, values, inherited, err := s.instanceValues(p, pr, key, q)
 	credentialState, credentialNote := s.credentialObservation(p, key)
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, InstancePath: pr.Path, ProfilePath: pr.Path, InstanceOrigin: "local", ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
 	if err != nil {
 		return preview, err
 	}
@@ -559,11 +561,13 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		preview.HasManifestUI = len(p.UI.Sections) > 0
 	}
 	if pr.Path != "" {
+		preview.InstanceOrigin = "pack"
 		preview.ProfileOrigin = "pack"
 		b, e := os.ReadFile(pr.Path)
 		if e != nil {
 			return preview, e
 		}
+		preview.InstanceTOML = string(b)
 		preview.ProfileTOML = string(b)
 	}
 	installations, err := s.Store.Installations()
@@ -789,14 +793,21 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	}
 	return preview, nil
 }
-func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
+
+// PreviewProfile is retained for source compatibility; selected capability
+// configuration is exposed through PreviewInstance.
+func (s *Service) PreviewProfile(ctx context.Context, q InstanceRequest) (viewmodel.SetupPreview, error) {
+	return s.PreviewInstance(ctx, q)
+}
+
+func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
 	if observer := viewmodel.OperationProgressObserver(ctx); observer != nil && ctx.Value(operationProgressScopeContextKey{}) != true {
 		scoped, progress := s.withOperationProgress(ctx, observer)
-		return scoped.ApplyProfile(progress, q)
+		return scoped.ApplyInstance(progress, q)
 	}
-	if ctx.Value(profileOperationLockKey{}) != s.Store {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.ApplyProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			out, err = s.ApplyInstance(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
 			return err
 		})
 		if err != nil && len(out.Errors) == 0 && !ordinaryCancellation(err) {
@@ -812,12 +823,12 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			out.Errors = append(out.Errors, err.Error())
 		}
 	}()
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
-	p, pr, values, _, err := s.profileValues(p, pr, key, q)
+	p, pr, values, _, err := s.instanceValues(p, pr, key, q)
 	if err != nil {
 		return out, err
 	}
@@ -890,7 +901,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if choiceErr != nil {
 					return out, choiceErr
 				}
-				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpProfileKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
+				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpDefinitionKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
 				if runErr != nil {
 					return out, runErr
 				}
@@ -1064,7 +1075,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		if !mcps[definition.Name] {
 			continue
 		}
-		child := mcpProfileKey(key, p, definition)
+		child := mcpDefinitionKey(key, p, definition)
 		externalURL := q.ExternalURLs[definition.Name]
 		if externalURL != "" {
 			if e := validateEndpointURL(externalURL); e != nil {
@@ -1114,7 +1125,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
 					out.Step = "authenticate"
 					reportOperationStep(ctx, out.Step)
-					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
 					if e != nil {
 						if containerAuthentication {
 							if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
@@ -1251,7 +1262,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		case "mcp":
 			found := false
 			for _, d := range p.MCPDefinitions() {
-				if mcps[d.Name] && mcpProfileKey(key, p, d) == row.Key {
+				if mcps[d.Name] && mcpDefinitionKey(key, p, d) == row.Key {
 					found = true
 				}
 			}
@@ -1307,7 +1318,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			}
 			out.Step = "register"
 			reportOperationStep(ctx, out.Step)
-			child := mcpProfileKey(key, p, d)
+			child := mcpDefinitionKey(key, p, d)
 			name, e := declaredRegistrationName(d, child, values)
 			if e != nil {
 				return out, invalid(e)
@@ -1385,6 +1396,12 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	out.Step = "complete"
 	return out, nil
 }
+
+// ApplyProfile is retained for source compatibility; new callers should use
+// ApplyInstance.
+func (s *Service) ApplyProfile(ctx context.Context, q InstanceRequest) (viewmodel.OperationResult, error) {
+	return s.ApplyInstance(ctx, q)
+}
 func (s *Service) removeProfileBinding(ctx context.Context, row state.Installation) error {
 	a, err := s.registrationAdapterFor(row.AgentID, row.AgentKind)
 	if err != nil {
@@ -1431,15 +1448,15 @@ func validateEndpointURL(value string) error {
 	return nil
 }
 
-func (s *Service) RemoveInstance(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
-	if ctx.Value(profileOperationLockKey{}) != s.Store {
+func (s *Service) RemoveInstance(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.RemoveInstance(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			out, err = s.RemoveInstance(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
 			return err
 		})
 		return out, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
@@ -1477,14 +1494,14 @@ func (s *Service) RemoveInstance(ctx context.Context, q ProfileRequest) (out vie
 }
 
 // RemoveProfile is retained for callers built against the previous API name.
-func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (viewmodel.OperationResult, error) {
+func (s *Service) RemoveProfile(ctx context.Context, q InstanceRequest) (viewmodel.OperationResult, error) {
 	return s.RemoveInstance(ctx, q)
 }
 
-func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileRequest, mcpName string) (out Result, err error) {
-	if ctx.Value(profileOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
+func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceRequest, mcpName string) (out Result, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.RunProfileMCP(context.WithValue(ctx, profileOperationLockKey{}, s.Store), action, q, mcpName)
+			out, err = s.RunInstanceMCP(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), action, q, mcpName)
 			return err
 		})
 		return out, err
@@ -1493,7 +1510,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		out.Instances, err = s.Options.Runtime.List(ctx)
 		return out, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
@@ -1501,7 +1518,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 	if err != nil {
 		return out, invalid(err)
 	}
-	child := mcpProfileKey(key, p, definition)
+	child := mcpDefinitionKey(key, p, definition)
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name + " / " + definition.Name
 	out.Step = action
 	switch action {
@@ -1517,7 +1534,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			err = e
 		}
 	case "start", "prepare", "authenticate":
-		p, pr, values, _, e := s.profileValues(p, pr, key, q)
+		p, pr, values, _, e := s.instanceValues(p, pr, key, q)
 		if e != nil {
 			return out, e
 		}
@@ -1525,7 +1542,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		if e != nil {
 			return out, invalid(e)
 		}
-		child = mcpProfileKey(key, p, definition)
+		child = mcpDefinitionKey(key, p, definition)
 		if e = forms.Validate(p.Inputs, values); e != nil {
 			return out, invalid(e)
 		}
@@ -1553,7 +1570,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			if choiceErr != nil {
 				return out, choiceErr
 			}
-			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 			if err == nil {
 				out.LoginURL = result.LoginURL
 				if result.AuthRequired {
@@ -1565,6 +1582,11 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		err = invalid(fmt.Errorf("unknown MCP action %q", action))
 	}
 	return out, err
+}
+
+// RunProfileMCP is retained for source compatibility; use RunInstanceMCP.
+func (s *Service) RunProfileMCP(ctx context.Context, action string, q InstanceRequest, mcpName string) (Result, error) {
+	return s.RunInstanceMCP(ctx, action, q, mcpName)
 }
 
 func profileManagedRows(rows []state.Installation, key state.Key, id string) []state.Installation {
@@ -1598,7 +1620,7 @@ func observedSelectionComplete(p catalog.Package, ids []string, values map[strin
 		for _, name := range item.MCPs {
 			for _, d := range p.MCPDefinitions() {
 				if d.Name == name {
-					registration, e := declaredRegistrationName(d, mcpProfileKey(key, p, d), values)
+					registration, e := declaredRegistrationName(d, mcpDefinitionKey(key, p, d), values)
 					if e != nil || !installed("mcp", registration) {
 						return false
 					}

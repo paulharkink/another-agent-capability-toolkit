@@ -187,7 +187,7 @@ func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testi
 	base := m.backend.(*profileBackend)
 	m.backend = &registrationWorkspaceBackend{Backend: base, profileBackend: base, setupBackendFixture: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, 1)
-	cmd := m.openTargetWorkspace(m.packProfileRequest(profile.Key), "Information")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(profile.Key), "Information")
 	m.Update(cmd())
 	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	view := m.View().Content
@@ -212,16 +212,16 @@ func TestInteractionUnknownOwnerOffersDiagnosisAndBindingButNotLifecycleControl(
 	m.Update(m.load()())
 	key := b.snapshot.Profiles[1].Key
 	openCapabilityProfileWorkspace(t, m, b, key.Target, "Overview")
-	if m.workspace == nil || m.workspace.Profile == nil || m.workspace.Profile.Ownership != "unknown" {
+	if m.workspace == nil || m.workspace.Instance == nil || m.workspace.Instance.Ownership != "unknown" {
 		t.Fatalf("Overview lost the unknown ownership observation: %+v", m.workspace)
 	}
-	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Profile: &b.snapshot.Profiles[1], Status: "foreign"}
+	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Instance: &b.snapshot.Profiles[1], Status: "foreign"}
 	for _, action := range []string{"check-connection"} {
-		if reason := m.profileActionReason(row, action); reason != "" {
+		if reason := m.instanceActionReason(row, action); reason != "" {
 			t.Fatalf("unknown owner blocked local diagnosis %q: %s", action, reason)
 		}
 	}
-	startReason := m.profileActionReason(row, "s")
+	startReason := m.instanceActionReason(row, "s")
 	if startReason == "" {
 		t.Fatal("unknown owner unexpectedly permits Start")
 	}
