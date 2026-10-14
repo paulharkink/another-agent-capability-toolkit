@@ -86,6 +86,9 @@ func (m *Model) contextRows() []contextRow {
 		return nil
 	}
 	if m.profileMode() && c.CatalogIndex >= 0 {
+		if !c.MCP {
+			return []contextRow{{ID: "configure", Label: capabilitySetupLabel(), Kind: "configure"}, {ID: "details", Label: "View capability details", Kind: "details"}}
+		}
 		rows := []contextRow{}
 		for i, p := range m.profiles() {
 			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
@@ -723,6 +726,9 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.profileMode() {
+		if c, ok := m.selectedCapability(); ok && !c.MCP {
+			return []homeMenuItem{{capabilitySetupLabel(), "configure", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
+		}
 		return []homeMenuItem{{"Open selected instance", "parameters", ""}, {"Create another instance…", "create-profile", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 	}
 	if m.home.Focus == ProfilesPane {
@@ -879,6 +885,15 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 }
 func (m *Model) homeOperation(action string) tea.Cmd {
 	if m.profileMode() {
+		if c, ok := m.selectedCapability(); ok && !c.MCP {
+			if action == "details" {
+				m.home.Modal = &modalState{Kind: "details"}
+				return nil
+			}
+			if action == "configure" || action == "parameters" {
+				return m.openTargetWorkspace(m.packProfileRequest(state.Key{Source: c.Source, Package: c.Package, Target: "default"}), "Overview")
+			}
+		}
 		if action == "create-profile" {
 			if c, ok := m.selectedCapability(); ok {
 				m.openProfileCreation(c)

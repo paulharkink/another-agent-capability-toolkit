@@ -100,8 +100,18 @@ func TestProfileHomeSkillOnlyAndNoSyntheticProfile(t *testing.T) {
 	m.home.Capabilities.ID = ""
 	m.reconcileHome()
 	rows := m.contextRows()
-	if len(rows) != 2 || rows[0].Kind != "create-profile" {
-		t.Fatalf("%+v", rows)
+	if len(rows) != 2 || rows[0].Kind != "configure" || rows[0].Label != capabilitySetupLabel() {
+		t.Fatalf("skill-only capability must offer setup without a synthetic instance: %+v", rows)
+	}
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
+	cmd := m.openContextRow()
+	if cmd == nil {
+		t.Fatal("skill-only setup action did not open its setup preview")
+	}
+	m.Update(cmd())
+	if m.form == nil || m.workspace == nil {
+		t.Fatal("skill-only setup action did not open the setup form")
 	}
 	v := m.View().Content
 	for _, bad := range []string{"Environment directory", "Related MCP profiles", "Without an environment", "Set up another target"} {
