@@ -139,8 +139,38 @@ func probeIdentity(ctx context.Context, config Config, incoming *http.Request) b
 		return false
 	}
 	defer response.Body.Close()
+	if strings.EqualFold(config.Provider, "github") && isGitHubInstallationAuthorization(authValue) {
+		if response.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, probeBodyLimit+1))
+			return false
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, probeBodyLimit+1))
+		return readErr == nil && len(body) <= probeBodyLimit && validGitHubInstallationRepositories(body)
+	}
 	_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, probeBodyLimit+1))
 	return readErr == nil && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+}
+
+func isGitHubInstallationAuthorization(value string) bool {
+	parts := strings.Fields(value)
+	return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && strings.HasPrefix(parts[1], "ghs_")
+}
+
+func validGitHubInstallationRepositories(body []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil || object == nil {
+		return false
+	}
+	var totalCount int64
+	if raw, ok := object["total_count"]; !ok || json.Unmarshal(raw, &totalCount) != nil || totalCount < 0 {
+		return false
+	}
+	repositories, ok := object["repositories"]
+	if !ok || len(repositories) == 0 || repositories[0] != '[' {
+		return false
+	}
+	var entries []json.RawMessage
+	return json.Unmarshal(repositories, &entries) == nil
 }
 
 func identityTarget(config Config, incoming *http.Request) (*url.URL, string, string, bool) {
@@ -156,6 +186,9 @@ func identityTarget(config Config, incoming *http.Request) (*url.URL, string, st
 			return nil, "", "", false
 		}
 		headerName, suffix = "Authorization", "user"
+		if isGitHubInstallationAuthorization(headerValue) {
+			suffix = "installation/repositories?per_page=1"
+		}
 	case "gitlab":
 		switch {
 		case incoming.Header.Get("Private-Token") != "":

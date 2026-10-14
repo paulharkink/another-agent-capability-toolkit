@@ -76,6 +76,167 @@ func TestHealthChecksConfiguredIdentityAndDoesNotForwardArbitraryHeaders(t *test
 	}
 }
 
+func TestGitHubInstallationTokenUsesRepositoryMembershipProbe(t *testing.T) {
+	for _, body := range []string{
+		`{"total_count":0,"repositories":[]}`,
+		`{"total_count":1,"repositories":[{"id":42}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var gotMethod, gotPath, gotAuthorization string
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.RequestURI()
+				gotAuthorization = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer provider.Close()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			defer upstream.Close()
+
+			handler := New(Config{Provider: "github", UpstreamURL: upstream.URL, APIBaseURL: provider.URL})
+			request := httptest.NewRequest(http.MethodGet, "/health", nil)
+			request.Header.Set("Authorization", "Bearer ghs_installation-token")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), true) {
+				t.Fatalf("health = %d %q, want authenticated=true", recorder.Code, recorder.Body.String())
+			}
+			if gotMethod != http.MethodGet || gotPath != "/installation/repositories?per_page=1" {
+				t.Fatalf("probe = %s %q, want GET /installation/repositories?per_page=1", gotMethod, gotPath)
+			}
+			if gotAuthorization != "Bearer ghs_installation-token" {
+				t.Fatalf("probe Authorization = %q, want selected installation bearer", gotAuthorization)
+			}
+		})
+	}
+}
+
+func TestGitHubInstallationTokenUsesResolvedEnterpriseAPIBase(t *testing.T) {
+	var gotPath string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		_, _ = io.WriteString(w, `{"total_count":0,"repositories":[]}`)
+	}))
+	defer provider.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer upstream.Close()
+
+	handler := New(Config{
+		Provider: "github", UpstreamURL: upstream.URL,
+		GitHubHost: provider.URL + "/ignored/configured/path",
+	})
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Header.Set("Authorization", "Bearer ghs_installation-token")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), true) {
+		t.Fatalf("health = %d %q, want authenticated=true", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/api/v3/installation/repositories?per_page=1" {
+		t.Fatalf("probe path = %q, want resolved enterprise API path", gotPath)
+	}
+}
+
+func TestGitHubInstallationTokenRejectsInvalidAndMalformedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`},
+		{name: "server error", status: http.StatusInternalServerError, body: `{"total_count":0,"repositories":[]}`},
+		{name: "missing total count", status: http.StatusOK, body: `{"repositories":[]}`},
+		{name: "negative total count", status: http.StatusOK, body: `{"total_count":-1,"repositories":[]}`},
+		{name: "fractional total count", status: http.StatusOK, body: `{"total_count":1.5,"repositories":[]}`},
+		{name: "missing repositories", status: http.StatusOK, body: `{"total_count":0}`},
+		{name: "null repositories", status: http.StatusOK, body: `{"total_count":0,"repositories":null}`},
+		{name: "wrong repositories type", status: http.StatusOK, body: `{"total_count":0,"repositories":{}}`},
+		{name: "message only", status: http.StatusOK, body: `{"message":"Not Found"}`},
+		{name: "malformed JSON", status: http.StatusOK, body: `{"total_count":0,"repositories":[]`},
+		{name: "non-object JSON", status: http.StatusOK, body: `[]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.RequestURI(); got != "/installation/repositories?per_page=1" {
+					t.Errorf("provider path = %q", got)
+				}
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer provider.Close()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			defer upstream.Close()
+
+			handler := New(Config{Provider: "github", UpstreamURL: upstream.URL, APIBaseURL: provider.URL})
+			request := httptest.NewRequest(http.MethodGet, "/health", nil)
+			request.Header.Set("Authorization", "Bearer ghs_installation-token")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), false) {
+				t.Fatalf("health = %d %q, want authenticated=false", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGitHubInstallationTokenMissingDoesNotProbeProvider(t *testing.T) {
+	var providerRequests int
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerRequests++
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"total_count":0,"repositories":[]}`)
+	}))
+	defer provider.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer upstream.Close()
+
+	handler := New(Config{Provider: "github", UpstreamURL: upstream.URL, APIBaseURL: provider.URL})
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), false) {
+		t.Fatalf("health = %d %q, want authenticated=false", recorder.Code, recorder.Body.String())
+	}
+	if providerRequests != 0 {
+		t.Fatalf("provider received %d probe(s) without a token", providerRequests)
+	}
+}
+
+func TestGitHubInstallationTokenRedirectDoesNotForwardBearer(t *testing.T) {
+	var redirectedAuthorization string
+	var redirectRequests int
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectRequests++
+		redirectedAuthorization = r.Header.Get("Authorization")
+	}))
+	defer redirectTarget.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer ghs_installation-token" {
+			t.Errorf("source probe Authorization = %q", got)
+		}
+		http.Redirect(w, r, redirectTarget.URL+"/redirected", http.StatusFound)
+	}))
+	defer provider.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer upstream.Close()
+
+	handler := New(Config{Provider: "github", UpstreamURL: upstream.URL, APIBaseURL: provider.URL})
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Header.Set("Authorization", "Bearer ghs_installation-token")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !healthValue(recorder.Body.String(), false) {
+		t.Fatalf("health = %d %q, want authenticated=false", recorder.Code, recorder.Body.String())
+	}
+	if redirectedAuthorization != "" {
+		t.Fatalf("cross-origin redirect received Authorization %q", redirectedAuthorization)
+	}
+	if redirectRequests != 0 {
+		t.Fatalf("cross-origin redirect target received %d request(s)", redirectRequests)
+	}
+}
+
 func TestMCPTransportIsStreamedThroughWithoutRewriting(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.RequestURI() != "/mcp?session=abc" {
