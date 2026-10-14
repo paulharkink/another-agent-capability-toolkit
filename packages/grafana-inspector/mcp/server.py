@@ -30,14 +30,26 @@ else:
 GRAFANA_URL = PROFILE.url
 LOKI_DATASOURCE_UID = PROFILE.datasource_uid
 AUTH_PATH = Path(os.environ.get("GRAFANA_AUTH_FILE", "/state/auth.json"))
-_AUTH = json.loads(AUTH_PATH.read_text()) if AUTH_PATH.exists() else {}
+try:
+    _AUTH_CONTENT = AUTH_PATH.read_bytes()
+except FileNotFoundError:
+    _AUTH_CONTENT = None
+_AUTH = json.loads(_AUTH_CONTENT) if _AUTH_CONTENT is not None else {}
+AUTH_LOCK = threading.RLock()
 AUTH_MODE = os.environ.get("GRAFANA_AUTH_MODE") or _AUTH.get("auth_mode") or PROFILE.auth_mode
 GRAFANA_SESSION = _AUTH.get("grafana_session", "")
 GRAFANA_SESSION_EXPIRY = _AUTH.get("session_expiry", "")
 OAUTH_REFRESH = _AUTH.get("oauth_refresh", "")
 REFRESH_COOKIE_NAME = PROFILE.refresh_cookie_name
 TOKEN_FILE = os.environ.get("GRAFANA_API_TOKEN_FILE", "")
-API_TOKEN = (Path(TOKEN_FILE).read_text().strip() if TOKEN_FILE else os.environ.get("GRAFANA_API_TOKEN", "")) or _AUTH.get("api_token", "")
+
+
+def _configured_api_token(auth: dict[str, Any]) -> str:
+    configured = Path(TOKEN_FILE).read_text().strip() if TOKEN_FILE else os.environ.get("GRAFANA_API_TOKEN", "")
+    return configured or auth.get("api_token", "")
+
+
+API_TOKEN = _configured_api_token(_AUTH)
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_RANGE_SECONDS = 3600
 MAX_LOG_LIMIT = 1000
@@ -118,6 +130,53 @@ try:
 except ValueError:
     CLIENT = None
 SESSION_LOCK = threading.Lock()
+
+
+def _reload_auth_if_changed() -> None:
+    """Apply credentials atomically written by the existing auth helper."""
+    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
+    global OAUTH_REFRESH, API_TOKEN, CLIENT
+
+    with AUTH_LOCK:
+        try:
+            content = AUTH_PATH.read_bytes()
+        except FileNotFoundError:
+            content = None
+        except OSError:
+            return
+        if content == _AUTH_CONTENT:
+            return
+        try:
+            auth = json.loads(content) if content is not None else {}
+        except (UnicodeDecodeError, ValueError):
+            return
+        if not isinstance(auth, dict):
+            return
+
+        previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+        auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or auth.get("auth_mode") or PROFILE.auth_mode
+        grafana_session = auth.get("grafana_session", "")
+        session_expiry = auth.get("session_expiry", "")
+        oauth_refresh = auth.get("oauth_refresh", "")
+        try:
+            api_token = _configured_api_token(auth)
+        except OSError:
+            return
+        current = (auth_mode, grafana_session, session_expiry, oauth_refresh, api_token)
+
+        _AUTH = auth
+        _AUTH_CONTENT = content
+        AUTH_MODE = auth_mode
+        GRAFANA_SESSION = grafana_session
+        GRAFANA_SESSION_EXPIRY = session_expiry
+        OAUTH_REFRESH = oauth_refresh
+        API_TOKEN = api_token
+        if current == previous:
+            return
+        try:
+            CLIENT = _session()
+        except ValueError:
+            CLIENT = None
 
 
 def _session_expiry() -> int:
@@ -201,6 +260,7 @@ def _bootstrap_session() -> None:
 
 
 def _request(method: str, path: str, parameters: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> Any:
+    _reload_auth_if_changed()
     if CLIENT is None:
         raise ValueError("Grafana authentication is unavailable.")
     if AUTH_MODE == "session_cookie":
@@ -237,6 +297,7 @@ def _validate_api_token() -> None:
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
     """Report whether the currently selected Grafana identity is authorized."""
+    _reload_auth_if_changed()
     try:
         if AUTH_MODE == "session_cookie":
             user = _get("/api/user")
