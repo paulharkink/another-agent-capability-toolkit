@@ -686,7 +686,7 @@ func TestAzureLoginChallengeRecognizesPinnedCLIMessagesOnly(t *testing.T) {
 		{name: "generic login text", message: "The login command is unavailable.", want: false},
 		{name: "generic auth required text", message: "Authentication required for this operation.", want: false},
 		{name: "generic not logged in text", message: "The user is not logged in.", want: false},
-		{name: "generic please run login text", message: "Please run 'az login' to setup account.", want: false},
+		{name: "clean account login prompt", message: "Please run 'az login' to setup account.", want: true},
 		{name: "operational cli failure", message: "ERROR: unrecognized arguments: --output none", want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -694,6 +694,29 @@ func TestAzureLoginChallengeRecognizesPinnedCLIMessagesOnly(t *testing.T) {
 				t.Fatalf("azureLoginRequired(%q) = %t, want %t", tc.message, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAzureCleanAccountPromptUsesOnlyExistingDeviceLogin(t *testing.T) {
+	q := helperRequest(t, "azure-inspector", map[string]any{"azure": map[string]any{"tenant_id": "tenant-selected", "subscription_id": "subscription-selected"}})
+	q.Action, q.Interactive = "authenticate", true
+	f := &helperProcess{TokenFailures: 1, TokenStderr: "Please run 'az login' to setup account.", AccountTenant: "tenant-selected", LoginTenant: "tenant-selected"}
+	result, err := (&Helper{Executor: f}).Run(context.Background(), "azure-inspector", q)
+	if err != nil || result.Runtime == nil {
+		t.Fatalf("clean account login prompt should use the existing device login: result=%+v err=%v", result, err)
+	}
+	logins := 0
+	for _, args := range f.Calls {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, " login ") {
+			logins++
+			if !strings.Contains(joined, "login --use-device-code --tenant tenant-selected") {
+				t.Fatalf("unexpected login command: %q", joined)
+			}
+		}
+	}
+	if logins != 1 {
+		t.Fatalf("expected one selected-tenant device login, got %d: %+v", logins, f.Calls)
 	}
 }
 

@@ -621,6 +621,7 @@ func azureLoginRequired(stderr string) bool {
 		"run the command below to authenticate interactively; additional arguments may be added as needed: az logout az login",
 		"does not exist in msal token cache. run az login",
 		"interactive authentication is needed. please run: az login",
+		"please run az login to setup account.",
 	} {
 		if strings.Contains(message, phrase) {
 			return true
