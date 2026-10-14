@@ -15,7 +15,7 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 ## Install a published release
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.4.5
+curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.5.0
 ```
 
 ## Use the manager
