@@ -82,6 +82,11 @@ def test_running_server_uses_auth_file_created_and_replaced_after_startup(tmp_pa
             session = self.cookies.values.get("grafana_session")
             path = url.removeprefix("https://grafana.example.test")
             provider_requests.append((method, path, session))
+            if self.headers.get("Authorization") == "Bearer authoritative-env-token":
+                if path == "/api/user/preferences":
+                    return _Response(200, {"theme": "dark"})
+                if path == "/api/health":
+                    return _Response(200, {"database": "ok"})
             if session in {"current-session", "replacement-session"}:
                 if path == "/api/user":
                     return _Response(200, {"id": 42, "login": "operator", "isAnonymous": False})
@@ -151,3 +156,158 @@ def test_running_server_uses_auth_file_created_and_replaced_after_startup(tmp_pa
         ("GET", "/api/user", "replacement-session"),
         ("GET", "/api/health", "replacement-session"),
     ]
+
+    def assert_fail_closed():
+        before = len(provider_requests)
+        unavailable = asyncio.run(server.health(None))
+        assert json.loads(unavailable.body) == {"authenticated": False}
+        tool_result = server.grafana_health()
+        assert tool_result == {"error": "Grafana authentication is unavailable."}
+        assert len(provider_requests) == before
+
+    # A failed read cannot leave the previously valid session client in use.
+    original_read_bytes = Path.read_bytes
+
+    def unreadable_auth(path):
+        if path == auth_path:
+            raise PermissionError("private auth details")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable_auth)
+    assert_fail_closed()
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+
+    for invalid_auth in ("{broken", "[]"):
+        auth_path.write_text(invalid_auth)
+        assert_fail_closed()
+        _write_auth_with_existing_helper(tmp_path, "current-session")
+        assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+
+    auth_path.unlink()
+    assert_fail_closed()
+    _write_auth_with_existing_helper(tmp_path, "current-session")
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+
+    # An explicit environment token remains authoritative over malformed file data.
+    monkeypatch.setenv("GRAFANA_AUTH_MODE", "api_token")
+    monkeypatch.setenv("GRAFANA_API_TOKEN", "authoritative-env-token")
+    auth_path.write_text(json.dumps({"api_token": "file-token"}))
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+    auth_path.write_text("{broken")
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+    assert server.grafana_health()["health"] == {"database": "ok"}
+
+
+def test_malformed_auth_file_at_startup_keeps_health_route_available(tmp_path, monkeypatch):
+    target = tmp_path / "target.toml"
+    target.write_text(
+        '[mcp]\nlocal_port=8765\n[grafana]\n'
+        'url="https://grafana.example.test"\nauth_mode="session_cookie"\n'
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text("{broken")
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = _Cookies()
+
+    requests = types.ModuleType("requests")
+    requests.Session = Session
+    requests.RequestException = Exception
+
+    class FastMCP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self):
+            return lambda function: function
+
+        def custom_route(self, *args, **kwargs):
+            return lambda function: function
+
+    fastmcp = types.ModuleType("fastmcp")
+    fastmcp.FastMCP = FastMCP
+    monkeypatch.setitem(sys.modules, "requests", requests)
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setenv("GRAFANA_CONFIG", str(target))
+    monkeypatch.setenv("GRAFANA_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("GRAFANA_TARGET", "sample")
+    monkeypatch.setenv("MCP_ENVIRONMENT", "test")
+    monkeypatch.setenv("GRAFANA_AUTH_MODE", "session_cookie")
+    monkeypatch.delenv("GRAFANA_API_TOKEN", raising=False)
+    monkeypatch.delenv("GRAFANA_API_TOKEN_FILE", raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        "grafana_malformed_startup_regression",
+        ROOT / "server.py",
+    )
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    assert server.CLIENT is None
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": False}
+
+
+def test_health_rejects_malformed_is_anonymous_identity_flag(tmp_path, monkeypatch):
+    # Reuse the full server setup above while varying only Grafana's identity response.
+    target = tmp_path / "target.toml"
+    target.write_text(
+        '[mcp]\nlocal_port=8765\n[grafana]\n'
+        'url="https://grafana.example.test"\nauth_mode="session_cookie"\n'
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(json.dumps({"grafana_session": "current-session", "session_expiry": "4102444800"}))
+
+    identities = [{"id": 42, "login": "operator", "isAnonymous": "true"}]
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = _Cookies()
+            self.cookies.set("grafana_session", "current-session")
+
+        def request(self, method, url, **kwargs):
+            if url.endswith("/api/user"):
+                return _Response(200, identities[0])
+            return _Response(200, {"database": "ok"})
+
+    requests = types.ModuleType("requests")
+    requests.Session = Session
+    requests.RequestException = Exception
+
+    class FastMCP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tool(self):
+            return lambda function: function
+
+        def custom_route(self, *args, **kwargs):
+            return lambda function: function
+
+    fastmcp = types.ModuleType("fastmcp")
+    fastmcp.FastMCP = FastMCP
+    monkeypatch.setitem(sys.modules, "requests", requests)
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.setenv("GRAFANA_CONFIG", str(target))
+    monkeypatch.setenv("GRAFANA_AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("GRAFANA_TARGET", "sample")
+    monkeypatch.setenv("MCP_ENVIRONMENT", "test")
+    monkeypatch.setenv("GRAFANA_AUTH_MODE", "session_cookie")
+    monkeypatch.delenv("GRAFANA_API_TOKEN", raising=False)
+    monkeypatch.delenv("GRAFANA_API_TOKEN_FILE", raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        "grafana_malformed_identity_regression",
+        ROOT / "server.py",
+    )
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": False}
+    identities[0] = {"id": 42, "login": "operator", "isAnonymous": False}
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}
+    identities[0] = {"id": 42, "login": "operator"}
+    assert json.loads(asyncio.run(server.health(None)).body) == {"authenticated": True}

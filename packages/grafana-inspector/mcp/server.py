@@ -32,9 +32,14 @@ LOKI_DATASOURCE_UID = PROFILE.datasource_uid
 AUTH_PATH = Path(os.environ.get("GRAFANA_AUTH_FILE", "/state/auth.json"))
 try:
     _AUTH_CONTENT = AUTH_PATH.read_bytes()
-except FileNotFoundError:
+except OSError:
     _AUTH_CONTENT = None
-_AUTH = json.loads(_AUTH_CONTENT) if _AUTH_CONTENT is not None else {}
+try:
+    _AUTH = json.loads(_AUTH_CONTENT) if _AUTH_CONTENT is not None else {}
+except (UnicodeDecodeError, ValueError):
+    _AUTH = {}
+if not isinstance(_AUTH, dict):
+    _AUTH = {}
 AUTH_LOCK = threading.RLock()
 AUTH_MODE = os.environ.get("GRAFANA_AUTH_MODE") or _AUTH.get("auth_mode") or PROFILE.auth_mode
 GRAFANA_SESSION = _AUTH.get("grafana_session", "")
@@ -42,11 +47,48 @@ GRAFANA_SESSION_EXPIRY = _AUTH.get("session_expiry", "")
 OAUTH_REFRESH = _AUTH.get("oauth_refresh", "")
 REFRESH_COOKIE_NAME = PROFILE.refresh_cookie_name
 TOKEN_FILE = os.environ.get("GRAFANA_API_TOKEN_FILE", "")
+AUTH_READ_ERROR = object()
 
 
 def _configured_api_token(auth: dict[str, Any]) -> str:
     configured = Path(TOKEN_FILE).read_text().strip() if TOKEN_FILE else os.environ.get("GRAFANA_API_TOKEN", "")
     return configured or auth.get("api_token", "")
+
+
+def _external_api_token_is_selected() -> bool:
+    if AUTH_MODE != "api_token":
+        return False
+    if os.environ.get("GRAFANA_API_TOKEN", ""):
+        return True
+    if TOKEN_FILE:
+        try:
+            return bool(Path(TOKEN_FILE).read_text().strip())
+        except OSError:
+            return False
+    return False
+
+
+def _fail_closed_auth(content: bytes | None | object) -> None:
+    """Discard file-backed credentials after an unreadable or invalid auth file."""
+    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
+    global OAUTH_REFRESH, API_TOKEN, CLIENT
+
+    if _external_api_token_is_selected():
+        return
+    _AUTH = {}
+    _AUTH_CONTENT = content
+    AUTH_MODE = os.environ.get("GRAFANA_AUTH_MODE") or PROFILE.auth_mode
+    GRAFANA_SESSION = ""
+    GRAFANA_SESSION_EXPIRY = ""
+    OAUTH_REFRESH = ""
+    try:
+        API_TOKEN = _configured_api_token(_AUTH)
+    except OSError:
+        API_TOKEN = ""
+    try:
+        CLIENT = _session()
+    except (TypeError, ValueError):
+        CLIENT = None
 
 
 API_TOKEN = _configured_api_token(_AUTH)
@@ -143,14 +185,17 @@ def _reload_auth_if_changed() -> None:
         except FileNotFoundError:
             content = None
         except OSError:
+            _fail_closed_auth(AUTH_READ_ERROR)
             return
         if content == _AUTH_CONTENT:
             return
         try:
             auth = json.loads(content) if content is not None else {}
         except (UnicodeDecodeError, ValueError):
+            _fail_closed_auth(content)
             return
         if not isinstance(auth, dict):
+            _fail_closed_auth(content)
             return
 
         previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
@@ -309,7 +354,10 @@ async def health(request: Request) -> JSONResponse:
                 and isinstance(user.get("login"), str)
                 and bool(user["login"].strip())
                 and user["login"].strip().casefold() != "anonymous"
-                and user.get("isAnonymous") is not True
+                and (
+                    "isAnonymous" not in user
+                    or isinstance(user["isAnonymous"], bool) and not user["isAnonymous"]
+                )
             )
         else:
             preferences = _get("/api/user/preferences")
