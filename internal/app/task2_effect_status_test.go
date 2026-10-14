@@ -146,12 +146,53 @@ func TestApplyProfileLegacyAuthRequiredStopsWithActionableIncompleteResult(t *te
 	svc.Options.Runner = exec
 	ref := writeProfileForTest(t, svc, "demo", "default", "")
 	result, err := svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, DestinationIDs: []string{agentID}, ActiveInputGroups: map[string]string{"auth_method": "new_auth"}})
-	if err != nil || !result.Saved || len(result.Changes) != 0 || len(result.Errors) == 0 {
+	if err != nil || !result.Saved || result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) != 0 || len(result.Errors) == 0 {
 		t.Fatalf("legacy auth-required result claimed completion or lost action guidance: result=%+v err=%v", result, err)
 	}
 	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	pending, readErr := store.PendingAuthInputGroups(key, child.ID())
 	if readErr != nil || pending["auth_method"] != "new_auth" {
 		t.Fatalf("incomplete method transition was cleared: pending=%#v err=%v", pending, readErr)
+	}
+}
+
+func TestApplyProfileDoesNotConfirmAuthenticationWhileAnotherPendingGroupRemains(t *testing.T) {
+	svc, _, store := fixture(t)
+	agentID, key := task2AuthProfile(t, svc)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "old_auth", Type: "secret", ExclusiveGroup: "auth_method"},
+		{Name: "new_auth", Type: "file", ExclusiveGroup: "auth_method"},
+		{Name: "old_tenant", Type: "string", ExclusiveGroup: "tenant_method"},
+		{Name: "new_tenant", Type: "string", ExclusiveGroup: "tenant_method"},
+	}
+	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{}, map[string]string{
+		"auth_method":   "old_auth",
+		"tenant_method": "new_tenant",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	if err := store.UpdatePendingAuthInputGroups(key, child.ID(), map[string]string{"tenant_method": "old_tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.Runner = diagnosticAuthExecutor{}
+	request := ProfileRequest{
+		Ref:            writeProfileForTest(t, svc, "demo", "default", ""),
+		DestinationIDs: []string{agentID},
+		ActiveInputGroups: map[string]string{
+			"auth_method":   "new_auth",
+			"tenant_method": "new_tenant",
+		},
+	}
+	result, err := svc.ApplyProfile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) != 0 || len(result.Errors) == 0 {
+		t.Fatalf("authentication was confirmed with another pending group: result=%+v", result)
+	}
+	pending, readErr := store.PendingAuthInputGroups(key, child.ID())
+	if readErr != nil || pending["tenant_method"] != "old_tenant" {
+		t.Fatalf("unmatched pending group was cleared: pending=%#v err=%v", pending, readErr)
 	}
 }

@@ -1102,6 +1102,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if e != nil {
 					return out, e
 				}
+				authenticated := false
 				if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
 					out.Step = "authenticate"
 					reportOperationStep(ctx, out.Step)
@@ -1132,20 +1133,24 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 					if result.LoginURL != "" {
 						reportOperationOutput(ctx, result.LoginURL)
 					}
-					if definition.HealthPath == "" {
-						markAuthenticationComplete(definition.Name)
-					}
+					authenticated = true
 					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
 						return out, e
 					}
 				}
-				remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-				if pendingErr != nil {
-					return out, pendingErr
-				}
-				if len(remaining) > 0 && definition.HealthPath == "" {
-					out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
-					return out, nil
+				if authenticated {
+					remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+					if pendingErr != nil {
+						return out, pendingErr
+					}
+					if len(remaining) > 0 && definition.HealthPath == "" {
+						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+						return out, nil
+					}
+					if definition.HealthPath == "" {
+						markAuthenticationComplete(definition.Name)
+					}
 				}
 			}
 			if needsOwnedInstance && !containerAuthentication {
@@ -1185,12 +1190,21 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				}
 				return out, e
 			}
+			if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+				return out, e
+			}
+			remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+			if pendingErr != nil {
+				return out, pendingErr
+			}
+			if len(remaining) > 0 {
+				out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+				out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
+				return out, nil
+			}
 			markAuthenticationComplete(definition.Name)
 			if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
 				return out, fmt.Errorf("MCP health check failed: %w", e)
-			}
-			if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-				return out, e
 			}
 		}
 	}
