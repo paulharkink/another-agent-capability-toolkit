@@ -92,6 +92,33 @@ func TestActionJSONContract(t *testing.T) {
 		t.Fatalf("%+v %v", out, e)
 	}
 }
+
+func TestActionUsesProfileAsLegacyTargetContext(t *testing.T) {
+	f := &actionExec{output: `{}`}
+	profile := config.Profile{
+		Ref:         config.ProfileRef{PackID: "dso-skills", CapabilityID: "grafana-inspector", Name: "ap"},
+		Path:        "/packs/dso-skills/profiles/grafana-inspector/ap.toml",
+		Raw:         map[string]any{"grafana": map[string]any{"auth_mode": "session_cookie"}},
+		InputPolicy: map[string]string{"auth_mode": "default"},
+	}
+	_, err := (&ActionRunner{Executor: f}).Run(context.Background(), actionPackage(), ActionRequest{
+		Action: "authenticate", Profile: profile,
+		Inputs: map[string]any{"grafana_session": "current-session", "session_expiry": "current-expiry"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.request.Target.Environment != "dso-skills" || f.request.Target.Name != "ap" || f.request.Target.Path != profile.Path {
+		t.Fatalf("legacy helper target context = %+v, want pack/profile/path from %+v", f.request.Target, profile)
+	}
+	if f.request.Target.Raw["grafana"] == nil || f.request.Target.InputPolicy["auth_mode"] != "default" {
+		t.Fatalf("legacy helper target context lost profile values or input policy: %+v", f.request.Target)
+	}
+	if f.request.Inputs["grafana_session"] != "current-session" || f.request.Inputs["session_expiry"] != "current-expiry" {
+		t.Fatalf("current authentication form inputs were not forwarded: %#v", f.request.Inputs)
+	}
+}
+
 func TestNoninteractiveAuthRequiredDoesNotLogin(t *testing.T) {
 	f := &actionExec{output: `{"auth_required":true}`}
 	r := ActionRunner{Executor: f}

@@ -90,6 +90,27 @@ func TestSplitDirectoryFormHasKeyboardAddRow(t *testing.T) {
 	}
 }
 
+func TestSplitDirectoryAddRowShowsBrowseShortcut(t *testing.T) {
+	m, _, _, _ := splitDirectoryForm(t)
+	m.Update(key(tea.KeyDown, ""))
+	m.Update(key(tea.KeyDown, ""))
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "b - Browse") {
+		t.Fatalf("focused directory Add row does not show the Browse shortcut:\n%s", view)
+	}
+}
+
+func TestSplitStringCollectionDoesNotShowBrowseShortcut(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "hosts", Label: "Git hosts", Type: "string", Multiple: true}}, map[string]any{"hosts": []string{"github.com"}})
+	m.SetSections(FormSection{Title: "Inputs", Fields: []string{"hosts"}})
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 24})
+	m.Update(key(tea.KeyRight, ""))
+	view := ansi.Strip(m.View().Content)
+	if strings.Contains(view, "b - Browse") {
+		t.Fatalf("non-path collection shows an unavailable Browse shortcut:\n%s", view)
+	}
+}
+
 func TestSplitStringCollectionCanEditSavedHosts(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "hosts", Label: "Git hosts", Type: "string", Multiple: true}}, map[string]any{"hosts": []string{"github.com", "git.example"}})
 	m.SetSections(FormSection{Title: "Inputs", Fields: []string{"hosts"}})

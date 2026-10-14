@@ -12,6 +12,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type diagnosticAuthExecutor struct {
@@ -92,8 +93,8 @@ func TestApplyProfileDoesNotInferAuthenticationFromSavedCredentialFile(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Errors) > 0 || len(result.Changes) == 0 {
-		t.Fatalf("saved credential presence was mistaken for completed authentication: %+v", result)
+	if result.AuthenticationStatus != viewmodel.AuthenticationNotCheckedThisRun || len(result.Changes) == 0 {
+		t.Fatalf("existing credentials should allow apply but report authentication was not checked this run: %+v", result)
 	}
 }
 

@@ -244,6 +244,13 @@ func (m *FormModel) Definitions() []catalog.Input { return append([]catalog.Inpu
 // PaneWidth returns the current overall form width.
 func (m *FormModel) PaneWidth() int { return m.width }
 
+// SectionContentWidth returns the text width available to read-only section
+// content after its two-cell bullet/continuation prefix in the split pane.
+func (m *FormModel) SectionContentWidth() int {
+	_, _, rightWidth := splitPaneWidths(m.width)
+	return max(1, rightWidth-3) // Reserve the prefix and final scrollbar cell.
+}
+
 // PickerActive reports whether the embedded fallback picker owns input.
 func (m *FormModel) PickerActive() bool { return m.browser != nil }
 
@@ -2128,10 +2135,15 @@ func (m *FormModel) submitActionLabel() string {
 	return "Save"
 }
 
+func splitPaneWidths(width int) (innerWidth, leftWidth, rightWidth int) {
+	innerWidth = max(18, width-2)
+	leftWidth = max(18, innerWidth/3)
+	rightWidth = max(18, innerWidth-leftWidth-3)
+	return innerWidth, leftWidth, rightWidth
+}
+
 func (m *FormModel) splitLayout() formLayout {
-	innerWidth := max(18, m.width-2)
-	leftWidth := max(18, innerWidth/3)
-	rightWidth := max(18, innerWidth-leftWidth-3)
+	innerWidth, leftWidth, rightWidth := splitPaneWidths(m.width)
 	rightContentWidth := max(1, rightWidth-1) // Reserve the final pane cell for its scrollbar.
 	values := m.editor.Values()
 	sectionHeading := m.sectionHeading
@@ -2154,7 +2166,7 @@ func (m *FormModel) splitLayout() formLayout {
 	rightLineChoices := []int{-1}
 	sectionContent := m.sectionContent[m.currentSectionKey()]
 	for _, line := range sectionContent {
-		for part, wrapped := range wrapCellText(line, max(1, rightWidth-2)) {
+		for part, wrapped := range wrapCellText(line, m.SectionContentWidth()) {
 			prefix := "  "
 			if part == 0 {
 				prefix = "· "
@@ -2380,7 +2392,7 @@ func (m *FormModel) splitLayout() formLayout {
 	footer := strings.Join(areaLabels, " · ") + "\n" + controls + "\n" + actions
 	if m.selected < len(m.defs) && isEditableCollection(m.defs[m.selected]) {
 		if def := m.defs[m.selected]; def.Type == "directory" || def.Type == "file" {
-			footer = "Enter edit · a Add (picker) · Backspace Remove · m Type path · b Browse\n" + footer
+			footer = "Enter edit · a Add (picker) · Backspace Remove · m Type path · b - Browse\n" + footer
 		} else {
 			footer = "Enter edit/add · a Add · Backspace Remove\n" + footer
 		}

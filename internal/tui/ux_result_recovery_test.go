@@ -645,32 +645,60 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 	}
 }
 
-func TestUXResultShowsActionableAuthenticationFailureWithoutAuthState(t *testing.T) {
+func TestUXResultShowsActionableAuthenticationFailureAsNotConfirmed(t *testing.T) {
 	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
 		Target: "demo/default", Saved: true, SavedApplicable: true,
-		Errors: []string{"demo authentication required; run aact mcp authenticate demo with credentials or --interactive"},
+		AuthenticationStatus: viewmodel.AuthenticationNotConfirmed,
+		Errors:               []string{"demo authentication required; run aact mcp authenticate demo with credentials or --interactive"},
 	})
 	joined := strings.Join(result.Rows, "\n")
-	for _, want := range []string{"Saved: yes", "Applied effects: none reported", "demo authentication required"} {
+	for _, want := range []string{"Saved: yes", "Authentication: not confirmed", "Applied effects: none reported", "demo authentication required"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("operation result missing %q:\n%s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "Authentication:") || strings.Contains(joined, "registered") {
-		t.Fatalf("operation showed obsolete auth state or implied registration:\n%s", joined)
+	if strings.Contains(joined, "registered") {
+		t.Fatalf("operation implied registration:\n%s", joined)
 	}
 	if !result.Failed {
 		t.Fatalf("nil-error auth-required outcome looked complete:\n%s", joined)
 	}
 }
 
-func TestUXResultDoesNotPresentAuthenticationStateAsAnOutcome(t *testing.T) {
+func TestUXResultReportsSkippedAuthenticationAsNotCheckedThisRun(t *testing.T) {
 	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
 		Target: "demo/default", Saved: true, SavedApplicable: true,
+		AuthenticationStatus: viewmodel.AuthenticationNotCheckedThisRun,
+		Changes:              []state.Installation{{Component: "mcp", AgentID: "opencode", RegistrationName: "demo"}},
 	})
 	joined := strings.Join(result.Rows, "\n")
-	if strings.Contains(joined, "Authentication:") || !strings.Contains(joined, "Applied effects: none reported") || strings.Contains(joined, "registered") {
-		t.Fatalf("obsolete authentication state was presented:\n%s", joined)
+	if !strings.Contains(joined, "Authentication: not checked this run") || !strings.Contains(joined, "Applied effects: 1 reported") {
+		t.Fatalf("skipped authentication status was unclear or successful registration was omitted:\n%s", joined)
+	}
+}
+
+func TestUXResultReportsCompletedAuthenticationWithoutClaimingRegistration(t *testing.T) {
+	result := resultStateFromOperation("install", "", nil, viewmodel.OperationResult{
+		Target: "demo/default", Saved: true, SavedApplicable: true,
+		AuthenticationStatus: viewmodel.AuthenticationComplete,
+	})
+	joined := strings.Join(result.Rows, "\n")
+	if !strings.Contains(joined, "Authentication: complete") || !strings.Contains(joined, "Applied effects: none reported") || strings.Contains(joined, "registered") {
+		t.Fatalf("completed authentication status or effects were unclear:\n%s", joined)
+	}
+}
+
+func TestUXResultShowsHealthFailureStatusAndKeepsProbeError(t *testing.T) {
+	const cause = "MCP health endpoint returned HTTP 503"
+	result := resultStateFromOperation("install", "", errors.New(cause), viewmodel.OperationResult{
+		Target: "demo/default", AuthenticationStatus: viewmodel.AuthenticationFailed,
+	})
+	joined := strings.Join(result.Rows, "\n")
+	if !strings.Contains(joined, "Authentication: failed") || !strings.Contains(joined, cause) || strings.Contains(joined, "bad credentials") {
+		t.Fatalf("health failure status or precise probe cause was lost or misattributed:\n%s", joined)
+	}
+	if !result.Failed {
+		t.Fatalf("health failure result appeared successful:\n%s", joined)
 	}
 }
 

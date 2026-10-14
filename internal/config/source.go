@@ -98,6 +98,12 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 		}
 	}
 	if manifest == "" {
+		manifest, err = savedDefaultPack(stateRoot)
+		if err != nil {
+			return Source{}, err
+		}
+	}
+	if manifest == "" {
 		return bundledSource(bundledRoot, stateRoot)
 	}
 	data, err := os.ReadFile(manifest)
@@ -147,6 +153,11 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	}
 	for _, entry := range entries {
 		s.Catalog = append(s.Catalog, entry.Package)
+	}
+	if !preview && explicitConfig == "" {
+		if err := rememberDefaultPack(stateRoot, manifest); err != nil {
+			return Source{}, err
+		}
 	}
 	return s, nil
 }

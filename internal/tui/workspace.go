@@ -576,7 +576,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		m.form.SetSectionActionsID(sectionRuntimeID, runtimeActions...)
 		m.form.SetSectionContentID(sectionLogsID, logs)
 	}
-	information := workspaceInformationLines(preview, max(20, m.form.PaneWidth()/2))
+	information := workspaceInformationLines(preview, m.form.SectionContentWidth())
 	if preview.MCP {
 		if profileInformation := workspaceProfileInformationLines(m.workspace.Profile); len(profileInformation) > 0 {
 			information = append(profileInformation, information...)

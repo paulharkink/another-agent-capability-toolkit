@@ -243,7 +243,7 @@ func (m *Model) logsOverlay(lines []string) []string {
 		if y+i >= len(lines) {
 			break
 		}
-		lines[y+i] = ansi.Cut(lines[y+i], 0, x) + line + ansi.Cut(lines[y+i], x+w, m.width)
+		lines[y+i] = fit(ansi.Cut(lines[y+i], 0, x)+line+ansi.Cut(lines[y+i], x+w, m.width), m.width)
 	}
 	return lines
 }

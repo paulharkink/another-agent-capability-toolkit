@@ -5,6 +5,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
@@ -274,10 +275,14 @@ func selectedWorkInstallationDetails(snapshot viewmodel.CapabilityProfileSnapsho
 						break
 					}
 				}
-				label := destination + " · " + selected.Kind + " · " + selected.Name
+				label := agents.DisplayName(destination) + " · " + selected.Kind + " · " + selected.Name
 				if status == "installed" {
 					complete++
-					details = append(details, label+": installed")
+					if selected.Kind == "mcp" {
+						details = append(details, label+": registered")
+					} else {
+						details = append(details, label+": installed")
+					}
 				} else {
 					if status == "unknown" || status == "unavailable" || status == "unobserved" || status == "stale" {
 						hasUnknown = true

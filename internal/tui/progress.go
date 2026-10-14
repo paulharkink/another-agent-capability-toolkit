@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,6 +70,9 @@ func resultStateFromOperationOutcome(action, output string, err error, operation
 		} else {
 			rows = append(rows, "Saved: no")
 		}
+	}
+	if outcomeKnown && operation.AuthenticationStatus != "" {
+		rows = append(rows, "Authentication: "+operation.AuthenticationStatus)
 	}
 	if outcomeKnown {
 		if len(operation.Changes) == 0 {
@@ -217,6 +221,19 @@ func operationEffectText(effect state.Installation) string {
 	}
 	if effect.Component != "" {
 		parts = append(parts, effect.Component)
+	}
+	componentName := effect.Key.MCP
+	if componentName == "" {
+		componentName = effect.Key.Profile
+	}
+	if componentName == "" && effect.Component == "skill" && effect.Destination != "" {
+		componentName = filepath.Base(effect.Destination)
+	}
+	if componentName == "" && effect.Component == "plugin" {
+		componentName, _, _ = strings.Cut(effect.ReleaseID, "@")
+	}
+	if componentName != "" {
+		parts = append(parts, componentName)
 	}
 	if effect.RegistrationName != "" {
 		parts = append(parts, "registration "+effect.RegistrationName)

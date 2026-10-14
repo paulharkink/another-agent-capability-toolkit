@@ -475,12 +475,40 @@ func TestRuntimeDigestChangesForEditedConfigAtStableMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Runtime.Mounts[0].Source != second.Runtime.Mounts[0].Source {
-		t.Fatal("expected stable config mount")
+	if len(first.Runtime.Mounts) != len(second.Runtime.Mounts) {
+		t.Fatalf("config mount count changed: %v / %v", first.Runtime.Mounts, second.Runtime.Mounts)
+	}
+	for i := range first.Runtime.Mounts {
+		if first.Runtime.Mounts[i] != second.Runtime.Mounts[i] {
+			t.Fatalf("config mount path/options changed: %v / %v", first.Runtime.Mounts, second.Runtime.Mounts)
+		}
 	}
 	a, b := first.Runtime.Env["AACT_CONFIG_DIGEST"], second.Runtime.Env["AACT_CONFIG_DIGEST"]
 	if a == "" || b == "" || a == b {
 		t.Fatalf("edited config digest unchanged: %q %q", a, b)
+	}
+}
+
+func TestIdenticalPreparedConfigPreservesMountedDirectoryIdentity(t *testing.T) {
+	q := helperRequest(t, "grafana-inspector", map[string]any{"grafana": map[string]any{"url": "https://grafana.example.test", "auth_mode": "api_token"}})
+	h := Helper{Executor: &helperProcess{AuthJSON: `{"auth_required":false}`}}
+	if _, err := h.Run(context.Background(), "grafana-inspector", q); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(q.StateDir, "config")
+	first, err := os.Stat(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Run(context.Background(), "grafana-inspector", q); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(first, second) {
+		t.Fatal("identical prepared config replaced the mounted directory; a running container can retain a stale bind mount")
 	}
 }
 

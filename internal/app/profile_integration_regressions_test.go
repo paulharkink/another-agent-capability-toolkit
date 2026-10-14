@@ -60,8 +60,12 @@ func TestProfileApplyGatesNoActionMCPOnDeclaredHealthPath(t *testing.T) {
 		}
 	}
 
-	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+	result, err := s.ApplyProfile(context.Background(), q)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.AuthenticationStatus != "complete" {
+		t.Fatalf("false then true health result status = %q, want complete", result.AuthenticationStatus)
 	}
 	if checks != 2 || initializes != 1 {
 		t.Fatalf("health checks = %d, initialize requests = %d; want false, true, then one initialize", checks, initializes)
@@ -150,6 +154,9 @@ func TestProfileApplyGatesHostAuthenticationActionOnDeclaredHealthPath(t *testin
 	}
 	if len(result.Changes) == 0 {
 		t.Fatalf("health endpoint did not authorize registration: %#v", result)
+	}
+	if result.AuthenticationStatus != "complete" {
+		t.Fatalf("ActionResult.AuthRequired overrode true health outcome: status=%q", result.AuthenticationStatus)
 	}
 	if !reflect.DeepEqual(order, []string{"authenticate", "start"}) {
 		t.Fatalf("host action/start order = %#v", order)
@@ -357,6 +364,9 @@ func TestProfileApplyDoesNotRegisterWhileDeclaredHealthPathRemainsFalse(t *testi
 	result, err := s.ApplyProfile(ctx, q)
 	if err == nil || (err != context.DeadlineExceeded && !strings.Contains(err.Error(), context.DeadlineExceeded.Error())) {
 		t.Fatalf("false health response did not time out: result=%#v err=%v", result, err)
+	}
+	if result.AuthenticationStatus != "failed" {
+		t.Fatalf("false health timeout status = %q, want failed; error=%v", result.AuthenticationStatus, err)
 	}
 	if len(a.calls) != 0 {
 		t.Fatalf("registration proceeded while health stayed false: %#v", a.calls)
@@ -598,5 +608,102 @@ func TestPreparedProfilePreservesStandardImageSelectionPortsAndState(t *testing.
 				t.Fatalf("private state mount was lost: %+v", spec.Mounts)
 			}
 		})
+	}
+}
+
+func TestProfileApplyHealthProbeErrorReportsAuthenticationFailedAndKeepsCause(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+	}{
+		{name: "HTTP error", body: `provider diagnostic fixture`, status: http.StatusServiceUnavailable},
+		{name: "malformed payload", body: `{"authenticated":"unknown"}`, status: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, q := profileApplyFixture(t)
+			p := &s.Source.Catalog[0]
+			p.Skills, p.Skill, p.MCP = nil, nil, nil
+			p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}}
+			p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+			q.ItemIDs = []string{"set:alpha-only"}
+			q.Inputs = map[string]any{"label": "company", "enabled": true}
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/health" {
+					t.Errorf("unexpected request after failed auth health: %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer endpoint.Close()
+			q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
+			result, err := s.ApplyProfile(context.Background(), q)
+			if err == nil || !strings.Contains(err.Error(), "MCP health") {
+				t.Fatalf("probe failure lost its health diagnostic: result=%#v err=%v", result, err)
+			}
+			if result.AuthenticationStatus != "failed" {
+				t.Fatalf("probe failure status = %q, want failed; error=%v", result.AuthenticationStatus, err)
+			}
+		})
+	}
+}
+
+func TestProfileApplyProtocolFailureKeepsConfirmedAuthenticationComplete(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/mcp" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer endpoint.Close()
+	q.ExternalURLs = map[string]string{"alpha": endpoint.URL + "/mcp"}
+	result, err := s.ApplyProfile(context.Background(), q)
+	if err == nil || !strings.Contains(err.Error(), "MCP health check failed") {
+		t.Fatalf("protocol failure diagnostic missing: result=%#v err=%v", result, err)
+	}
+	if result.AuthenticationStatus != "complete" {
+		t.Fatalf("protocol failure changed confirmed authentication status: %q", result.AuthenticationStatus)
+	}
+}
+
+func TestProfileApplyMultiMCPHealthFailureDominatesEarlierSuccess(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}, {Name: "beta", Transport: "streamable-http", HealthPath: "/health"}}
+	p.Sets = []catalog.ComponentSet{{Name: "both", MCPs: []string{"alpha", "beta"}}}
+	q.ItemIDs = []string{"set:both"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
+	alpha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/mcp" {
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+			return
+		}
+		t.Errorf("unexpected alpha request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer alpha.Close()
+	beta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer beta.Close()
+	q.ExternalURLs = map[string]string{"alpha": alpha.URL + "/mcp", "beta": beta.URL + "/mcp"}
+	result, err := s.ApplyProfile(context.Background(), q)
+	if err == nil || result.AuthenticationStatus != "failed" {
+		t.Fatalf("later MCP failure did not dominate earlier success: result=%#v err=%v", result, err)
 	}
 }

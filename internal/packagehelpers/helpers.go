@@ -651,10 +651,27 @@ func removeConfigKey(raw map[string]any, path string) {
 	delete(raw, keys[len(keys)-1])
 }
 func publishConfig(staged, stable string) error {
-	if _, err := os.Stat(stable); os.IsNotExist(err) {
+	stableInfo, err := os.Stat(stable)
+	if os.IsNotExist(err) {
 		return os.Rename(staged, stable)
 	} else if err != nil {
 		return err
+	}
+	if stableInfo.IsDir() {
+		stagedDigest, err := configDigest(staged)
+		if err != nil {
+			return err
+		}
+		stableDigest, err := configDigest(stable)
+		if err != nil {
+			return err
+		}
+		if stagedDigest == stableDigest {
+			// Keep the published directory inode when its contents are unchanged.
+			// A running container bind-mounts this directory and would otherwise
+			// continue to reference the renamed, now-unlinked previous directory.
+			return os.RemoveAll(staged)
+		}
 	}
 	backup, err := os.MkdirTemp(filepath.Dir(stable), ".config-previous-*")
 	if err != nil {

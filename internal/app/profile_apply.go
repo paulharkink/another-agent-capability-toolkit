@@ -920,6 +920,27 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			plugins[v] = true
 		}
 	}
+	authenticationRequired := map[string]bool{}
+	authenticationComplete := map[string]bool{}
+	for _, definition := range p.MCPDefinitions() {
+		if mcps[definition.Name] {
+			if _, hasAuth := definition.Actions["authenticate"]; hasAuth || definition.HealthPath != "" {
+				authenticationRequired[definition.Name] = true
+			}
+		}
+	}
+	markAuthenticationComplete := func(name string) {
+		authenticationComplete[name] = true
+		if len(authenticationRequired) > 0 && len(authenticationComplete) == len(authenticationRequired) && out.AuthenticationStatus != viewmodel.AuthenticationFailed {
+			out.AuthenticationStatus = viewmodel.AuthenticationComplete
+		}
+	}
+	if len(authenticationRequired) == 0 {
+		out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
+	} else {
+		out.AuthenticationStatus = viewmodel.AuthenticationNotCheckedThisRun
+	}
+
 	if destIDs == nil {
 		settings, e := s.UISettings(ctx)
 		if e != nil {
@@ -1058,6 +1079,10 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				reportOperationStep(ctx, out.Step)
 				instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 				if err != nil {
+					var authFailure authenticationRequiredFailure
+					if definition.HealthPath == "" && errors.As(err, &authFailure) {
+						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+					}
 					var failure operationFailure
 					if errors.As(err, &failure) {
 						out.Step = failure.step
@@ -1093,6 +1118,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 						return out, e
 					}
 					if result.AuthRequired && definition.HealthPath == "" {
+						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
 						diagnostic := strings.TrimSpace(result.Diagnostic)
 						if diagnostic != "" && !containerAuthentication {
 							return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
@@ -1105,6 +1131,9 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 					}
 					if result.LoginURL != "" {
 						reportOperationOutput(ctx, result.LoginURL)
+					}
+					if definition.HealthPath == "" {
+						markAuthenticationComplete(definition.Name)
 					}
 					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
 						return out, e
@@ -1124,6 +1153,10 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				reportOperationStep(ctx, out.Step)
 				instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 				if startErr != nil {
+					var authFailure authenticationRequiredFailure
+					if definition.HealthPath == "" && errors.As(startErr, &authFailure) {
+						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+					}
 					var failure operationFailure
 					if errors.As(startErr, &failure) {
 						out.Step = failure.step
@@ -1143,6 +1176,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				healthHeaders.Set(name, value)
 			}
 			if e := mcp.WaitForAuthenticated(ctx, urls[definition.Name], definition.HealthPath, healthHeaders); e != nil {
+				out.AuthenticationStatus = viewmodel.AuthenticationFailed
 				if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
 					return out, saveErr
 				}
@@ -1151,6 +1185,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				}
 				return out, e
 			}
+			markAuthenticationComplete(definition.Name)
 			if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
 				return out, fmt.Errorf("MCP health check failed: %w", e)
 			}
