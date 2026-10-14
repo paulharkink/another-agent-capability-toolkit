@@ -16,6 +16,8 @@ from typing import Any, Iterator
 
 import psycopg
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from config import ClusterProfile, DatabaseProfile, TenantProfile, load_profile, materialize_kubeconfig, validate_selections
 
@@ -120,9 +122,9 @@ def _kubectl(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> st
     return result.stdout
 
 
-def _kubectl_json(arguments: list[str]) -> dict[str, Any]:
+def _kubectl_json(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
     try:
-        value = json.loads(_kubectl(arguments))
+        value = json.loads(_kubectl(arguments, timeout=timeout))
     except json.JSONDecodeError:
         raise ValueError("Kubernetes returned invalid JSON.") from None
     if not isinstance(value, dict):
@@ -136,6 +138,35 @@ def _require_session() -> dict[str, str] | None:
     except ValueError:
         return _error("No valid Kubernetes session is available. Start and authenticate this cluster-inspector profile, then retry.")
     return None
+
+
+def _has_authenticated_identity() -> bool:
+    try:
+        identity = _kubectl_json(["auth", "whoami", "--output=json"], timeout=10)
+    except Exception:
+        return False
+    status = identity.get("status")
+    user_info = status.get("userInfo") if isinstance(status, dict) else None
+    if not isinstance(user_info, dict):
+        return False
+    username = user_info.get("username")
+    groups = user_info.get("groups")
+    if not isinstance(username, str) or not isinstance(groups, list):
+        return False
+    normalized_username = username.strip()
+    if not normalized_username:
+        return False
+    if any(not isinstance(group, str) for group in groups):
+        return False
+    return normalized_username != "system:anonymous" and not any(
+        group.strip() == "system:unauthenticated" for group in groups
+    )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Report whether the configured Kubernetes identity probe succeeds."""
+    return JSONResponse({"authenticated": _has_authenticated_identity()})
 
 
 def _database_connections() -> dict[str, TenantProfile]:

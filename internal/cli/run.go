@@ -202,6 +202,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			if value.Logs != "" {
 				fmt.Fprint(out, value.Logs)
 			}
+			if value.LoginURL != "" {
+				fmt.Fprintln(out, value.LoginURL)
+			}
 			if value.Message != "" {
 				fmt.Fprintln(out, value.Message)
 			}

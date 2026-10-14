@@ -21,6 +21,18 @@ type Executor interface {
 }
 type OSExecutor struct{}
 
+// ConfigureChildProcessTree prepares cmd so SignalChildProcessTree can target
+// its descendants as well as the command itself.
+func ConfigureChildProcessTree(cmd *exec.Cmd) {
+	configureChildProcessTree(cmd)
+}
+
+// SignalChildProcessTree terminates cmd and its descendants. force selects an
+// immediate kill after callers have had a chance to request graceful shutdown.
+func SignalChildProcessTree(cmd *exec.Cmd, force bool) error {
+	return signalChildProcessTree(cmd, force)
+}
+
 func (OSExecutor) Run(ctx context.Context, argv []string, cwd string, stdin []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
 	return Run(ctx, argv, cwd, stdin, env, onStderr)
 }

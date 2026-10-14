@@ -6,7 +6,7 @@ import (
 )
 
 func TestBundledMCPReleaseImagesArePinnedToAACTVersionTemplate(t *testing.T) {
-	for _, id := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector"} {
+	for _, id := range []string{"cluster-inspector", "grafana-inspector", "azure-inspector", "argocd"} {
 		pkg, err := Load("../../packages/" + id)
 		if err != nil {
 			t.Fatal(err)

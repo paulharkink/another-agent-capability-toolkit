@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,22 @@ import (
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validateMCPHealthPath(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawFragment != "" || strings.Contains(value, "#") {
+		return fmt.Errorf("must be an absolute path without origin, query, or fragment")
+	}
+	if strings.Contains(value, `\`) {
+		return fmt.Errorf("must not contain path traversal or escaping segments")
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return fmt.Errorf("must not contain path traversal or escaping segments")
+		}
+	}
+	return nil
+}
 
 func Load(dir string) (Package, error) {
 	abs, err := filepath.Abs(dir)
@@ -422,6 +439,11 @@ func Validate(p Package) error {
 		if mcp.RegistrationTimeoutMS < 0 {
 			return fmt.Errorf("mcp registration_timeout_ms must be positive")
 		}
+		if mcp.HealthPath != "" {
+			if err := validateMCPHealthPath(mcp.HealthPath); err != nil {
+				return fmt.Errorf("mcp %s health_path: %w", mcp.Name, err)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	inputsByName := map[string]Input{}
@@ -472,6 +494,60 @@ func Validate(p Package) error {
 		}
 	}
 	for _, mcp := range p.MCPDefinitions() {
+		usedContainerPorts := map[int]bool{}
+		for _, port := range mcp.AdditionalPorts {
+			if len(port.When) == 0 {
+				return fmt.Errorf("mcp %s additional port condition is required", mcp.Name)
+			}
+			if port.ContainerPortInput == "" {
+				if port.ContainerPort < 1 || port.ContainerPort > 65535 {
+					return fmt.Errorf("mcp %s additional port must be within 1..65535", mcp.Name)
+				}
+				if usedContainerPorts[port.ContainerPort] {
+					return fmt.Errorf("mcp %s additional port %d is declared more than once", mcp.Name, port.ContainerPort)
+				}
+				usedContainerPorts[port.ContainerPort] = true
+			} else if port.ContainerPort != 0 {
+				return fmt.Errorf("mcp %s additional port must use either container_port or container_port_input", mcp.Name)
+			}
+			hostPortInput, ok := inputsByName[port.HostPortInput]
+			if !ok || hostPortInput.Type != "integer" {
+				return fmt.Errorf("mcp %s additional port host_port_input %q must reference a declared integer input", mcp.Name, port.HostPortInput)
+			}
+			if port.ContainerPortInput != "" {
+				containerPortInput, ok := inputsByName[port.ContainerPortInput]
+				if !ok || containerPortInput.Type != "integer" {
+					return fmt.Errorf("mcp %s additional port container_port_input %q must reference a declared integer input", mcp.Name, port.ContainerPortInput)
+				}
+				if containerPortInput.Min == nil || containerPortInput.Max == nil || *containerPortInput.Min < 1 || *containerPortInput.Max > 65535 {
+					return fmt.Errorf("mcp %s additional port container_port_input %q must be bounded within 1..65535", mcp.Name, port.ContainerPortInput)
+				}
+				if !InputVisible(containerPortInput, port.When) {
+					return fmt.Errorf("mcp %s additional port container_port_input %q must be visible whenever its condition matches", mcp.Name, port.ContainerPortInput)
+				}
+			}
+			for inputName, expected := range port.When {
+				input, ok := inputsByName[inputName]
+				if !ok {
+					return fmt.Errorf("mcp %s additional port condition references undeclared input %q", mcp.Name, inputName)
+				}
+				if !validInputEquality(input, expected) {
+					return fmt.Errorf("mcp %s additional port condition for %s must use a scalar value compatible with the input", mcp.Name, inputName)
+				}
+				if input.Type == "choice" {
+					found := false
+					for _, option := range input.Options {
+						if option.Value == expected {
+							found = true
+							break
+						}
+					}
+					if !found {
+						return fmt.Errorf("mcp %s additional port condition for %s must match a declared choice", mcp.Name, inputName)
+					}
+				}
+			}
+		}
 		if mcp.EnabledInput != "" {
 			input, ok := inputsByName[mcp.EnabledInput]
 			if !ok {
@@ -625,7 +701,37 @@ func Validate(p Package) error {
 	}
 	return nil
 }
+func validInputEquality(input Input, value any) bool {
+	switch input.Type {
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "integer":
+		switch value.(type) {
+		case int, int64:
+			return true
+		default:
+			return false
+		}
+	case "number", "float":
+		switch value.(type) {
+		case int, int64, float64:
+			return true
+		default:
+			return false
+		}
+	case "string", "secret", "choice":
+		_, ok := value.(string)
+		return ok
+	default:
+		return false
+	}
+}
+
 func validateCommand(c Command) error {
+	if c.Target != "" && c.Target != "host" && c.Target != "container" {
+		return fmt.Errorf("target must be host or container")
+	}
 	if len(c.Argv) == 0 || c.Argv[0] == "" {
 		return fmt.Errorf("command is required")
 	}
@@ -700,4 +806,13 @@ func declaredTimeout(command map[string]any) error {
 		return declaredTimeout(windows)
 	}
 	return nil
+}
+
+func hasPathEscape(value string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(value), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }

@@ -511,32 +511,74 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 	if tenant == "" || subscription == "" {
 		return mcp.ActionResult{}, errors.New("Azure tenant_id and subscription_id are required")
 	}
-	spec.Env = map[string]string{"AZMCP_TRANSPORT": "sse", "AZMCP_PORT": "8084", "AZURE_CONFIG_DIR": "/state", "HOME": "/tmp"}
+	spec.Env = map[string]string{
+		"AZMCP_TRANSPORT": "sse", "AZMCP_PORT": "8084",
+		"AZURE_CONFIG_DIR": "/state", "HOME": "/tmp",
+		"AACT_AZURE_TENANT_ID": tenant, "AACT_AZURE_SUBSCRIPTION_ID": subscription,
+	}
 	spec.Args = []string{"server", "start"}
 	base := []string{"run", "--rm"}
 	if spec.User != "" {
 		base = append(base, "--user", spec.User)
 	}
-	base = append(base, "--mount", "type=bind,src="+q.StateDir+",dst=/state", "--env", "AZURE_CONFIG_DIR=/state", "--env", "HOME=/tmp", "--entrypoint", "az", spec.Image)
+	base = append(base, "--mount", "type=bind,src="+q.StateDir+",dst=/state",
+		"--env", "AZURE_CONFIG_DIR=/state", "--env", "HOME=/tmp",
+		"--env", "AACT_AZURE_TENANT_ID="+tenant,
+		"--env", "AACT_AZURE_SUBSCRIPTION_ID="+subscription,
+		"--entrypoint", "az", spec.Image)
 	call := func(a ...string) error {
 		_, err := h.command(ctx, append(append([]string{}, base...), a...), nil, nil, secrets)
 		return err
 	}
+	probeToken := func() error {
+		executor := h.Executor
+		if executor == nil {
+			executor = process.OSExecutor{}
+		}
+		// Probe stderr is kept private: it is used only to distinguish a missing
+		// login from an operational Azure CLI or Docker failure.
+		var probeStderr bytes.Buffer
+		capture := func(p []byte) { _, _ = probeStderr.Write(p) }
+		accountArgs := append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "json")
+		accountOutput, err := executor.Run(ctx, append([]string{"docker"}, accountArgs...), "", nil, nil, capture)
+		if err != nil {
+			if azureLoginRequired(probeStderr.String()) {
+				return errAzureLoginRequired
+			}
+			return errors.New("Azure subscription account probe failed")
+		}
+		var account struct {
+			TenantID string `json:"tenantId"`
+		}
+		if json.Unmarshal(accountOutput, &account) != nil {
+			return errors.New("Azure subscription account metadata is malformed")
+		}
+		if account.TenantID == "" {
+			return errors.New("Azure subscription account metadata is missing tenantId")
+		}
+		if !strings.EqualFold(account.TenantID, tenant) {
+			return errAzureLoginRequired
+		}
+		tokenArgs := append(append([]string{}, base...), "account", "get-access-token",
+			"--subscription", subscription, "--output", "none")
+		_, err = executor.Run(ctx, append([]string{"docker"}, tokenArgs...), "", nil, nil, capture)
+		if err == nil {
+			return nil
+		}
+		if azureLoginRequired(probeStderr.String()) {
+			return errAzureLoginRequired
+		}
+		return errors.New("Azure access-token probe failed")
+	}
 	if err := call("config", "set", "core.login_experience_v2=off"); err != nil {
 		return mcp.ActionResult{}, err
 	}
-	var probeOutput bytes.Buffer
-	_, probeErr := h.commandWithStderr(ctx, append(append([]string{}, base...), "account", "show", "--subscription", subscription, "--output", "none"), nil, nil, secrets, func(p []byte) { probeOutput.Write(p) })
-	if probeErr != nil {
-		output := strings.TrimSpace(probeOutput.String())
-		if !azureLoginRequired(output) {
-			if h.OnStderr != nil && probeOutput.Len() > 0 {
-				h.OnStderr(probeOutput.Bytes())
-			}
-			return mcp.ActionResult{}, probeErr
+	if err := probeToken(); err != nil {
+		if !errors.Is(err, errAzureLoginRequired) {
+			return mcp.ActionResult{}, err
 		}
 		if q.Action != "authenticate" || !q.Interactive {
-			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Azure CLI account probe requires authentication: " + output}, nil
+			return mcp.ActionResult{AuthRequired: true, Diagnostic: "Selected Azure tenant and subscription credentials need authentication."}, nil
 		}
 		argv := append(append([]string{"docker"}, base...), "login", "--use-device-code", "--tenant", tenant, "--output", "none")
 		if h.Executor == nil {
@@ -556,6 +598,12 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 				h.OnStderr(out)
 			}
 		}
+		if err := probeToken(); err != nil {
+			if !errors.Is(err, errAzureLoginRequired) {
+				return mcp.ActionResult{}, err
+			}
+			return mcp.ActionResult{}, errors.New("Azure credentials could not obtain an access token for the selected tenant and subscription")
+		}
 	}
 	if err := call("account", "set", "--subscription", subscription, "--output", "none"); err != nil {
 		return mcp.ActionResult{}, err
@@ -563,9 +611,23 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 	return mcp.ActionResult{Runtime: spec}, nil
 }
 
-func azureLoginRequired(output string) bool {
-	message := strings.ToLower(output)
-	return strings.Contains(message, "az login") || strings.Contains(message, "not logged in")
+var errAzureLoginRequired = errors.New("Azure login is required")
+
+func azureLoginRequired(stderr string) bool {
+	message := strings.ToLower(strings.Join(strings.Fields(stderr), " "))
+	message = strings.NewReplacer("'", "", `"`, "", "`", "").Replace(message)
+	for _, phrase := range []string{
+		"to re-authenticate, please run: az login",
+		"run the command below to authenticate interactively; additional arguments may be added as needed: az logout az login",
+		"does not exist in msal token cache. run az login",
+		"interactive authentication is needed. please run: az login",
+		"please run az login to setup account.",
+	} {
+		if strings.Contains(message, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 type callbackProgress struct{ callback func([]byte) }

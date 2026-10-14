@@ -29,15 +29,21 @@ type ActionRequest struct {
 	ReleaseImage    string         `json:"release_image,omitempty"`
 }
 type ActionResult struct {
+	LoginURL     string                      `json:"login_url,omitempty"`
 	AuthRequired bool                        `json:"auth_required"`
 	Diagnostic   string                      `json:"diagnostic,omitempty"`
 	Choices      map[string][]catalog.Choice `json:"choices,omitempty"`
 	Runtime      *RunSpec                    `json:"runtime,omitempty"`
 }
+type ContainerActionExecutor interface {
+	Exec(context.Context, []string, []byte, func([]byte)) ([]byte, error)
+}
+
 type ActionRunner struct {
-	Executor process.Executor
-	GOOS     string
-	OnStderr func([]byte)
+	Executor          process.Executor
+	ContainerExecutor ContainerActionExecutor
+	GOOS              string
+	OnStderr          func([]byte)
 }
 
 type actionFailure struct {
@@ -76,19 +82,26 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		goos = runtime.GOOS
 	}
 	if goos == "windows" && cmd.Windows != nil {
+		target := cmd.Target
 		cmd = *cmd.Windows
+		if cmd.Target == "" {
+			cmd.Target = target
+		}
 	}
 	argv := append([]string{}, cmd.Argv...)
 	if len(argv) == 0 {
 		return ActionResult{}, errors.New("empty action command")
 	}
 	workingDir := p.Dir
-	if strings.ContainsAny(argv[0], "/\\") && !filepath.IsAbs(argv[0]) {
+	if cmd.Target != "container" && strings.ContainsAny(argv[0], "/\\") && !filepath.IsAbs(argv[0]) {
 		executable := filepath.Join(p.Dir, argv[0])
 		argv[0] = executable
 	}
 	q.ProtocolVersion = 1
 	q.PackageDir = p.Dir
+	if cmd.Target == "container" {
+		q.StateDir = "/state"
+	}
 	b, e := json.Marshal(q)
 	if e != nil {
 		return ActionResult{}, e
@@ -124,7 +137,16 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 			r.OnStderr(b)
 		}
 	})
-	out, e := executor.Run(ctx, argv, workingDir, b, nil, redactor.Write)
+	var out []byte
+	if cmd.Target == "container" {
+		if r.ContainerExecutor == nil {
+			e = errors.New("container action runtime is unavailable")
+		} else {
+			out, e = r.ContainerExecutor.Exec(ctx, argv, b, redactor.Write)
+		}
+	} else {
+		out, e = executor.Run(ctx, argv, workingDir, b, nil, redactor.Write)
+	}
 	redactor.Flush()
 	if e != nil {
 		message := fmt.Sprintf("%s %s failed: %s: %s", p.ID, q.Action, scrub(e.Error()), strings.TrimSpace(string(diagnostics)))
@@ -157,6 +179,7 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 		}
 	}
 	result.Diagnostic = scrub(result.Diagnostic)
+	result.LoginURL = scrub(result.LoginURL)
 	return result, nil
 }
 

@@ -3,10 +3,14 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -365,5 +369,142 @@ func TestApplyProfileRecordFailureReportsAchievedEffect(t *testing.T) {
 	rows, _ := s.Store.Installations()
 	if err == nil || out.Step != "record" || len(out.Changes) != 1 || len(rows) != 0 {
 		t.Fatalf("%+v rows=%v err=%v", out, rows, err)
+	}
+}
+
+func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	healthChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			healthChecks++
+			if healthChecks == 1 {
+				_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"authenticated":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/mcp":
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		default:
+			t.Errorf("unexpected MCP health request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	runtime := &authenticationTestRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, results: []string{`{"login_url":"https://login.example/device"}`}}
+	s.Options.Runtime = runtime
+	a.inspect = func() {
+		if healthChecks != 2 {
+			t.Fatalf("MCP registration started after %d health checks, expected explicit true after false", healthChecks)
+		}
+	}
+	var progress []viewmodel.OperationProgress
+	ctx := viewmodel.WithOperationProgress(context.Background(), func(event viewmodel.OperationProgress) { progress = append(progress, event) })
+	result, err := s.ApplyProfile(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Changes) == 0 {
+		t.Fatalf("confirmed authentication did not produce registration changes: %#v", result)
+	}
+	if len(runtime.keys) != 1 {
+		t.Fatalf("runtime starts = %d", len(runtime.keys))
+	}
+	if len(runtime.actions) != 1 || runtime.actions[0] != "authenticate" {
+		t.Fatalf("actions = %#v", runtime.actions)
+	}
+	if len(runtime.stateDirs) != 1 || runtime.stateDirs[0] != "/state" {
+		t.Fatalf("container authentication state_dir = %#v", runtime.stateDirs)
+	}
+	if healthChecks != 2 {
+		t.Fatalf("health checks = %d, want false then true", healthChecks)
+	}
+	foundRegistration := false
+	for _, call := range a.calls {
+		if strings.HasPrefix(call, "mcp:") {
+			foundRegistration = true
+		}
+	}
+	if !foundRegistration {
+		t.Fatalf("registration did not happen after confirmed auth: %#v", a.calls)
+	}
+	if len(progress) == 0 || !strings.Contains(fmt.Sprint(progress), "https://login.example/device") {
+		t.Fatalf("login URL was not reported through progress: %#v", progress)
+	}
+}
+
+func TestReconfiguredProfileAuthFailurePreservesSavedStateAndReportsAuthRequired(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	p.Inputs = append(p.Inputs, catalog.Input{Name: "auth_mode", Type: "string"})
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture:v2", Transport: "streamable-http", HealthPath: "/health", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+	q.Inputs = map[string]any{"enabled": false, "auth_mode": "api_token"}
+	key, err := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, *p, p.MCPs[0])
+	oldRegistration := state.Installation{Key: child, AgentID: a.ID(), AgentKind: a.ID(), Component: "mcp", Destination: filepath.Join(a.home, "mcp", "alpha"), RegistrationName: "alpha", URL: "http://old.example/mcp"}
+	if err := s.Store.Record(oldRegistration); err != nil {
+		t.Fatal(err)
+	}
+	stateDir, err := s.Store.EnsureAuthDir(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "saved-session"), []byte("prior-session"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SaveAnswers(key, map[string]any{"enabled": true, "auth_mode": "sso"}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	defer server.Close()
+	runtime := &authenticationTestRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, results: []string{`{"login_url":"https://login.example/device"}`}}
+	s.Options.Runtime = runtime
+	result, err := s.ApplyProfile(context.Background(), q)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("unexpected health result=%#v err=%v", result, err)
+	}
+	if len(runtime.specs) != 1 || runtime.specs[0].Image != "fixture:v2" {
+		t.Fatalf("reconfigured runtime not retained: %#v", runtime.specs)
+	}
+	if len(runtime.requests) != 1 || runtime.requests[0].Inputs["auth_mode"] != "api_token" {
+		t.Fatalf("authentication did not use the currently selected mode: %#v", runtime.requests)
+	}
+	if len(a.calls) != 0 {
+		t.Fatalf("registration occurred after auth failure: %#v", a.calls)
+	}
+	answers, err := s.Store.Answers(key)
+	if err != nil || answers["enabled"] != true || answers["auth_mode"] != "sso" {
+		t.Fatalf("saved state changed: %#v %v", answers, err)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRegistration := false
+	for _, row := range rows {
+		if row.Key == child && row.Component == "mcp" && row.RegistrationName == "alpha" {
+			foundRegistration = true
+		}
+	}
+	if !foundRegistration {
+		t.Fatalf("existing registration was lost: %#v", rows)
+	}
+	if data, err := os.ReadFile(filepath.Join(stateDir, "saved-session")); err != nil || string(data) != "prior-session" {
+		t.Fatalf("saved auth state changed: %q %v", data, err)
 	}
 }

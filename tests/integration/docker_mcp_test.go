@@ -4,15 +4,86 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestConditionalCallbackPortAndMCPReadinessAreIndependent(t *testing.T) {
+	pkg, err := catalog.Load(filepath.Join("..", "..", "packages", "argocd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.MCP == nil || len(pkg.MCP.AdditionalPorts) != 1 {
+		t.Fatalf("expected one declared SSO callback mapping, got %+v", pkg.MCP)
+	}
+	callback := pkg.MCP.AdditionalPorts[0]
+	if callback.HostPortInput != "callback_port" || callback.ContainerPortInput != "callback_port" || callback.When["auth_mode"] != "sso" {
+		t.Fatalf("callback mapping is not restricted to the requested SSO callback port: %+v", callback)
+	}
+
+	var authenticated atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			if r.Method != http.MethodPost {
+				http.Error(w, "expected MCP initialize", http.StatusMethodNotAllowed)
+				return
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]bool{"authenticated": authenticated.Load()})
+		case "/oauth/callback":
+			authenticated.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if err := mcp.Health(context.Background(), server.URL+"/mcp", "streamable-http"); err != nil {
+		t.Fatalf("MCP readiness should succeed before authentication: %v", err)
+	}
+	checkAuthentication := func(want bool) {
+		t.Helper()
+		response, err := http.Get(server.URL + "/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var got struct {
+			Authenticated bool `json:"authenticated"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Authenticated != want {
+			t.Fatalf("authenticated = %v, want %v", got.Authenticated, want)
+		}
+	}
+	checkAuthentication(false)
+	callbackResponse, err := http.Get(server.URL + "/oauth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackResponse.Body.Close()
+	if callbackResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("synthetic callback status = %d", callbackResponse.StatusCode)
+	}
+	checkAuthentication(true)
+}
 
 func TestDockerMCP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

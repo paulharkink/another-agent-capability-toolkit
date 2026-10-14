@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -26,6 +27,26 @@ type MCPRuntime interface {
 	List(context.Context) ([]mcp.Instance, error)
 	Logs(context.Context, state.Key) (io.ReadCloser, error)
 }
+type mcpRuntimeActionExecutor interface {
+	Exec(context.Context, state.Key, []string, []byte, func([]byte)) ([]byte, error)
+}
+type profileActionExecutor struct {
+	runtime mcpRuntimeActionExecutor
+	key     state.Key
+}
+
+func (e profileActionExecutor) Exec(ctx context.Context, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	return e.runtime.Exec(ctx, e.key, argv, stdin, stderr)
+}
+
+func (s *Service) containerActionExecutor(key state.Key) mcp.ContainerActionExecutor {
+	runtime, ok := s.Options.Runtime.(mcpRuntimeActionExecutor)
+	if !ok {
+		return nil
+	}
+	return profileActionExecutor{runtime: runtime, key: key}
+}
+
 type Options struct {
 	Adapters           AdapterProvider
 	AgentScopes        map[string]agents.Scope
@@ -127,6 +148,7 @@ type Result struct {
 	Changes   []state.Installation `json:"changes"`
 	Errors    []string             `json:"errors"`
 	Saved     bool                 `json:"saved"`
+	LoginURL  string               `json:"login_url,omitempty"`
 	Instances []mcp.Instance       `json:"instances,omitempty"`
 	Logs      string               `json:"logs,omitempty"`
 	Message   string               `json:"message,omitempty"`
@@ -373,7 +395,7 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (Result, erro
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
-func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool) (mcp.Instance, error) {
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Profile, k state.Key, values map[string]any, interactive bool, deferProtocolHealth ...bool) (mcp.Instance, error) {
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
@@ -381,7 +403,16 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	if nameErr != nil {
 		return mcp.Instance{}, invalid(nameErr)
 	}
+	stateDir, stateErr := s.Store.EnsureAuthDir(k)
+	if stateErr != nil {
+		return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("prepare private profile state: %w", stateErr)}
+	}
+	additionalPorts, portErr := resolveConditionalPorts(*p.MCP, p.Inputs, values)
+	if portErr != nil {
+		return mcp.Instance{}, invalid(portErr)
+	}
 	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	spec.AdditionalPorts = additionalPorts
 	spec.RegistrationName = resolvedRegistrationName
 	applyDeclaredRuntimeHosts := func() {
 		if p.MCP.BindIPInput != "" {
@@ -436,13 +467,29 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	case int:
 		spec.HostPort = port
 	}
-	if _, ok := p.MCP.Actions["prepare"]; ok {
-		runner := mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}
-		imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
-		if choiceErr != nil {
-			return mcp.Instance{}, operationFailure{step: "prepare", err: choiceErr}
+	_, hasPrepare := p.MCP.Actions["prepare"]
+	imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
+	if choiceErr != nil {
+		step := "start"
+		if hasPrepare {
+			step = "prepare"
 		}
-		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: s.Store.AuthDir(k), Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+		return mcp.Instance{}, operationFailure{step: step, err: choiceErr}
+	}
+	preserveImageSelection := false
+	if imageSource == "release" {
+		spec.Image = releaseImage
+		spec.BuildContext = ""
+		preserveImageSelection = true
+	} else if p.MCP.BuildContext != "" {
+		spec.Image = ""
+		preserveImageSelection = true
+	}
+	if hasPrepare {
+		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
+		selectedImage := spec.Image
+		selectedBuildContext := spec.BuildContext
+		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Profile: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 		if e != nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
 		}
@@ -456,9 +503,24 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
 		spec = *result.Runtime
+		if preserveImageSelection {
+			spec.Image = selectedImage
+			spec.BuildContext = selectedBuildContext
+		}
 		spec.RegistrationName = resolvedRegistrationName
+		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
 	}
+	spec.DeferProtocolHealth = p.MCP.HealthPath != "" && len(deferProtocolHealth) > 0 && deferProtocolHealth[0]
+	stateMount := mcp.Mount{Source: stateDir, Destination: "/state", ReadOnly: false}
+	for i := 0; i < len(spec.Mounts); {
+		if spec.Mounts[i].Destination == stateMount.Destination {
+			spec.Mounts = append(spec.Mounts[:i], spec.Mounts[i+1:]...)
+			continue
+		}
+		i++
+	}
+	spec.Mounts = append(spec.Mounts, stateMount)
 	instance, err := s.Options.Runtime.Start(ctx, k, spec)
 	if errors.Is(err, mcp.ErrRunningWithDifferentSettings) {
 		if stopErr := s.Options.Runtime.Stop(ctx, k); stopErr != nil {
@@ -470,6 +532,76 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		return instance, operationFailure{step: "start", err: err}
 	}
 	return instance, nil
+}
+
+func resolveConditionalPorts(definition catalog.MCP, inputs []catalog.Input, values map[string]any) ([]mcp.PortMapping, error) {
+	resolved := make([]mcp.PortMapping, 0, len(definition.AdditionalPorts))
+	for _, port := range definition.AdditionalPorts {
+		hostInput := findInput(inputs, port.HostPortInput)
+		if hostInput == nil {
+			return nil, fmt.Errorf("conditional port references unknown input %q", port.HostPortInput)
+		}
+		var containerInput *catalog.Input
+		if port.ContainerPortInput != "" {
+			containerInput = findInput(inputs, port.ContainerPortInput)
+			if containerInput == nil {
+				return nil, fmt.Errorf("conditional port references unknown container input %q", port.ContainerPortInput)
+			}
+		}
+		if !catalog.InputVisible(catalog.Input{VisibleWhen: port.When}, values) || !catalog.InputVisible(*hostInput, values) || containerInput != nil && !catalog.InputVisible(*containerInput, values) {
+			continue
+		}
+		hostPort, err := resolvePortInputValue(port.HostPortInput, values[port.HostPortInput])
+		if err != nil {
+			return nil, err
+		}
+		containerPort := port.ContainerPort
+		if containerInput != nil {
+			containerPort, err = resolvePortInputValue(port.ContainerPortInput, values[port.ContainerPortInput])
+			if err != nil {
+				return nil, err
+			}
+		}
+		resolved = append(resolved, mcp.PortMapping{HostPort: hostPort, ContainerPort: containerPort})
+	}
+	return resolved, nil
+}
+
+func findInput(inputs []catalog.Input, name string) *catalog.Input {
+	for i := range inputs {
+		if inputs[i].Name == name {
+			return &inputs[i]
+		}
+	}
+	return nil
+}
+
+func resolvePortInputValue(name string, raw any) (int, error) {
+	var port int
+	switch value := raw.(type) {
+	case int:
+		port = value
+	case int64:
+		port = int(value)
+		if int64(port) != value {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+		}
+		port = int(parsed)
+		if int64(port) != parsed {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	default:
+		return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("conditional port input %q must be between 1 and 65535", name)
+	}
+	return port, nil
 }
 
 func (s *Service) MCP(ctx context.Context, q MCPRequest) (Result, error) {

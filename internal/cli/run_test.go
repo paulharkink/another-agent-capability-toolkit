@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func cliFixture(t *testing.T) (string, string, string) {
@@ -65,6 +67,81 @@ func TestParseNamedExternalURLs(t *testing.T) {
 	}
 	if _, err := parse([]string{"install", "demo", "--external-url", "search=https://one", "--external-url", "search=https://two"}); err == nil {
 		t.Fatal("duplicate named endpoint accepted")
+	}
+}
+
+func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "demo")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	actionPath := filepath.Join(root, "authenticate.sh")
+	command := "[\"sh\", " + strconv.Quote(actionPath) + "]"
+	actionBody := []byte("#!/bin/sh\nprintf 'x\\n' >> \"$(dirname \"$0\")/calls\"\nprintf '%s\\n' '{\"login_url\":\"https://login.example/device\"}'\n")
+	if runtime.GOOS == "windows" {
+		actionPath += ".cmd"
+		command = "[\"cmd\", \"/c\", " + strconv.Quote(actionPath) + "]"
+		actionBody = []byte("@echo x>>\"%~dp0calls\"\r\n@echo {\"login_url\":\"https://login.example/device\"}\r\n")
+	}
+	if err := os.WriteFile(actionPath, actionBody, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n[mcp]\nname = \"server\"\nhealth_path = \"/health\"\n[mcp.actions.authenticate]\ntarget = \"host\"\ncommand = " + command + "\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(root, "aact.toml")
+	if err := os.WriteFile(cfg, []byte("schema_version = 1\nsource_id = \"fixture\"\n[[catalog]]\nid = \"demo\"\nsource = \"./demo\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	var out, errOut bytes.Buffer
+	profileArgs := []string{"profile", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), profileArgs, nil, &out, &errOut); code != 0 {
+		t.Fatalf("profile creation failed (%d): %s", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		code        int
+		output, err string
+	}
+	done := make(chan result, 1)
+	args := []string{"mcp", "authenticate", "demo", "--profile", "default", "--config", cfg, "--state-dir", stateDir}
+	go func() {
+		var commandOut, commandErr bytes.Buffer
+		code := Run(ctx, args, nil, &commandOut, &commandErr)
+		done <- result{code: code, output: commandOut.String(), err: commandErr.String()}
+	}()
+	var got result
+	select {
+	case got = <-done:
+	case <-ctx.Done():
+		t.Fatal("direct authenticate did not return before its bounded context expired")
+	}
+	if got.code != 0 {
+		t.Fatalf("authenticate failed (%d): %s", got.code, got.err)
+	}
+	if strings.TrimSpace(got.output) != "https://login.example/device" {
+		t.Fatalf("authenticate output = %q, want returned login URL", got.output)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || strings.ReplaceAll(string(calls), "\r\n", "\n") != "x\n" {
+		t.Fatalf("authenticate action invocations = %q, %v; want exactly one", calls, err)
+	}
+}
+
+func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
+	if !strings.Contains(usage, "authenticate") {
+		t.Fatal("MCP usage omits authenticate")
+	}
+	for _, action := range []string{"authentication_status", "cancel_authentication"} {
+		if strings.Contains(usage, action) {
+			t.Fatalf("obsolete MCP action %q remains in usage", action)
+		}
 	}
 }
 

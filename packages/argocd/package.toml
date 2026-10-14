@@ -1,0 +1,154 @@
+schema_version = 1
+id = "argocd"
+name = "Argo CD"
+
+[skill]
+name = "argocd"
+
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "MCP listen port"
+default = 8765
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Listen address"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "advertised_host"
+type = "string"
+label = "Client address host"
+default = "localhost"
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+required = true
+
+[[inputs]]
+name = "server"
+type = "string"
+label = "Argo CD server"
+required = true
+
+[[inputs]]
+name = "auth_mode"
+type = "choice"
+label = "Authentication mode"
+required = true
+[[inputs.options]]
+value = "sso"
+label = "SSO"
+[[inputs.options]]
+value = "api_token"
+label = "API token"
+[[inputs.options]]
+value = "username_password"
+label = "Username and password"
+
+[[inputs]]
+name = "api_token"
+type = "secret"
+label = "API token"
+visible_when = { auth_mode = "api_token" }
+
+[[inputs]]
+name = "username"
+type = "secret"
+label = "Username"
+visible_when = { auth_mode = "username_password" }
+
+[[inputs]]
+name = "password"
+type = "secret"
+label = "Password"
+visible_when = { auth_mode = "username_password" }
+
+[[inputs]]
+name = "callback_port"
+type = "integer"
+label = "SSO callback port"
+default = 8085
+min = 1024
+max = 65535
+visible_when = { auth_mode = "sso" }
+
+[[inputs]]
+name = "grpc_web"
+type = "boolean"
+label = "Use gRPC web"
+default = false
+
+[[inputs]]
+name = "grpc_web_root_path"
+type = "string"
+label = "gRPC web root path"
+default = ""
+
+[[inputs]]
+name = "plaintext"
+type = "boolean"
+label = "Use plaintext connection"
+default = false
+
+[[inputs]]
+name = "read_only"
+type = "boolean"
+label = "Read-only operations"
+default = true
+
+[[inputs]]
+name = "insecure"
+type = "boolean"
+label = "Skip TLS verification"
+default = false
+
+[[inputs]]
+name = "skip_test_tls"
+type = "boolean"
+label = "Skip TLS test during Argo CD login"
+default = false
+
+[mcp]
+name = "argocd"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+health_path = "/health"
+host_port_input = "local_port"
+bind_ip_input = "host"
+advertised_host_input = "advertised_host"
+registration_name_input = "registration_name"
+registration_timeout_ms = 60000
+build_context = "./mcp"
+release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/argocd-mcp:v{aact_version}"
+
+[mcp.env]
+AACT_ARGOCD_SERVER = "${ inputs.server }"
+AACT_ARGOCD_READ_ONLY = "${ tostring(inputs.read_only) }"
+AACT_ARGOCD_AUTH_MODE = "${ inputs.auth_mode }"
+AACT_ARGOCD_GRPC_WEB = "${ tostring(inputs.grpc_web) }"
+AACT_ARGOCD_GRPC_WEB_ROOT_PATH = "${ inputs.grpc_web_root_path }"
+AACT_ARGOCD_PLAINTEXT = "${ tostring(inputs.plaintext) }"
+AACT_ARGOCD_INSECURE = "${ tostring(inputs.insecure) }"
+AACT_ARGOCD_SKIP_TEST_TLS = "${ tostring(inputs.skip_test_tls) }"
+
+[[mcp.additional_ports]]
+container_port_input = "callback_port"
+host_port_input = "callback_port"
+when = { auth_mode = "sso" }
+
+[mcp.actions.authenticate]
+target = "container"
+command = ["python", "/app/server.py", "action", "authenticate"]

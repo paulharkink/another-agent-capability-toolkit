@@ -1,9 +1,13 @@
 package catalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,6 +33,106 @@ func TestInvalidPatternIncludesInputAndManifest(t *testing.T) {
 	_, err := Load(dir)
 	if err == nil || !strings.Contains(err.Error(), "name") || !strings.Contains(err.Error(), "package.toml") {
 		t.Fatalf("malformed pattern accepted or not identified: %v", err)
+	}
+}
+
+func TestArgoPackageUsesFixedVerifiedCLI(t *testing.T) {
+	p, err := Load(filepath.Join("..", "..", "packages", "argocd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range p.Inputs {
+		if input.Name == "cli_version" {
+			t.Fatal("Argo CD CLI version must not be selected by profile input")
+		}
+	}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "packages", "argocd", "package.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "[mcp.image_variant]") {
+		t.Fatal("Argo package manifest must not declare an image variant")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "packages", "argocd", "mcp", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"3.2.0", "verify-cli-checksum.sh", "cli_checksums.txt"} {
+		if !strings.Contains(string(dockerfile), required) {
+			t.Errorf("standard Argo MCP Dockerfile must include %q", required)
+		}
+	}
+	if strings.Contains(string(dockerfile), "ARG CLI_VERSION") || strings.Contains(string(dockerfile), "latest") {
+		t.Fatal("standard Argo MCP Dockerfile must pin its CLI version without a profile build argument or latest")
+	}
+}
+
+func TestManifestHealthPathValidation(t *testing.T) {
+	for _, path := range []string{"health", "//other.test/health", "https://other.test/health", "/health?token=x", "/health#fragment", "/../health"} {
+		t.Run(path, func(t *testing.T) {
+			dir := writeManifest(t, `schema_version = 1
+id = "health-path"
+name = "Health path"
+[mcp]
+name = "server"
+health_path = `+strconv.Quote(path)+`
+`)
+			if _, err := Load(dir); err == nil {
+				t.Fatalf("invalid health_path %q accepted", path)
+			}
+		})
+	}
+	dir := writeManifest(t, `schema_version = 1
+id = "health-path"
+name = "Health path"
+[mcp]
+name = "server"
+health_path = "/health"
+`)
+	pkg, err := Load(dir)
+	if err != nil || pkg.MCP == nil || pkg.MCP.HealthPath != "/health" {
+		t.Fatalf("valid health_path was not loaded: %#v, %v", pkg.MCP, err)
+	}
+}
+
+func TestConditionalPortsMayBindContainerPortToVisibleIntegerInput(t *testing.T) {
+	minPort, maxPort := float64(1), float64(65535)
+	base := Package{
+		SchemaVersion: 1, ID: "ports", Name: "Ports",
+		Inputs: []Input{
+			{Name: "auth_mode", Type: "choice", Options: []Choice{{Value: "sso"}, {Value: "token"}}},
+			{Name: "host_port", Type: "integer", Min: &minPort, Max: &maxPort},
+			{Name: "callback_port", Type: "integer", Min: &minPort, Max: &maxPort, VisibleWhen: map[string]any{"auth_mode": "sso"}},
+		},
+		MCP: &MCP{Name: "server", AdditionalPorts: []ConditionalPort{{
+			HostPortInput: "host_port", ContainerPortInput: "callback_port", When: map[string]any{"auth_mode": "sso"},
+		}}},
+	}
+	if err := Validate(base); err != nil {
+		t.Fatalf("valid input-bound conditional port rejected: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		edit func(*Package)
+	}{
+		{"fixed and dynamic container port", func(p *Package) { p.MCP.AdditionalPorts[0].ContainerPort = 8085 }},
+		{"container input is not integer", func(p *Package) { p.Inputs[2].Type = "string" }},
+		{"container input is hidden when condition matches", func(p *Package) { p.Inputs[2].VisibleWhen = map[string]any{"auth_mode": "token"} }},
+		{"container input range exceeds ports", func(p *Package) { value := float64(65536); p.Inputs[2].Max = &value }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := base
+			pkg.Inputs = append([]Input(nil), base.Inputs...)
+			port := *base.MCP
+			port.AdditionalPorts = append([]ConditionalPort(nil), base.MCP.AdditionalPorts...)
+			pkg.MCP = &port
+			tc.edit(&pkg)
+			if err := Validate(pkg); err == nil {
+				t.Fatal("invalid input-bound conditional port accepted")
+			}
+		})
 	}
 }
 
@@ -813,4 +917,238 @@ func fixture(t *testing.T, name string) string {
 		t.Fatal(e)
 	}
 	return string(data)
+}
+
+func TestMCPConditionalPortsValidateAgainstDeclaredInputs(t *testing.T) {
+	base := `schema_version = 1
+id = "ports"
+name = "Ports"
+[mcp]
+name = "service"
+[[inputs]]
+name = "mode"
+type = "choice"
+[[inputs.options]]
+value = "interactive"
+label = "Interactive"
+[[inputs]]
+name = "callback_port"
+type = "integer"
+min = 1
+max = 65535
+`
+	valid := base + `[[mcp.additional_ports]]
+container_port = 7443
+host_port_input = "callback_port"
+when = { mode = "interactive" }
+`
+	if _, err := Load(writeManifest(t, valid)); err != nil {
+		t.Fatalf("valid conditional port declaration rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		port string
+		when string
+	}{
+		{name: "undeclared input", port: `host_port_input = "missing"`, when: `when = { mode = "interactive" }`},
+		{name: "invalid port", port: `host_port_input = "callback_port"`, when: `when = { mode = "interactive" }`},
+		{name: "unknown condition input", port: `host_port_input = "callback_port"`, when: `when = { absent = "interactive" }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := base + "[[mcp.additional_ports]]\n"
+			if tc.name == "invalid port" {
+				manifest += "container_port = 70000\n"
+			} else {
+				manifest += "container_port = 7443\n"
+			}
+			manifest += tc.port + "\n" + tc.when + "\n"
+			if _, err := Load(writeManifest(t, manifest)); err == nil {
+				t.Fatal("invalid conditional port declaration accepted")
+			}
+		})
+	}
+}
+
+func TestMCPActionRejectsUnknownTarget(t *testing.T) {
+	manifest := plainManifest + `
+[mcp]
+name = "service"
+[mcp.actions.authenticate]
+target = "remote"
+command = ["helper", "authenticate"]
+`
+	if _, err := Load(writeManifest(t, manifest)); err == nil {
+		t.Fatal("unknown action execution target accepted")
+	}
+}
+
+func TestArgoCapabilityDeclaresAuthModesAndReadOnlyDefault(t *testing.T) {
+	pkg, err := Load("../../packages/argocd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]Input{}
+	for _, input := range pkg.Inputs {
+		inputs[input.Name] = input
+	}
+	mode, ok := inputs["auth_mode"]
+	if !ok || mode.Type != "choice" || len(mode.Options) != 3 {
+		t.Fatalf("auth_mode must declare exactly three choices, got %#v", mode)
+	}
+	for _, want := range []string{"sso", "api_token", "username_password"} {
+		found := false
+		for _, option := range mode.Options {
+			found = found || option.Value == want
+		}
+		if !found {
+			t.Errorf("auth_mode choices missing %q", want)
+		}
+	}
+	for _, name := range []string{"api_token", "username", "password"} {
+		if input, ok := inputs[name]; !ok || input.Type != "secret" {
+			t.Errorf("%s must be a named secret input, got %#v", name, input)
+		}
+	}
+	mcp := pkg.MCP
+	if mcp == nil || mcp.BuildContext != "./mcp" || mcp.ReleaseImage == "" {
+		t.Fatalf("Argo must retain standard package local/release image selection: %#v", mcp)
+	}
+	if got := inputs["read_only"].Default; got != true {
+		t.Fatalf("read_only default = %#v, want true", got)
+	}
+	if got := inputs["skip_test_tls"].Default; got != false {
+		t.Fatalf("skip_test_tls default = %#v, want false", got)
+	}
+	for _, name := range []string{"AACT_ARGOCD_SERVER", "AACT_ARGOCD_AUTH_MODE", "AACT_ARGOCD_GRPC_WEB", "AACT_ARGOCD_GRPC_WEB_ROOT_PATH", "AACT_ARGOCD_PLAINTEXT", "AACT_ARGOCD_INSECURE", "AACT_ARGOCD_SKIP_TEST_TLS"} {
+		if mcp.Env[name] == "" {
+			t.Errorf("container profile environment %s must be templated from selected inputs", name)
+		}
+	}
+	resolved, err := ResolveExpressions(pkg, map[string]any{
+		"server": "argocd.example.test", "auth_mode": "sso", "read_only": true, "grpc_web": true,
+		"grpc_web_root_path": "/current", "plaintext": false, "insecure": true, "skip_test_tls": true,
+	})
+	if err != nil {
+		t.Fatalf("resolve selected Argo profile environment: %v", err)
+	}
+	if resolved.MCP.Env["AACT_ARGOCD_SERVER"] != "argocd.example.test" || resolved.MCP.Env["AACT_ARGOCD_READ_ONLY"] != "true" || resolved.MCP.Env["AACT_ARGOCD_AUTH_MODE"] != "sso" || resolved.MCP.Env["AACT_ARGOCD_GRPC_WEB"] != "true" || resolved.MCP.Env["AACT_ARGOCD_GRPC_WEB_ROOT_PATH"] != "/current" || resolved.MCP.Env["AACT_ARGOCD_PLAINTEXT"] != "false" || resolved.MCP.Env["AACT_ARGOCD_INSECURE"] != "true" || resolved.MCP.Env["AACT_ARGOCD_SKIP_TEST_TLS"] != "true" {
+		t.Fatalf("selected profile environment did not resolve exactly: %#v", resolved.MCP.Env)
+	}
+	command, ok := mcp.Actions["authenticate"]
+	if !ok || command.Target != "container" {
+		t.Errorf("authenticate must be the container-target action, got %#v", command)
+	}
+	for _, action := range []string{"authentication_status", "cancel_authentication"} {
+		if _, ok := mcp.Actions[action]; ok {
+			t.Errorf("%s must not be declared as an AACT action", action)
+		}
+	}
+	if len(mcp.AdditionalPorts) != 1 || mcp.AdditionalPorts[0].ContainerPort != 0 || mcp.AdditionalPorts[0].ContainerPortInput != "callback_port" || mcp.AdditionalPorts[0].HostPortInput != "callback_port" || mcp.AdditionalPorts[0].When["auth_mode"] != "sso" {
+		t.Fatalf("SSO callback port declaration = %#v", mcp.AdditionalPorts)
+	}
+}
+
+func TestArgoCapabilityDefaultPublishedPortsAreDistinct(t *testing.T) {
+	pkg, err := Load("../../packages/argocd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, err := ResolveInputDefinitions(pkg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := map[string]any{}
+	for _, input := range definitions {
+		defaults[input.Name] = input.Default
+	}
+	mcpPort, mcpOK := defaults["local_port"].(int64)
+	callbackPort, callbackOK := defaults["callback_port"].(int64)
+	if !mcpOK || !callbackOK {
+		t.Fatalf("expected integer defaults for local_port/callback_port, got %#v and %#v", defaults["local_port"], defaults["callback_port"])
+	}
+	if mcpPort == callbackPort {
+		t.Fatalf("default MCP listener port %d collides with default SSO callback port %d", mcpPort, callbackPort)
+	}
+}
+
+func TestArgoStandardRecipeMapsBuildArchitectureToFixedOfficialAssets(t *testing.T) {
+	recipe, err := os.ReadFile("../../packages/argocd/mcp/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(recipe)
+	for _, required := range []string{
+		"ARG TARGETARCH",
+		`case "$TARGETARCH" in`,
+		"amd64|arm64)",
+		`argocd-linux-${TARGETARCH}`,
+		"v3.2.0",
+		"cli_checksums.txt",
+		"verify-cli-checksum.sh",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("standard recipe must include fixed architecture asset mapping %q", required)
+		}
+	}
+	if !strings.Contains(contents, "Unsupported target architecture") {
+		t.Error("standard recipe must reject unsupported target architectures explicitly")
+	}
+}
+
+func TestArgoFixedClientChecksumVerifierSelectsOneMatchingAssetEntry(t *testing.T) {
+	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
+	binaryPath := filepath.Join(t.TempDir(), "argocd-linux-amd64")
+	binary := []byte("fixture CLI binary bytes")
+	if err := os.WriteFile(binaryPath, binary, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(binary)
+	validHash := hex.EncodeToString(digest[:])
+	checksumsPath := filepath.Join(t.TempDir(), "cli_checksums.txt")
+
+	tests := []struct {
+		name      string
+		checksums string
+		wantError bool
+	}{
+		{name: "matching selected entry among other platforms", checksums: strings.Repeat("0", 64) + "  argocd-linux-arm64\n" + validHash + "  argocd-linux-amd64\n"},
+		{name: "mismatch", checksums: strings.Repeat("0", 64) + "  argocd-linux-amd64\n", wantError: true},
+		{name: "missing selected entry", checksums: strings.Repeat("0", 64) + "  argocd-linux-arm64\n", wantError: true},
+		{name: "duplicate selected entry", checksums: validHash + "  argocd-linux-amd64\n" + validHash + "  argocd-linux-amd64\n", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(checksumsPath, []byte(test.checksums), 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("sh", helper, checksumsPath, "argocd-linux-amd64", binaryPath)
+			output, err := command.CombinedOutput()
+			if test.wantError && err == nil {
+				t.Fatalf("checksum verifier accepted invalid input: %s", output)
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("checksum verifier rejected valid selected entry: %v: %s", err, output)
+			}
+		})
+	}
+}
+
+func TestArgoFixedClientChecksumVerifierDoesNotParseBinaryPathFromHashOutput(t *testing.T) {
+	helper := "../../packages/argocd/mcp/verify-cli-checksum.sh"
+	directory := t.TempDir()
+	binaryPath := filepath.Join(directory, "binary name")
+	binary := []byte("fixture CLI binary bytes")
+	if err := os.WriteFile(binaryPath, binary, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(binary)
+	checksumsPath := filepath.Join(directory, "cli_checksums.txt")
+	if err := os.WriteFile(checksumsPath, []byte(hex.EncodeToString(digest[:])+"  argocd-linux-amd64\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", helper, checksumsPath, "argocd-linux-amd64", binaryPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("checksum verifier rejected an existing binary whose path requires sha256sum escaping: %v: %s", err, output)
+	}
 }

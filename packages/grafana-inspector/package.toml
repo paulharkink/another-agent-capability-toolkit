@@ -135,6 +135,7 @@ runtime = "docker"
 transport = "streamable-http"
 container_port = 8765
 endpoint_path = "/mcp"
+health_path = "/health"
 host_port_input = "local_port"
 bind_ip_input = "host"
 advertised_host_input = "advertised_host"

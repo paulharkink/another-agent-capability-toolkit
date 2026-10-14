@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 TARGET_CONFIG = os.environ.get("GRAFANA_CONFIG", "/config/target.toml")
 TARGET = os.environ.get("GRAFANA_TARGET", "target")
@@ -28,14 +30,67 @@ else:
 GRAFANA_URL = PROFILE.url
 LOKI_DATASOURCE_UID = PROFILE.datasource_uid
 AUTH_PATH = Path(os.environ.get("GRAFANA_AUTH_FILE", "/state/auth.json"))
-_AUTH = json.loads(AUTH_PATH.read_text()) if AUTH_PATH.exists() else {}
+try:
+    _AUTH_CONTENT = AUTH_PATH.read_bytes()
+except OSError:
+    _AUTH_CONTENT = None
+try:
+    _AUTH = json.loads(_AUTH_CONTENT) if _AUTH_CONTENT is not None else {}
+except (UnicodeDecodeError, ValueError):
+    _AUTH = {}
+if not isinstance(_AUTH, dict):
+    _AUTH = {}
+AUTH_LOCK = threading.RLock()
 AUTH_MODE = os.environ.get("GRAFANA_AUTH_MODE") or _AUTH.get("auth_mode") or PROFILE.auth_mode
 GRAFANA_SESSION = _AUTH.get("grafana_session", "")
 GRAFANA_SESSION_EXPIRY = _AUTH.get("session_expiry", "")
 OAUTH_REFRESH = _AUTH.get("oauth_refresh", "")
 REFRESH_COOKIE_NAME = PROFILE.refresh_cookie_name
 TOKEN_FILE = os.environ.get("GRAFANA_API_TOKEN_FILE", "")
-API_TOKEN = (Path(TOKEN_FILE).read_text().strip() if TOKEN_FILE else os.environ.get("GRAFANA_API_TOKEN", "")) or _AUTH.get("api_token", "")
+AUTH_READ_ERROR = object()
+
+
+def _configured_api_token(auth: dict[str, Any], auth_mode: str | None = None) -> str:
+    if (AUTH_MODE if auth_mode is None else auth_mode) != "api_token":
+        return ""
+    environment_token = os.environ.get("GRAFANA_API_TOKEN", "")
+    if environment_token:
+        return environment_token
+    if TOKEN_FILE:
+        try:
+            return Path(TOKEN_FILE).read_text().strip()
+        except OSError:
+            # A selected file may be mounted after startup or temporarily
+            # unavailable during replacement. Keep the HTTP service alive and
+            # fail closed until the selected source becomes readable again.
+            return ""
+    return auth.get("api_token", "")
+
+
+def _fail_closed_auth(content: bytes | None | object) -> None:
+    """Discard file-backed credentials and refresh the selected external source."""
+    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
+    global OAUTH_REFRESH, API_TOKEN, CLIENT
+
+    previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or AUTH_MODE or PROFILE.auth_mode
+    _AUTH = {}
+    _AUTH_CONTENT = content
+    AUTH_MODE = auth_mode
+    GRAFANA_SESSION = ""
+    GRAFANA_SESSION_EXPIRY = ""
+    OAUTH_REFRESH = ""
+    API_TOKEN = _configured_api_token(_AUTH, auth_mode)
+    current = (auth_mode, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    if current == previous:
+        return
+    try:
+        CLIENT = _session()
+    except (TypeError, ValueError):
+        CLIENT = None
+
+
+API_TOKEN = _configured_api_token(_AUTH)
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_RANGE_SECONDS = 3600
 MAX_LOG_LIMIT = 1000
@@ -111,8 +166,63 @@ def _session() -> requests.Session:
     return client
 
 
-CLIENT = _session()
+try:
+    CLIENT = _session()
+except ValueError:
+    CLIENT = None
 SESSION_LOCK = threading.Lock()
+
+
+def _reload_auth_if_changed() -> None:
+    """Apply credentials atomically written by the existing auth helper."""
+    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
+    global OAUTH_REFRESH, API_TOKEN, CLIENT
+
+    with AUTH_LOCK:
+        try:
+            content = AUTH_PATH.read_bytes()
+        except FileNotFoundError:
+            content = None
+        except OSError:
+            _fail_closed_auth(AUTH_READ_ERROR)
+            return
+        try:
+            auth = json.loads(content) if content is not None else {}
+        except (UnicodeDecodeError, ValueError):
+            _fail_closed_auth(content)
+            return
+        if not isinstance(auth, dict):
+            _fail_closed_auth(content)
+            return
+
+        previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+        auth_unchanged = content == _AUTH_CONTENT
+        auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or (
+            AUTH_MODE if auth_unchanged else auth.get("auth_mode") or PROFILE.auth_mode
+        )
+        grafana_session = auth.get("grafana_session", "")
+        session_expiry = auth.get("session_expiry", "")
+        oauth_refresh = auth.get("oauth_refresh", "")
+        try:
+            api_token = _configured_api_token(auth, auth_mode)
+        except OSError:
+            _fail_closed_auth(AUTH_READ_ERROR)
+            return
+        current = (auth_mode, grafana_session, session_expiry, oauth_refresh, api_token)
+
+        _AUTH = auth
+        _AUTH_CONTENT = content
+        AUTH_MODE = auth_mode
+        GRAFANA_SESSION = grafana_session
+        GRAFANA_SESSION_EXPIRY = session_expiry
+        OAUTH_REFRESH = oauth_refresh
+        API_TOKEN = api_token
+        if current == previous:
+            return
+        try:
+            CLIENT = _session()
+        except ValueError:
+            CLIENT = None
 
 
 def _session_expiry() -> int:
@@ -126,6 +236,8 @@ def _session_expiry() -> int:
 
 
 def _rotate_session() -> None:
+    if CLIENT is None:
+        raise ValueError("Grafana session authentication is unavailable.")
     with SESSION_LOCK:
         parsed_url = urlparse(GRAFANA_URL)
         response = CLIENT.post(
@@ -194,6 +306,9 @@ def _bootstrap_session() -> None:
 
 
 def _request(method: str, path: str, parameters: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> Any:
+    _reload_auth_if_changed()
+    if CLIENT is None:
+        raise ValueError("Grafana authentication is unavailable.")
     if AUTH_MODE == "session_cookie":
         _rotate_before_expiry()
     response = CLIENT.request(
@@ -223,6 +338,36 @@ def _get(path: str, parameters: dict[str, Any] | None = None) -> Any:
 
 def _validate_api_token() -> None:
     _get("/api/datasources")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Report whether the currently selected Grafana identity is authorized."""
+    _reload_auth_if_changed()
+    try:
+        if AUTH_MODE == "session_cookie":
+            user = _get("/api/user")
+            authenticated = (
+                isinstance(user, dict)
+                and isinstance(user.get("id"), int)
+                and not isinstance(user.get("id"), bool)
+                and user["id"] > 0
+                and isinstance(user.get("login"), str)
+                and bool(user["login"].strip())
+                and user["login"].strip().casefold() != "anonymous"
+                and (
+                    "isAnonymous" not in user
+                    or isinstance(user["isAnonymous"], bool) and not user["isAnonymous"]
+                )
+            )
+        else:
+            preferences = _get("/api/user/preferences")
+            authenticated = isinstance(preferences, dict) and any(
+                isinstance(preferences.get(field), str) for field in ("theme", "timezone")
+            )
+    except Exception:
+        authenticated = False
+    return JSONResponse({"authenticated": authenticated})
 
 
 def _post(path: str, parameters: dict[str, Any], payload: dict[str, Any]) -> Any:
@@ -382,13 +527,14 @@ if __name__ == "__main__":
     if AUTH_MODE == "session_cookie":
         try:
             _bootstrap_session()
-        except (requests.RequestException, ValueError) as error:
-            raise SystemExit(f"Grafana target session rotation failed during startup: {error}") from error
-        threading.Thread(target=_rotation_worker, name="grafana-session-rotation", daemon=True).start()
+        except (requests.RequestException, ValueError):
+            print("Grafana session authentication is unavailable; health checks will report false.", flush=True)
+        else:
+            threading.Thread(target=_rotation_worker, name="grafana-session-rotation", daemon=True).start()
     else:
         try:
             _validate_api_token()
-        except (requests.RequestException, ValueError) as error:
-            raise SystemExit(f"Grafana API token validation failed: {error}") from error
+        except (requests.RequestException, ValueError):
+            print("Grafana API authentication is unavailable; health checks will report false.", flush=True)
     hosts = ["localhost", "127.0.0.1", *[item.strip() for item in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if item.strip()]]
     mcp.run(transport="http", host=os.environ.get("MCP_HTTP_BIND_HOST", "0.0.0.0"), port=int(os.environ.get("MCP_HTTP_PORT", "8765")), path="/mcp", stateless_http=True, host_origin_protection=True, allowed_hosts=hosts)

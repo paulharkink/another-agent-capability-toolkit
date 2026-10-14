@@ -56,6 +56,7 @@ type OperationResult struct {
 
 const (
 	AuthenticationComplete          = "complete"
+	AuthenticationFailed            = "failed"
 	AuthenticationNotConfirmed      = "not confirmed"
 	AuthenticationNotCheckedThisRun = "not checked this run"
 	AuthenticationNotRequired       = "not required"

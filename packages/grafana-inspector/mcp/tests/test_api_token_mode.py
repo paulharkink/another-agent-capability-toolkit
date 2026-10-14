@@ -1,4 +1,5 @@
 import json
+import asyncio
 import os
 import sys
 import tempfile
@@ -29,6 +30,7 @@ sys.modules.setdefault("requests",_requests)
 class _FastMCP:
     def __init__(self,*args,**kwargs): pass
     def tool(self): return lambda function:function
+    def custom_route(self,*args,**kwargs): return lambda function:function
     def run(self,*args,**kwargs): pass
 _fastmcp=types.ModuleType("fastmcp")
 _fastmcp.FastMCP=_FastMCP
@@ -37,6 +39,79 @@ import server
 
 
 class ApiTokenModeTests(unittest.TestCase):
+    def test_session_health_rejects_expired_cookie_even_if_datasources_are_anonymous(self):
+        outcomes = {
+            "expired": ValueError("Grafana rejected credentials (HTTP 401)."),
+            "valid": {"id": 17, "login": "operator", "isAnonymous": False},
+            "anonymous": {"id": 1, "login": "Anonymous", "isAnonymous": True},
+            "malformed": {"login": "operator"},
+        }
+        with patch.object(server, "AUTH_MODE", "session_cookie"):
+            for mode, expected in (("expired", False), ("valid", True), ("anonymous", False), ("malformed", False)):
+                calls = []
+                def fake_get(path, parameters=None):
+                    calls.append(path)
+                    if path == "/api/datasources":
+                        return [{"uid": "public-datasource"}]
+                    if path == "/api/user":
+                        outcome = outcomes[mode]
+                        if isinstance(outcome, Exception):
+                            raise outcome
+                        return outcome
+                    raise AssertionError(f"unexpected health endpoint: {path}")
+
+                with self.subTest(mode=mode), patch.object(server, "_get", side_effect=fake_get):
+                    response = asyncio.run(server.health(None))
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(json.loads(response.body), {"authenticated": expected})
+                    self.assertEqual(calls, ["/api/user"])
+
+    def test_api_token_health_rejects_anonymously_listable_datasources_when_preferences_reject_token(self):
+        calls = []
+
+        def fake_get(path, parameters=None):
+            calls.append(path)
+            if path == "/api/datasources":
+                return [{"uid": "public-datasource"}]
+            if path == "/api/user/preferences":
+                raise ValueError("Grafana rejected credentials (HTTP 401).")
+            raise AssertionError(f"unexpected health endpoint: {path}")
+
+        with patch.object(server, "AUTH_MODE", "api_token"), patch.object(server, "_get", side_effect=fake_get):
+            response = asyncio.run(server.health(None))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body), {"authenticated": False})
+        self.assertEqual(calls, ["/api/user/preferences"])
+
+    def test_api_token_health_accepts_service_account_and_legacy_token_preferences(self):
+        preferences_by_token = {
+            "service-account": {"theme": "dark", "timezone": "browser", "weekStart": ""},
+            "legacy-api-key": {"theme": "", "timezone": ""},
+        }
+        with patch.object(server, "AUTH_MODE", "api_token"):
+            for token_kind, expected_preferences in preferences_by_token.items():
+                calls = []
+
+                def fake_get(path, parameters=None):
+                    calls.append(path)
+                    if path == "/api/user/preferences":
+                        return expected_preferences
+                    raise AssertionError(f"unexpected health endpoint: {path}")
+
+                with self.subTest(token_kind=token_kind), patch.object(server, "_get", side_effect=fake_get):
+                    response = asyncio.run(server.health(None))
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(json.loads(response.body), {"authenticated": True})
+                    self.assertEqual(calls, ["/api/user/preferences"])
+
+    def test_api_token_health_rejects_unexpected_preferences_response_shape(self):
+        for preferences in (None, [], "ok", {}, {"message": "unexpected response"}, {"theme": [], "timezone": 7}):
+            with self.subTest(preferences=preferences), patch.object(server, "AUTH_MODE", "api_token"), patch.object(server, "_get", return_value=preferences):
+                response = asyncio.run(server.health(None))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(json.loads(response.body), {"authenticated": False})
+
     def test_startup_validates_token_on_protected_datasource_api(self):
         with patch.object(server, "_get", return_value=[]) as get:
             server._validate_api_token()

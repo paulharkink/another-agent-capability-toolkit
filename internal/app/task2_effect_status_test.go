@@ -65,7 +65,7 @@ func task2AuthProfile(t *testing.T, svc *Service) (string, state.Key) {
 	return agentID, state.Key{Source: "fixture", Package: "demo", Target: "default"}
 }
 
-func TestApplyProfileReportsAuthenticationCompleteOnlyAfterSuccessfulAction(t *testing.T) {
+func TestApplyProfileRegistersOnlyAfterSuccessfulAuthenticationAction(t *testing.T) {
 	svc, _, _ := fixture(t)
 	agentID, _ := task2AuthProfile(t, svc)
 	svc.Options.Runner = diagnosticAuthExecutor{}
@@ -73,8 +73,8 @@ func TestApplyProfileReportsAuthenticationCompleteOnlyAfterSuccessfulAction(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AuthenticationStatus != viewmodel.AuthenticationComplete || len(result.Changes) == 0 {
-		t.Fatalf("successful authentication and actual registration not reported distinctly: %+v", result)
+	if result.AuthenticationStatus != viewmodel.AuthenticationComplete || len(result.Changes) == 0 || len(result.Errors) > 0 {
+		t.Fatalf("successful authentication did not report completion and allow registration: %+v", result)
 	}
 }
 
@@ -153,5 +153,46 @@ func TestApplyProfileLegacyAuthRequiredStopsWithActionableIncompleteResult(t *te
 	pending, readErr := store.PendingAuthInputGroups(key, child.ID())
 	if readErr != nil || pending["auth_method"] != "new_auth" {
 		t.Fatalf("incomplete method transition was cleared: pending=%#v err=%v", pending, readErr)
+	}
+}
+
+func TestApplyProfileDoesNotConfirmAuthenticationWhileAnotherPendingGroupRemains(t *testing.T) {
+	svc, _, store := fixture(t)
+	agentID, key := task2AuthProfile(t, svc)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "old_auth", Type: "secret", ExclusiveGroup: "auth_method"},
+		{Name: "new_auth", Type: "file", ExclusiveGroup: "auth_method"},
+		{Name: "old_tenant", Type: "string", ExclusiveGroup: "tenant_method"},
+		{Name: "new_tenant", Type: "string", ExclusiveGroup: "tenant_method"},
+	}
+	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{}, map[string]string{
+		"auth_method":   "old_auth",
+		"tenant_method": "new_tenant",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	if err := store.UpdatePendingAuthInputGroups(key, child.ID(), map[string]string{"tenant_method": "old_tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.Runner = diagnosticAuthExecutor{}
+	request := ProfileRequest{
+		Ref:            writeProfileForTest(t, svc, "demo", "default", ""),
+		DestinationIDs: []string{agentID},
+		ActiveInputGroups: map[string]string{
+			"auth_method":   "new_auth",
+			"tenant_method": "new_tenant",
+		},
+	}
+	result, err := svc.ApplyProfile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AuthenticationStatus != viewmodel.AuthenticationNotConfirmed || len(result.Changes) != 0 || len(result.Errors) == 0 {
+		t.Fatalf("authentication was confirmed with another pending group: result=%+v", result)
+	}
+	pending, readErr := store.PendingAuthInputGroups(key, child.ID())
+	if readErr != nil || pending["tenant_method"] != "old_tenant" {
+		t.Fatalf("unmatched pending group was cleared: pending=%#v err=%v", pending, readErr)
 	}
 }

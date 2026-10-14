@@ -7,6 +7,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -232,5 +233,90 @@ func TestActionResultDecodesOptionalProviderDiagnostic(t *testing.T) {
 	}
 	if legacy.Diagnostic != "" {
 		t.Fatalf("legacy diagnostic = %q", legacy.Diagnostic)
+	}
+}
+
+type recordingContainerActionExec struct {
+	argv   []string
+	stdin  []byte
+	output string
+}
+
+func (f *recordingContainerActionExec) Exec(_ context.Context, argv []string, stdin []byte, _ func([]byte)) ([]byte, error) {
+	f.argv = append([]string(nil), argv...)
+	f.stdin = append([]byte(nil), stdin...)
+	return []byte(f.output), nil
+}
+
+func TestContainerActionUsesInjectedRuntimeExec(t *testing.T) {
+	pkg := actionPackage()
+	pkg.MCP.Actions["authenticate"] = catalog.Command{Target: "container", Argv: []string{"helper", "authenticate", "value with spaces"}}
+	host := &recordingActionExec{output: `{}`}
+	container := &recordingContainerActionExec{output: `{}`}
+	runner := ActionRunner{Executor: host, ContainerExecutor: container}
+	if _, err := runner.Run(context.Background(), pkg, ActionRequest{Action: "authenticate"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.argv) != 0 {
+		t.Fatalf("container action fell back to host executor: %v", host.argv)
+	}
+	want := []string{"helper", "authenticate", "value with spaces"}
+	if !reflect.DeepEqual(container.argv, want) {
+		t.Fatalf("container argv = %#v, want %#v", container.argv, want)
+	}
+	var request ActionRequest
+	if err := json.Unmarshal(container.stdin, &request); err != nil || request.ProtocolVersion != 1 || request.Action != "authenticate" || request.StateDir != "/state" {
+		t.Fatalf("container stdin request = %+v, %v", request, err)
+	}
+}
+
+func TestHostActionKeepsHostStateDirectory(t *testing.T) {
+	executor := &actionExec{output: `{}`}
+	runner := ActionRunner{Executor: executor}
+	if _, err := runner.Run(context.Background(), actionPackage(), ActionRequest{Action: "prepare", StateDir: "/host/state"}); err != nil {
+		t.Fatal(err)
+	}
+	if executor.request.StateDir != "/host/state" {
+		t.Fatalf("host state_dir = %q", executor.request.StateDir)
+	}
+}
+
+type secretDiagnosticContainerExec struct{}
+
+func (secretDiagnosticContainerExec) Exec(_ context.Context, _ []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	var request ActionRequest
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	stderr([]byte("authentication output: " + request.Inputs["token"].(string)))
+	return []byte(`{}`), nil
+}
+
+func TestContainerActionRedactsSecretFromLiveStderr(t *testing.T) {
+	pkg := actionPackage()
+	pkg.MCP.Actions["authenticate"] = catalog.Command{Target: "container", Argv: []string{"helper", "authenticate"}}
+	var logged string
+	runner := ActionRunner{
+		ContainerExecutor: secretDiagnosticContainerExec{},
+		OnStderr:          func(output []byte) { logged += string(output) },
+	}
+	if _, err := runner.Run(context.Background(), pkg, ActionRequest{Action: "authenticate", Inputs: map[string]any{"token": "private-secret"}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logged, "private-secret") || !strings.Contains(logged, "[redacted]") {
+		t.Fatalf("live container diagnostic was not redacted: %q", logged)
+	}
+}
+
+func TestAuthenticateReturnsScrubbedLoginURLWithoutAuthState(t *testing.T) {
+	result, err := (&ActionRunner{Executor: &actionExec{output: `{"login_url":"https://login.example/device?token=private-secret"}`}}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate", Inputs: map[string]any{"token": "private-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LoginURL != "https://login.example/device?token=[redacted]" {
+		t.Fatalf("login URL was not scrubbed: %#v", result)
+	}
+	if _, err := (&ActionRunner{Executor: &actionExec{output: `{"status":"waiting_for_user","login_url":"https://login.example"}`}}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate"}); err == nil {
+		t.Fatal("superseded authentication status field accepted")
 	}
 }

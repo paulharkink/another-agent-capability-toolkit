@@ -1,0 +1,26 @@
+---
+name: argocd
+description: Use the configured Argo CD MCP tools to inspect Argo CD resources and, when permitted, perform explicitly approved server changes.
+---
+
+# Argo CD
+
+Use the Argo CD MCP server selected for this session. Treat the selected profile's saved server, connection settings, and permissions as authoritative. Do not switch targets or override connection settings through tool arguments.
+
+## Authentication
+
+MCP readiness and Argo CD authentication are separate. A connected MCP server does not prove that Argo CD login is valid.
+
+If authentication is needed, invoke the selected profile's shared AACT `authenticate` action for every configured authentication mode. From the terminal, the supported form is `aact mcp authenticate <capability> --profile <name> [--mcp <server>]`; use the selected capability, profile, and MCP names. The action may return a `login_url`; show that URL to the user and ask them to open it in their browser. For SSO, the package container continues the login and receives the callback.
+
+The AACT setup UI uses this package's declared `health_path` and waits for HTTP 200 with `{"authenticated":true}` before registration. If you need to check after using the direct CLI action, run `aact mcp status --json`. Its JSON has an `instances` array; select the Argo CD instance whose `key.source`, `key.package`, `key.profile`, and `key.mcp` match the selected profile, then use its `url`. Replace only the URL path with the package's declared `health_path` (`/health` for this package), preserving scheme, host, and port, and issue an HTTP GET. Proceed with Argo CD MCP tools only when the response is HTTP 200 and its JSON boolean `authenticated` is `true`. HTTP 200 with `authenticated: false` means login is still incomplete: let the user finish the browser flow, then repeat the status lookup and GET. Do not use an authentication status action or infer authentication from MCP initialization. If the matching runtime URL or health endpoint cannot be reached from this session, say that login cannot be verified here and ask the user to continue through the AACT setup UI.
+
+Do not invent separate authentication status or cancellation actions, a mode-specific login state machine, or a second Apply step. Do not use Computer Use to complete browser sign-in.
+
+## Operation policy
+
+The selected profile defaults to `read_only=true`. Follow that saved setting and the tools exposed by the server. Both refresh forms use the same public `argocd_app_get` tool and its `arguments` object. For example, call `argocd_app_get` with `arguments: {"positionals": ["my-app"], "refresh": true}` for an ordinary refresh; it is a read and remains allowed in read-only mode. A hard refresh is `argocd_app_get` with `arguments: {"positionals": ["my-app"], "hard_refresh": true}`. It changes server state and is a mutation; the server hides or rejects it when `read_only=true`. When `read_only=false`, get the user's explicit approval for this specific hard refresh before calling it.
+
+When `read_only=false`, ask the user for explicit approval immediately before each individual mutating operation. Approval to use a writable profile does not approve a specific change or later mutations. Explain the exact resource and intended change, then proceed only after that operation is approved.
+
+Prefer the narrowest supported MCP operation. Do not attempt to bypass the operation policy with arbitrary CLI commands, raw RPC, client-side login or configuration commands, or per-call server, context, token, TLS, or global-flag overrides. If the requested operation is unavailable or rejected, report that result instead of finding an alternate mutation path.

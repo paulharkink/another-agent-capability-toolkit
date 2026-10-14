@@ -1,10 +1,12 @@
 import base64
+import json
 import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from starlette.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -348,6 +350,40 @@ class KubeconfigTests(unittest.TestCase):
         with __import__("tempfile").TemporaryDirectory() as directory:
             path = config.write_auth_file(Path(directory) / "auth", "secret")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_health_requires_a_non_anonymous_kubernetes_identity(self):
+        valid_identity = {"status": {"userInfo": {"username": "fixture-user", "groups": ["system:authenticated"]}}}
+        cases = (
+            (json.dumps(valid_identity), "", 0, True),
+            ("", "expired secret-token", 1, False),
+            ("", "Forbidden", 1, False),
+            ("{", "", 0, False),
+            (json.dumps({"status": {}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "system:anonymous", "groups": ["system:unauthenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": " system:anonymous ", "groups": ["system:authenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "fixture-user", "groups": ["system:unauthenticated"]}}}), "", 0, False),
+            (json.dumps({"status": {"userInfo": {"username": "fixture-user", "groups": [" system:unauthenticated "]}}}), "", 0, False),
+        )
+        client = TestClient(server.mcp.http_app(path="/mcp", transport="streamable-http"))
+        for stdout, stderr, returncode, expected in cases:
+            with self.subTest(expected=expected, returncode=returncode):
+                completed = subprocess.CompletedProcess(
+                    args=["kubectl"], returncode=returncode, stdout=stdout, stderr=stderr
+                )
+                with patch.object(server.subprocess, "run", return_value=completed) as probe:
+                    response = client.get("/health")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"authenticated": expected})
+                self.assertNotIn("fixture-user", response.text)
+                self.assertNotIn("Forbidden", response.text)
+                self.assertNotIn("secret-token", response.text)
+                probe.assert_called_once_with(
+                    ["kubectl", "auth", "whoami", "--output=json"],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                    timeout=10,
+                )
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ runtime = "docker"
 transport = "sse"
 container_port = 8084
 endpoint_path = "/sse"
+health_path = "/health"
 host_port_input = "local_port"
 bind_ip_input = "host"
 advertised_host_input = "advertised_host"

@@ -174,7 +174,7 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 				t.Fatalf("auth-required operation appeared successful: %+v", model.result)
 			}
 			joined := strings.Join(model.result.Rows, "\n")
-			for _, want := range []string{"Saved: yes", "Authentication: not confirmed", "Applied effects: none reported"} {
+			for _, want := range []string{"Saved: yes", "Authentication: not confirmed", "Applied effects: none reported", "aact mcp authenticate"} {
 				if !strings.Contains(joined, want) {
 					t.Errorf("foreground result omitted %q:\n%s", want, joined)
 				}
