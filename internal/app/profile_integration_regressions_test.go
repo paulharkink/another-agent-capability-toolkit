@@ -406,8 +406,8 @@ func TestProfileApplyDoesNotRegisterWhenAuthenticatedProtocolInitializeFails(t *
 
 func TestProfileWithoutPrepareHonorsImageSourceSelection(t *testing.T) {
 	for _, tc := range []struct {
-		source, version string
-	}{{"release", "1.2.3"}, {"local", "dev"}} {
+		source, version, imageVersion string
+	}{{"release", "0.5.1-SNAPSHOT-feature-test", "0.5.0"}, {"local", "dev", "dev"}} {
 		t.Run(tc.source, func(t *testing.T) {
 			source := tc.source
 			s, _, q := profileApplyFixture(t)
@@ -424,9 +424,9 @@ func TestProfileWithoutPrepareHonorsImageSourceSelection(t *testing.T) {
 			if err := s.UISetMCPImageSource(context.Background(), source); err != nil {
 				t.Fatal(err)
 			}
-			oldVersion := versioninfo.Version
-			versioninfo.Version = tc.version
-			t.Cleanup(func() { versioninfo.Version = oldVersion })
+			oldVersion, oldImageVersion := versioninfo.Version, versioninfo.ImageVersion
+			versioninfo.Version, versioninfo.ImageVersion = tc.version, tc.imageVersion
+			t.Cleanup(func() { versioninfo.Version, versioninfo.ImageVersion = oldVersion, oldImageVersion })
 			runtime := &providerTestRuntime{}
 			s.Options.Runtime = runtime
 
@@ -437,7 +437,7 @@ func TestProfileWithoutPrepareHonorsImageSourceSelection(t *testing.T) {
 				t.Fatalf("runtime specs = %#v", runtime.specs)
 			}
 			got := runtime.specs[0]
-			if source == "release" && (got.Image != "ghcr.io/example/alpha:v1.2.3" || got.BuildContext != "") {
+			if source == "release" && (got.Image != "ghcr.io/example/alpha:v0.5.0" || got.BuildContext != "") {
 				t.Fatalf("release selection was ignored: %+v", got)
 			}
 			if source == "local" && (got.Image != "" || got.BuildContext != filepath.Join(p.Dir, "docker")) {
@@ -463,9 +463,9 @@ func TestPreparedProfileRunPassesReleaseImageThroughToRuntime(t *testing.T) {
 	p.MCPs[0].ReleaseImage = "ghcr.io/paulharkink/another-agent-capability-toolkit/cluster-inspector-mcp:v{aact_version}"
 	p.MCPs[0].BuildContext = "./mcp"
 	p.MCPs[0].Actions = map[string]catalog.Command{"prepare": {Argv: []string{"fixture-prepare"}}}
-	oldVersion := versioninfo.Version
-	versioninfo.Version = "1.2.3"
-	t.Cleanup(func() { versioninfo.Version = oldVersion })
+	oldVersion, oldImageVersion := versioninfo.Version, versioninfo.ImageVersion
+	versioninfo.Version, versioninfo.ImageVersion = "1.2.3", "1.2.3"
+	t.Cleanup(func() { versioninfo.Version, versioninfo.ImageVersion = oldVersion, oldImageVersion })
 	executor := &releasePrepareExecutor{}
 	s.Options.Runner = executor
 	runtime := &providerTestRuntime{}
@@ -615,9 +615,13 @@ func TestPreparedProfilePreservesStandardImageSelectionPortsAndState(t *testing.
 					t.Fatal(err)
 				}
 			}
-			oldVersion := versioninfo.Version
-			versioninfo.Version = "1.2.3"
-			t.Cleanup(func() { versioninfo.Version = oldVersion })
+			oldVersion, oldImageVersion := versioninfo.Version, versioninfo.ImageVersion
+			imageVersion := "dev"
+			if imageSource == "release" {
+				imageVersion = "1.2.3"
+			}
+			versioninfo.Version, versioninfo.ImageVersion = "1.2.3", imageVersion
+			t.Cleanup(func() { versioninfo.Version, versioninfo.ImageVersion = oldVersion, oldImageVersion })
 			executor := &releasePrepareExecutor{}
 			s.Options.Runner = executor
 			runtime := &providerTestRuntime{}
