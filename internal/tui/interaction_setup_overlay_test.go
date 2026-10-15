@@ -42,8 +42,8 @@ func TestInteractionSetupInsetHasOneBottomActionAndIgnoresParentClicks(t *testin
 		t.Fatal("clicking underlying home content dismissed the setup overlay")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "[ Save and apply ]") || strings.Contains(view, "[ Cancel ]") {
-		t.Fatalf("workspace should expose one bottom Save and apply control only:\n%s", view)
+	if !strings.Contains(view, "[ Save ]") || !strings.Contains(view, "[ Cancel ]") {
+		t.Fatalf("Inputs should expose visible Save and Cancel controls:\n%s", view)
 	}
 	if backend.installRequest != nil || m.unsavedExit != nil {
 		t.Fatal("clicking outside the workspace action region changed setup state")

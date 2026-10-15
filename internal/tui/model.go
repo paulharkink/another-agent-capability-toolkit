@@ -64,6 +64,7 @@ type Model struct {
 	pendingRegistrationRemoval bool
 	registration               *registrationState
 	pendingSetup               *viewmodel.SetupPreview
+	pendingSkillOnly           *skillOnlyActionState
 	pendingSetupField          string
 	workspace                  *workspaceState
 	setupRetry                 *setupRetryDraft
@@ -238,6 +239,30 @@ func (m *Model) load() tea.Cmd {
 		return msg
 	}
 }
+
+func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
+	m.busy = false
+	if msg.err != nil {
+		m.output = "Could not save inputs: " + msg.err.Error()
+		return nil
+	}
+	if m.workspace != nil && m.workspace.Key == msg.key {
+		m.workspace.InputsSaved = true
+		if msg.inputsChanged {
+			m.workspace.Installed = false
+		}
+	}
+	m.pendingSetup = &msg.preview
+	m.pendingSetupField = msg.destinationField
+	m.output = "Inputs saved. Install this capability for selected agents to enable Start."
+	if m.form != nil {
+		m.form.ReopenAfterSave()
+		m.form.MarkClean()
+		m.configureWorkspaceForm(msg.preview)
+	}
+	return nil
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
 	case setupProgressMsg:
@@ -282,6 +307,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if loaded, ok := msg.(loadedMsg); ok {
 		m.applyLoaded(loaded)
 		return m, nil
+	}
+	if saved, ok := msg.(setupInputsSavedMsg); ok {
+		return m, m.handleSetupInputsSaved(saved)
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		stroke := key.String()
@@ -411,6 +439,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectAllComponents()
 		return m, nil
 	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionInputsID {
+		if action.ID == "save-inputs" && m.form != nil {
+			return m, m.saveSetupInputs(m.form.Values())
+		}
+	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionAgentsID {
+		switch action.ID {
+		case "install-selected":
+			if m.form != nil {
+				return m, m.applySetup(m.form.Values())
+			}
+		case "uninstall-selected":
+			if m.form != nil && m.pendingSetup != nil {
+				return m, m.uninstallSelectedAgents()
+			}
+			m.output = "Uninstall is unavailable until the agent selection is loaded."
+			return m, nil
+		}
+	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
 		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Instance != nil {
 			profile := m.workspace.Instance
@@ -426,11 +473,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if parts[0] == "logs" {
 				if profile := m.instanceForMCPName(parts[1]); profile != nil {
+					m.workspace.Section = "Logs"
+					m.workspace.SectionID = sectionLogsID
+					if m.form != nil && m.form.HasSectionID(sectionLogsID) {
+						m.form.SelectSectionID(sectionLogsID)
+						m.form.FocusSection()
+					}
 					return m, m.openProfileLogs(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 				}
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
+				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || (m.form != nil && m.form.HasUnsavedChanges())) {
+					m.output = "Save inputs and install this capability for an agent before starting the runtime."
+					return m, nil
+				}
 				profile := m.instanceForMCPName(parts[1])
 				if profile == nil && m.workspace.Instance != nil {
 					parent := *m.workspace.Instance
@@ -616,8 +673,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg = event
 			}
 		}
+		// FormModel clears its active section when Save completes, so preserve
+		// the submitting stage before updating it. Inputs Save must persist only
+		// answers and leave installation to the separate Agent access action.
+		submittedSectionID := m.form.SectionID()
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
+		if m.workspace != nil && m.workspace.Active {
+			m.workspace.SectionID = m.form.SectionID()
+			m.workspace.Section = m.form.SectionTitle()
+			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
+			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
+		}
 		m.refreshComponentAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
@@ -636,6 +703,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+		if !m.unsavedExitApplying && m.form != nil && m.workspace != nil && m.workspace.Active && submittedSectionID == sectionInputsID && m.pendingSetup != nil {
+			return m, m.saveSetupInputs(values)
+		}
 		if !m.unsavedExitApplying {
 			if m.pendingSetup != nil {
 				m.pendingSetup.ActiveInputGroups = m.form.ActiveInputGroups()
@@ -648,6 +718,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingRegistrationRemoval = false
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
+			m.pendingSkillOnly = nil
 			m.pendingDefaultAgents = false
 			m.pendingMCPImageSource = false
 			m.creatingInstance = nil
@@ -662,24 +733,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = e.Error()
 			return m, nil
 		}
-		if m.deletingInstance != nil {
-			ref := *m.deletingInstance
-			confirmed, _ := values["confirmation"].(string)
-			m.deletingInstance = nil
-			if confirmed != ref.Name {
-				m.output = "Instance deletion cancelled: exact name did not match"
-				return m, nil
-			}
-			m.action = "delete instance"
-			return m, func() tea.Msg {
-				backend, ok := m.backend.(instanceRemovalBackend)
-				if !ok {
-					return instanceRemovedMsg{ref: ref, err: fmt.Errorf("instance removal is unavailable")}
-				}
-				_, err := backend.UIRemoveInstance(m.ctx, ref)
-				return instanceRemovedMsg{ref: ref, err: err}
-			}
-		}
 		if m.creatingInstance != nil {
 			ref := *m.creatingInstance
 			ref.Name, _ = values["name"].(string)
@@ -692,6 +745,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return instanceCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
 			}
+		}
+		if m.pendingSkillOnly != nil {
+			pending := *m.pendingSkillOnly
+			m.pendingSkillOnly = nil
+			selected, _ := values["agents"].([]string)
+			return m, m.runSkillOnlyAction(pending, selected)
 		}
 		if m.pendingRegistration != nil {
 			request := *m.pendingRegistration
@@ -780,11 +839,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "delete instance", target: msg.ref.Name})
 			return m, nil
 		}
-		m.output = "Deleted instance " + msg.ref.Name
+		if msg.resetPreset {
+			m.output = msg.message
+			if m.output == "" {
+				m.output = "Reset instance " + msg.ref.Name + " to pack preset. Unknown runtime may remain; inspect its owner before starting another."
+			}
+		} else {
+			m.output = "Deleted instance " + msg.ref.Name
+		}
 		return m, m.load()
 	case instanceCreatedMsg:
 		if msg.err != nil {
-				m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create instance"})
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create instance"})
 			return m, nil
 		}
 		return m, m.openTargetWorkspace(viewmodel.SetupRequest{Ref: msg.ref}, "Overview")
@@ -802,21 +868,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.workspace != nil && m.workspace.InstanceRef.CapabilityID != "" {
 			m.workspace.Key = msg.preview.Key
 		}
+		if m.workspace != nil && m.workspace.SectionID == sectionInputsID && msg.preview.Configured {
+			m.workspace.Section = "Agent access"
+			m.workspace.SectionID = sectionAgentsID
+		}
 		m.openSetupForm(msg.preview)
 		name := msg.preview.PackageName
 		if name == "" {
 			name = msg.preview.Key.Package
 		}
-		title := "New setup · " + name
+		title := name
 		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
-			title = "Configure · " + name
+			title = name
 		}
 		if m.instanceMode() {
 			title += " · Instance " + msg.preview.Key.Target
 		} else if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
 		}
-		m.form.SetTitle(title + " · F3 Information")
+		m.form.SetTitle(title)
+		m.form.SetContext("Instance: " + msg.preview.Key.Target)
 	case loadedMsg:
 		m.applyLoaded(msg)
 	case agentConfigMsg:
@@ -1044,6 +1115,11 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 		return nil
 	}
 	if succeeded {
+		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
+			m.workspace.Installed = true
+			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
+			m.configureWorkspaceForm(m.setupRetry.preview)
+		}
 		// Keep the retained workspace actionable after its result is dismissed.
 		// applySetup consumes pendingSetup while the operation runs, so restore
 		// the preview and destination field from the submitted draft on success.
@@ -1157,7 +1233,7 @@ func (m *Model) rows() []string {
 	case "Environments":
 		rows = append(rows, "Environment directory: "+m.environmentRoot(), "Target browsing awaits the environment service.")
 	case "Help":
-		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
+		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter: open selected row · a: Actions · F3: Details", "m / F9: Main menu", "Mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
 	case "Settings":
 		rows = append(rows, "Environment directory: "+m.environmentRoot())
 		keys := []string{}

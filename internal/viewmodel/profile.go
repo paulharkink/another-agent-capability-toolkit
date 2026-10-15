@@ -15,6 +15,7 @@ type Instance struct {
 	URL                        string
 	Transport                  string
 	RuntimeStatus              string
+	AuthenticationStatus       string
 	Ownership                  string
 	LastAction                 string
 	LastActionAt               time.Time

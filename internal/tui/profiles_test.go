@@ -200,7 +200,8 @@ func openProfileAction(t *testing.T, m *Model, label string, mouse bool) tea.Cmd
 		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		return cmd
 	case "View details":
-		m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+		m.form.SelectSectionID(sectionInformationID)
+		m.form.FocusSection()
 		return nil
 	case "Start":
 		_, cmd := m.workspaceOverviewAction("s")

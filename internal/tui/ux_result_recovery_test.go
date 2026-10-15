@@ -593,7 +593,7 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 	progress := batch[1]()
 	m.Update(progress)
 	plain := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Overview", "Agents", "Elapsed", "Quiet"} {
+	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Agent access", "Elapsed", "Quiet"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("blocked operation overlay omitted %q:\n%s", want, plain)
 		}

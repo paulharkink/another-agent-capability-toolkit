@@ -86,7 +86,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instance root:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instance root:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -377,7 +377,7 @@ func TestManagementHelpReturnsToOrigin(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	selected := m.selected
 	press(m, tea.KeyF1, "")
-	if m.view != "Help" || !strings.Contains(m.View().Content, "Open / focus") || strings.Contains(m.View().Content, "fixed:") {
+	if m.view != "Help" {
 		t.Fatal("context help not shown")
 	}
 	press(m, tea.KeyEscape, "")
@@ -420,15 +420,9 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 	if m.selected != 1 {
 		t.Fatalf("mouse selected row %d, want second agent", m.selected)
 	}
-	m.View()
-	for _, hit := range m.management.Hits {
-		if hit.Control == "actions" {
-			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
-			break
-		}
-	}
-	if m.management.Focus != ProfilesPane || !strings.Contains(ansi.Strip(m.View().Content), "View configuration") {
-		t.Fatal("Open / Focus control did not reveal the selected agent action")
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "View configuration") {
+		t.Fatalf("selected agent's direct configuration action is not visible: %s", view)
 	}
 	for _, hit := range m.management.Hits {
 		if hit.Control == "agent-config" {
@@ -507,9 +501,8 @@ func TestSettingsOffersReleaseOrLocalMCPImageSource(t *testing.T) {
 	for range 4 {
 		press(m, tea.KeyDown, "")
 	}
-	press(m, tea.KeyF2, "")
-	press(m, tea.KeyEnd, "")
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnter, "") // Focus selected category's detail action.
+	press(m, tea.KeyEnter, "") // Open visible image-source control.
 	if m.form == nil || !strings.Contains(m.View().Content, "Prebuilt release image") {
 		t.Fatalf("image source choice missing: %s", m.View().Content)
 	}
@@ -535,9 +528,8 @@ func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
 	m.Update(m.Init()())
 	m.navigate("Settings")
 	press(m, tea.KeyDown, "")
-	press(m, tea.KeyF2, "")
-	press(m, tea.KeyEnd, "")
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnter, "") // Focus selected category's detail action.
+	press(m, tea.KeyEnter, "") // Open visible default-agent control.
 	if m.form == nil || !strings.Contains(m.View().Content, "Default named agents") || !strings.Contains(m.View().Content, "[claude]") {
 		t.Fatalf("default-agent form missing or not prefilled: %s", m.View().Content)
 	}

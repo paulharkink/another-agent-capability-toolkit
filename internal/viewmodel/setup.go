@@ -80,3 +80,10 @@ type SkillOnlyInstallRequest struct {
 	SourceID, PackageID string
 	DestinationIDs      []string
 }
+
+// SkillOnlyUninstallRequest removes a zero-input skill from the exact selected
+// agent destinations without requiring or changing an instance record.
+type SkillOnlyUninstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
+}

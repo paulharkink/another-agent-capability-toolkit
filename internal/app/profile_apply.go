@@ -771,6 +771,13 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 				if hadSelection {
 					scope := s.agentScope(id)
 					scope.ID = id
+					if recorded, ok := profileRegistrationConfig(achievedRows, key, id); ok {
+						scope.ConfigPathOverride = recorded.Destination
+						if recorded.AgentHome != "" {
+							scope.Home = recorded.AgentHome
+							scope.ExplicitHome = true
+						}
+					}
 					observation, e := a.Observe(ctx, scope, agents.ObservationRequest{IncludeInventory: true, Key: key, Managed: profileManagedRows(achievedRows, key, id)})
 					row.Selected = e == nil && observedSelectionComplete(p, preview.SelectedItemIDs, values, key, observation)
 				}
@@ -1583,6 +1590,64 @@ func (s *Service) removeInstanceConfiguration(ref config.InstanceRef, path strin
 		return err
 	}
 	return nil
+}
+
+// ResetInstanceToPreset removes exact AACT-managed registration rows and saved
+// state for a pack-provided instance without stopping or probing its runtime.
+func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
+		err = s.Store.WithLock(ctx, func() error {
+			out, err = s.ResetInstanceToPreset(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
+			return err
+		})
+		return out, err
+	}
+	p, preset, key, err := s.loadInstance(q.Ref)
+	if err != nil {
+		return out, err
+	}
+	if preset.Path == "" {
+		return out, invalid(fmt.Errorf("instance %q has no pack preset to restore", q.Ref.Name))
+	}
+	out.Target = s.Source.ID + "/" + p.ID + "  " + preset.Ref.Name
+	out.Step = "reset to preset"
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return out, err
+	}
+	keys := map[state.Key]bool{key: true}
+	for _, row := range rows {
+		if !sameCapabilityKey(row.Key, key) {
+			continue
+		}
+		keys[row.Key] = true
+		if row.Component == "runtime" {
+			// Forget only AACT's exact observation. Never stop a runtime whose
+			// current ownership cannot be established by this reset action.
+			if err := s.Store.Remove(row); err != nil {
+				return out, err
+			}
+			out.Changes = append(out.Changes, row)
+			continue
+		}
+		if row.ExternalRegistration {
+			continue
+		}
+		if err := s.removeProfileBinding(ctx, row); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+		out.Changes = append(out.Changes, row)
+	}
+	for child := range keys {
+		if err := s.Store.ForgetInstanceState(child); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+	}
+	out.Step = "complete"
+	out.Message = fmt.Sprintf("Reset instance %s to its pack preset. AACT-managed registrations and saved inputs were cleared; external registrations were left unchanged, and an unknown runtime may remain running.", preset.Ref.Name)
+	return out, nil
 }
 
 // RemoveProfile is retained for callers built against the previous API name.

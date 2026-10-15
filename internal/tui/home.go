@@ -59,6 +59,10 @@ type modalState struct {
 	Follow   bool
 }
 type homeMenuItem struct{ Label, Action, Reason string }
+type skillOnlyActionState struct {
+	Capability CapabilityRow
+	Action     string
+}
 type hitRegion struct {
 	X, Y, Width, Height int
 	Pane                Pane
@@ -91,6 +95,24 @@ func (m *Model) contextRows() []contextRow {
 	}
 	if m.instanceMode() && c.CatalogIndex >= 0 {
 		if !c.MCP {
+			if m.skillOnlyWithoutInputs(c) {
+				installed := make([]string, 0)
+				for _, item := range m.inventory {
+					if item.Key.Source == c.Source && item.Key.Package == c.Package && item.Component == "skill" {
+						installed = append(installed, agents.DisplayName(item.AgentID))
+					}
+				}
+				status := "Not installed"
+				if len(installed) > 0 {
+					sort.Strings(installed)
+					status = "Installed · " + strings.Join(installed, ", ")
+				}
+				return []contextRow{
+					{ID: "skill-status", Label: "Skill · " + status, Kind: "status"},
+					{ID: "skill-access", Label: "Manage skill access…", Kind: "skill-access"},
+					{ID: "details", Label: "View capability details", Kind: "details"},
+				}
+			}
 			return []contextRow{{ID: "configure", Label: m.capabilitySetupLabel(c), Kind: "configure"}, {ID: "details", Label: "View capability details", Kind: "details"}}
 		}
 		rows := []contextRow{}
@@ -610,28 +632,16 @@ func (m *Model) homeKey(stroke string) tea.Cmd {
 		} else {
 			return m.openContextRow()
 		}
-	case "f2":
-		if m.home.Focus == CapabilitiesPane {
-			m.focusPane(ProfilesPane)
-		} else {
-			return m.openContextRow()
+	case "delete", "backspace":
+		if m.home.Focus == ProfilesPane {
+			if row, ok := m.selectedContextProfile(); ok {
+				ref := config.InstanceRef{PackID: row.Key.Source, CapabilityID: row.Key.Package, Name: row.Key.Target}
+				m.deletingInstance = &ref
+				m.home.Modal = &modalState{Kind: "delete-confirm", Selected: 0}
+			}
 		}
 	case "f3":
-		if m.home.Focus == CapabilitiesPane {
-			m.selectContext(1)
-		} else if row, ok := m.selectedContextRow(); ok && row.Kind == "details" {
-			m.home.Modal = &modalState{Kind: "details"}
-		} else {
-			m.selectContext(1)
-		}
-	case "f4":
-		if m.home.Focus == CapabilitiesPane {
-			m.selectContext(0)
-		} else if row, ok := m.selectedContextRow(); ok && row.Kind == "configure" {
-			return m.homeOperation("parameters")
-		} else {
-			m.selectContext(0)
-		}
+		m.home.Modal = &modalState{Kind: "details"}
 	case "f5", "R":
 		return m.load()
 	case "u":
@@ -660,6 +670,8 @@ func (m *Model) openContextRow() tea.Cmd {
 		}
 	case "configure":
 		return m.homeOperation("parameters")
+	case "skill-access":
+		m.openHomeMenu("actions")
 	case "locate-source":
 		m.locateSelectedSource()
 	case "saved-information":
@@ -747,20 +759,64 @@ func (m *Model) selectedCapabilitySource() string {
 	c, _ := m.selectedCapability()
 	return c.Source
 }
+func (m *Model) selectedCapabilityDetails() []string {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return []string{"No capability selected"}
+	}
+	lines := []string{"Capability: " + c.Name, "Capability Pack: " + c.Source, "Package: " + c.Package}
+	components := []string{}
+	if c.Skill {
+		components = append(components, "skill")
+	}
+	if c.MCP {
+		components = append(components, "MCP")
+	}
+	lines = append(lines, "Components: "+strings.Join(components, " + "))
+	if len(c.MCPNames) > 0 {
+		lines = append(lines, "MCP definitions: "+strings.Join(c.MCPNames, ", "))
+	}
+	return append(lines, "Enter / Esc Back")
+}
+
+func (m *Model) selectedInstanceIsPackPreset() bool {
+	row, ok := m.selectedContextProfile()
+	return ok && row.Configuration != nil && row.Configuration.Origin == "pack"
+}
+
 func (m *Model) homeMenuItems() []homeMenuItem {
 	if m.home.Modal == nil {
 		return nil
+	}
+	if m.home.Modal.Kind == "delete-confirm" {
+		confirmLabel := "Delete"
+		if m.selectedInstanceIsPackPreset() {
+			confirmLabel = "Reset to preset"
+		}
+		return []homeMenuItem{{"Cancel", "cancel-delete", ""}, {confirmLabel, "confirm-delete", ""}}
 	}
 	if m.home.Modal.Kind == "main" {
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.instanceMode() {
 		if c, ok := m.selectedCapability(); ok && !c.MCP {
+			if m.skillOnlyWithoutInputs(c) {
+				return []homeMenuItem{
+					{"Install skill for agents...", "install-skill-only", ""},
+					{"Uninstall skill from agents...", "uninstall-skill-only", ""},
+					{"View capability details", "details", ""},
+					{"Back", "back", ""},
+				}
+			}
 			return []homeMenuItem{{m.capabilitySetupLabel(c), "configure", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
 		}
-		items := []homeMenuItem{{"Open selected instance", "parameters", ""}}
+		items := []homeMenuItem{}
 		if row, selected := m.selectedContextProfile(); selected {
-			items = append(items, homeMenuItem{"Delete instance " + row.Name + string(rune(8230)), "delete-instance", ""})
+			label := "Delete instance " + row.Name + string(rune(8230))
+			if row.Configuration != nil && row.Configuration.Origin == "pack" {
+				label = "Reset " + row.Name + " to pack preset" + string(rune(8230))
+			}
+			items = append(items, homeMenuItem{label, "delete-instance", ""})
 		}
 		items = append(items, homeMenuItem{"Create another instance" + string(rune(8230)), "create-profile", ""}, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
 		return items
@@ -835,6 +891,9 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 		return m.logKey(stroke)
 	}
 	if stroke == "esc" {
+		if m.home.Modal.Kind == "delete-confirm" {
+			m.deletingInstance = nil
+		}
 		m.home.Modal = m.home.Modal.Parent
 		return nil
 	}
@@ -906,6 +965,33 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 			}
 			return nil
 		}
+		if m.home.Modal.Kind == "delete-confirm" {
+			ref := m.deletingInstance
+			m.deletingInstance = nil
+			m.home.Modal = nil
+			if item.Action == "cancel-delete" || ref == nil {
+				return nil
+			}
+			m.action = "delete instance"
+			selected := *ref
+			resetPreset := m.selectedInstanceIsPackPreset()
+			return func() tea.Msg {
+				if resetPreset {
+					backend, ok := m.backend.(instancePresetResetBackend)
+					if !ok {
+						return instanceRemovedMsg{ref: selected, resetPreset: true, err: fmt.Errorf("reset to pack preset is unavailable")}
+					}
+					result, err := backend.UIResetInstanceToPreset(m.ctx, selected)
+					return instanceRemovedMsg{ref: selected, resetPreset: true, message: result.Message, err: err}
+				}
+				backend, ok := m.backend.(instanceRemovalBackend)
+				if !ok {
+					return instanceRemovedMsg{ref: selected, err: fmt.Errorf("instance removal is unavailable")}
+				}
+				_, err := backend.UIRemoveInstance(m.ctx, selected)
+				return instanceRemovedMsg{ref: selected, err: err}
+			}
+		}
 		switch item.Action {
 		case "back":
 			m.home.Modal = nil
@@ -918,9 +1004,7 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 			if row, ok := m.selectedContextProfile(); ok {
 				ref := config.InstanceRef{PackID: row.Key.Source, CapabilityID: row.Key.Package, Name: row.Key.Target}
 				m.deletingInstance = &ref
-				m.home.Modal = nil
-				m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "confirmation", Label: "Type exact instance name to delete", Type: "string", Required: true}}, nil)
-				m.form.SetTitle("Delete instance " + row.Name + "?")
+				m.home.Modal = &modalState{Kind: "delete-confirm", Selected: 0}
 			}
 		default:
 			if item.Action != "registrations" && item.Action != "remove-registrations" {
@@ -932,8 +1016,13 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 	return nil
 }
 func (m *Model) homeOperation(action string) tea.Cmd {
-	if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) && (action == "configure" || action == "parameters" || action == "create-profile") {
-		return m.installSkillOnly(c)
+	if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
+		if action == "install-skill-only" || action == "uninstall-skill-only" {
+			return m.openSkillOnlyTargets(c, action)
+		}
+		if action == "configure" || action == "parameters" || action == "create-profile" {
+			return m.openSkillOnlyTargets(c, "install-skill-only")
+		}
 	}
 	if m.instanceMode() {
 		if c, ok := m.selectedCapability(); ok && !c.MCP {
@@ -943,7 +1032,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			}
 			if action == "configure" || action == "parameters" {
 				if m.skillOnlyWithoutInputs(c) {
-					return m.installSkillOnly(c)
+					return m.openSkillOnlyTargets(c, "install-skill-only")
 				}
 				return m.openTargetWorkspace(m.packInstanceRequest(state.Key{Source: c.Source, Package: c.Package, Target: "default"}), "Overview")
 			}
@@ -951,7 +1040,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		if action == "create-profile" {
 			if c, ok := m.selectedCapability(); ok {
 				if m.skillOnlyWithoutInputs(c) {
-					return m.installSkillOnly(c)
+					return m.openSkillOnlyTargets(c, "install-skill-only")
 				}
 				m.openInstanceCreation(c)
 			}
@@ -969,7 +1058,7 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 			if row.Kind == "create-profile" {
 				if c, ok := m.selectedCapability(); ok {
 					if m.skillOnlyWithoutInputs(c) {
-						return m.installSkillOnly(c)
+						return m.openSkillOnlyTargets(c, "install-skill-only")
 					}
 					m.openInstanceCreation(c)
 				}
@@ -1069,24 +1158,79 @@ func (m *Model) skillOnlyWithoutInputs(c CapabilityRow) bool {
 	return p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0
 }
 
-func (m *Model) installSkillOnly(c CapabilityRow) tea.Cmd {
-	backend, ok := m.backend.(skillOnlyInstallBackend)
-	if !ok {
-		m.output = "Direct skill installation service unavailable"
+func (m *Model) openSkillOnlyTargets(c CapabilityRow, action string) tea.Cmd {
+	choices := make([]catalog.Choice, 0, len(m.agents))
+	installed := map[string]bool{}
+	for _, row := range m.inventory {
+		if row.Key.Source == c.Source && row.Key.Package == c.Package && row.Component == "skill" {
+			installed[row.AgentID] = true
+		}
+	}
+	selected := []string{}
+	for _, id := range m.agents {
+		if id == "" || id == "all" {
+			continue
+		}
+		label := id
+		if installed[id] {
+			label += " (installed)"
+			if action == "uninstall-skill-only" {
+				selected = append(selected, id)
+			}
+		} else if action == "install-skill-only" {
+			selected = append(selected, id)
+		}
+		choices = append(choices, catalog.Choice{Value: id, Label: label})
+	}
+	if len(choices) == 0 {
+		m.output = "No selectable agent destinations are available"
+		return nil
+	}
+	m.pendingSkillOnly = &skillOnlyActionState{Capability: c, Action: action}
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agents", Label: "Target agents", Type: "multichoice", Required: true, Options: choices}}, map[string]any{"agents": selected})
+	title := "Install skill - " + c.Name
+	if action == "uninstall-skill-only" {
+		title = "Uninstall skill - " + c.Name
+	}
+	m.form.SetTitle(title)
+	m.form.SetBackNavigation(true)
+	m.management.FormOverlay = true
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m.home.Modal = nil
+	return nil
+}
+
+func (m *Model) runSkillOnlyAction(pending skillOnlyActionState, destinations []string) tea.Cmd {
+	if len(destinations) == 0 {
+		m.output = "Select at least one agent destination"
 		return nil
 	}
 	m.busy = true
-	m.action = "install skill"
+	m.action = "manage skill access"
 	ctx := m.ctx
-	request := viewmodel.SkillOnlyInstallRequest{SourceID: c.Source, PackageID: c.Package, DestinationIDs: []string{"all"}}
 	return func() tea.Msg {
-		result, err := backend.UIInstallSkillOnly(ctx, request)
+		var result viewmodel.OperationResult
+		var err error
+		if pending.Action == "uninstall-skill-only" {
+			backend, ok := m.backend.(skillOnlyUninstallBackend)
+			if !ok {
+				return operationMsg{origin: "Catalog", err: fmt.Errorf("direct skill removal service unavailable")}
+			}
+			result, err = backend.UIUninstallSkillOnly(ctx, viewmodel.SkillOnlyUninstallRequest{SourceID: pending.Capability.Source, PackageID: pending.Capability.Package, DestinationIDs: destinations})
+		} else {
+			backend, ok := m.backend.(skillOnlyInstallBackend)
+			if !ok {
+				return operationMsg{origin: "Catalog", err: fmt.Errorf("direct skill installation service unavailable")}
+			}
+			result, err = backend.UIInstallSkillOnly(ctx, viewmodel.SkillOnlyInstallRequest{SourceID: pending.Capability.Source, PackageID: pending.Capability.Package, DestinationIDs: destinations})
+		}
 		lines := []string{}
 		if result.Message != "" {
 			lines = append(lines, result.Message)
 		}
 		for _, change := range result.Changes {
-			lines = append(lines, fmt.Sprintf("%s: %s installed", change.AgentID, change.Component))
+			lines = append(lines, fmt.Sprintf("%s: %s", change.AgentID, change.Component))
 		}
 		lines = append(lines, result.Errors...)
 		return operationMsg{origin: "Catalog", output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &result}
@@ -1142,7 +1286,7 @@ func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 		case "main":
 			return m.homeKey("m")
 		case "actions":
-			return m.homeKey("f2")
+			return m.homeKey("a")
 		case "details":
 			return m.homeKey("f3")
 		case "parameters":
@@ -1328,7 +1472,7 @@ func (m *Model) homeView() tea.View {
 		return filepath.Base(path)
 	}
 	scope := " Capability Pack: " + m.settings["source"] + " · Instance root: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
-	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
+	menubar := " F9 Main menu: Agents | Settings | Help"
 	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
 	ltitle := "Capabilities"
 	rtitle := "Selected capability · " + c.Name
@@ -1444,7 +1588,7 @@ func (m *Model) homeView() tea.View {
 		contextPosition += "  ↓ More below"
 	}
 	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(contextPosition, right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║", "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
-	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F2 Open / Focus", "actions"}, {"F3 Details", "details"}, {"F4 Parameters", "parameters"}, {"F5 Refresh", "refresh"}}
+	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F3 Details", "details"}, {"F5 Refresh", "refresh"}}
 	x := 2
 	f := " "
 	fy := len(lines)
@@ -1454,7 +1598,7 @@ func (m *Model) homeView() tea.View {
 		x += len(b.text) + 2
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║")
-	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open / Focus", "actions"}, {"a Actions", "actions"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
+	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open", "actions"}, {"a Actions", "actions"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
 	f = " "
 	x = 2
 	fy = len(lines)
@@ -1468,8 +1612,7 @@ func (m *Model) homeView() tea.View {
 		x += lipgloss.Width(b.text)
 	}
 	lines = append(lines, "║"+fit(f, width-2)+"║", "╚"+strings.Repeat("═", width-2)+"╝")
-	actionsStart := strings.Index(menubar, "F2 Open / Focus")
-	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Open / Focus"), Height: 1, Control: "actions"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
+	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: width - 2, Height: 1, Control: "main"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
 	if m.home.Modal != nil && m.registration == nil {
 		lines = m.overlay(lines)
 	}
@@ -1487,6 +1630,16 @@ func (m *Model) overlay(lines []string) []string {
 	title := "Actions"
 	if m.home.Modal.Kind == "main" {
 		title = "Main menu"
+	} else if m.home.Modal.Kind == "delete-confirm" {
+		if m.deletingInstance != nil {
+			if m.selectedInstanceIsPackPreset() {
+				title = "Reset instance " + m.deletingInstance.Name + " to pack preset?"
+			} else {
+				title = "Delete instance " + m.deletingInstance.Name + "?"
+			}
+		} else {
+			title = "Delete instance?"
+		}
 	} else if m.home.Modal.Kind == "actions" {
 		if m.home.Focus == ProfilesPane {
 			if profiles := m.profiles(); len(profiles) > 0 {
@@ -1503,7 +1656,11 @@ func (m *Model) overlay(lines []string) []string {
 	menuItems := []homeMenuItem{}
 	if m.home.Modal.Kind == "details" {
 		title = "Details"
-		entries = m.instanceDetails()
+		if m.home.Focus == CapabilitiesPane {
+			entries = m.selectedCapabilityDetails()
+		} else {
+			entries = m.instanceDetails()
+		}
 	} else {
 		menuItems = m.homeMenuItems()
 		entries = m.menuEntries()

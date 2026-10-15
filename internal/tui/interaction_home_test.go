@@ -38,26 +38,16 @@ func focusHomeContext(t *testing.T, m *Model) {
 	}
 }
 
-func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		key  rune
-	}{{"Enter", tea.KeyEnter}, {"F2", tea.KeyF2}} {
-		t.Run(test.name, func(t *testing.T) {
-			m, _ := homeFixture()
-			press(m, test.key, "")
-			if m.home.Focus != ProfilesPane {
-				t.Fatalf("first %s should focus layer 2, got %v", test.name, m.home.Focus)
-			}
-			if m.home.Modal != nil {
-				t.Fatalf("first %s opened a deeper overlay: %#v", test.name, m.home.Modal)
-			}
-			for _, want := range []string{"Configure now", "View capability details", "Related MCP instances", "MCP · inspector"} {
-				if !strings.Contains(m.View().Content, want) {
-					t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
-				}
-			}
-		})
+func TestHomeEnterFocusesLayerTwoBeforeOpeningAnAction(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyEnter, "")
+	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
+		t.Fatalf("Enter should focus layer 2 before opening an action, got focus=%v modal=%#v", m.home.Focus, m.home.Modal)
+	}
+	for _, want := range []string{"Configure now", "View capability details", "Related MCP instances"} {
+		if !strings.Contains(m.View().Content, want) {
+			t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
+		}
 	}
 }
 
@@ -121,22 +111,25 @@ func TestHomeEscapeAndPaneKeysMoveOneLayerAtATime(t *testing.T) {
 
 func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
 	m, _ := homeFixture()
-	setup := &setupBackendFixture{}
-	m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
-	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
-	focusHomeContext(t, m)
+	backend := &zeroInputSkillSetupBackend{}
+	m.backend = skillOnlyInstanceBackend{backend}
+	selectPlainSkill(t, m)
+	m.focusPane(ProfilesPane)
 	view := m.View().Content
-	for _, want := range []string{"Install skill", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Manage skill access", "View capability details", "Skill · Not installed"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
-	pressAndRun(m, tea.KeyEnter)
-	if m.home.Modal != nil || m.form != nil || (m.workspace != nil && m.workspace.Active) {
-		t.Fatalf("skill-only install opened configuration UI: modal=%#v form=%#v workspace=%#v", m.home.Modal, m.form, m.workspace)
+	if cmd := m.homeOperation("install-skill-only"); cmd != nil {
+		t.Fatal("opening the skill-only install target selector unexpectedly started an operation")
 	}
-	if setup.skillOnlyRequest == nil {
-		t.Fatal("skill-only install did not call the install backend directly")
+	if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "install-skill-only" {
+		t.Fatalf("skill-only L2 Install skill did not open its targeted Agent access action: form=%v pending=%+v", m.form != nil, m.pendingSkillOnly)
+	}
+	assertAgentTargetSelector(t, m)
+	if strings.Contains(m.View().Content, "already installed") && backend.skillOnlyRequest == nil {
+		t.Fatal("L2 claims the skill is installed without an installed destination")
 	}
 }
 

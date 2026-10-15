@@ -95,6 +95,52 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
 }
 
+// UISaveInputs persists a capability instance's input answers without
+// installing agent links, changing MCP registrations, or starting runtimes.
+func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	return s.Store.WithLock(ctx, func() error {
+		p, instance, key, err := s.loadInstance(q.Ref)
+		if err != nil {
+			return err
+		}
+		p, instance, values, _, err := s.instanceValuesForPreview(p, instance, key, InstanceRequest{
+			Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
+		})
+		if err != nil {
+			return err
+		}
+		fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: instance.Path, InputPolicy: instance.InputPolicy}, instance.Raw)
+		if err != nil {
+			return invalid(err)
+		}
+		previous, err := s.Store.ActiveInputGroups(key)
+		if err != nil {
+			return err
+		}
+		groups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previous)
+		if err := validateActiveInputGroups(p.Inputs, groups); err != nil {
+			return invalid(err)
+		}
+		reset := make(map[string]bool, len(q.ResetInputs))
+		for _, name := range q.ResetInputs {
+			reset[name] = true
+		}
+		safe := make(map[string]any, len(values))
+		for _, input := range p.Inputs {
+			if input.Type == "secret" || reset[input.Name] {
+				continue
+			}
+			if value, ok := values[input.Name]; ok {
+				safe[input.Name] = value
+			}
+		}
+		return s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups)
+	})
+}
+
 func currentUserHome() string {
 	home, _ := os.UserHomeDir()
 	return home
@@ -127,6 +173,59 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 // UIInstallSkillOnly installs a zero-input skill capability without creating
 // an instance record. The request is deliberately separate from normal instance
 // apply so regular setup can never opt out of its instance ledger.
+// UIUninstallSkillOnly removes only the selected skill installation records.
+// It never creates or deletes capability instance state.
+func (s *Service) UIUninstallSkillOnly(ctx context.Context, q viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error) {
+	if q.SourceID == "" || q.PackageID == "" {
+		return viewmodel.OperationResult{}, invalid(errors.New("Capability Pack and capability are required"))
+	}
+	if q.SourceID != s.Source.ID {
+		return viewmodel.OperationResult{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.SourceID))
+	}
+	p, err := s.packageByID(q.PackageID)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	if !p.HasSkill() || p.HasMCP() || len(p.Inputs) != 0 || len(p.Plugins) != 0 {
+		return viewmodel.OperationResult{}, invalid(errors.New("direct skill removal requires a skill-only capability with no inputs"))
+	}
+	if len(q.DestinationIDs) == 0 {
+		return viewmodel.OperationResult{}, invalid(errors.New("select an agent destination"))
+	}
+	selected := make(map[string]bool, len(q.DestinationIDs))
+	for _, id := range q.DestinationIDs {
+		if id == "" || id == "all" {
+			return viewmodel.OperationResult{}, invalid(errors.New("select exact agent destinations; the all-agents target is not supported"))
+		}
+		selected[id] = true
+	}
+	key := state.Key{Source: s.Source.ID, Package: p.ID, Target: "default"}
+	out := viewmodel.OperationResult{SavedApplicable: true, Changes: []state.Installation{}, Errors: []string{}, Step: "uninstall", Target: s.Source.ID + "/" + p.ID}
+	err = s.Store.WithLock(ctx, func() error {
+		rows, readErr := s.Store.Installations()
+		if readErr != nil {
+			return readErr
+		}
+		for _, row := range rows {
+			if row.Key.Source != key.Source || row.Key.Package != key.Package || row.Key.Environment != "" ||
+				(row.Key.Target != "" && row.Key.Target != key.Target) || row.Component != "skill" || !selected[row.AgentID] {
+				continue
+			}
+			if removeErr := s.removeProfileBinding(ctx, row); removeErr != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", row.AgentID, removeErr))
+				continue
+			}
+			out.Changes = append(out.Changes, row)
+		}
+		out.Message = "Skill removal completed"
+		return nil
+	})
+	if err != nil {
+		out.Errors = append(out.Errors, err.Error())
+	}
+	return out, err
+}
+
 func (s *Service) UIInstallSkillOnly(ctx context.Context, q viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
 	if q.SourceID == "" || q.PackageID == "" {
 		return viewmodel.OperationResult{}, invalid(errors.New("Capability Pack and capability are required"))

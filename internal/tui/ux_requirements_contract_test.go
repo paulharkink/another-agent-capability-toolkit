@@ -26,8 +26,11 @@ func TestUXDeclaredCredentialHintAndSourcePathStaySeparate(t *testing.T) {
 					{Definition: catalog.Input{Name: "kubeconfig", Label: "Source kubeconfig", Type: "file", ExclusiveGroup: "credential-source", Hint: "Credential observation · " + credentialState}, Value: "/tmp/source-kubeconfig.yaml", HasValue: true, Provenance: "saved", Editable: true},
 				},
 			})
-			m.form.SelectSection("Credentials")
-			view := ansi.Strip(m.View().Content)
+			m.form.SelectSectionID(sectionInputsID)
+			m.form.FocusSection()
+			m.form.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+			m.form.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			view := ansi.Strip(m.form.View().Content)
 			if !strings.Contains(view, "Credential observation") || !strings.Contains(view, credentialState) {
 				t.Fatalf("declared credential hint %q is not visible:\n%s", credentialState, view)
 			}

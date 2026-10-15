@@ -20,8 +20,23 @@ type setupBackend interface {
 	UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
 }
 
+type setupInputSaveBackend interface {
+	UISaveInputs(context.Context, viewmodel.SetupInstallRequest) error
+}
+
+type setupInputsSavedMsg struct {
+	key              state.Key
+	preview          viewmodel.SetupPreview
+	destinationField string
+	err              error
+	inputsChanged    bool
+}
+
 type skillOnlyInstallBackend interface {
 	UIInstallSkillOnly(context.Context, viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error)
+}
+type skillOnlyUninstallBackend interface {
+	UIUninstallSkillOnly(context.Context, viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error)
 }
 
 type setupPreviewMsg struct {
@@ -91,7 +106,7 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	}
 	switch selectedSection {
 	case "Overview":
-		workspace.SectionID = sectionOverviewID
+		workspace.Section, workspace.SectionID = "Inputs", sectionInputsID
 	case "Agents":
 		workspace.SectionID = sectionAgentsID
 	case "Runtime":
@@ -136,7 +151,7 @@ func (m *Model) targetHasSavedRecord(key state.Key) bool {
 
 func (m *Model) targetHasInstallRecord(key state.Key) bool {
 	for _, installation := range m.inventory {
-		if installation.Key == key && (installation.Component == "runtime" || installation.Component == "skill") {
+		if installation.Key == key && (installation.Component == "runtime" || installation.Component == "skill" || installation.Component == "mcp") {
 			return true
 		}
 	}
@@ -544,14 +559,73 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 			m.output = "Could not restore configuration draft: " + err.Error()
 		}
 	}
-	m.form.SetSubmitLabel("Save and apply")
-	m.form.SetCancelHidden(true)
+	m.form.SetSubmitLabel("Save")
+	m.form.SetSubmitHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
+	m.form.SetCancelHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
 	_, _, width, height, ok := m.setupOverlayBounds()
 	if !ok {
 		width, height = m.width, m.height
 	}
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	m.refreshComponentAvailability()
+}
+
+func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
+	backend, ok := m.backend.(setupInputSaveBackend)
+	if !ok || m.pendingSetup == nil || m.workspace == nil {
+		m.output = "Input-only save is unavailable for this target."
+		return nil
+	}
+	preview := *m.pendingSetup
+	request := viewmodel.SetupInstallRequest{SetupRequest: m.packInstanceRequest(preview.Key), Inputs: map[string]any{}, ActiveInputGroups: m.form.ActiveInputGroups(), ResetInputs: m.form.ResetFields()}
+	for _, input := range preview.Inputs {
+		if !input.Editable {
+			continue
+		}
+		if value, exists := values[input.Definition.Name]; exists {
+			request.Inputs[input.Definition.Name] = value
+		}
+	}
+	inputsChanged := m.form.HasUnsavedChanges()
+	ctx, key, destination := m.ctx, preview.Key, m.pendingSetupField
+	m.busy, m.action = true, "save inputs"
+	return func() tea.Msg {
+		err := backend.UISaveInputs(ctx, request)
+		if err == nil {
+			for i := range preview.Inputs {
+				if value, exists := request.Inputs[preview.Inputs[i].Definition.Name]; exists {
+					preview.Inputs[i].Value, preview.Inputs[i].HasValue, preview.Inputs[i].Provenance = value, true, "saved"
+				}
+			}
+			preview.Configured = true
+		}
+		return setupInputsSavedMsg{key: key, preview: preview, destinationField: destination, err: err, inputsChanged: inputsChanged}
+	}
+}
+
+func (m *Model) uninstallSelectedAgents() tea.Cmd {
+	if m.workspace == nil || m.workspace.Preview == nil || m.form == nil || m.pendingSetupField == "" {
+		m.output = "Agent selection is unavailable for uninstall."
+		return nil
+	}
+	selected, _ := m.form.Values()[m.pendingSetupField].([]string)
+	remove := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		remove[id] = true
+	}
+	var remaining []string
+	for _, destination := range m.workspace.Preview.Destinations {
+		if destination.Selected && !remove[destination.ID] {
+			remaining = append(remaining, destination.ID)
+		}
+	}
+	if len(selected) == 0 {
+		m.output = "Select installed agents to uninstall."
+		return nil
+	}
+	values := cloneSetupValues(m.form.Values())
+	values[m.pendingSetupField] = remaining
+	return m.applySetupWithReset(values, m.form.ResetFields())
 }
 
 func setupDisplayValue(input viewmodel.SetupInput) bool {

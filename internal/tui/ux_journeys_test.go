@@ -123,8 +123,8 @@ func TestUXFocusedPaneShowsOffscreenCueAndBoundedButtonsAtAllSupportedSizes(t *t
 	if got := len(strings.Split(view, "\n")); got > 16 {
 		t.Fatalf("80x16 workspace exceeds the parent terminal height: %d\n%s", got, view)
 	}
-	if !strings.Contains(view, "[ Save and apply ]") || strings.Contains(view, "[ Cancel ]") {
-		t.Errorf("80x16 workspace should show only its bottom Save and apply action:\n%s", view)
+	if !strings.Contains(view, "[ Save ]") || !strings.Contains(view, "[ Cancel ]") || !strings.Contains(view, "↓ more") {
+		t.Errorf("80x16 Inputs stage must keep Save, Cancel, and a scroll cue visible:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc Back") {
 		t.Errorf("80x16 workspace footer clips its Back hint:\n%s", view)
@@ -192,9 +192,12 @@ func TestUXInactiveAuthenticationAlternativeIsVisiblyMutedAndFocusable(t *testin
 
 func TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft(t *testing.T) {
 	m := openWorkspaceGeometryFixture(t, tea.WindowSizeMsg{Width: 80, Height: 16})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Connection section.
+	if !m.form.SelectSectionID(sectionInputsID) {
+		t.Fatal("fixture does not expose the Inputs stage")
+	}
+	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // Enter the Inputs editor.
 	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	before := ansi.Strip(m.form.View().Content)
 	if !strings.Contains(before, "fixturex") {
@@ -227,14 +230,24 @@ func TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft(t *testing.T)
 }
 
 func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *testing.T) {
-	m, _ := openSetupInteraction(t)
+	m, backend := openSetupInteraction(t)
+	m.form.SelectSectionID(sectionInputsID)
 	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if save == nil || !m.busy {
-		t.Fatal("fixture did not submit a real setup operation")
+	if save == nil {
+		t.Fatal("Inputs Save did not submit")
 	}
-	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
-	_, refresh := m.Update(runTeaCmd(t, m, save))
-	if m.result == nil || m.busy || !strings.Contains(ansi.Strip(m.View().Content), "Result · SUCCESS · need 80×16") || !strings.Contains(ansi.Strip(m.View().Content), "Tab/Enter · Esc close") {
+	m.Update(save())
+	if backend.savedInputRequest == nil || backend.installRequest != nil {
+		t.Fatal("Inputs Save did not persist answers separately from installation")
+	}
+	m.form.SelectSectionID(sectionAgentsID)
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil || !m.busy {
+		t.Fatal("fixture did not start an explicit Agent access install")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	_, refresh := m.Update(runTeaCmd(t, m, install))
+	if m.result == nil || m.busy || !strings.Contains(ansi.Strip(m.View().Content), "Operation result") || !strings.Contains(ansi.Strip(m.View().Content), "Close / Back") {
 		t.Fatalf("worker completion/result controls were lost behind the below-minimum viewport: busy=%t result=%+v\n%s", m.busy, m.result, ansi.Strip(m.View().Content))
 	}
 	if refresh != nil {
@@ -507,60 +520,160 @@ func TestUXSettingsHighlightsOnlyTheFocusedAction(t *testing.T) {
 	t.Fatalf("focused settings action disappeared:\n%s", ansi.Strip(view))
 }
 
+func TestUXWorkspacePrimaryActionTracksNavigatedStage(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 28})
+	sectionOrder := []string{sectionInputsID, sectionAgentsID, sectionRuntimeID}
+	for i, sectionID := range sectionOrder {
+		m.form.FocusSection()
+		for m.form.SectionID() != sectionID {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if m.workspace.SectionID != sectionID {
+			t.Fatalf("navigation did not sync selected section: want %q, got %q", sectionID, m.workspace.SectionID)
+		}
+		view := ansi.Strip(m.View().Content)
+		switch sectionID {
+		case sectionInputsID:
+			if !strings.Contains(view, "[ Save ]") || !strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs does not show its primary actions:\n%s", view)
+			}
+		case sectionAgentsID:
+			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs form actions leaked into Agent access:\n%s", view)
+			}
+			if !strings.Contains(view, "Install selected") {
+				t.Fatalf("Agent access does not show Install selected:\n%s", view)
+			}
+		case sectionRuntimeID:
+			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs form actions leaked into Runtime:\n%s", view)
+			}
+			if !strings.Contains(view, "Start cluster-inspector") {
+				t.Fatalf("Runtime does not show its Start action:\n%s", view)
+			}
+		}
+		if i < len(sectionOrder)-1 {
+			m.form.FocusSection()
+		}
+	}
+}
+
+func collectWorkspacePages(t *testing.T, m *Model) string {
+	t.Helper()
+	if m.form.FocusArea() != 1 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	var b strings.Builder
+	for i := 0; i < 24; i++ {
+		v := m.View().Content
+		b.WriteString(v)
+		if !strings.Contains(ansi.Strip(v), "\u2193 more") {
+			break
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	return ansi.Strip(b.String())
+}
+
+func collectWorkspaceANSI(t *testing.T, m *Model) string {
+	t.Helper()
+	if m.form.FocusArea() != 1 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	var b strings.Builder
+	for i := 0; i < 24; i++ {
+		v := m.View().Content
+		b.WriteString(v)
+		if !strings.Contains(ansi.Strip(v), "\u2193 more") {
+			break
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	return b.String()
+}
+
 func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	for _, screen := range []struct {
 		name      string
 		sectionID string
 		size      tea.WindowSizeMsg
 	}{
-		{"Overview at minimum", sectionOverviewID, tea.WindowSizeMsg{Width: 80, Height: 16}},
-		{"Connection", "package:connection", tea.WindowSizeMsg{Width: 100, Height: 23}},
-		{"Authentication", "package:authentication", tea.WindowSizeMsg{Width: 100, Height: 23}},
-		{"Agents destinations", sectionAgentsID, tea.WindowSizeMsg{Width: 100, Height: 23}},
+		{"Inputs", sectionInputsID, tea.WindowSizeMsg{Width: 120, Height: 36}},
+		{"Agent access", sectionAgentsID, tea.WindowSizeMsg{Width: 120, Height: 36}},
+		{"Runtime", sectionRuntimeID, tea.WindowSizeMsg{Width: 120, Height: 36}},
 		{"Information", sectionInformationID, tea.WindowSizeMsg{Width: 170, Height: 42}},
 	} {
 		t.Run(screen.name, func(t *testing.T) {
 			m, _ := actualClusterWorkspace(t, screen.size)
-			if !m.form.SelectSectionID(screen.sectionID) {
-				t.Fatalf("fixture did not expose declared section ID %q", screen.sectionID)
-			}
 			m.form.FocusSection()
+			for attempts := 0; m.form.SectionID() != screen.sectionID && attempts < 24; attempts++ {
+				m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			}
+			if m.form.SectionID() != screen.sectionID || m.workspace.SectionID != screen.sectionID {
+				t.Fatalf("keyboard did not select/sync section %q (form=%q workspace=%q)", screen.sectionID, m.form.SectionID(), m.workspace.SectionID)
+			}
 			t.Logf("FIXTURE VIEW · actual packages/cluster-inspector/package.toml · %s · %dx%d\n%s", screen.name, screen.size.Width, screen.size.Height, ansi.Strip(m.View().Content))
 			t.Logf("ANSI_CELLS[%s]\n%s", screen.name, m.View().Content)
 			writeUXCapture(t, screen.name, m.View().Content)
-			if screen.name == "Authentication" {
+			if screen.name == "Inputs" {
+				view := ansi.Strip(m.View().Content)
+				for _, want := range []string{"[ Save ]", "[ Cancel ]"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("Inputs action %q missing:\n%s", want, view)
+					}
+				}
+				if !strings.Contains(collectWorkspacePages(t, m), "Save stores these inputs") {
+					t.Fatal("Inputs save-only explanation is not reachable while scrolling")
+				}
+			}
+			if screen.name == "Agent access" {
+				view := ansi.Strip(m.View().Content)
+				if !strings.Contains(view, "Select agents to install") {
+					t.Fatalf("Agent access instructions missing:\n%s", view)
+				}
+				if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+					t.Fatalf("Inputs actions leaked into Agent access:\n%s", view)
+				}
+				pages := collectWorkspacePages(t, m)
+				for _, want := range []string{"Install selected", "Uninstall selected"} {
+					if !strings.Contains(pages, want) {
+						t.Fatalf("Agent access action %q is not reachable by scrolling:\n%s", want, pages)
+					}
+				}
+				for _, destination := range m.workspace.Preview.Destinations {
+					name := firstNonempty(destination.Name, destination.ID)
+					if !strings.Contains(pages, name) {
+						t.Errorf("Agent access stage does not show target %q:\n%s", name, view)
+					}
+				}
+			}
+			if screen.name == "Runtime" {
+				view := ansi.Strip(m.View().Content)
+				if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+					t.Fatalf("Inputs actions leaked into Runtime:\n%s", view)
+				}
+				pages := collectWorkspacePages(t, m)
+				for _, want := range []string{"Status: Stopped", "Inputs: Not saved", "Agent install: Not installed", "This starts the Docker instance.", "Start cluster-inspector"} {
+					if !strings.Contains(pages, want) {
+						t.Fatalf("Runtime mockup missing %q:\n%s", want, pages)
+					}
+				}
+			}
+			if screen.name == "Inputs" {
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp}) // Start at the top of L4 without changing L3 selection.
-				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Authentication" {
-					t.Fatal("detail scrolling changed the focused L3 section or surrendered L4 focus")
+				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Inputs" {
+					t.Fatal("detail scrolling changed the focused Inputs stage or surrendered L4 focus")
 				}
-				writeUXCapture(t, "Authentication detail page 1", m.View().Content)
+				writeUXCapture(t, "Inputs detail page 1", m.View().Content)
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Authentication" {
-					t.Fatalf("PageDown changed Authentication L3 selection or left L4 focus (area=%d section=%q)", m.form.FocusArea(), m.form.SectionTitle())
+				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Inputs" {
+					t.Fatalf("PageDown changed Inputs selection or left L4 focus (area=%d section=%q)", m.form.FocusArea(), m.form.SectionTitle())
 				}
-				writeUXCapture(t, "Authentication detail page 2", m.View().Content)
+				writeUXCapture(t, "Inputs detail page 2", m.View().Content)
 			}
-			if screen.name == "Agents destinations" {
-				paths := destinationDisplayPaths(m.workspace.Preview.Destinations)
-				var allAgentViews strings.Builder
-				allAgentViews.WriteString(m.View().Content)
-				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				if m.form.FocusArea() != 1 {
-					t.Fatal("Enter in L3 did not transfer focus to L4 for keyboard path inspection")
-				}
-				for i := 0; i < len(paths)*6+30; i++ {
-					allAgentViews.WriteString(m.form.View().Content + "\n<FRAME>\n")
-					m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-					if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Agents" {
-						t.Fatalf("PageDown %d changed Agents L3 selection or left L4 focus (area=%d section=%q)", i, m.form.FocusArea(), m.form.SectionTitle())
-					}
-					if i == 0 || i == 2 || i == 4 {
-						writeUXCapture(t, fmt.Sprintf("Agents destinations page %d", i/2+1), m.View().Content)
-					}
-				}
-				assertRenderedTextIsComplete(t, allAgentViews.String(), paths...)
-			}
+
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
 				chunks := []string{"Credential note:", "Managed credential", "is missing at"}
 				visible := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
@@ -620,11 +733,23 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 
 	failure, backend := openSetupInteraction(t)
 	backend.installErr = errors.New("fixture connection rejected")
-	_, submit := failure.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if submit == nil {
-		t.Fatal("failure fixture did not execute the production setup submit route")
+	_, saveInputs := failure.Update(forms.ActionMsg{SectionID: sectionInputsID, ID: "save-inputs"})
+	if saveInputs == nil {
+		t.Fatal("Inputs Save did not execute the save-only route")
 	}
-	_, refresh := failure.Update(runTeaCmd(t, failure, submit))
+	failure.Update(saveInputs())
+	if backend.installRequest != nil || backend.savedInputRequest == nil {
+		t.Fatalf("Inputs Save must persist values without installing: saved=%+v installed=%+v", backend.savedInputRequest, backend.installRequest)
+	}
+	failure.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if failure.form.SectionID() != sectionAgentsID {
+		t.Fatalf("Down did not navigate to Agent access: %q", failure.form.SectionID())
+	}
+	_, install := failure.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Agent access Install did not execute the install route")
+	}
+	_, refresh := failure.Update(runTeaCmd(t, failure, install))
 	if refresh != nil {
 		failure.Update(refresh())
 	}
@@ -639,14 +764,27 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	// Model keyboard route. The values are synthetic fixture data; no credential
 	// or native chooser is involved.
 	auth, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 28})
-	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyDown}, {Code: tea.KeyRight}} {
-		auth.Update(key)
+	auth.form.FocusSection()
+	for attempts := 0; auth.form.SectionID() != sectionInputsID && attempts < 12; attempts++ {
+		auth.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if auth.form.SectionID() != sectionInputsID {
+		t.Fatalf("keyboard did not select Inputs before editing authentication: %q", auth.form.SectionID())
+	}
+	auth.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if auth.form.FocusArea() != 1 {
+		t.Fatal("Right did not focus Inputs details")
+	}
+	// The packaged Inputs are one staged screen; move from the first
+	// connection field to Token within its detail controls.
+	for i := 0; i < 5; i++ {
+		auth.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	const fixtureToken = "fixture-token-not-a-credential"
 	for _, msg := range []tea.Msg{tea.KeyPressMsg{Code: tea.KeyEnter}, tea.PasteStartMsg{}, tea.PasteMsg{Content: fixtureToken}, tea.PasteEndMsg{}, tea.KeyPressMsg{Code: tea.KeyEnter}} {
 		auth.Update(msg)
 	}
-	tokenView := auth.View().Content
+	tokenView := collectWorkspaceANSI(t, auth)
 	if got := fmt.Sprint(auth.form.Values()["token"]); got != fixtureToken {
 		t.Fatalf("keyboard paste/commit did not preserve the synthetic token fixture: %q\n%s", got, ansi.Strip(auth.View().Content))
 	}
@@ -669,7 +807,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	} {
 		auth.Update(msg)
 	}
-	kubeconfigView := auth.View().Content
+	kubeconfigView := collectWorkspaceANSI(t, auth)
 	values := auth.form.Values()
 	if fmt.Sprint(values["kubeconfig"]) != fixtureKubeconfig || fmt.Sprint(values["token"]) != "" {
 		t.Fatalf("keyboard edit/commit did not switch to the synthetic kubeconfig choice: %#v", values)
@@ -839,17 +977,27 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 }
 
 func TestUXAllScreensKeyboardOnlyNoBatch(t *testing.T) {
-	// The setup route is submitted by a single keyboard Ctrl-S and the fixture
-	// records one concrete SetupInstallRequest; there is no batch confirmation
-	// or extra apply step between the form and service request.
+	// Inputs Save persists only. Agent installation is a separate stage action.
 	m, backend := openSetupInteraction(t)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("keyboard Ctrl-S did not submit the setup form")
+	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save == nil {
+		t.Fatal("keyboard Ctrl-S did not save Inputs")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
+	m.Update(save())
+	if backend.savedInputRequest == nil || backend.installRequest != nil {
+		t.Fatalf("keyboard Inputs Save did not remain separate: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("keyboard navigation did not reach Agent access: %q", m.form.SectionID())
+	}
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Agent access Install did not reach its service boundary")
+	}
+	m.Update(runTeaCmd(t, m, install))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.CapabilityID == "" || backend.installRequest.SetupRequest.Ref.Name == "" {
-		t.Fatalf("keyboard setup did not reach the real UI service boundary: %+v", backend.installRequest)
+		t.Fatalf("explicit Agent access install did not preserve capability identity: %+v", backend.installRequest)
 	}
 	if strings.Contains(strings.ToLower(m.View().Content), "batch") {
 		t.Fatalf("single-target keyboard flow exposed an unrelated batch step:\n%s", m.View().Content)
@@ -864,7 +1012,7 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	// makes it return ErrUnavailable before it can build or open an OS dialog.
 	t.Setenv("PATH", t.TempDir())
 	m, _ := openSetupInteraction(t)
-	m.form.SelectSection("Authentication")
+	m.form.SelectSectionID(sectionInputsID)
 	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Source kubeconfig.
@@ -891,12 +1039,12 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	})
 	p.Send(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	state := waitJourneyView(t, spy.states, func(s journeyViewState) bool { return strings.Contains(s.content, "Browse file") })
-	if state.section != "Authentication" {
+	if state.section != "Inputs" {
 		t.Fatalf("picker opened from the wrong section: %q\n%s", state.section, state.content)
 	}
 	p.Send(tea.KeyPressMsg{Code: tea.KeyF3})
 	state = queryJourneyProgram(t, p)
-	if state.section != "Authentication" {
+	if state.section != "Inputs" {
 		t.Fatalf("F3 escaped the active picker and changed the parent section to %q:\n%s", state.section, state.content)
 	}
 	if !strings.Contains(state.content, "Browse file") {
@@ -904,7 +1052,7 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	}
 	p.Send(tea.KeyPressMsg{Code: tea.KeyEscape})
 	state = queryJourneyProgram(t, p)
-	if state.section != "Authentication" || strings.Contains(state.content, "Browse file") || !strings.Contains(state.content, "Source kubeconfig") {
+	if state.section != "Inputs" || strings.Contains(state.content, "Browse file") || !strings.Contains(state.content, "Source kubeconfig") {
 		t.Fatalf("Escape did not cancel only the browser and restore its parent field:\n%s", state.content)
 	}
 	p.Quit()
@@ -1227,8 +1375,8 @@ func editPasteJourney(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("in-place Unicode edit did not submit through the production Model.Update path")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if backend.installRequest == nil || backend.installRequest.Inputs["token"] != want {
-		t.Fatalf("Model.Update edit/paste/save changed or lost the exact value: request=%+v", backend.installRequest)
+	m.Update(cmd())
+	if backend.savedInputRequest == nil || backend.savedInputRequest.Inputs["token"] != want || backend.installRequest != nil {
+		t.Fatalf("Model.Update edit/paste/save changed the exact value or triggered installation: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
 	}
 }

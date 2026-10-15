@@ -19,12 +19,14 @@ import (
 
 type setupBackendFixture struct {
 	fixtureBackend
-	previewRequest   viewmodel.SetupRequest
-	installRequest   *viewmodel.SetupInstallRequest
-	skillOnlyRequest *viewmodel.SkillOnlyInstallRequest
-	extraInputs      []viewmodel.SetupInput
-	installResult    *viewmodel.OperationResult
-	installErr       error
+	previewRequest    viewmodel.SetupRequest
+	installRequest    *viewmodel.SetupInstallRequest
+	savedInputRequest *viewmodel.SetupInstallRequest
+	skillOnlyRequest  *viewmodel.SkillOnlyInstallRequest
+	extraInputs       []viewmodel.SetupInput
+	installResult     *viewmodel.OperationResult
+	installErr        error
+	saveInputsErr     error
 }
 
 func setupProfileKey(request viewmodel.SetupRequest) state.Key {
@@ -166,11 +168,11 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
-		t.Fatal("setup form did not save")
+		t.Fatal("Inputs Save did not submit")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if b.installRequest == nil || b.installRequest.Inputs["destination"] != "/output" || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) || b.installRequest.ExternalURL != "" {
-		t.Fatalf("package destination collided with installer destination field: %+v", b.installRequest)
+	m.Update(cmd())
+	if b.savedInputRequest == nil || b.savedInputRequest.Inputs["destination"] != "/output" || b.savedInputRequest.ExternalURL != "" || b.installRequest != nil {
+		t.Fatalf("input-only Save mixed package and agent-install fields: saved=%+v installed=%+v", b.savedInputRequest, b.installRequest)
 	}
 }
 
@@ -185,13 +187,18 @@ func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInst
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "all", Component: "skill"}}}, nil
 }
 
+func (b *setupBackendFixture) UISaveInputs(_ context.Context, q viewmodel.SetupInstallRequest) error {
+	b.savedInputRequest = &q
+	return b.saveInputsErr
+}
+
 func (b *setupBackendFixture) UIInstallSkillOnly(_ context.Context, q viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
 	b.skillOnlyRequest = &q
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "codex", Component: "skill"}}}, nil
 }
 
 func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
-	b := &setupBackendFixture{installResult: &viewmodel.OperationResult{Saved: true}, installErr: errors.New("MCP port 9000 is already allocated")}
+	b := &setupBackendFixture{saveInputsErr: errors.New("MCP port 9000 is already allocated")}
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
@@ -200,8 +207,8 @@ func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Save did not submit")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if !strings.Contains(m.output, "Inputs saved") || !strings.Contains(m.output, "port 9000 is already allocated") || strings.Contains(m.output, "configured") {
+	m.Update(cmd())
+	if !strings.Contains(m.output, "port 9000 is already allocated") || strings.Contains(m.output, "configured") || b.installRequest != nil || m.form == nil {
 		t.Fatalf("result hid save/apply distinction: %q", m.output)
 	}
 }
@@ -260,17 +267,23 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 			t.Fatalf("single setup form missing %q:\n%s", want, view)
 		}
 	}
-	setupSection(m, 1) // Inputs follows the workspace Overview section.
+	setupSection(m, 0) // Inputs is the first workspace stage.
 	view = m.View().Content
-	for _, want := range []string{"Repository", "Mode", "aact.toml"} {
+	for _, want := range []string{"Repository", "aact.toml"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup Inputs section missing %q:\n%s", want, view)
 		}
 	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if !strings.Contains(m.View().Content, "Mode") {
+		t.Fatalf("second required input is not reachable in the Inputs stage:\n%s", m.View().Content)
+	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	if !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "All") {
-		t.Fatalf("setup Agents section missing:\n%s", m.View().Content)
+	for _, want := range []string{"Agent access", "Target", "Install selected", "Uninstall selected"} {
+		if !strings.Contains(m.View().Content, want) {
+			t.Fatalf("setup Agent access section missing %q:\n%s", want, m.View().Content)
+		}
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil || !m.busy || m.form != nil {
@@ -370,12 +383,12 @@ func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Save unavailable")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if b.installRequest == nil {
-		t.Fatal("Save did not submit")
+	m.Update(cmd())
+	if b.savedInputRequest == nil || b.installRequest != nil {
+		t.Fatal("Save did not persist inputs independently of installation")
 	}
-	if _, ok := b.installRequest.Inputs["api_server"]; ok {
-		t.Fatalf("fixed target input was submitted: %+v", b.installRequest.Inputs)
+	if _, ok := b.savedInputRequest.Inputs["api_server"]; ok {
+		t.Fatalf("fixed target input was submitted: %+v", b.savedInputRequest.Inputs)
 	}
 }
 
@@ -419,7 +432,7 @@ func TestManagedProfileParametersOpenItsExactSetupTarget(t *testing.T) {
 		t.Fatal("Edit parameters did not request the shared workspace")
 	}
 	m.Update(cmd())
-	if b.previewRequest != (m.packInstanceRequest(key)) || m.form == nil || m.form.SectionTitle() != "Overview" {
+	if b.previewRequest != (m.packInstanceRequest(key)) || m.form == nil || !m.form.HasSectionID(sectionAgentsID) {
 		t.Fatalf("wrong profile target or missing shared editor: %+v section=%q form=%v", b.previewRequest, func() string {
 			if m.form == nil {
 				return ""
@@ -457,7 +470,7 @@ func TestSetupFormNamesCapabilityAndEnvironmentTarget(t *testing.T) {
 		Destinations:  []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	}})
 	view := m.View().Content
-	for _, want := range []string{"New setup · Cluster Inspector", "Authentication", "Agents"} {
+	for _, want := range []string{"Cluster Inspector", "Inputs", "Agent access", "Token"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup form does not show %q:\n%s", want, view)
 		}
@@ -482,7 +495,7 @@ func TestExclusiveCredentialsShowMethodAndInactiveBranch(t *testing.T) {
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", Selected: true}},
 	})
 	view := m.View().Content
-	for _, want := range []string{"Authentication", "Agents"} {
+	for _, want := range []string{"Inputs", "Agent access", "Token", "Source kubeconfig"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("setup missing %q:\n%s", want, view)
 		}
@@ -490,14 +503,14 @@ func TestExclusiveCredentialsShowMethodAndInactiveBranch(t *testing.T) {
 	if m.pendingSetup == nil || m.pendingSetup.Key.Environment != "company" || m.pendingSetup.Key.Target != "production" {
 		t.Fatalf("setup lost the selected environment target: %+v", m.pendingSetup)
 	}
-	m.form.SelectSection("Authentication")
+	m.form.SelectSectionID(sectionInputsID)
 	view = m.View().Content
 	for _, want := range []string{"Token", "Source kubeconfig"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("authentication field %q was not visible:\n%s", want, view)
 		}
 	}
-	m.form.SelectSection("Agents")
+	m.form.SelectSectionID(sectionAgentsID)
 	if !strings.Contains(m.View().Content, "Codex") {
 		t.Fatalf("setup Destinations section omitted Codex:\n%s", m.View().Content)
 	}

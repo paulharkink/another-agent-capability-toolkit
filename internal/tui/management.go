@@ -251,25 +251,12 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			}
 			return m.activateSettingsDetail()
 		}
-		fallthrough
-	case "f2":
-		if m.view != "Help" {
-			if m.view == "Agents" && m.management.Focus == CapabilitiesPane {
-				m.management.Focus = ProfilesPane
-				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
-			} else if m.view == "Settings" && m.management.Focus == CapabilitiesPane {
-				m.focusSettingsDetails()
-			} else if m.view == "Agents" {
-				return m.activateAgentDetail()
-			} else if m.view == "Settings" {
-				return m.activateSettingsDetail()
-			} else if m.view == "Environments" {
-				m.management.Modal = "actions"
-				m.management.ModalSelected = 0
-			}
+		if m.view == "Environments" {
+			m.management.Modal = "actions"
+			m.management.ModalSelected = 0
 		}
 	case "space", " ":
-		// Category controls are activated explicitly with Enter / F2.
+		// Category controls are activated explicitly with Enter.
 	case "f5", "R":
 		if m.view == "Agents" {
 			if _, ok := m.backend.(agentManagementBackend); !ok {
@@ -906,7 +893,7 @@ func (m *Model) managementHelpRows() []string {
 	return []string{
 		"Agents / Settings: Left / Right or Tab changes focused pane",
 		"Up / Down / PageUp / PageDown / Home / End selects and scrolls the focused pane",
-		"Enter / F2: Open / focus the highlighted row or control; Environments opens target actions",
+		"Enter activates the highlighted row or control; Environments opens target actions",
 		"Text editors: arrows move the cursor · Backspace edits · Esc leaves the editor",
 		"Pickers: arrows choose · Enter accepts · Esc returns to the previous layer",
 		"Agents: choose an agent before opening a config · Settings: choose a category before its control",
@@ -936,14 +923,13 @@ func (m *Model) managementView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
+	menubar := " F9 Main menu: Agents | Settings | Help"
 	scope := " Capability Pack: " + m.settings["source"] + " · Instance root: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"
 	lines[3] = "╠" + strings.Repeat("═", width-2) + "╣"
-	actionsStart := strings.Index(menubar, "F2 Open / Focus")
-	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Open / Focus"), Height: 1, Control: "actions"})
+	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: width - 2, Height: 1, Control: "main"})
 	visible := height - 12
 	if m.view == "Agents" {
 		m.renderAgentManagement(lines, visible)
@@ -961,7 +947,7 @@ func (m *Model) managementView() tea.View {
 	lines[height-6] = "╠" + strings.Repeat("═", width-2) + "╣"
 	lines[height-5] = "║" + fit(" "+m.output, width-2) + "║"
 	lines[height-4] = "╠" + strings.Repeat("═", width-2) + "╣"
-	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F2 Open / Focus", "actions"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
+	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
 	x, content := 2, " "
 	for _, item := range footer {
 		content += item.label + "  "
@@ -969,7 +955,7 @@ func (m *Model) managementView() tea.View {
 		x += len(item.label) + 2
 	}
 	lines[height-3] = "║" + fit(content, width-2) + "║"
-	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select focused pane · Enter / F2 Open / Focus", width-2) + "║"
+	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select focused pane · Enter Activate", width-2) + "║"
 	m.management.Hits = append(m.management.Hits, hitRegion{X: 2, Y: height - 2, Width: len("Esc Back"), Height: 1, Control: "back"})
 	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
 	if m.management.Modal != "" {

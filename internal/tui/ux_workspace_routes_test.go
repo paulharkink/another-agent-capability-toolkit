@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -62,8 +63,8 @@ func TestUXProfileBackedConfiguredTargetEnterOpensItsExactWorkspace(t *testing.T
 	if m.form == nil || m.home.Modal != nil || m.pendingSetup == nil || m.pendingSetup.Key != key {
 		t.Fatalf("configured target did not open its exact workspace: form=%v modal=%#v preview=%#v", m.form != nil, m.home.Modal, m.pendingSetup)
 	}
-	if m.form.SectionTitle() != "Overview" || !strings.Contains(m.form.View().Content, "Configure ·") {
-		t.Fatalf("configured target did not start in its Configure Overview workspace: section=%q\n%s", m.form.SectionTitle(), ansi.Strip(m.form.View().Content))
+	if m.form.SectionID() != sectionAgentsID || m.workspace == nil || m.workspace.InstanceRef.Name != key.Target {
+		t.Fatalf("configured target did not advance to Agent access for the exact instance: section=%q workspace=%+v\n%s", m.form.SectionID(), m.workspace, ansi.Strip(m.form.View().Content))
 	}
 }
 
@@ -132,36 +133,27 @@ func TestUXProfileConfigurationOpensSharedGenericWorkspace(t *testing.T) {
 	if m.form != nil {
 		section = m.form.SectionTitle()
 	}
-	if setup.previewRequest.Ref.Name != "foreign" || setup.previewRequest.Ref.PackID != "team-source" || section != "Overview" || m.workspace == nil || m.workspace.SectionID != sectionOverviewID {
+	if setup.previewRequest.Ref.Name != "foreign" || setup.previewRequest.Ref.PackID != "team-source" || section != "Agent access" || m.workspace == nil || m.workspace.SectionID != sectionAgentsID {
 		t.Fatalf("profile configuration did not open the generic workspace on the exact target: request=%+v section=%q form=%v workspace=%+v", setup.previewRequest, section, m.form != nil, m.workspace)
 	}
 }
 
-func TestUXOverviewAgentActionSelectsTheSharedAgentsSection(t *testing.T) {
+func TestUXWorkspaceOpensExactTargetInInputsWithoutGlobalAgentsAction(t *testing.T) {
 	m, _ := typedProfileFixture()
 	setup := &workspaceRouteBackend{}
 	m.backend = profileWorkspaceBackend{profileBackend: m.backend.(*profileBackend), workspaceRouteBackend: setup}
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "foreign"}
 	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
-	if m.form == nil || !strings.Contains(ansi.Strip(m.form.View().Content), "Configure agent destinations") {
-		t.Fatalf("Overview does not offer the shared Agents action:\n%s", ansi.Strip(m.View().Content))
+	if m.form == nil || m.workspace == nil || m.workspace.InstanceRef.Name != key.Target || setup.previewRequest.Ref.Name != key.Target || setup.previewRequest.Ref.PackID != key.Source || setup.previewRequest.Ref.CapabilityID != key.Package {
+		t.Fatalf("exact target did not open its workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	handled, _ := m.workspaceOverviewAction("g")
-	if !handled || m.workspace == nil || m.workspace.SectionID != sectionAgentsID || m.form == nil || !m.workspace.Active || m.registration != nil {
-		t.Fatalf("Agents action did not select the one complete-binding workspace: registration=%+v form=%v workspace=%+v", m.registration, m.form != nil, m.workspace)
+	if m.form.SectionID() != sectionAgentsID || m.workspace.SectionID != sectionAgentsID {
+		t.Fatalf("configured workspace did not advance to Agent access: form section=%q workspace section=%q", m.form.SectionID(), m.workspace.SectionID)
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capabilities", "Selected capability", "Agents"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("shared Agents workspace lacks %q:\n%s", want, view)
-		}
-	}
-	if strings.Contains(view, "No named agent destinations") {
-		t.Fatalf("Agents section contains redundant destination prose: %s", view)
-	}
-	if m.workspace.Section != "Agents" {
-		t.Fatalf("Agents action did not retain the selected section: %q", m.workspace.Section)
+	if strings.Contains(view, "Configure agent destinations") || strings.Contains(view, "Overview · Agents") {
+		t.Fatalf("workspace still exposes a duplicate global Agents action:\n%s", view)
 	}
 }
 
@@ -206,42 +198,85 @@ func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T)
 	}
 }
 
-func TestUXOverviewHasNoApplyActionAndBottomSaveSubmitsCurrentConfiguration(t *testing.T) {
+func TestUXInputsSaveIsSeparateFromAgentInstallAndRuntimeStart(t *testing.T) {
 	setup := &workspaceApplyBackend{withMCP: true}
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
 	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
-	view := ansi.Strip(m.form.View().Content)
-	if strings.Contains(view, "Save and apply · configure agents") || strings.Contains(strings.ToLower(view), "build, start, register") || !strings.Contains(view, "Save and apply") {
-		t.Fatalf("Overview should contain facts/navigation and the form one bottom Save and apply control:\n%s", view)
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+
+	inputs := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(inputs, "[ Save ]") || !strings.Contains(inputs, "[ Cancel ]") || strings.Contains(inputs, "Save and apply") {
+		t.Fatalf("Inputs must expose Save/Cancel without a combined apply action:\n%s", inputs)
 	}
-	if strings.Contains(view, "Save and apply ·") {
-		t.Fatal("Overview content contains a second Save and apply action")
+	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save == nil {
+		t.Fatal("Ctrl-S did not submit Inputs Save")
 	}
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("bottom form Save and apply did not invoke UIInstall")
+	m.Update(save())
+	if m.form.SectionID() != sectionInputsID || m.workspace.SectionID != sectionInputsID || !m.workspace.InputsSaved || !strings.Contains(m.output, "Inputs saved") {
+		t.Fatalf("Inputs Save must show saved state and remain on Inputs: section=%q workspace=%q saved=%t output=%q", m.form.SectionID(), m.workspace.SectionID, m.workspace.InputsSaved, m.output)
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if setup.installRequest == nil {
-		t.Fatal("bottom Save and apply bypassed the unified setup service")
+	if setup.savedInputRequest == nil || setup.installRequest != nil || setup.installCalls != 0 {
+		t.Fatalf("Inputs Save did not persist answers independently: saved=%+v install=%+v calls=%d", setup.savedInputRequest, setup.installRequest, setup.installCalls)
+	}
+
+	m.form.FocusSection()
+	if !m.form.SelectSectionID(sectionAgentsID) {
+		t.Fatal("Agent access section is unavailable")
+	}
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("Down did not select Agent access: %q", m.form.SectionID())
+	}
+	agents := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(agents, "[ Install selected ]") || !strings.Contains(agents, "[ Uninstall selected ]") ||
+		strings.Contains(agents, "[ Save ]") || strings.Contains(agents, "[ Cancel ]") || strings.Contains(agents, "Save and apply") {
+		t.Fatalf("Agent access must expose install controls without global input actions:\n%s", agents)
+	}
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Agent access Install selected did not submit UIInstall")
+	}
+	m.Update(runTeaCmd(t, m, install))
+	if setup.installCalls != 1 || setup.installRequest == nil {
+		t.Fatal("Agent access Install selected did not call UIInstall")
 	}
 	if setup.installRequest.SetupRequest.Ref.Name != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
-		t.Fatalf("bottom Save and apply did not submit the current target draft: %+v", setup.installRequest)
+		t.Fatalf("install did not submit the exact target and saved inputs: %+v", setup.installRequest)
+	}
+
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.form == nil {
+		cmd = m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
+		m.Update(cmd())
+	}
+	m.form.FocusSection()
+	if !m.form.SelectSectionID(sectionRuntimeID) {
+		t.Fatal("Runtime section is unavailable")
+	}
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.form.SectionID() != sectionRuntimeID {
+		t.Fatalf("navigation did not reach Runtime: %q", m.form.SectionID())
+	}
+	runtime := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(runtime, "Start inspector") || strings.Contains(runtime, "[ Save ]") || strings.Contains(runtime, "[ Cancel ]") || strings.Contains(runtime, "Save and apply") {
+		t.Fatalf("Runtime must expose Start without global input actions:\n%s", runtime)
 	}
 }
 
-func TestUXOverviewApplyCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
+func TestUXAgentInstallCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
 	setup := &workspaceApplyBackend{withMCP: true}
 	m := NewContext(t.Context(), setup)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
-	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
-	m.Update(cmd())
 
-	activate := func(dismiss bool) {
+	install := func(dismiss bool) {
 		t.Helper()
 		if m.form == nil {
 			cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
@@ -250,26 +285,32 @@ func TestUXOverviewApplyCanBeRepeatedAfterSuccessfulResult(t *testing.T) {
 			}
 			m.Update(cmd())
 		}
-		_, install := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-		if install == nil {
-			t.Fatalf("Save and apply did not submit UIInstall: active=%t pending=%v form=%t busy=%t", m.workspace != nil && m.workspace.Active, m.pendingSetup != nil, m.form != nil, m.busy)
+		m.form.FocusSection()
+		if !m.form.SelectSectionID(sectionAgentsID) {
+			t.Fatal("Agent access section is unavailable")
 		}
-		m.Update(runTeaCmd(t, m, install))
+		m.form.FocusSection()
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+		if cmd == nil {
+			t.Fatal("Install selected did not submit UIInstall")
+		}
+		m.Update(runTeaCmd(t, m, cmd))
 		if m.result == nil || m.result.Failed {
-			t.Fatalf("successful apply did not show its result: %+v", m.result)
+			t.Fatalf("successful explicit install did not show its result: %+v", m.result)
 		}
 		if dismiss {
 			m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		}
 	}
 
-	activate(true)
+	install(true)
 	if setup.installCalls != 1 || setup.installRequest == nil {
-		t.Fatal("first Save and apply did not call UIInstall")
+		t.Fatal("first Install selected did not call UIInstall")
 	}
-	activate(false)
+	install(false)
 	if setup.installCalls != 2 || setup.installRequest == nil || m.busy || m.result == nil {
-		t.Fatalf("second Overview apply did not run through progress and result: request=%+v busy=%t result=%+v", setup.installRequest, m.busy, m.result)
+		t.Fatalf("second explicit Install selected did not run through progress and result: request=%+v busy=%t result=%+v", setup.installRequest, m.busy, m.result)
 	}
 }
 
@@ -280,14 +321,30 @@ func TestUXSkillOnlyTargetDoesNotOfferMCPRuntimeActions(t *testing.T) {
 	key := state.Key{Source: "team-source", Package: "skill-only", Environment: "dev", Target: "default"}
 	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
-	view := ansi.Strip(m.form.View().Content)
-	for _, forbidden := range []string{"MCP runtime", "Build and start MCP", "Stop MCP", "build, start, register"} {
-		if strings.Contains(view, forbidden) {
-			t.Fatalf("skill-only target exposed runtime action %q:\n%s", forbidden, view)
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+
+	inputs := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(inputs, "[ Save ]") || !strings.Contains(inputs, "[ Cancel ]") || strings.Contains(inputs, "Save and apply") {
+		t.Fatalf("skill-only Inputs must expose Save/Cancel without a combined apply action:\n%s", inputs)
+	}
+	m.form.FocusSection()
+	if !m.form.SelectSectionID(sectionAgentsID) {
+		t.Fatal("skill-only Agent access section is unavailable")
+	}
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("skill-only capability lost Agent access: %q", m.form.SectionID())
+	}
+	agents := ansi.Strip(m.form.View().Content)
+	for _, forbidden := range []string{"MCP runtime", "Start ", "Stop ", "Save and apply", "[ Save ]", "[ Cancel ]"} {
+		if strings.Contains(agents, forbidden) {
+			t.Fatalf("skill-only Agent access exposed runtime/global action %q:\n%s", forbidden, agents)
 		}
 	}
-	if !strings.Contains(view, "[ Save and apply ]") {
-		t.Fatalf("skill-only target lost its Save and Apply action:\n%s", view)
+	if !strings.Contains(agents, "[ Install selected ]") || !strings.Contains(agents, "[ Uninstall selected ]") {
+		t.Fatalf("skill-only capability lost targeted install/uninstall actions:\n%s", agents)
 	}
 }
 

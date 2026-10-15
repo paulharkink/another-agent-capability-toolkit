@@ -42,8 +42,9 @@ func firstNonempty(values ...string) string {
 }
 
 const (
+	sectionInputsID      = "tool:inputs"
 	sectionOverviewID    = "tool:overview"
-	sectionAgentsID      = "tool:agents"
+	sectionAgentsID      = "tool:agent-access"
 	sectionEndpointID    = "tool:endpoint"
 	sectionRuntimeID     = "tool:runtime"
 	sectionLogsID        = "tool:logs"
@@ -63,6 +64,7 @@ type workspaceState struct {
 	Active            bool
 	Existing          bool
 	Installed         bool
+	InputsSaved       bool
 	ObservedOnly      bool
 	Preview           *viewmodel.SetupPreview
 	Instance          *viewmodel.Instance
@@ -357,11 +359,15 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 	}
 	switch strings.ToLower(stroke) {
 	case "g", "r":
-		m.workspace.Section = "Agents"
+		m.workspace.Section = "Agent access"
 		m.workspace.SectionID = sectionAgentsID
+		m.form.SelectSectionID(sectionAgentsID)
+		m.form.FocusSection()
 	case "i":
 		m.workspace.Section = "Information"
 		m.workspace.SectionID = sectionInformationID
+		m.form.SelectSectionID(sectionInformationID)
+		m.form.FocusSection()
 	case "l":
 		if !m.form.HasSectionID(sectionLogsID) {
 			return false, nil
@@ -489,8 +495,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.configureComponentActions()
 	m.form.SetSectionHeading("Workspace sections")
 	if m.workspace.Section == "" {
-		m.workspace.Section = "Agents"
-		m.workspace.SectionID = sectionAgentsID
+		m.workspace.Section = "Inputs"
+		m.workspace.SectionID = sectionInputsID
 		for _, section := range sections {
 			if len(section.Fields) > 0 {
 				m.workspace.Section = section.Title
@@ -502,22 +508,61 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	if m.workspace.Instance != nil {
 		m.workspace.Instance.Key = preview.Key
 	}
-	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Instance))
-
-	agentNotes := []string{}
-	for _, destination := range workspaceDestinations(preview) {
-		name := firstNonempty(destination.Name, destination.ID)
-		if strings.HasPrefix(strings.ToLower(destination.Detection), "failed") {
-			agentNotes = append(agentNotes, name+": "+destination.Detection)
+	m.workspace.InputsSaved = preview.Configured
+	ready, required := 0, 0
+	for _, input := range preview.Inputs {
+		if !input.Definition.Required {
+			continue
 		}
-		if destination.Note != "" {
-			agentNotes = append(agentNotes, name+": "+destination.Note)
-		}
-		if destination.DisabledReason != "" {
-			agentNotes = append(agentNotes, name+": "+destination.DisabledReason)
+		required++
+		if input.HasValue {
+			ready++
 		}
 	}
-	m.form.SetSectionContentID(sectionAgentsID, agentNotes)
+	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
+	for _, section := range preview.Sections {
+		if len(section.Fields) > 0 {
+			inputLines = append(inputLines, strings.ToUpper(section.Title))
+		}
+	}
+	m.form.SetSectionContentID(sectionInputsID, inputLines)
+
+	agentAccess := []string{"Select agents to install this capability for.", "Agent install edits configuration only; it does not start Docker.", "Agent          Target   Skill         MCP config"}
+	for _, destination := range workspaceDestinations(preview) {
+		status := "Not installed"
+		marker := "[ ]"
+		if destination.Selected {
+			status, marker = "Installed", "[x]"
+		}
+		mcpStatus := "Not installed"
+		if !preview.MCP {
+			mcpStatus = "—"
+		} else if destination.Selected {
+			mcpStatus = "Installed"
+		}
+		name := firstNonempty(destination.Name, destination.ID)
+		agentAccess = append(agentAccess, fmt.Sprintf("%-14s %-8s %-13s %s", name, marker, status, mcpStatus))
+		details := []string{}
+		detectionFailed := strings.HasPrefix(strings.ToLower(destination.Detection), "failed")
+		if detectionFailed {
+			details = append(details, destination.Detection)
+		}
+		note := strings.ToLower(destination.Note)
+		if detectionFailed || strings.Contains(note, "conflict") || strings.Contains(note, "permission") || strings.Contains(note, "failed") {
+			details = append(details, destination.Note)
+		}
+		if destination.DisabledReason != "" {
+			details = append(details, destination.DisabledReason)
+		}
+		for _, detail := range details {
+			agentAccess = append(agentAccess, "  "+name+": "+detail)
+		}
+	}
+	m.form.SetSectionContentID(sectionAgentsID, agentAccess)
+	m.form.SetSectionActionsID(sectionAgentsID,
+		forms.FormAction{ID: "install-selected", Label: "Install selected"},
+		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected"},
+	)
 
 	if preview.MCP {
 		runtime := []string{}
@@ -542,7 +587,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if profile != nil {
 				status, owner, endpoint = nonempty(profile.RuntimeStatus, "unknown"), nonempty(profile.Ownership, "unknown"), nonempty(profile.URL, "not configured")
 			}
-			runtime = append(runtime, label+" · status: "+status+" · ownership: "+owner+" · endpoint: "+endpoint)
+			runtimeLine := label + " · status: " + status + " · ownership: " + owner + " · endpoint: " + endpoint
+			runtime = append(runtime, runtimeLine)
 			startProfile := profile
 			if startProfile == nil && m.workspace.Instance != nil {
 				parent := *m.workspace.Instance
@@ -553,6 +599,12 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
 			startDisabled := m.instanceActionReason(startRow, "s")
+			if !m.workspace.InputsSaved || !m.workspace.Installed || (m.form != nil && m.form.HasUnsavedChanges()) {
+				if startDisabled != "" {
+					startDisabled += " · "
+				}
+				startDisabled += "Save inputs and install this capability for an agent first"
+			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if profile != nil && profile.CanStop {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
@@ -571,6 +623,31 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		if len(logs) == 0 {
 			logs = []string{"No runtime logs are available."}
 		}
+		status := "Stopped"
+		authentication := ""
+		if len(definitions) > 0 {
+			if profile := m.instanceForMCPName(definitions[0].Name); profile != nil {
+				if profile.RuntimeStatus == "running" {
+					status = "Running"
+				}
+				if label := authenticationDisplayStatus(profile.AuthenticationStatus); label != "" {
+					authentication = "Authentication: " + label
+				}
+			}
+		}
+		inputStatus, installStatus := "Not saved", "Not installed"
+		if m.workspace.InputsSaved {
+			inputStatus = "Saved"
+		}
+		if m.workspace.Installed {
+			installStatus = "Complete"
+		}
+		header := []string{"Status: " + status}
+		if authentication != "" {
+			header = append(header, authentication)
+		}
+		header = append(header, "Inputs: "+inputStatus, "Agent install: "+installStatus, "This starts the Docker instance. It does not edit agent configuration.")
+		runtime = append(header, runtime...)
 		m.form.SetSectionContentID(sectionRuntimeID, runtime)
 		m.form.SetSectionActionsID(sectionRuntimeID, runtimeActions...)
 		m.form.SetSectionContentID(sectionLogsID, logs)
@@ -582,17 +659,12 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	m.form.SetSectionContentID(sectionInformationID, information)
-	actions := []forms.FormAction{}
-	if !m.workspace.ObservedOnly {
-		actions = append(actions, forms.FormAction{ID: "agents", Label: "Configure agent destinations"})
-	}
-	m.form.SetSectionActionsID(sectionOverviewID, actions...)
 	if m.workspace.SectionID != "" && !m.form.HasSectionID(m.workspace.SectionID) {
 		m.workspace.SectionID = ""
 	}
 	if m.workspace.SectionID == "" && !m.form.HasSection(m.workspace.Section) {
-		m.workspace.Section = "Overview"
-		m.workspace.SectionID = sectionOverviewID
+		m.workspace.Section = "Inputs"
+		m.workspace.SectionID = sectionInputsID
 	}
 	if m.workspace.SectionID != "" {
 		m.form.SelectSectionID(m.workspace.SectionID)
@@ -600,6 +672,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		m.form.SelectSection(m.workspace.Section)
 	}
 	m.form.FocusSection()
+	m.form.SetSubmitLabel("Save")
+	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
 }
 
 func formSectionFields(sections []forms.FormSection, title string) []string {
@@ -626,21 +701,9 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 		known[def.Name] = true
 		ordered = append(ordered, def.Name)
 	}
-	sections := []forms.FormSection{{ID: sectionOverviewID, Title: "Overview"}}
-	if preview.HasManifestUI {
-		for _, section := range preview.Sections {
-			fields := make([]string, 0, len(section.Fields))
-			for _, name := range section.Fields {
-				if known[name] {
-					fields = append(fields, name)
-				}
-			}
-			if len(fields) > 0 {
-				sections = append(sections, forms.FormSection{ID: "package:" + section.ID, Title: section.Title, Fields: fields})
-			}
-		}
-	} else if len(ordered) > 0 {
-		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
+	sections := []forms.FormSection{}
+	if len(ordered) > 0 {
+		sections = append(sections, forms.FormSection{ID: sectionInputsID, Title: "Inputs", Fields: ordered})
 	}
 	if preview.ItemFieldName != "" && len(preview.Items) > 1 {
 		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
@@ -649,7 +712,7 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 	if hasDestination {
 		agentFields = []string{destinationField}
 	}
-	sections = append(sections, forms.FormSection{ID: sectionAgentsID, Title: "Agents", Fields: agentFields})
+	sections = append(sections, forms.FormSection{ID: sectionAgentsID, Title: "Agent access", Fields: agentFields})
 	if preview.MCP {
 		sections = append(sections, forms.FormSection{ID: sectionRuntimeID, Title: "Runtime"}, forms.FormSection{ID: sectionLogsID, Title: "Logs"})
 	}

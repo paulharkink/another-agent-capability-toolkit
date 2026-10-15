@@ -111,6 +111,30 @@ func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 	}
 }
 
+func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: false}}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	if err := svc.UISaveInputs(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref},
+		Inputs:       map[string]any{"label": "saved-only"},
+	}); err != nil {
+		t.Fatalf("save-only input operation failed: %v", err)
+	}
+	key, err := store.ResolveInstanceKey(svc.Source.ID, "demo", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil || answers["label"] != "saved-only" {
+		t.Fatalf("answers were not saved: answers=%v err=%v", answers, err)
+	}
+	installations, err := store.Installations()
+	if err != nil || len(installations) != 0 {
+		t.Fatalf("save-only operation created installation effects: %+v err=%v", installations, err)
+	}
+}
+
 func TestUIInstallSkillOnlyDoesNotCreateInstanceRecord(t *testing.T) {
 	svc, _, store := fixture(t)
 	result, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"all"}})
@@ -132,6 +156,36 @@ func TestUIInstallSkillOnlyDoesNotCreateInstanceRecord(t *testing.T) {
 	}
 	if len(instances) != 0 {
 		t.Fatalf("skill-only install created a synthetic instance record: %+v", instances)
+	}
+}
+
+func TestUIUninstallSkillOnlyRemovesOnlySelectedAgent(t *testing.T) {
+	svc, _, store := fixture(t)
+	_, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{
+		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex", "opencode"},
+	})
+	if err != nil {
+		t.Fatalf("install for selected agents: %v", err)
+	}
+	result, err := svc.UIUninstallSkillOnly(context.Background(), viewmodel.SkillOnlyUninstallRequest{
+		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex"},
+	})
+	if err != nil {
+		t.Fatalf("uninstall selected agent: %v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "opencode" || rows[0].Component != "skill" {
+		t.Fatalf("uninstall changed unrelated destinations: %+v", rows)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 0 {
+		t.Fatalf("skill-only uninstall created or retained instance state: %+v %v", instances, err)
+	}
+	if len(result.Changes) != 1 || result.Changes[0].AgentID != "codex" {
+		t.Fatalf("uninstall result did not identify exact removed target: %+v", result)
 	}
 }
 

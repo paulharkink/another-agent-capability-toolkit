@@ -21,17 +21,31 @@ func TestManifestSectionsPreserveDeclaredOrderAndDoNotInferFieldGroups(t *testin
 	}
 	defs := []catalog.Input{{Name: "credential", Label: "Token", Type: "secret"}, {Name: "endpoint", Label: "Endpoint", Type: "string"}, {Name: "__agents", Type: "multichoice"}}
 	got := workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 5 || got[0].Title != "Overview" || got[1].Title != "Remote Control" || got[2].Title != "Extra Options" || got[3].Title != "Agents" || got[4].Title != "Information" {
-		t.Fatalf("sections did not follow manifest declaration: %#v", got)
+	if len(got) != 3 || got[0].Title != "Inputs" || got[1].Title != "Agent access" || got[2].Title != "Information" {
+		t.Fatalf("staged workspace sections did not group manifest settings under Inputs: %#v", got)
 	}
-	if got[1].Fields[0] != "endpoint" || got[2].Fields[0] != "credential" {
-		t.Fatalf("fields were regrouped heuristically: %#v", got)
+	if len(got[0].Fields) != 2 || got[0].Fields[0] != "credential" || got[0].Fields[1] != "endpoint" {
+		t.Fatalf("Inputs did not preserve declared input order: %#v", got)
 	}
 }
 
 type zeroInputSkillSetupBackend struct {
 	fixtureBackend
 	skillOnlyRequest *viewmodel.SkillOnlyInstallRequest
+	skillOnlyRemoval *viewmodel.SkillOnlyUninstallRequest
+}
+
+type skillOnlyInstanceBackend struct{ *zeroInputSkillSetupBackend }
+
+func (skillOnlyInstanceBackend) UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error) {
+	return map[string]viewmodel.CapabilityInstanceSnapshot{}, nil
+}
+func (skillOnlyInstanceBackend) UICreateInstance(context.Context, config.InstanceRef) error {
+	return nil
+}
+func (b *zeroInputSkillSetupBackend) UIUninstallSkillOnly(_ context.Context, request viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error) {
+	b.skillOnlyRemoval = &request
+	return viewmodel.OperationResult{Message: "Removed"}, nil
 }
 
 func (zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
@@ -49,16 +63,18 @@ func TestManifestlessSectionsUseInputOrderAndOnlyMCPAddsRuntimeSections(t *testi
 	preview := viewmodel.SetupPreview{Key: state.Key{Package: "arbitrary-name"}}
 	defs := []catalog.Input{{Name: "token", Label: "Access token", Type: "secret"}, {Name: "host", Label: "Host", Type: "string"}}
 	got := workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 4 || got[1].Title != "Inputs" || got[1].Fields[0] != "token" || got[1].Fields[1] != "host" {
+	if len(got) != 3 || got[0].Title != "Inputs" || got[0].Fields[0] != "token" || got[0].Fields[1] != "host" {
 		t.Fatalf("legacy inputs were not kept in declared order: %#v", got)
 	}
 	preview.MCP = true
 	got = workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 6 || got[3].Title != "Runtime" || got[4].Title != "Logs" {
+	if len(got) != 5 || got[2].Title != "Runtime" || got[3].Title != "Logs" {
 		t.Fatalf("MCP runtime sections missing: %#v", got)
 	}
-	if len(workspaceFormSections(preview, nil, "__agents")) == 6 {
-		t.Fatal("zero-input MCP capability received an empty Inputs menu")
+	for _, section := range workspaceFormSections(preview, nil, "__agents") {
+		if section.ID == sectionInputsID {
+			t.Fatal("zero-input MCP capability received an empty Inputs menu")
+		}
 	}
 }
 
@@ -87,29 +103,99 @@ func TestDestinationPresentationUsesSkillPathsAndRetainsMCPConfigPaths(t *testin
 	}
 }
 
-func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
-	m, _ := homeFixture()
-	backend := &zeroInputSkillSetupBackend{}
-	m.backend = backend
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", PackageID: "plain", Name: "staging", Path: "/tmp/staging.toml"}}}
-	rows := m.capabilities()
-	for _, row := range rows {
-		if row.Package == "plain" {
-			m.home.Capabilities.ID = row.ID
-			break
+func TestSkillOnlyZeroInputOffersTargetedInstallAndUninstall(t *testing.T) {
+	t.Run("install", func(t *testing.T) {
+		m, _ := homeFixture()
+		backend := &zeroInputSkillSetupBackend{}
+		m.backend = skillOnlyInstanceBackend{backend}
+		selectPlainSkill(t, m)
+		if cmd := m.homeOperation("install-skill-only"); cmd != nil {
+			t.Fatal("opening agent selector unexpectedly started an operation")
+		}
+		if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "install-skill-only" {
+			t.Fatalf("targeted install selector did not open: form=%t pending=%+v", m.form != nil, m.pendingSkillOnly)
+		}
+		assertAgentTargetSelector(t, m)
+		selected := firstSelectableAgent(t, m)
+		if err := m.form.ApplyValues(map[string]any{"agents": []string{selected}}); err != nil {
+			t.Fatal(err)
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+		if cmd == nil {
+			t.Fatal("saving target selection did not dispatch install")
+		}
+		m.Update(cmd())
+		if backend.skillOnlyRequest == nil || len(backend.skillOnlyRequest.DestinationIDs) != 1 || backend.skillOnlyRequest.DestinationIDs[0] != selected {
+			t.Fatalf("install did not receive the exact selected agent: %+v", backend.skillOnlyRequest)
+		}
+		if m.creatingInstance != nil {
+			t.Fatal("skill-only install created a fake instance")
+		}
+	})
+	t.Run("uninstall", func(t *testing.T) {
+		m, _ := homeFixture()
+		backend := &zeroInputSkillSetupBackend{}
+		m.backend = skillOnlyInstanceBackend{backend}
+		selectPlainSkill(t, m)
+		selected := firstSelectableAgent(t, m)
+		m.inventory = []state.Installation{{Key: state.Key{Source: "one", Package: "plain"}, AgentID: selected, Component: "skill"}}
+		if cmd := m.homeOperation("uninstall-skill-only"); cmd != nil {
+			t.Fatal("opening agent selector unexpectedly started an operation")
+		}
+		if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "uninstall-skill-only" {
+			t.Fatalf("targeted uninstall selector did not open: form=%t pending=%+v", m.form != nil, m.pendingSkillOnly)
+		}
+		assertAgentTargetSelector(t, m)
+		if got, _ := m.form.Values()["agents"].([]string); len(got) != 1 || got[0] != selected {
+			t.Fatalf("installed destination was not selected by default: %v want %q", got, selected)
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+		if cmd == nil {
+			t.Fatal("saving target selection did not dispatch uninstall")
+		}
+		m.Update(cmd())
+		if backend.skillOnlyRemoval == nil || len(backend.skillOnlyRemoval.DestinationIDs) != 1 || backend.skillOnlyRemoval.DestinationIDs[0] != selected {
+			t.Fatalf("uninstall did not receive the exact selected agent: %+v", backend.skillOnlyRemoval)
+		}
+		if m.creatingInstance != nil {
+			t.Fatal("skill-only uninstall created a fake instance")
+		}
+	})
+}
+
+func selectPlainSkill(t *testing.T, m *Model) {
+	t.Helper()
+	m.agents = []string{"codex", "opencode"}
+	for index, capability := range m.capabilities() {
+		if capability.Package == "plain" {
+			m.home.Capabilities.ID = capability.ID
+			m.home.Capabilities.Index = index
+			m.home.Focus = CapabilitiesPane
+			return
 		}
 	}
-	m.reconcileHome()
-	cmd := m.homeOperation("parameters")
-	if cmd == nil || m.creatingInstance != nil {
-		t.Fatalf("skill-only capability did not dispatch direct install without creating an instance: ref=%+v cmd=%v", m.creatingInstance, cmd != nil)
+	t.Fatal("plain skill capability missing")
+}
+
+func firstSelectableAgent(t *testing.T, m *Model) string {
+	t.Helper()
+	for _, agent := range m.agents {
+		if agent != "" && agent != "all" {
+			return agent
+		}
 	}
-	m.Update(cmd())
-	if backend.skillOnlyRequest == nil || backend.skillOnlyRequest.PackageID != "plain" || backend.skillOnlyRequest.SourceID != "one" {
-		t.Fatalf("direct skill install request missing or incorrect: %+v", backend.skillOnlyRequest)
+	t.Fatal("no selectable agent destination")
+	return ""
+}
+
+func assertAgentTargetSelector(t *testing.T, m *Model) {
+	t.Helper()
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "Target agents") {
+		t.Fatalf("agent target selector label missing from rendered view:\n%s", content)
 	}
-	if m.form != nil || m.home.Modal != nil {
-		t.Fatalf("direct skill install opened configuration UI: form=%v modal=%+v", m.form != nil, m.home.Modal)
+	if strings.Contains(content, "All agents") {
+		t.Fatalf("selector unexpectedly offers a broadcast destination:\n%s", content)
 	}
 }
 
@@ -124,8 +210,8 @@ func TestFixedManifestControllerExposesRequiredEditableInputWithoutSubmittingCon
 		},
 	}
 	m.openSetupForm(preview)
-	if m.form == nil || !m.form.HasSection("Credential Settings") {
-		t.Fatal("fixed controller hid its required editable field section")
+	if m.form == nil || !m.form.HasSection("Inputs") || !strings.Contains(ansi.Strip(m.form.View().Content), "Credential") {
+		t.Fatal("fixed controller hid its required editable field from the Inputs stage")
 	}
 	if _, submitted := m.form.Values()["mode"]; submitted {
 		t.Fatal("fixed controller leaked into editable answers")
@@ -139,17 +225,17 @@ func TestFixedManifestControllerExposesRequiredEditableInputWithoutSubmittingCon
 func TestDeclaredSectionIDCannotOverwriteBuiltinAgentsWithSameName(t *testing.T) {
 	preview := viewmodel.SetupPreview{HasManifestUI: true, Sections: []catalog.Section{{ID: "tool:agents", Title: "Agents", Fields: []string{"endpoint"}}}}
 	sections := workspaceFormSections(preview, []catalog.Input{{Name: "endpoint", Type: "string"}}, "")
-	foundBuiltin, foundPublisher := false, false
+	foundBuiltin, foundInput := false, false
 	for _, section := range sections {
 		if section.ID == sectionAgentsID {
-			foundBuiltin = section.Title == "Agents" && len(section.Fields) == 0
+			foundBuiltin = section.Title == "Agent access" && len(section.Fields) == 0
 		}
-		if section.ID == "package:tool:agents" {
-			foundPublisher = section.Title == "Agents" && len(section.Fields) == 1 && section.Fields[0] == "endpoint"
+		if section.ID == sectionInputsID {
+			foundInput = section.Title == "Inputs" && len(section.Fields) == 1 && section.Fields[0] == "endpoint"
 		}
 	}
-	if !foundBuiltin || !foundPublisher {
-		t.Fatalf("declared ID/title collision overwrote a tool section: %#v", sections)
+	if !foundBuiltin || !foundInput {
+		t.Fatalf("declared ID/title collision overwrote a staged tool section: %#v", sections)
 	}
 }
 
@@ -219,6 +305,9 @@ func TestRuntimeControlsAddressTheSelectedManifestMCPChild(t *testing.T) {
 		t.Fatal("workspace preview did not start")
 	}
 	m.Update(open())
+	m.workspace.Preview.Configured = true
+	m.workspace.Installed = true
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
 	if !strings.Contains(ansi.Strip(m.View().Content), "beta · status: running") {
@@ -255,6 +344,9 @@ func TestMissingNamedChildInheritsParentOwnershipForLifecycleGuards(t *testing.T
 				t.Fatal("workspace preview did not start")
 			}
 			m.Update(open())
+			m.workspace.Preview.Configured = true
+			m.workspace.Installed = true
+			m.configureWorkspaceForm(*m.workspace.Preview)
 			m.form.SelectSectionID(sectionRuntimeID)
 			m.form.FocusSection()
 			view := ansi.Strip(m.View().Content)
@@ -350,5 +442,28 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 				t.Fatalf("local companion received a broadcast external URL: %+v", backend.installRequest.ExternalURLs)
 			}
 		})
+	}
+}
+
+func TestSkillOnlyActionsOfferExplicitAgentInstallAndUninstall(t *testing.T) {
+	m, _ := homeFixture()
+	m.backend = skillOnlyInstanceBackend{&zeroInputSkillSetupBackend{}}
+	selectPlainSkill(t, m)
+	m.home.Focus = CapabilitiesPane
+	m.home.Modal = &modalState{Kind: "actions"}
+	actions := map[string]string{}
+	for _, item := range m.homeMenuItems() {
+		actions[item.Action] = item.Label
+	}
+	for action, label := range map[string]string{
+		"install-skill-only":   "Install skill for agents...",
+		"uninstall-skill-only": "Uninstall skill from agents...",
+	} {
+		if actions[action] != label {
+			t.Errorf("skill-only action %q = %q; want explicit targeted action %q (all actions: %#v)", action, actions[action], label, actions)
+		}
+	}
+	if _, exists := actions["configure"]; exists {
+		t.Errorf("skill-only capability still offers a misleading configure/default-install action: %#v", actions)
 	}
 }

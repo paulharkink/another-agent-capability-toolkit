@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -515,6 +516,96 @@ func TestReconfiguredProfileAuthFailurePreservesSavedStateAndReportsAuthRequired
 		t.Fatalf("saved auth state changed: %q %v", data, err)
 	}
 }
+
+func TestResetInstanceToPresetClearsExactLocalStateWithoutStoppingUnknownRuntime(t *testing.T) {
+	s, adapter, request := profileApplyFixture(t)
+	ref := config.InstanceRef{PackID: request.Ref.PackID, CapabilityID: request.Ref.CapabilityID, Name: request.Ref.Name}
+	preset, _, key, err := s.loadInstance(ref)
+	_ = preset
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := config.LoadInstance(s.Source.CapabilityPack(), ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presetBytes, err := os.ReadFile(instance.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: ref.Name, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SaveAnswers(key, map[string]any{"token": "selected-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	authDir, err := s.Store.EnsureAuthDir(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authFile := filepath.Join(authDir, "token")
+	if err := os.WriteFile(authFile, []byte("selected-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	child := mcpDefinitionKey(key, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
+	rows := []state.Installation{
+		{Key: key, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: filepath.Join(adapter.home, "skills", "one")},
+		{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "mcp", Destination: filepath.Join(adapter.home, "config.toml"), RegistrationName: "managed"},
+		{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "runtime", RegistrationName: "unknown-runtime", ExternalRegistration: true},
+		{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "mcp", Destination: filepath.Join(adapter.home, "config.toml"), RegistrationName: "external", ExternalRegistration: true},
+	}
+	siblingKey, err := s.Store.ResolveInstanceKey(ref.PackID, ref.CapabilityID, "sibling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows = append(rows, state.Installation{Key: siblingKey, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: filepath.Join(adapter.home, "skills", "sibling")})
+	for _, row := range rows {
+		if err := s.Store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := &changedRuntime{}
+	s.Options.Runtime = runtime
+
+	result, err := s.ResetInstanceToPreset(context.Background(), InstanceRequest{Ref: ref})
+	if err != nil {
+		t.Fatalf("reset to preset failed: %+v %v", result, err)
+	}
+	if !strings.Contains(result.Message, "runtime may remain") {
+		t.Fatalf("reset did not explain unknown runtime recovery: %+v", result)
+	}
+	if runtime.stops != 0 || runtime.starts != 0 {
+		t.Fatalf("reset touched an ambiguously owned runtime: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
+	afterRows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterRows) != 2 || afterRows[0].RegistrationName != "external" || afterRows[1].Key != siblingKey {
+		t.Fatalf("reset removed unrelated or externally owned rows, or retained managed/runtime rows: %+v", afterRows)
+	}
+	if _, err := os.Stat(authFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("exact instance credentials survived reset: %v", err)
+	}
+	hasAnswers, err := s.Store.HasAnswers(key)
+	if err != nil || hasAnswers {
+		t.Fatalf("exact instance answers survived reset: has=%t err=%v", hasAnswers, err)
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Key == key {
+			t.Fatalf("exact instance ledger survived reset: %+v", record)
+		}
+	}
+	afterPreset, err := os.ReadFile(instance.Path)
+	if err != nil || !bytes.Equal(afterPreset, presetBytes) {
+		t.Fatalf("pack preset TOML changed during reset: err=%v", err)
+	}
+}
+
 func TestRemoveInstanceDeletesOnlySelectedInstanceStateAfterCleanup(t *testing.T) {
 	s, _, request := profileApplyFixture(t)
 	_, selectedConfig, _, err := s.loadInstance(request.Ref)
@@ -652,6 +743,28 @@ func TestRemoveInstanceDeletesOnlyLocallyCreatedInstanceTOML(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("locally created instance TOML still exists: %v", err)
+	}
+}
+
+func TestRemovePackProvidedInstanceKeepsPresetTOML(t *testing.T) {
+	s, _, request := profileApplyFixture(t)
+	_, preset, _, err := s.loadInstance(request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(preset.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RemoveInstance(context.Background(), InstanceRequest{Ref: request.Ref}); err != nil {
+		t.Fatalf("remove pack-provided instance state: %v", err)
+	}
+	got, err := os.ReadFile(preset.Path)
+	if err != nil {
+		t.Fatalf("pack-provided preset was removed instead of restored: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("pack-provided preset changed during remove/reset:\nwant %q\ngot  %q", want, got)
 	}
 }
 

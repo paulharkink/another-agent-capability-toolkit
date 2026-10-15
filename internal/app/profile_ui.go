@@ -61,6 +61,9 @@ func (s *Service) UICreateInstance(ctx context.Context, ref config.InstanceRef) 
 func (s *Service) UIRemoveInstance(ctx context.Context, ref config.InstanceRef) (viewmodel.OperationResult, error) {
 	return s.RemoveInstance(ctx, InstanceRequest{Ref: ref})
 }
+func (s *Service) UIResetInstanceToPreset(ctx context.Context, ref config.InstanceRef) (viewmodel.OperationResult, error) {
+	return s.ResetInstanceToPreset(ctx, InstanceRequest{Ref: ref})
+}
 func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) error {
 	return s.UICreateInstance(ctx, ref)
 }

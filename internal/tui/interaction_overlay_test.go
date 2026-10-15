@@ -23,7 +23,7 @@ func openForeignRegistrationInteraction(t *testing.T) (*Model, *profileBackend) 
 
 func TestInteractionCapabilityEndpointAndAgentsAreSeparateSections(t *testing.T) {
 	m, _ := openForeignRegistrationInteraction(t)
-	m.form.SelectSection("Endpoint")
+	m.form.SelectSectionID(sectionInformationID)
 	view := m.View().Content
 	for _, want := range []string{"Endpoint URI", "http://127.0.0.1:8765/mcp"} {
 		if !strings.Contains(view, want) {
@@ -33,7 +33,7 @@ func TestInteractionCapabilityEndpointAndAgentsAreSeparateSections(t *testing.T)
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
 	view = m.View().Content
-	for _, want := range []string{"Agents", "Codex", "Claude Code"} {
+	for _, want := range []string{"Agent access", "codex", "claude"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("complete binding section missing %q:\n%s", want, view)
 		}
@@ -191,7 +191,9 @@ func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testi
 	m.Update(cmd())
 	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	view := m.View().Content
-	if !strings.Contains(view, "── Information") { t.Fatalf("workspace information section missing: %s", view) }
+	if !strings.Contains(view, "── Information") {
+		t.Fatalf("workspace information section missing: %s", view)
+	}
 	for _, want := range []string{"Endpoint URI: http://127.0.0.1:8765/mcp", "Live runtime status: conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("workspace Information omitted %q:\n%s", want, view)
@@ -226,12 +228,11 @@ func TestInteractionUnknownOwnerOffersDiagnosisAndBindingButNotLifecycleControl(
 	if startReason == "" {
 		t.Fatal("unknown owner unexpectedly permits Start")
 	}
-	if handled, _ := m.workspaceOverviewAction("g"); !handled || m.form == nil || !m.form.HasSectionID(sectionAgentsID) {
-		t.Fatalf("unknown-owner Overview did not route to complete capability Agents configuration: handled=%t", handled)
-	}
-	m.form.SelectSectionID(sectionOverviewID)
-	if !strings.Contains(m.form.View().Content, "Save and apply") {
-		t.Fatal("unknown-owner workspace did not retain the Save and apply capability action")
+	m.form.SelectSectionID(sectionAgentsID)
+	m.form.FocusSection()
+	view := m.form.View().Content
+	if !strings.Contains(view, "Install selected") || strings.Contains(view, "Start") || strings.Contains(view, "Stop") {
+		t.Fatalf("unknown-owner workspace must allow local agent install while withholding runtime lifecycle controls: %s", view)
 	}
 }
 

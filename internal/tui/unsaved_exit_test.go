@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 )
 
 func TestDirtySetupBackShowsUnsavedPopupAndKeepEditingPreservesDraft(t *testing.T) {
@@ -109,48 +110,38 @@ func TestApplyFailureKeepsDirtyFormEditableAndShowsActualError(t *testing.T) {
 	failure := errors.New("fixture rejected configuration apply")
 	m, backend := openSetupInteraction(t)
 	enableWorkspaceBackForTest(m)
-	dirtySetupAndRequestBack(t, m)
-	form := m.form
 	backend.installErr = failure
-	setupKey(m, tea.KeyUp, "")
-	setupKey(m, tea.KeyUp, "") // Apply changes.
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	inputsSave := m.saveSetupInputs(m.form.Values())
+	if inputsSave == nil {
+		t.Fatal("Inputs Save did not start")
+	}
+	m.Update(inputsSave())
+	form := m.form
+	m.form.SelectSectionID(sectionAgentsID)
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
 	if cmd == nil {
-		t.Fatal("Apply changes did not run Save and apply")
+		t.Fatal("Agent access Install selected did not start installation")
 	}
 	result := runTeaCmd(t, m, cmd)
 	m.Update(result)
-	if m.form != form || !m.form.HasUnsavedChanges() || m.result == nil {
-		t.Fatalf("failed apply lost the same dirty form or error dialog: same=%t dirty=%t result=%+v", m.form == form, m.form != nil && m.form.HasUnsavedChanges(), m.result)
+	if m.form != form || m.result == nil {
+		t.Fatalf("failed install lost the same form or error dialog: same=%t result=%+v", m.form == form, m.result)
 	}
 	if !strings.Contains(strings.Join(m.result.Rows, "\n"), failure.Error()) {
 		t.Fatalf("failed apply did not show its actual error in the result dialog: %+v", m.result.Rows)
 	}
-	setupKey(m, tea.KeyEscape, "") // Dismiss the error dialog.
-	if m.result != nil || m.form != form || !m.form.HasUnsavedChanges() {
-		t.Fatal("dismissing the apply error lost the retained dirty form")
-	}
-	for attempts := 0; attempts < 3 && !strings.Contains(m.View().Content, "Apply changes"); attempts++ {
-		if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
-			m.Update(cmd())
-		}
-	}
-	if !strings.Contains(m.View().Content, "Apply changes") {
-		t.Fatal("failed apply reset the dirty baseline; leaving should prompt again")
-	}
-	setupKey(m, tea.KeyEnter, "") // Keep editing and dismiss the popup.
-	setupKey(m, tea.KeyRight, "") // Form remains editable.
-	if m.form != form || !m.form.HasUnsavedChanges() {
-		t.Fatal("the failed form was not editable after the error was dismissed")
+	setupKey(m, 'e', "e") // Return to the editable inputs from the error result.
+	if m.result != nil || m.form == nil || m.form == form || !m.workspace.Active || m.form.Values()["token"] != "old-token" {
+		t.Fatalf("Edit answers did not restore the saved inputs in the active instance workspace: result=%+v newForm=%t workspace=%+v\n%s", m.result, m.form != nil && m.form != form, m.workspace, m.View().Content)
 	}
 	backend.installErr = nil
-	_, retry := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	_, retry := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
 	if retry == nil {
-		t.Fatal("retained configuration form could not retry Save and apply")
+		t.Fatal("Agent access could not retry installation")
 	}
 	m.Update(runTeaCmd(t, m, retry))
 	if backend.installRequest == nil || m.pendingSetup == nil {
-		t.Fatal("retry did not run Save and apply against the retained setup")
+		t.Fatal("retry did not run installation against the retained setup")
 	}
 }
 
@@ -244,9 +235,8 @@ func TestDefaultAgentsPopupApplyFailureRetainsActionAndRetriesSameService(t *tes
 	m.Update(m.Init()())
 	m.navigate("Settings")
 	setupKey(m, tea.KeyDown, "")
-	setupKey(m, tea.KeyF2, "")
-	setupKey(m, tea.KeyEnd, "")
-	setupKey(m, tea.KeyEnter, "")
+	setupKey(m, tea.KeyEnter, "") // Focus selected category's detail action.
+	setupKey(m, tea.KeyEnter, "") // Open visible default-agent control.
 	if m.form == nil {
 		t.Fatal("default agents settings form did not open")
 	}

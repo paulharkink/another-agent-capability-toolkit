@@ -53,6 +53,7 @@ type FormModel struct {
 	unsavedExitGuard            bool
 	readOnly                    bool
 	hideCancel                  bool
+	hideSubmit                  bool
 	result                      map[string]any
 	err                         error
 	sections                    []FormSection
@@ -342,6 +343,10 @@ func (m *FormModel) SetCancelHidden(hidden bool) {
 	}
 }
 
+// SetSubmitHidden hides the global submit control when a section owns its
+// explicit action button.
+func (m *FormModel) SetSubmitHidden(hidden bool) { m.hideSubmit = hidden }
+
 // ApplyValues loads a saved or restored draft through the declared field
 // normalizers while keeping the existing dirty baseline intact.
 func (m *FormModel) ApplyValues(values map[string]any) error {
@@ -498,6 +503,14 @@ func (m *FormModel) ChangedFieldSummary(limit int) ([]string, int) {
 
 // MarkClean records the current semantic form values as the clean baseline.
 func (m *FormModel) MarkClean() { m.editor.MarkClean() }
+
+// ReopenAfterSave clears the completed submit result while keeping the form and
+// its clean answer baseline available for the next workspace stage.
+func (m *FormModel) ReopenAfterSave() {
+	m.done = false
+	m.result = nil
+	m.err = nil
+}
 
 // PrepareRetry reopens a submitted form after its parent operation fails,
 // retaining the submitted values and the existing clean baseline.
@@ -1740,7 +1753,7 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.cancel()
 		}
 		saveText := "[ " + m.submitActionLabel() + " ]"
-		if mouse.X >= 1 && mouse.X < 1+len(saveText) {
+		if !m.hideSubmit && mouse.X >= 1 && mouse.X < 1+len(saveText) {
 			if m.editing {
 				m.commitBuffer()
 				if m.editing {
@@ -2028,9 +2041,15 @@ func (m *FormModel) layout() formLayout {
 		escapeAction = "Esc back"
 	}
 	saveControl := "[ " + m.submitActionLabel() + " ]"
-	actionsControl := saveControl
+	actionsControl := ""
+	if !m.hideSubmit {
+		actionsControl = "[ " + m.submitActionLabel() + " ]"
+	}
 	if !m.hideCancel {
-		actionsControl += "  [ Cancel ]"
+		if actionsControl != "" {
+			actionsControl += "  "
+		}
+		actionsControl += "[ Cancel ]"
 	}
 	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · " + escapeAction
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
@@ -2366,9 +2385,15 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	saveControl := "[ " + m.submitActionLabel() + " ]"
-	actionsControl := saveControl
+	actionsControl := ""
+	if !m.hideSubmit {
+		actionsControl = "[ " + m.submitActionLabel() + " ]"
+	}
 	if !m.hideCancel {
-		actionsControl += "  [ Cancel ]"
+		if actionsControl != "" {
+			actionsControl += "  "
+		}
+		actionsControl += "[ Cancel ]"
 	}
 	actions := actionsControl
 	if m.readOnly {
@@ -2546,7 +2571,7 @@ func (m *FormModel) splitLayout() formLayout {
 	content := strings.Join(framed, "\n")
 	footerY := -1
 	for y, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, saveControl) {
+		if strings.Contains(line, saveControl) || (!m.hideCancel && strings.Contains(line, "[ Cancel ]")) {
 			footerY = y
 			break
 		}

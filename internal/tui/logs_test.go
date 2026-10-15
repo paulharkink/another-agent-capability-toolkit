@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -51,12 +52,18 @@ func openLogAction(t *testing.T, m *Model) tea.Cmd {
 	}
 	m.backend = &logWorkspaceBackend{logProfileBackend: base, setup: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, profileIndex)
-	cmd := m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Overview")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Runtime")
 	if cmd == nil {
 		t.Fatalf("target workspace did not open for logs target %+v", p.Key)
 	}
 	m.Update(cmd())
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if m.form == nil {
+		t.Fatal("Runtime section did not open for logs target")
+	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	updated, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "logs:" + p.Key.MCP})
+	m = updated.(*Model)
 	return cmd
 }
 
@@ -334,9 +341,12 @@ func TestPauseResumeReplacementIgnoresIntentionalCancellation(t *testing.T) {
 	m.backend = backend
 	key := base.snapshot.Profiles[0].Key
 	m.selectPane(ProfilesPane, 0)
-	setup := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
+	setup := m.openTargetWorkspace(m.packInstanceRequest(key), "Runtime")
 	m.Update(setup())
-	_, firstFetch := m.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	updated, firstFetch := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "logs:" + key.MCP})
+	m = updated.(*Model)
 	if firstFetch == nil {
 		t.Fatal("workspace Logs route did not start the first fetch")
 	}

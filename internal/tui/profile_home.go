@@ -38,9 +38,14 @@ type instanceCreatedMsg struct {
 type instanceRemovalBackend interface {
 	UIRemoveInstance(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
 }
+type instancePresetResetBackend interface {
+	UIResetInstanceToPreset(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
+}
 type instanceRemovedMsg struct {
-	ref config.InstanceRef
-	err error
+	ref         config.InstanceRef
+	resetPreset bool
+	message     string
+	err         error
 }
 
 func (m *Model) instanceMode() bool {
@@ -73,14 +78,23 @@ func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
 	}
 	for _, r := range p.MCPs {
 		status := r.MCPID + " " + r.Status
-		if r.AuthenticationStatus == viewmodel.AuthenticationFailed {
-			status += " AuthenticationFailed"
-		} else if r.AuthenticationStatus == viewmodel.AuthenticationComplete {
-			status += " AuthenticationComplete"
+		if label := authenticationDisplayStatus(r.AuthenticationStatus); label != "" {
+			status += " " + label
 		}
 		parts = append(parts, status)
 	}
 	return strings.Join(parts, " · ")
+}
+
+func authenticationDisplayStatus(status string) string {
+	switch status {
+	case viewmodel.AuthenticationFailed:
+		return "AuthenticationFailed"
+	case viewmodel.AuthenticationComplete:
+		return "AuthenticationComplete"
+	default:
+		return ""
+	}
 }
 
 func instanceComponentStatusText(c viewmodel.ComponentStatus) string {
@@ -110,10 +124,8 @@ func instanceConfigurationDetails(row InstanceRow) []string {
 	}
 	for _, runtime := range profile.MCPs {
 		status := runtime.MCPID + " " + runtime.Status
-		if runtime.AuthenticationStatus == viewmodel.AuthenticationFailed {
-			status += " AuthenticationFailed"
-		} else if runtime.AuthenticationStatus == viewmodel.AuthenticationComplete {
-			status += " AuthenticationComplete"
+		if label := authenticationDisplayStatus(runtime.AuthenticationStatus); label != "" {
+			status += " " + label
 		}
 		rows = append(rows, status)
 	}
@@ -147,7 +159,7 @@ func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.Ru
 			}
 		}
 	}
-	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
+	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, AuthenticationStatus: r.AuthenticationStatus, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
 	row.CanStart = !r.Stale && r.Ownership == "local" && (r.Status == "stopped" || r.Status == "missing" || r.Status == "exited" || r.Status == "never-started")
 	row.CanStop = !r.Stale && r.Ownership == "local" && r.Status == "running"
 	for _, c := range p.Components {

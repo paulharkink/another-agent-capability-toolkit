@@ -160,7 +160,7 @@ func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
 	v := m.View().Content
-	for _, s := range []string{"Capabilities", "Inspector", "Instance", "Main menu", "F2 Open / Focus"} {
+	for _, s := range []string{"Capabilities", "Inspector", "Instance", "Main menu", "Enter Open", "F3 Details"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q: %s", s, v)
 		}
@@ -312,7 +312,7 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 		t.Fatal("wrong footer action")
 	}
 }
-func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
+func TestHomeEnterSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.View()
@@ -323,9 +323,9 @@ func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
 	id := m.home.Profiles.ID
-	pressAndRun(m, tea.KeyF2)
+	pressAndRun(m, tea.KeyEnter)
 	if m.form == nil || m.workspace == nil {
-		t.Fatal("F2 did not open the selected target workspace")
+		t.Fatal("Enter did not open the selected target workspace")
 	}
 	pressAndRun(m, tea.KeyEscape)
 	if m.home.Focus != ProfilesPane || m.home.Profiles.ID != id {
@@ -385,9 +385,9 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 		t.Fatalf("main menu: %v", got)
 	}
 	press(m, tea.KeyEscape, "")
-	press(m, tea.KeyF2, "")
-	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
-		t.Fatal("F2 should focus the context list before opening an action")
+	m.focusPane(ProfilesPane)
+	if m.home.Modal != nil {
+		t.Fatal("focusing the context pane opened an unexpected overlay")
 	}
 	for _, want := range []string{"Configure now", "View capability details", "MCP · inspector", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
@@ -396,11 +396,11 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	}
 	m.selectContext(2)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
-	pressAndRun(m, tea.KeyF2)
-	if m.form == nil || m.workspace == nil || m.form.SectionTitle() != "Overview" {
-		t.Fatalf("F2 on a target did not open the shared Overview workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	pressAndRun(m, tea.KeyEnter)
+	if m.form == nil || m.workspace == nil || m.workspace.Section != "Agent access" || m.workspace.SectionID != sectionAgentsID {
+		t.Fatalf("Enter on an input-saved target did not open the next incomplete Agent access stage: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	for _, want := range []string{"Configure ·", "Overview", "Agents", "Runtime", "Logs", "Information"} {
+	for _, want := range []string{"Agent access", "Install selected", "Uninstall selected", "Runtime", "Logs", "Information"} {
 		if !strings.Contains(ansi.Strip(m.View().Content), want) {
 			t.Fatalf("shared target workspace omitted %q:\n%s", want, ansi.Strip(m.View().Content))
 		}
@@ -415,13 +415,17 @@ func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T
 	m.Update(msg)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)
-	pressAndRun(m, tea.KeyF2)
+	pressAndRun(m, tea.KeyEnter)
 	if m.form == nil || m.workspace == nil {
-		t.Fatalf("F2 did not open the shared workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+		t.Fatalf("Enter did not open the selected target workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	handled, cmd := m.workspaceOverviewAction("s")
-	if !handled || cmd != nil || m.busy || !strings.Contains(strings.ToLower(m.output), "another installation") {
-		t.Fatalf("disabled Start activated or hid reason: handled=%t cmd=%v busy=%t output=%q", handled, cmd != nil, m.busy, m.output)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	view := ansi.Strip(m.form.View().Content)
+	for _, want := range []string{"Owned by another installation"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Runtime disabled Start omitted %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -429,27 +433,45 @@ func TestHomeTopControlsAndContextPaneFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Settings | Help", "F2 Open / Focus"} {
+	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Settings | Help", "a Actions", "F3 Details"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home missing %q:\n%s", want, view)
 		}
 	}
-	m.focusPane(ProfilesPane)
-	m.View()
-	x := -1
-	for _, hit := range m.home.Hits {
-		if hit.Control == "actions" && hit.Y == 1 {
-			x = hit.X + 1
-			break
+	if !strings.Contains(view, "a Actions") {
+		t.Fatal("Actions shortcut is not discoverable in the home view")
+	}
+}
+
+func TestHomeRemovesDuplicateOpenAndParametersShortcuts(t *testing.T) {
+	m, _ := homeFixture()
+	view := ansi.Strip(m.View().Content)
+	for _, unwanted := range []string{"F2 Open", "F4 Parameters", "Enter Open / Focus"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("home advertises duplicate or unrequested control %q:\n%s", unwanted, view)
 		}
 	}
-	if x < 0 {
-		t.Fatal("top Actions control has no hit region")
+	press(m, tea.KeyF2, "")
+	if m.home.Modal != nil {
+		t.Fatalf("F2 still opens an action/menu overlay: %#v", m.home.Modal)
 	}
-	if cmd := m.homeMouse(tea.MouseClickMsg{X: x, Y: 1, Button: tea.MouseLeft}); cmd != nil {
-		t.Fatal("Actions click dispatched unexpected command")
+	press(m, tea.KeyF4, "")
+	if m.home.Modal != nil {
+		t.Fatalf("F4 still opens an action/menu overlay: %#v", m.home.Modal)
 	}
-	if m.home.Modal != nil || m.home.Focus != ProfilesPane {
-		t.Fatal("top Open / Focus control did not focus the context list")
+}
+
+func TestF3OpensUsefulSelectedCapabilityDetails(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyF3, "")
+	if m.home.Modal == nil || m.home.Modal.Kind != "details" {
+		t.Fatalf("F3 did not open selected capability details: %#v", m.home.Modal)
+	}
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Details", "Inspector", "Capability Pack: one", "Package: inspect", "Components: MCP"} {
+		if strings.Contains(view, want) {
+			continue
+		}
+		t.Fatalf("F3 did not show useful details for the selected capability:\n%s", view)
 	}
 }

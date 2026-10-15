@@ -254,7 +254,7 @@ func TestUXHelpMatchesCurrentKeyGrammarAndReturnsOrigin(t *testing.T) {
 	m.management.Focus = ProfilesPane
 	press(m, tea.KeyF1, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Enter", "F2", "Open / focus", "F9", "m", "Esc", "scroll"} {
+	for _, want := range []string{"Enter", "F1", "F5", "F9", "F10", "Esc", "scroll"} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("Help omitted key grammar %q:\n%s", want, view)
 		}

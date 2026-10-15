@@ -17,7 +17,7 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 	m := NewContext(t.Context(), backend)
 	m.catalog = []catalog.Package{{ID: "cluster-inspector", MCP: &catalog.MCP{}}}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
-	m.openSetupForm(viewmodel.SetupPreview{
+	preview := viewmodel.SetupPreview{
 		Key:            state.Key{Source: "team-source", Package: "cluster-inspector", Environment: "sample-env", Target: "target-a"},
 		PackageName:    "Cluster Inspector",
 		MCP:            true,
@@ -34,7 +34,9 @@ func openSetupInteraction(t *testing.T) (*Model, *setupBackendFixture) {
 			{Definition: catalog.Input{Name: "databases", Label: "Databases", Type: "multichoice", Options: []catalog.Choice{{Value: "plane", Label: "Plane"}, {Value: "grafana", Label: "Grafana"}}}, Value: []string{"plane"}, HasValue: true, Editable: true},
 		},
 		Destinations: []viewmodel.SetupDestination{{ID: "all", Path: "/home/test/.agents/skills"}, {ID: "codex", Path: "/home/test/.codex", Selected: true}},
-	})
+	}
+	m.workspace = &workspaceState{Key: preview.Key, Section: "Inputs", SectionID: sectionInputsID, Active: true, Preview: &preview}
+	m.openSetupForm(preview)
 	return m, backend
 }
 
@@ -116,24 +118,24 @@ func enableWorkspaceBackForTest(m *Model) {
 func TestInteractionSetupUsesSectionListAndMatchingDetailsPane(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	view := m.View().Content
-	for _, want := range []string{"Authentication", "Databases", "Agents", "Token", "Source kubeconfig", "Save and apply"} {
+	for _, want := range []string{"Inputs", "Agent access", "Runtime", "Logs", "Information", "Token", "Source kubeconfig", "[ Save ]", "[ Cancel ]"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("setup split overlay missing %q:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "[ Cancel ]") || strings.Contains(view, "Save and apply configuration") {
-		t.Fatalf("workspace exposed a second exit/apply action:\n%s", view)
+	if strings.Contains(view, "Save and apply configuration") {
+		t.Fatalf("Inputs stage exposed a combined save-and-install action:\n%s", view)
 	}
-	if strings.Index(view, "Authentication") > strings.Index(view, "Token") {
-		t.Fatalf("section list should precede its right-side detail controls:\n%s", view)
+	if strings.Index(view, "Inputs") > strings.Index(view, "Token") {
+		t.Fatalf("Inputs navigation should precede its right-side details:\n%s", view)
 	}
 }
 
 func TestInteractionSetupKeepsSaveAndApplyFixedAt80By24(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if !strings.Contains(m.View().Content, "[ Save and apply ]") || strings.Contains(m.View().Content, "[ Cancel ]") {
-		t.Fatalf("one fixed Save and apply action should remain above the bottom border:\n%s", m.View().Content)
+	if !strings.Contains(m.View().Content, "[ Save ]") || !strings.Contains(m.View().Content, "[ Cancel ]") {
+		t.Fatalf("Inputs needs visible Save and Cancel controls at 80x24:\n%s", m.View().Content)
 	}
 }
 
@@ -141,14 +143,14 @@ func TestInteractionSetupKeyboardMovesBetweenSectionsAndDetails(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	setupKey(m, tea.KeyDown, "")
 	view := m.View().Content
-	if !strings.Contains(view, "Databases") || !strings.Contains(view, "Plane") {
-		t.Fatalf("Down on section list did not keep the database controls in the right pane:\n%s", view)
+	if !strings.Contains(view, "Agent access") || !strings.Contains(view, "Destinations") {
+		t.Fatalf("Down on the stage list did not open Agent access controls:\n%s", view)
 	}
 	setupKey(m, tea.KeyRight, "")
 	setupKey(m, tea.KeyTab, "")
 	setupKey(m, tea.KeyLeft, "")
-	if !strings.Contains(m.View().Content, "Authentication") {
-		t.Fatalf("left/right and Tab navigation lost the setup section list:\n%s", m.View().Content)
+	if !strings.Contains(m.View().Content, "Agent access") {
+		t.Fatalf("left/right and Tab navigation lost the staged workspace:\n%s", m.View().Content)
 	}
 }
 
@@ -156,20 +158,24 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	setupKey(m, tea.KeyRight, "")
 	view := m.View().Content
-	for _, want := range []string{"Token", "Source kubeconfig", "Import source", "old-token"} {
+	for _, want := range []string{"Token", "Source kubeconfig", "old-token"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("authentication field %q missing before edit:\n%s", want, view)
 		}
 	}
 	setupKey(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "old-token") {
+	view = m.View().Content
+	if got := m.form.Values()["token"]; got != "old-token" {
 		t.Fatal("merely focusing Source kubeconfig cleared the active Token value")
+	}
+	if !strings.Contains(view, "Import source") {
+		t.Fatalf("scrolling to Source kubeconfig did not reveal its field hint:\n%s", view)
 	}
 	setupKey(m, 'm', "m") // Manually edit a file path without opening the native picker.
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/source-kubeconfig"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view = m.View().Content
-	if strings.Contains(view, "old-token") || !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a value to switch to Token") {
+	if strings.Contains(view, "old-token") || !strings.Contains(view, "Active method") || !strings.Contains(view, "Source kubeconfig") {
 		t.Fatalf("typing Source kubeconfig did not activate it and clear Token:\n%s", view)
 	}
 }
@@ -228,8 +234,10 @@ func TestInteractionSetupTabActionCancelAndEscBack(t *testing.T) {
 
 func TestInteractionSetupShowsDatabaseAndNamedMCPDestinationsInRightPane(t *testing.T) {
 	m, _ := openSetupInteraction(t)
-	setupKey(m, tea.KeyDown, "") // Databases.
-	setupKey(m, tea.KeyRight, "")
+	setupKey(m, tea.KeyRight, "") // Inputs.
+	for i := 0; i < 3; i++ {      // Reach the fourth declared input without requiring a legacy subgroup.
+		setupKey(m, tea.KeyDown, "")
+	}
 	view := m.View().Content
 	for _, want := range []string{"Plane", "Grafana"} {
 		if !strings.Contains(view, want) {
@@ -237,7 +245,7 @@ func TestInteractionSetupShowsDatabaseAndNamedMCPDestinationsInRightPane(t *test
 		}
 	}
 	setupKey(m, tea.KeyLeft, "")
-	setupKey(m, tea.KeyDown, "") // Agents.
+	setupKey(m, tea.KeyDown, "") // Agent access.
 	setupKey(m, tea.KeyRight, "")
 	view = m.View().Content
 	if !strings.Contains(view, "Codex") || !strings.Contains(view, "/home/test/.codex") {
@@ -274,15 +282,27 @@ func TestInteractionSetupEscapeShowsDirtyExitBeforeDiscard(t *testing.T) {
 
 func TestInteractionSetupCtrlSSavesFromKeyboard(t *testing.T) {
 	m, backend := openSetupInteraction(t)
+	if m.form == nil || m.form.SectionID() != sectionInputsID {
+		t.Fatalf("test did not begin in Inputs: section=%q form=%v", func() string {
+			if m.form == nil {
+				return ""
+			}
+			return m.form.SectionID()
+		}(), m.form != nil)
+	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 115, Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatalf("Ctrl-S did not submit the setup form:\n%s", m.View().Content)
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if backend.installRequest == nil {
-		t.Fatal("Ctrl-S did not apply the saved setup")
+	m.Update(cmd())
+	if backend.installRequest != nil {
+		section := ""
+		if m.form != nil {
+			section = m.form.SectionID()
+		}
+		t.Fatalf("Ctrl-S saved Inputs but incorrectly installed the capability: saved=%+v installed=%+v section=%q output=%q", backend.savedInputRequest, backend.installRequest, section, m.output)
 	}
-	if backend.installRequest.Inputs["token"] != "old-token" || !containsString(backend.installRequest.DestinationIDs, "codex") {
-		t.Fatalf("Ctrl-S lost the setup draft or destination selection: %+v", backend.installRequest)
+	if backend.savedInputRequest == nil || m.form == nil || !strings.Contains(m.output, "Inputs saved") {
+		t.Fatalf("Ctrl-S did not save Inputs and keep the staged workspace open: output=%q view=%s", m.output, m.View().Content)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
@@ -22,16 +23,25 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	if m.form == nil {
 		t.Fatal("setup form did not open")
 	}
-	m.form.SelectSectionID("inputs")
+	m.form.SelectSectionID(sectionInputsID)
 	m.form.FocusSection()
 	if !m.form.ReconcileDraftField("repo", "/repos/edited") {
 		t.Fatal("could not edit the saved profile input draft")
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("setup Save did not submit")
+	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save == nil {
+		t.Fatal("Inputs Save did not submit")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
+	m.Update(save())
+	if backend.savedInputRequest == nil || backend.installRequest != nil {
+		t.Fatal("Inputs Save did not persist answers separately from installation")
+	}
+	m.form.SelectSectionID(sectionAgentsID)
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Install selected did not start installation")
+	}
+	m.Update(runTeaCmd(t, m, install))
 	if backend.installRequest == nil || backend.installRequest.Inputs["repo"] != "/repos/edited" {
 		t.Fatalf("edited draft was not submitted: %+v", backend.installRequest)
 	}
@@ -53,15 +63,25 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
 	startHomeSetup(m)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	m.Update(runTeaCmd(t, m, cmd))
+	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save == nil {
+		t.Fatal("Inputs Save did not submit")
+	}
+	m.Update(save())
+	if backend.installRequest != nil {
+		t.Fatal("Inputs Save unexpectedly installed the capability")
+	}
+	m.form.SelectSectionID(sectionAgentsID)
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Install selected did not start installation")
+	}
+	m.Update(runTeaCmd(t, m, install))
 	if m.result == nil || !m.result.Failed || !strings.Contains(m.View().Content, "Edit answers") {
 		t.Fatal("partial installation failure was displayed as success")
 	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Retry
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // Close
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.result != nil || m.form != nil {
-		t.Fatal("Close action in failed result did not return to the parent screen")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape}) // Close the result and return to the editable workspace.
+	if m.result != nil || m.form == nil || m.workspace.Active || m.workspace.Draft == nil {
+		t.Fatal("closing the failed result did not preserve the draft and return to the parent")
 	}
 }
