@@ -27,6 +27,9 @@ func TestInstallerNativeHelper(t *testing.T) {
 	os.Exit(0)
 }
 func installerArchive(t *testing.T) []byte {
+	return installerArchiveWithMarker(t, "fixture skill")
+}
+func installerArchiveWithMarker(t *testing.T, marker string) []byte {
 	t.Helper()
 	native, err := os.ReadFile(os.Args[0])
 	if err != nil {
@@ -38,7 +41,7 @@ func installerArchive(t *testing.T) []byte {
 		for _, f := range []struct {
 			name string
 			data []byte
-		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte("fixture skill")}, {"release.json", []byte(`{"version":"fixture"}`)}} {
+		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte(marker)}, {"release.json", []byte(`{"version":"fixture"}`)}} {
 			h := &zip.FileHeader{Name: f.name, Method: zip.Deflate}
 			h.SetMode(0755)
 			w, err := z.CreateHeader(h)
@@ -58,7 +61,7 @@ func installerArchive(t *testing.T) []byte {
 		name string
 		data []byte
 		mode int64
-	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte("fixture skill"), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}} {
+	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte(marker), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}} {
 		if err = tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
 			t.Fatal(err)
 		}
@@ -179,6 +182,118 @@ func TestInstallerAcceptsLocalArchiveWithAdjacentChecksum(t *testing.T) {
 	}
 }
 
+func TestInstallerForceReplacesDifferentArchiveWithSameVersion(t *testing.T) {
+	root := t.TempDir()
+	version := "0.5.1-SNAPSHOT-feature-aact-remediation-pr"
+	archiveA := writeLocalInstallerArchive(t, version, "snapshot A")
+	archiveB := writeLocalInstallerArchive(t, version, "snapshot B")
+	firstOutput, err := runLocalInstaller(t, root, archiveA)
+	if err != nil {
+		t.Fatalf("install archive A: %s: %v", firstOutput, err)
+	}
+	release := filepath.Join(root, "releases", version+"-"+installerPlatform()+"-amd64")
+	manifest := filepath.Join(release, "packages", "sample", "SKILL.md")
+	if got, err := os.ReadFile(manifest); err != nil || string(got) != "snapshot A" {
+		t.Fatalf("initial release content = %q, %v", got, err)
+	}
+	launcher := filepath.Join(root, "bin", "aact")
+	launcherBefore, err := launcherContents(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutForceOutput, err := runLocalInstaller(t, root, archiveB)
+	if err == nil || !strings.Contains(withoutForceOutput, "Existing version directory differs") {
+		t.Fatalf("different archive replaced release without force: %q, %v", withoutForceOutput, err)
+	}
+	if got, err := os.ReadFile(manifest); err != nil || string(got) != "snapshot A" {
+		t.Fatalf("failed update changed existing release: %q, %v", got, err)
+	}
+	launcherAfterFailure, err := launcherContents(launcher)
+	if err != nil || launcherAfterFailure != launcherBefore {
+		t.Fatalf("failed update changed launcher: before=%q after=%q err=%v", launcherBefore, launcherAfterFailure, err)
+	}
+	forceOutput, err := runLocalInstallerForce(t, root, archiveB)
+	if err != nil {
+		t.Fatalf("force install archive B: %s: %v", forceOutput, err)
+	}
+	if got, err := os.ReadFile(manifest); err != nil || string(got) != "snapshot B" {
+		t.Fatalf("forced release content = %q, %v", got, err)
+	}
+	launcherAfterForce, err := launcherContents(launcher)
+	if err != nil || launcherAfterForce != launcherBefore {
+		t.Fatalf("launcher no longer resolves through same version path: before=%q after=%q err=%v", launcherBefore, launcherAfterForce, err)
+	}
+}
+
+func TestInstallerForceRestoresPreviousReleaseIfLauncherSwitchFails(t *testing.T) {
+	root := t.TempDir()
+	version := "0.5.1-SNAPSHOT-feature-aact-remediation-pr"
+	archiveA := writeLocalInstallerArchive(t, version, "snapshot A")
+	archiveB := writeLocalInstallerArchive(t, version, "snapshot B")
+	if out, err := runLocalInstaller(t, root, archiveA); err != nil {
+		t.Fatalf("install archive A: %s: %v", out, err)
+	}
+	release := filepath.Join(root, "releases", version+"-"+installerPlatform()+"-amd64")
+	manifest := filepath.Join(release, "packages", "sample", "SKILL.md")
+	launcher := filepath.Join(root, "bin", "aact")
+	var unrelated string
+	if runtime.GOOS == "windows" {
+		launcher += ".cmd"
+		if err := os.Remove(launcher); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(launcher, 0700); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := os.Remove(launcher); err != nil {
+			t.Fatal(err)
+		}
+		unrelated = filepath.Join(t.TempDir(), "unrelated-aact")
+		if err := os.WriteFile(unrelated, []byte("unrelated"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(unrelated, launcher); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := runLocalInstallerForce(t, root, archiveB)
+	if err == nil {
+		t.Fatalf("invalid launcher did not fail staged update: %q", output)
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(output, "unrelated symlink") {
+		t.Fatalf("unexpected POSIX launcher failure: %q, %v", output, err)
+	}
+	if got, err := os.ReadFile(manifest); err != nil || string(got) != "snapshot A" {
+		t.Fatalf("failed forced update did not restore prior release: %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		if got, err := os.Readlink(launcher); err != nil || got != unrelated {
+			t.Fatalf("failed forced update changed unrelated launcher: %q, %v", got, err)
+		}
+	}
+}
+
+func writeLocalInstallerArchive(t *testing.T, version, marker string) string {
+	t.Helper()
+	archive := installerArchiveWithMarker(t, marker)
+	archiveDir := t.TempDir()
+	extension := "tar.gz"
+	if installerPlatform() == "windows" {
+		extension = "zip"
+	}
+	filename := fmt.Sprintf("aact_%s_%s_amd64.%s", version, installerPlatform(), extension)
+	archivePath := filepath.Join(archiveDir, filename)
+	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(archive)
+	if err := os.WriteFile(filepath.Join(archiveDir, "checksums.txt"), []byte(fmt.Sprintf("%x  %s\n", sum, filename)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return archivePath
+}
+
 func TestInstallerRejectsLocalArchiveWithMissingOrInvalidChecksum(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -261,20 +376,34 @@ func TestInstallerRejectsVersionThatDoesNotMatchLocalArchive(t *testing.T) {
 }
 
 func runLocalInstaller(t *testing.T, root, archive string) (string, error) {
-	return runLocalInstallerVersion(t, root, archive, "")
+	return runLocalInstallerVersionForce(t, root, archive, "", false)
 }
 
 func runLocalInstallerVersion(t *testing.T, root, archive, version string) (string, error) {
+	return runLocalInstallerVersionForce(t, root, archive, version, false)
+}
+
+func runLocalInstallerForce(t *testing.T, root, archive string) (string, error) {
+	return runLocalInstallerVersionForce(t, root, archive, "", true)
+}
+
+func runLocalInstallerVersionForce(t *testing.T, root, archive, version string, force bool) (string, error) {
 	t.Helper()
 	args := []string{"--local-archive", archive, "--install-dir", root}
 	if version != "" {
 		args = append(args, "--version", version)
+	}
+	if force {
+		args = append(args, "--force")
 	}
 	cmd := exec.Command("/bin/sh", append([]string{"../../install.sh"}, args...)...)
 	if runtime.GOOS == "windows" {
 		windowsArgs := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-LocalArchive", archive, "-InstallDir", root}
 		if version != "" {
 			windowsArgs = append(windowsArgs, "-Version", version)
+		}
+		if force {
+			windowsArgs = append(windowsArgs, "-Force")
 		}
 		cmd = exec.Command(powerShell(t), windowsArgs...)
 	}

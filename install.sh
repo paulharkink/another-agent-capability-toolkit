@@ -8,14 +8,16 @@ ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 MIGRATE_USER_BIN=1
 [ "${AACT_INSTALL_DIR+x}" != x ] || MIGRATE_USER_BIN=0
 PRINT_TARGET=0
+FORCE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
     --local-archive) [ "$#" -ge 2 ] || { echo '--local-archive needs a path' >&2; exit 1; }; LOCAL_ARCHIVE=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
     --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; MIGRATE_USER_BIN=0; shift 2 ;;
+    --force) FORCE=1; shift ;;
     --print-target) PRINT_TARGET=1; shift ;;
-    --help) echo 'Usage: install.sh (-v|--version VERSION | --local-archive ARCHIVE) [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
+    --help) echo 'Usage: install.sh (-v|--version VERSION | --local-archive ARCHIVE) [--install-dir ROOT] [--base-url URL] [--force] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -54,9 +56,27 @@ download() {
 mkdir -p "$ROOT/releases" "$ROOT/bin"
 ROOT=$(cd "$ROOT" && pwd)
 ROOT_PHYSICAL=$(CDPATH= cd -P "$ROOT" && pwd -P)
+release="$ROOT/releases/${VERSION}-${platform}-${arch}"
 work=$(mktemp -d "$ROOT/releases/.install-XXXXXX")
 launcher="$ROOT/bin/.aact-next-$$"
-trap 'rm -rf "$work"; rm -f "$launcher"' EXIT HUP INT TERM
+release_backup=
+release_committed=0
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$release_committed" = 0 ] && [ -n "$release_backup" ] && [ -d "$release_backup" ]; then
+    if [ -e "$release" ] || [ -L "$release" ]; then rm -rf "$release"; fi
+    if ! mv "$release_backup" "$release"; then
+      printf 'Install failed and rollback could not restore the previous version directory: %s\n' "$release_backup" >&2
+      status=1
+    fi
+  fi
+  rm -rf "$work"
+  rm -f "$launcher"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 if [ -n "$LOCAL_ARCHIVE" ]; then
   [ -f "$LOCAL_ARCHIVE" ] || { printf 'Local archive is not a regular file: %s\n' "$LOCAL_ARCHIVE" >&2; exit 1; }
   checksum_source="$(dirname "$LOCAL_ARCHIVE")/checksums.txt"
@@ -98,10 +118,27 @@ fi
 binary=aact
 [ "$platform" != windows ] || binary=aact.exe
 [ -f "$work/tree/bin/$binary" ] && [ -d "$work/tree/packages" ] || { echo 'Release archive is incomplete' >&2; exit 1; }
-release="$ROOT/releases/${VERSION}-${platform}-${arch}"
 printf '%s\n' "$expected" > "$work/tree/.archive-sha256"
 if [ -e "$release" ]; then
-  [ -f "$release/.archive-sha256" ] && [ "$(cat "$release/.archive-sha256")" = "$expected" ] || { echo 'Existing version directory differs; refusing to replace referenced resources' >&2; exit 1; }
+  existing_hash_file="$release/.archive-sha256"
+  if [ -f "$existing_hash_file" ] && [ "$(cat "$existing_hash_file")" = "$expected" ]; then
+    :
+  else
+    if [ "$FORCE" != 1 ]; then
+      echo 'Existing version directory differs; refusing to replace referenced resources without --force' >&2
+      exit 1
+    fi
+    [ -f "$existing_hash_file" ] || { echo 'Existing version directory is not an AACT-managed release; refusing to replace it with --force' >&2; exit 1; }
+    release_backup="$ROOT/releases/.aact-backup-${VERSION}-${platform}-${arch}-$$"
+    [ ! -e "$release_backup" ] || { echo "Replacement backup already exists: $release_backup" >&2; exit 1; }
+    mv "$release" "$release_backup" || { echo 'Could not stage the existing version directory; close any running AACT processes and retry with --force' >&2; exit 1; }
+    if ! mv "$work/tree" "$release"; then
+      echo 'Could not activate the staged release; restoring the previous version directory' >&2
+      mv "$release_backup" "$release" || { echo "Rollback failed; previous release remains at $release_backup" >&2; release_backup=; exit 1; }
+      release_backup=
+      exit 1
+    fi
+  fi
 else mv "$work/tree" "$release"; fi
 if [ "$platform" != windows ]; then
   canonical="$ROOT/bin/aact"
@@ -220,3 +257,9 @@ if [ "$platform" != windows ] && [ "$MIGRATE_USER_BIN" = 1 ]; then
 fi
 printf 'Installed AACT %s (%s/%s) at %s\n' "$VERSION" "$platform" "$arch" "$release"
 case ":${PATH:-}:" in *":$ROOT/bin:"*) ;; *) printf 'Add %s to PATH to run aact. Your shell profiles were not modified.\n' "$ROOT/bin" ;; esac
+release_committed=1
+if [ -n "$release_backup" ] && [ -d "$release_backup" ]; then
+  if ! rm -rf "$release_backup"; then
+    printf 'Installed successfully, but could not remove the previous release backup: %s\n' "$release_backup" >&2
+  fi
+fi

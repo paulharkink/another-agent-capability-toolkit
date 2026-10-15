@@ -4,7 +4,8 @@ param(
   [string]$LocalArchive = '',
   [string]$BaseUrl = $(if ($env:AACT_DOWNLOAD_BASE) { $env:AACT_DOWNLOAD_BASE } else { 'https://github.com/paulharkink/another-agent-capability-toolkit/releases/download' }),
   [string]$InstallDir = $(if ($env:AACT_INSTALL_DIR) { $env:AACT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'aact' }),
-  [switch]$PrintTarget
+  [switch]$PrintTarget,
+  [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
 $architecture = $env:AACT_ARCH
@@ -39,6 +40,8 @@ $launchers = Join-Path $InstallDir 'bin'
 $work = Join-Path $releases ('.install-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($work) | Out-Null
 $next = Join-Path $launchers ('.aact-next-' + [Guid]::NewGuid().ToString('N'))
+$releaseBackup = ''
+$releaseCommitted = $false
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $filename = "aact_${Version}_windows_${arch}.zip"
@@ -76,7 +79,33 @@ try {
   $release = Join-Path $releases "$Version-windows-$arch"
   if (Test-Path -LiteralPath $release) {
     $existingHash = Join-Path $release '.archive-sha256'
-    if (-not (Test-Path -LiteralPath $existingHash) -or (Get-Content -LiteralPath $existingHash -Raw).Trim() -ne $expected) { throw 'Existing version directory differs; refusing to replace referenced resources' }
+    $existingRelease = Get-Item -LiteralPath $release -Force
+    if (($existingRelease.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Existing version directory is a reparse point; refusing to replace it' }
+    if (-not (Test-Path -LiteralPath $existingHash -PathType Leaf)) {
+      if ($Force) { throw 'Existing version directory is not an AACT-managed release; refusing to replace it with -Force' }
+      throw 'Existing version directory differs; refusing to replace referenced resources without -Force'
+    }
+    if ((Get-Content -LiteralPath $existingHash -Raw).Trim() -ne $expected) {
+      if (-not $Force) { throw 'Existing version directory differs; refusing to replace referenced resources without -Force' }
+      $releaseBackup = Join-Path $releases ('.aact-backup-' + $Version + '-windows-' + $arch + '-' + [Guid]::NewGuid().ToString('N'))
+      try {
+        [IO.Directory]::Move($release, $releaseBackup)
+      } catch {
+        throw "Could not stage the existing version directory; close running AACT processes and retry with -Force. Details: $($_.Exception.Message)"
+      }
+      try {
+        [IO.Directory]::Move($tree, $release)
+      } catch {
+        $activationError = $_.Exception.Message
+        try {
+          [IO.Directory]::Move($releaseBackup, $release)
+          $releaseBackup = ''
+        } catch {
+          throw "Could not activate the staged release ($activationError), and rollback failed: $($_.Exception.Message). Previous release remains at $releaseBackup"
+        }
+        throw "Could not activate the staged release; previous version was restored. Details: $activationError"
+      }
+    }
   } else { [IO.Directory]::Move($tree, $release) }
   $command = '@"%~dp0..\releases\' + $Version + '-windows-' + $arch + '\bin\aact.exe" %*' + "`r`n"
   [IO.File]::WriteAllText($next, $command, [Text.UTF8Encoding]::new($false))
@@ -85,8 +114,25 @@ try {
     $backup = Join-Path $work 'previous-launcher.cmd'
     [IO.File]::Replace($next, $launcher, $backup)
   } else { [IO.File]::Move($next, $launcher) }
+  $releaseCommitted = $true
+  if ($releaseBackup -and (Test-Path -LiteralPath $releaseBackup)) {
+    try { Remove-Item -LiteralPath $releaseBackup -Recurse -Force -ErrorAction Stop }
+    catch { Write-Warning "Installed successfully, but could not remove previous release backup $releaseBackup. Close running AACT processes and remove it later." }
+    $releaseBackup = ''
+  }
   Write-Output "Installed AACT $Version (windows/$arch) at $release"
   if (($env:PATH -split ';') -notcontains $launchers) { Write-Output "Add $launchers to PATH to run aact. Your shell profiles were not modified." }
+} catch {
+  if (-not $releaseCommitted -and $releaseBackup -and (Test-Path -LiteralPath $releaseBackup)) {
+    try {
+      if (Test-Path -LiteralPath $release) { Remove-Item -LiteralPath $release -Recurse -Force -ErrorAction Stop }
+      [IO.Directory]::Move($releaseBackup, $release)
+      $releaseBackup = ''
+    } catch {
+      throw "Install failed and rollback could not restore the previous version directory: $($_.Exception.Message). Previous release remains at $releaseBackup"
+    }
+  }
+  throw
 } finally {
   if (Test-Path -LiteralPath $next) { Remove-Item -LiteralPath $next -Force }
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
