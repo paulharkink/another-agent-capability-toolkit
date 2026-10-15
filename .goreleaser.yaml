@@ -10,7 +10,7 @@ builds:
     env: [CGO_ENABLED=0]
     ldflags:
       - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/cli.Version={{ .Version }}
-      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.Version={{ .Version }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.Version={{ if .IsSnapshot }}dev{{ else }}{{ .Version }}{{ end }}
 
   - id: inspector-helper
     main: ./cmd/inspector-helper
@@ -95,6 +95,9 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-SNAPSHOT-{{ .Env.AACT_SNAPSHOT_BRANCH }}'
 
 release:
   extra_files:

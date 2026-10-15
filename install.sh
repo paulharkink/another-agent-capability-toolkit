@@ -1,7 +1,8 @@
 #!/bin/sh
 # Bootstrap only: installed Unix launchers point directly to the native binary.
 set -eu
-VERSION=${AACT_VERSION:-0.1.0-dev}
+VERSION=${AACT_VERSION:-}
+LOCAL_ARCHIVE=
 BASE=${AACT_DOWNLOAD_BASE:-https://github.com/paulharkink/another-agent-capability-toolkit/releases/download}
 ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 MIGRATE_USER_BIN=1
@@ -10,14 +11,14 @@ PRINT_TARGET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
+    --local-archive) [ "$#" -ge 2 ] || { echo '--local-archive needs a path' >&2; exit 1; }; LOCAL_ARCHIVE=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
     --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; MIGRATE_USER_BIN=0; shift 2 ;;
     --print-target) PRINT_TARGET=1; shift ;;
-    --help) echo 'Usage: install.sh [-v|--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
+    --help) echo 'Usage: install.sh (-v|--version VERSION | --local-archive ARCHIVE) [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
-case "$VERSION" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version' >&2; exit 1 ;; esac
 system=${AACT_OS:-$(uname -s)}
 case "$system" in Darwin|darwin|macos) platform=darwin ;; Linux|linux) platform=linux ;; MINGW*|MSYS*|CYGWIN*|Windows_NT|windows) platform=windows ;; *) printf 'Unsupported operating system: %s\n' "$system" >&2; exit 1 ;; esac
 machine=${AACT_ARCH:-$(uname -m)}
@@ -25,6 +26,25 @@ case "$machine" in x86_64|amd64|AMD64|x64) arch=amd64 ;; aarch64|arm64|ARM64) ar
 if [ "$PRINT_TARGET" = 1 ]; then printf '%s_%s\n' "$platform" "$arch"; exit 0; fi
 extension=tar.gz
 [ "$platform" != windows ] || extension=zip
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  archive_name=$(basename "$LOCAL_ARCHIVE")
+  suffix="_${platform}_${arch}.${extension}"
+  case "$archive_name" in
+    aact_*"$suffix") ;;
+    *) printf 'Local archive does not match this platform (%s/%s): %s\n' "$platform" "$arch" "$archive_name" >&2; exit 1 ;;
+  esac
+  archive_version=${archive_name#aact_}
+  archive_version=${archive_version%"$suffix"}
+  case "$archive_version" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version in local archive name' >&2; exit 1 ;; esac
+  if [ -n "$VERSION" ] && [ "$VERSION" != "$archive_version" ]; then
+    printf 'Requested version %s does not match local archive version %s\n' "$VERSION" "$archive_version" >&2
+    exit 1
+  fi
+  VERSION=$archive_version
+else
+  [ -n "$VERSION" ] || { echo 'Specify --version or --local-archive' >&2; exit 1; }
+  case "$VERSION" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version' >&2; exit 1 ;; esac
+fi
 filename="aact_${VERSION}_${platform}_${arch}.${extension}"
 download() {
   if command -v curl >/dev/null 2>&1; then curl --fail --location --silent --show-error "$1" -o "$2"
@@ -37,9 +57,17 @@ ROOT_PHYSICAL=$(CDPATH= cd -P "$ROOT" && pwd -P)
 work=$(mktemp -d "$ROOT/releases/.install-XXXXXX")
 launcher="$ROOT/bin/.aact-next-$$"
 trap 'rm -rf "$work"; rm -f "$launcher"' EXIT HUP INT TERM
-download "${BASE%/}/v${VERSION}/${filename}" "$work/$filename"
-download "${BASE%/}/v${VERSION}/checksums.txt" "$work/checksum"
-expected=$(awk -v name="$filename" '$2 == name { print $1; exit }' "$work/checksum")
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  [ -f "$LOCAL_ARCHIVE" ] || { printf 'Local archive is not a regular file: %s\n' "$LOCAL_ARCHIVE" >&2; exit 1; }
+  checksum_source="$(dirname "$LOCAL_ARCHIVE")/checksums.txt"
+  [ -f "$checksum_source" ] || { printf 'Adjacent checksums.txt is missing: %s\n' "$checksum_source" >&2; exit 1; }
+  cp "$LOCAL_ARCHIVE" "$work/$filename"
+else
+  download "${BASE%/}/v${VERSION}/${filename}" "$work/$filename"
+  download "${BASE%/}/v${VERSION}/checksums.txt" "$work/checksum"
+  checksum_source="$work/checksum"
+fi
+expected=$(awk -v name="$filename" '$2 == name { print $1; exit }' "$checksum_source")
 case "$expected" in *[!a-fA-F0-9]*|'') echo 'Invalid release checksum' >&2; exit 1 ;; esac
 [ "${#expected}" = 64 ] || { echo 'Invalid release checksum length' >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$work/$filename" | sed 's/[[:space:]].*//')

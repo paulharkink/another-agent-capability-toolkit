@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+func TestPlainBuildReportsDevelopmentVersion(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"--version"}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("version command returned %d: %s", code, errOut.String())
+	}
+	if got := out.String(); got != "dev\n" {
+		t.Fatalf("plain build version = %q, want %q", got, "dev\n")
+	}
+}
+
 func cliFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()

@@ -145,6 +145,143 @@ func TestChecksumMismatchPreservesInstalledRelease(t *testing.T) {
 		t.Fatal("unverified release published")
 	}
 }
+
+func TestInstallerAcceptsLocalArchiveWithAdjacentChecksum(t *testing.T) {
+	root := t.TempDir()
+	archive := installerArchive(t)
+	archiveDir := t.TempDir()
+	extension := "tar.gz"
+	if installerPlatform() == "windows" {
+		extension = "zip"
+	}
+	version := "0.5.1-SNAPSHOT-feature-aact-remediation-pr"
+	filename := fmt.Sprintf("aact_%s_%s_amd64.%s", version, installerPlatform(), extension)
+	archivePath := filepath.Join(archiveDir, filename)
+	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, filename)
+	if err := os.WriteFile(filepath.Join(archiveDir, "checksums.txt"), []byte(checksums), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runLocalInstaller(t, root, archivePath)
+	if err != nil {
+		t.Fatalf("local archive install failed: %s: %v", out, err)
+	}
+	release := filepath.Join(root, "releases", version+"-"+installerPlatform()+"-amd64")
+	if _, err := os.Stat(filepath.Join(release, "packages", "sample", "SKILL.md")); err != nil {
+		t.Fatalf("local archive resources not installed: %v", err)
+	}
+	if !strings.Contains(out, "Installed AACT "+version) {
+		t.Fatalf("local version was not reported: %s", out)
+	}
+}
+
+func TestInstallerRejectsLocalArchiveWithMissingOrInvalidChecksum(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		checksum  string
+		wantError string
+	}{{"missing", "", "checksum"}, {"mismatch", strings.Repeat("0", 64), "checksum mismatch"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := installerArchive(t)
+			archiveDir := t.TempDir()
+			extension := "tar.gz"
+			if installerPlatform() == "windows" {
+				extension = "zip"
+			}
+			filename := fmt.Sprintf("aact_1.2.3_%s_amd64.%s", installerPlatform(), extension)
+			archivePath := filepath.Join(archiveDir, filename)
+			if err := os.WriteFile(archivePath, archive, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.checksum != "" {
+				if err := os.WriteFile(filepath.Join(archiveDir, "checksums.txt"), []byte(tc.checksum+"  "+filename+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := runLocalInstaller(t, t.TempDir(), archivePath)
+			if err == nil || !strings.Contains(strings.ToLower(out), tc.wantError) {
+				t.Fatalf("invalid local checksum accepted: %q, %v", out, err)
+			}
+		})
+	}
+}
+
+func TestInstallerRequiresExplicitReleaseVersionWhenNoLocalArchiveIsProvided(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--install-dir", t.TempDir())
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-InstallDir", t.TempDir())
+	}
+	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_VERSION=", "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
+	out, err := cmd.CombinedOutput()
+	want := "specify --version or --local-archive"
+	if runtime.GOOS == "windows" {
+		want = "specify -version or -localarchive"
+	}
+	if err == nil || !strings.Contains(strings.ToLower(strings.ReplaceAll(string(out), " ", "")), strings.ReplaceAll(want, " ", "")) {
+		t.Fatalf("installer did not explain how to select a release: %q, %v", out, err)
+	}
+}
+
+func TestInstallerRejectsLocalArchiveForAnotherPlatform(t *testing.T) {
+	archiveDir := t.TempDir()
+	filename := "aact_1.2.3-windows_windows_amd64.zip"
+	if installerPlatform() == "windows" {
+		filename = "aact_1.2.3-linux_linux_amd64.tar.gz"
+	}
+	archivePath := filepath.Join(archiveDir, filename)
+	if err := os.WriteFile(archivePath, []byte("not a platform archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runLocalInstaller(t, t.TempDir(), archivePath)
+	if err == nil || !strings.Contains(strings.ToLower(out), "does not match this platform") {
+		t.Fatalf("wrong-platform archive accepted: %q, %v", out, err)
+	}
+}
+
+func TestInstallerRejectsVersionThatDoesNotMatchLocalArchive(t *testing.T) {
+	archive := installerArchive(t)
+	archiveDir := t.TempDir()
+	extension := "tar.gz"
+	if installerPlatform() == "windows" {
+		extension = "zip"
+	}
+	filename := fmt.Sprintf("aact_0.5.1-SNAPSHOT-feature-aact-remediation-pr_%s_amd64.%s", installerPlatform(), extension)
+	archivePath := filepath.Join(archiveDir, filename)
+	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runLocalInstallerVersion(t, t.TempDir(), archivePath, "1.2.4")
+	if err == nil || !strings.Contains(strings.ToLower(out), "does not match local archive version") {
+		t.Fatalf("conflicting version accepted: %q, %v", out, err)
+	}
+}
+
+func runLocalInstaller(t *testing.T, root, archive string) (string, error) {
+	return runLocalInstallerVersion(t, root, archive, "")
+}
+
+func runLocalInstallerVersion(t *testing.T, root, archive, version string) (string, error) {
+	t.Helper()
+	args := []string{"--local-archive", archive, "--install-dir", root}
+	if version != "" {
+		args = append(args, "--version", version)
+	}
+	cmd := exec.Command("/bin/sh", append([]string{"../../install.sh"}, args...)...)
+	if runtime.GOOS == "windows" {
+		windowsArgs := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-LocalArchive", archive, "-InstallDir", root}
+		if version != "" {
+			windowsArgs = append(windowsArgs, "-Version", version)
+		}
+		cmd = exec.Command(powerShell(t), windowsArgs...)
+	}
+	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
 func TestUpdateKeepsReferencedResources(t *testing.T) {
 	root := t.TempDir()
 	s := fixtureServer(t, false)

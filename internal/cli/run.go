@@ -29,7 +29,7 @@ func externalURLValues(values map[string]string) []string {
 	return out
 }
 
-var Version = "0.1.0-dev"
+var Version = "dev"
 
 const usage = `Another Agent Capability Toolkit (aact)
 
