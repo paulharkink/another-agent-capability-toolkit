@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -194,5 +196,36 @@ func TestUIProfileSnapshotExplainsDisabledForeignStop(t *testing.T) {
 	snapshot, err := svc.UIProfileSnapshot(context.Background())
 	if err != nil || len(snapshot.Profiles) != 1 || snapshot.Profiles[0].CanStop || snapshot.Profiles[0].StopDisabledReason == "" {
 		t.Fatalf("foreign Stop lacks visible reason: %+v, %v", snapshot, err)
+	}
+}
+func TestUICapabilityInstancesReportsAuthFailureAndKeepsRuntimeRunning(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", HealthPath: "/health"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "smoke"}
+	if err := store.RecordInstance(state.InstanceRecord{Key: key, Name: "smoke", Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte("{\"authenticated\":false}"))
+	}))
+	defer server.Close()
+	svc.Options.Runtime = &profileRuntime{instances: []mcp.Instance{{Key: key, ID: "smoke-container", Name: "demo", Status: "running", URL: server.URL + "/mcp", Ownership: "local"}}}
+	snapshots, err := svc.UICapabilityInstances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := snapshots["demo"]
+	if len(snapshot.Instances) != 1 || len(snapshot.Instances[0].MCPs) != 1 {
+		t.Fatalf("capability snapshot = %+v", snapshot)
+	}
+	runtime := snapshot.Instances[0].MCPs[0]
+	if runtime.Status != "running" {
+		t.Fatalf("auth failure changed runtime state: %+v", runtime)
+	}
+	if runtime.AuthenticationStatus != "failed" {
+		t.Fatalf("auth status = %q, want failed", runtime.AuthenticationStatus)
 	}
 }

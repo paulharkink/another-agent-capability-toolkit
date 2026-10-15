@@ -187,7 +187,7 @@ func (m *Model) environmentEntries() []environmentEntry {
 			if byName[key] == nil {
 				byName[key] = map[string]bool{}
 			}
-			byName[key][p.Key.Package+" / "+p.Key.Target+" · Saved profile"] = true
+			byName[key][p.Key.Package+" / "+p.Key.Target+" · Saved instance"] = true
 		}
 	}
 	names := make([]string, 0, len(byName))
@@ -415,7 +415,7 @@ func (m *Model) agentManagementDisplayLines() (details, controls []string, first
 		registrations = row.Registrations
 		details = agentManagementDetails(row)
 	} else {
-		details = []string{"Status: Unverified", "Evidence: Detection unavailable", "Active home: Not reported", "Effective config: Not resolved", "Intended write config: Not supported or not resolved", "Config candidates: None reported", "Observed registrations: None reported"}
+		details = []string{"Registrations: None"}
 	}
 	if !ok && len(registrations) > 0 {
 		details = append(details, "Observed AACT registrations:")
@@ -430,15 +430,14 @@ func (m *Model) agentManagementDisplayLines() (details, controls []string, first
 	details = wrapManagementDetails(details, right-1)
 	firstControl = len(details)
 	if ok {
-		for i, file := range row.ConfigFiles {
+		for _, file := range row.ConfigFiles {
 			if file.Exists {
-				controls = append(controls, fmt.Sprintf("View exact configuration candidate %d", i+1))
+				controls = append(controls, "View configuration")
+				break
 			}
 		}
 	}
-	if len(controls) == 0 {
-		details = append(details, wrapManagementDetails([]string{"Configure location: unavailable; this backend has no supported location editor"}, right-1)...)
-	} else {
+	if len(controls) > 0 {
 		details = append(details, controls...)
 	}
 	return details, controls, firstControl
@@ -938,7 +937,7 @@ func (m *Model) managementView() tea.View {
 		return filepath.Base(path)
 	}
 	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
-	scope := " Capability Pack: " + m.settings["source"] + " · Instances: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	scope := " Capability Pack: " + m.settings["source"] + " · Instance root: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"

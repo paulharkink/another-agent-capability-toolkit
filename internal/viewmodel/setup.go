@@ -73,3 +73,10 @@ type SetupInstallRequest struct {
 	ExternalURL       string
 	ExternalURLs      map[string]string
 }
+
+// SkillOnlyInstallRequest installs a capability with no configuration inputs
+// directly into the selected agent destinations, without creating an instance.
+type SkillOnlyInstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
+}

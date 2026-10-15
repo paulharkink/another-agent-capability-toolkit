@@ -86,6 +86,7 @@ type ComponentStatus struct {
 }
 type RuntimeStatus struct {
 	MCPID, Status, Ownership, URL, Error string
+	AuthenticationStatus                 string
 	ObservedAt                           time.Time
 	Stale                                bool
 }

@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
@@ -20,6 +23,22 @@ func TestMCPConfigureUsesSourceOnlyProfileCreation(t *testing.T) {
 	}
 	if m.home.Modal != nil {
 		t.Fatalf("profile creation left an environment/target chooser open: %+v", m.home.Modal)
+	}
+}
+
+func TestNewInstancePromptUsesStyledHomeOverlay(t *testing.T) {
+	m, _ := homeFixture()
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	c, ok := m.selectedCapability()
+	if !ok {
+		t.Fatal("fixture has no selected capability")
+	}
+	m.openInstanceCreation(c)
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Capabilities", "Capability Pack:", "New instance", "Instance name"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("New Instance prompt is missing styled home context or title %q:\n%s", want, view)
+		}
 	}
 }
 

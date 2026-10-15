@@ -417,7 +417,7 @@ func (s *Service) uiEnvironment(id string, k state.Key) (agents.Environment, err
 		return agents.Environment{}, fmt.Errorf("agent %s has multiple homes; use the CLI with --agent-home", id)
 	}
 	if len(configPaths) > 1 {
-		return agents.Environment{}, fmt.Errorf("agent %s has multiple MCP config files for this profile; use an explicit config path outside the TUI", id)
+		return agents.Environment{}, fmt.Errorf("agent %s has multiple MCP config files for this instance; use an explicit config path outside the TUI", id)
 	}
 	for h := range homes {
 		home = h

@@ -62,6 +62,7 @@ func (r *ActionRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	strict := json.NewDecoder(bytes.NewReader(normalized))
+	strict.UseNumber()
 	strict.DisallowUnknownFields()
 	var decoded canonical
 	if err := strict.Decode(&decoded); err != nil {

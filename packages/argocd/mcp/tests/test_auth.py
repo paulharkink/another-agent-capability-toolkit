@@ -607,6 +607,21 @@ def test_health_route_is_false_for_missing_or_expired_private_state_without_crea
     assert list(state.iterdir()) == [state / "credentials.json"]
 
 
+def test_main_uses_streamable_http_transport_for_health_route(monkeypatch):
+    module = load_server()
+    observed = {}
+    monkeypatch.setattr(module.mcp, "run", lambda **kwargs: observed.update(kwargs))
+
+    module.main()
+
+    assert observed == {
+        "transport": "streamable-http",
+        "host": "0.0.0.0",
+        "port": 8765,
+        "path": "/mcp",
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "selected"),
     [

@@ -108,7 +108,7 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 		"Observed transport: " + nonempty(profile.Transport, "unknown"),
 		"Runtime status: " + nonempty(profile.RuntimeStatus, "unknown"),
 		"Runtime ownership: " + nonempty(profile.Ownership, "unknown"),
-		"This workspace reflects observed profile facts; it does not imply package installation or local runtime ownership.",
+		"This workspace reflects observed instance facts; it does not imply package installation or local runtime ownership.",
 	})
 	m.form.SetSectionActionsID(sectionOverviewID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
 	m.form.SetSectionActionsID(sectionAgentsID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
@@ -245,7 +245,7 @@ func workspaceProfileInformationLines(profile *viewmodel.Instance) []string {
 	status := nonempty(profile.RuntimeStatus, "unknown")
 	owner := nonempty(profile.Ownership, "unknown")
 	endpoint := nonempty(profile.URL, "not configured")
-	lines := []string{"Selected MCP profile", "Endpoint URI: " + endpoint, "Live runtime status: " + status, "Runtime ownership: " + owner}
+	lines := []string{"Selected MCP definition", "Endpoint URI: " + endpoint, "Live runtime status: " + status, "Runtime ownership: " + owner}
 	if profile.RegistrationDisabledReason != "" {
 		lines = append(lines, "Registration availability: "+profile.RegistrationDisabledReason)
 	}
@@ -611,14 +611,6 @@ func formSectionFields(sections []forms.FormSection, title string) []string {
 	return nil
 }
 
-func setupComponentCount(items []catalog.InstallationItem) int {
-	count := 0
-	for _, item := range items {
-		count += len(item.Skills) + len(item.MCPs) + len(item.Plugins)
-	}
-	return count
-}
-
 func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input, destinationField string) []forms.FormSection {
 	known := make(map[string]bool, len(defs))
 	ordered := make([]string, 0, len(defs))
@@ -650,7 +642,7 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 	} else if len(ordered) > 0 {
 		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
 	}
-	if preview.ItemFieldName != "" && setupComponentCount(preview.Items) > 1 {
+	if preview.ItemFieldName != "" && len(preview.Items) > 1 {
 		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
 	}
 	var agentFields []string

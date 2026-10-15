@@ -58,6 +58,9 @@ func (s *Service) UICapabilityProfiles(ctx context.Context) (map[string]viewmode
 func (s *Service) UICreateInstance(ctx context.Context, ref config.InstanceRef) error {
 	return s.CreateInstance(ctx, ref)
 }
+func (s *Service) UIRemoveInstance(ctx context.Context, ref config.InstanceRef) (viewmodel.OperationResult, error) {
+	return s.RemoveInstance(ctx, InstanceRequest{Ref: ref})
+}
 func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) error {
 	return s.UICreateInstance(ctx, ref)
 }

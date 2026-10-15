@@ -206,7 +206,7 @@ func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSna
 			case stale:
 				profile.StartDisabledReason = "Docker observation is unavailable"
 			case profile.RuntimeStatus == "conflict":
-				profile.StartDisabledReason = "Multiple running containers claim this profile"
+				profile.StartDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
 				profile.StartDisabledReason = "Runtime belongs to another AACT installation"
 			case profile.Ownership != "local":
@@ -220,7 +220,7 @@ func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSna
 			case stale:
 				profile.StopDisabledReason = "Docker observation is unavailable"
 			case profile.RuntimeStatus == "conflict":
-				profile.StopDisabledReason = "Multiple running containers claim this profile"
+				profile.StopDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
 				profile.StopDisabledReason = "Runtime belongs to another AACT installation"
 			case profile.Ownership != "local":
@@ -231,7 +231,7 @@ func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSna
 		}
 		if !profile.CanConfigureRegistrations {
 			if profile.RuntimeStatus == "conflict" {
-				profile.RegistrationDisabledReason = "Multiple running containers claim this profile"
+				profile.RegistrationDisabledReason = "Multiple running containers claim this MCP definition"
 			} else {
 				profile.RegistrationDisabledReason = "No MCP endpoint is configured"
 			}

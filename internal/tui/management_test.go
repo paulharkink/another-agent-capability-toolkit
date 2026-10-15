@@ -86,7 +86,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instances:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instance root:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -259,14 +259,14 @@ func TestAgentsDoesNotInventDetectionOrConfigEvidence(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Agents")
 	view := m.View().Content
-	if !strings.Contains(view, "codex") || !strings.Contains(view, "Detection unavailable") {
-		t.Fatalf("agent evidence was invented or hidden: %s", view)
+	if !strings.Contains(view, "codex") || !strings.Contains(view, "Unverified") {
+		t.Fatalf("agent destination status was hidden: %s", view)
 	}
 	press(m, tea.KeyEnter, "")
 	view = m.View().Content
 	stripped := strings.ReplaceAll(ansi.Strip(view), "\n", " ")
-	if !strings.Contains(stripped, "Configure location") || !strings.Contains(stripped, "unavailable") || strings.Contains(stripped, "View exact configuration") {
-		t.Fatalf("unsupported configuration controls were offered: %s", view)
+	if !strings.Contains(stripped, "Registrations: None") || strings.Contains(stripped, "View configuration") {
+		t.Fatalf("empty agent detail should show only registration state: %s", view)
 	}
 	press(m, tea.KeyEscape, "")
 	if m.view != "Agents" || m.selected != 0 || m.management.Focus != CapabilitiesPane {
@@ -278,9 +278,14 @@ func TestAgentsDoesNotInventDetectionOrConfigEvidence(t *testing.T) {
 func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	view := m.View().Content
-	for _, want := range []string{"Codex", "Detected", "CLI at /usr/bin/codex", "/home/test/config.json", "team / inspect / dev / production"} {
+	for _, want := range []string{"Codex", "Detected", "team / inspect / dev / production"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q from agent details: %s", want, view)
+		}
+	}
+	for _, redundant := range []string{"CLI at /usr/bin/codex", "/home/test/config.json"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("destination detail %q was repeated in Agents: %s", redundant, view)
 		}
 	}
 }
@@ -288,21 +293,36 @@ func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"╦ Codex", "Status: Detected", "Config candidates: 1", "/home/test/config.json", "Intended write config", "Observed registrations:"} {
+	for _, want := range []string{"╦ Codex", "Registrations:", "team / inspect / dev / production", "View configuration"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("agent detail summary missing %q: %s", want, view)
 		}
 	}
-	if strings.Contains(view, "Resolution note:") || !strings.Contains(view, "Observed registrations:") {
-		t.Fatalf("agent detail shows an empty note or unlabeled registrations: %s", view)
+	for _, redundant := range []string{"Resolution note:", "Active home:", "Effective config:", "Config candidates:", "/home/test/config.json"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("agent detail repeats destination details %q: %s", redundant, view)
+		}
 	}
 	m = fixtureModel(t)
 	m.navigate("Agents")
 	press(m, tea.KeyDown, "")
 	view = ansi.Strip(m.View().Content)
 	stripped := strings.ReplaceAll(ansi.Strip(view), "\n", " ")
-	if !strings.Contains(stripped, "╦ claude") || !strings.Contains(stripped, "Status: Unverified") || !strings.Contains(stripped, "supported location editor") {
+	if !strings.Contains(stripped, "╦ claude") || !strings.Contains(stripped, "Unverified") || !strings.Contains(stripped, "Registrations: None") || strings.Contains(stripped, "supported location editor") {
 		t.Fatalf("selected fallback agent summary is misleading: %s", view)
+	}
+}
+
+func TestAgentsDetailDoesNotRepeatDestinationDiscoveryDetails(t *testing.T) {
+	m, _ := typedAgentModel(t)
+	view := ansi.Strip(m.View().Content)
+	for _, redundant := range []string{"CLI at /usr/bin/codex", "Active home:", "Effective config:", "Intended write config:", "Config candidates:"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("Agents detail repeats destination discovery/configuration detail %q:\n%s", redundant, view)
+		}
+	}
+	if !strings.Contains(view, "Registrations") {
+		t.Fatalf("Agents detail omitted its relevant registration summary:\n%s", view)
 	}
 }
 
@@ -310,13 +330,10 @@ func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
 func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	press(m, tea.KeyEnter, "")
-	if m.management.Focus != ProfilesPane || !strings.Contains(m.View().Content, "View exact configuration candidate 1") {
+	if m.management.Focus != ProfilesPane || !strings.Contains(m.View().Content, "View configuration") {
 		t.Fatal("verified config viewer unavailable")
 	}
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(ansi.Strip(m.View().Content), "/home/test/config.json") {
-		t.Fatal("agent detail omitted exact config path")
-	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("file viewer did not request file content")
@@ -410,7 +427,7 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 			break
 		}
 	}
-	if m.management.Focus != ProfilesPane || !strings.Contains(ansi.Strip(m.View().Content), "View exact configuration candidate 1") {
+	if m.management.Focus != ProfilesPane || !strings.Contains(ansi.Strip(m.View().Content), "View configuration") {
 		t.Fatal("Open / Focus control did not reveal the selected agent action")
 	}
 	for _, hit := range m.management.Hits {
@@ -443,7 +460,7 @@ func TestEnvironmentBrowserKeepsCapabilityPackIdentity(t *testing.T) {
 	}
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
-	if !strings.Contains(m.View().Content, "two") || strings.Contains(m.View().Content, "one · Saved profile") {
+	if !strings.Contains(m.View().Content, "two") || strings.Contains(m.View().Content, "one · Saved instance") {
 		t.Fatal("targets from two sources mixed")
 	}
 }

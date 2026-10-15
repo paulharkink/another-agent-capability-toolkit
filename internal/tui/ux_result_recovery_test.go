@@ -436,13 +436,18 @@ func TestUXProfileActionsUseObservedOwnerAndRuntimeStatus(t *testing.T) {
 		{"foreign running start", "other-aact", "running", "s", "another installation"},
 		{"unknown running logs", "unknown", "running", "l", "locally owned"},
 		{"foreign running logs", "other-aact", "running", "l", "locally owned"},
+		{"foreign generic action", "other-aact", "running", "restart", "not locally owned"},
 		{"local running logs", "local", "running", "l", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			row := ProfileRow{Instance: &viewmodel.Instance{Ownership: tc.owner, RuntimeStatus: tc.status}}
-			if got := m.instanceActionReason(row, tc.action); !strings.Contains(got, tc.want) {
+			got := m.instanceActionReason(row, tc.action)
+			if !strings.Contains(got, tc.want) {
 				t.Fatalf("reason=%q, want it to contain %q", got, tc.want)
+			}
+			if strings.Contains(strings.ToLower(got), "profile") {
+				t.Fatalf("user-facing instance action still says profile: %q", got)
 			}
 		})
 	}

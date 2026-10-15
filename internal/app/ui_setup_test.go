@@ -111,6 +111,30 @@ func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 	}
 }
 
+func TestUIInstallSkillOnlyDoesNotCreateInstanceRecord(t *testing.T) {
+	svc, _, store := fixture(t)
+	result, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"all"}})
+	if err != nil {
+		t.Fatalf("install skill-only capability: %v", err)
+	}
+	if len(result.Changes) == 0 {
+		t.Fatalf("skill install did not report applied effects: %+v", result)
+	}
+	if result.Saved {
+		t.Fatal("direct skill install reported instance inputs saved")
+	}
+	if _, err := os.Stat(filepath.Join(result.Changes[0].Destination, "SKILL.md")); err != nil {
+		t.Fatalf("installed skill content is missing: %v", err)
+	}
+	instances, err := store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("skill-only install created a synthetic instance record: %+v", instances)
+	}
+}
+
 func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
@@ -145,7 +169,7 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		{"public", "Capability definition", "public-default", true},
 		{"saved", "Saved override", "saved-value", true},
 		{"source", "Saved override", "stale-saved", true},
-		{"certificate", "Profile default", filepath.Join(filepath.Dir(profilePath), "certs", "ca.pem"), true},
+		{"certificate", "Instance default", filepath.Join(filepath.Dir(profilePath), "certs", "ca.pem"), true},
 		{"missing", "Capability definition", nil, false},
 	}
 	for i, want := range wants {
@@ -325,7 +349,7 @@ func TestFixedProfileInputWinsSavedAnswersAndSubmittedOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
-	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "Profile fixed" {
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "Instance fixed" {
 		t.Fatalf("fixed preview: %+v %v", preview, err)
 	}
 	if _, err = svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"api_server": "https://other.example"}, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
@@ -857,5 +881,17 @@ func TestUIInstallRejectsGlobalDestinationForMCPBeforeStartingIt(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot install every selected capability component") || runtime.starts != 0 {
 		t.Fatalf("invalid global MCP install: %v, starts=%d", err, runtime.starts)
+	}
+}
+
+func TestUISetupPreviewAllowsUnconfiguredZeroInputSkill(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}})
+	if err != nil {
+		t.Fatalf("zero-input skill preview requires a fabricated instance TOML: %v", err)
+	}
+	if got.MCP || len(got.Inputs) != 0 || !got.Configured {
+		t.Fatalf("zero-input skill preview should be configured without settings: %#v", got)
 	}
 }

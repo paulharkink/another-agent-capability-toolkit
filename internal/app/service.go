@@ -320,7 +320,7 @@ func operationTarget(k state.Key) string {
 	}
 	identity := k.Source + "/" + k.Package
 	if k.MCPDefinition != "" {
-		identity += " profile " + k.MCPDefinition
+		identity += " MCP definition " + k.MCPDefinition
 	} else if k.MCP != "" {
 		identity += " MCP " + k.MCP
 	}
@@ -405,7 +405,7 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	}
 	stateDir, stateErr := s.Store.EnsureAuthDir(k)
 	if stateErr != nil {
-		return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("prepare private profile state: %w", stateErr)}
+		return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("prepare private instance state: %w", stateErr)}
 	}
 	additionalPorts, portErr := resolveConditionalPorts(*p.MCP, p.Inputs, values)
 	if portErr != nil {

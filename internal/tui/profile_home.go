@@ -35,6 +35,13 @@ type instanceCreatedMsg struct {
 	ref config.InstanceRef
 	err error
 }
+type instanceRemovalBackend interface {
+	UIRemoveInstance(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
+}
+type instanceRemovedMsg struct {
+	ref config.InstanceRef
+	err error
+}
 
 func (m *Model) instanceMode() bool {
 	_, modern := m.backend.(capabilityInstancesBackend)
@@ -65,7 +72,13 @@ func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
 		parts = append(parts, fmt.Sprintf("registered %d/%d", registered, registrationTotal))
 	}
 	for _, r := range p.MCPs {
-		parts = append(parts, r.MCPID+" "+r.Status)
+		status := r.MCPID + " " + r.Status
+		if r.AuthenticationStatus == viewmodel.AuthenticationFailed {
+			status += " AuthenticationFailed"
+		} else if r.AuthenticationStatus == viewmodel.AuthenticationComplete {
+			status += " AuthenticationComplete"
+		}
+		parts = append(parts, status)
 	}
 	return strings.Join(parts, " · ")
 }
@@ -95,6 +108,15 @@ func instanceConfigurationDetails(row InstanceRow) []string {
 	for _, component := range profile.Components {
 		rows = append(rows, instanceComponentStatusText(component))
 	}
+	for _, runtime := range profile.MCPs {
+		status := runtime.MCPID + " " + runtime.Status
+		if runtime.AuthenticationStatus == viewmodel.AuthenticationFailed {
+			status += " AuthenticationFailed"
+		} else if runtime.AuthenticationStatus == viewmodel.AuthenticationComplete {
+			status += " AuthenticationComplete"
+		}
+		rows = append(rows, status)
+	}
 	return rows
 }
 
@@ -104,8 +126,9 @@ func (m *Model) openInstanceCreation(c CapabilityRow) {
 	m.workspace = nil
 	m.pendingSetup = nil
 	m.home.Modal = nil
+	m.management.FormOverlay = true
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
-	m.form.SetTitle("Create another instance · " + c.Name)
+	m.form.SetTitle("New instance · " + c.Name)
 }
 func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
 	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}

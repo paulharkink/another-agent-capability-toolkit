@@ -46,6 +46,7 @@ type Model struct {
 	pendingSetupItemsField     string
 	capabilityInstances        map[string]viewmodel.CapabilityInstanceSnapshot
 	creatingInstance           *config.InstanceRef
+	deletingInstance           *config.InstanceRef
 	home                       homeState
 	backend                    Backend
 	ctx                        context.Context
@@ -586,7 +587,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case "s", "x":
-				m.output = "Runtime lifecycle actions are unavailable from this observed profile workspace."
+				m.output = "Runtime lifecycle actions are unavailable from this observed instance workspace."
 				return m, nil
 			}
 		}
@@ -650,6 +651,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingDefaultAgents = false
 			m.pendingMCPImageSource = false
 			m.creatingInstance = nil
+			m.deletingInstance = nil
 			m.workspace = nil
 			m.output = "Cancelled"
 			return m, nil
@@ -660,10 +662,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = e.Error()
 			return m, nil
 		}
+		if m.deletingInstance != nil {
+			ref := *m.deletingInstance
+			confirmed, _ := values["confirmation"].(string)
+			m.deletingInstance = nil
+			if confirmed != ref.Name {
+				m.output = "Instance deletion cancelled: exact name did not match"
+				return m, nil
+			}
+			m.action = "delete instance"
+			return m, func() tea.Msg {
+				backend, ok := m.backend.(instanceRemovalBackend)
+				if !ok {
+					return instanceRemovedMsg{ref: ref, err: fmt.Errorf("instance removal is unavailable")}
+				}
+				_, err := backend.UIRemoveInstance(m.ctx, ref)
+				return instanceRemovedMsg{ref: ref, err: err}
+			}
+		}
 		if m.creatingInstance != nil {
 			ref := *m.creatingInstance
 			ref.Name, _ = values["name"].(string)
 			m.creatingInstance = nil
+			m.management.FormOverlay = false
 			m.action = "create instance"
 			return m, func() tea.Msg {
 				if modern, ok := m.backend.(capabilityInstancesBackend); ok {
@@ -754,9 +775,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
 			return m, m.fetchLogs(msg.session)
 		}
+	case instanceRemovedMsg:
+		if msg.err != nil {
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "delete instance", target: msg.ref.Name})
+			return m, nil
+		}
+		m.output = "Deleted instance " + msg.ref.Name
+		return m, m.load()
 	case instanceCreatedMsg:
 		if msg.err != nil {
-			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create profile"})
+				m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create instance"})
 			return m, nil
 		}
 		return m, m.openTargetWorkspace(viewmodel.SetupRequest{Ref: msg.ref}, "Overview")
@@ -784,7 +812,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			title = "Configure · " + name
 		}
 		if m.instanceMode() {
-			title += " · Profile " + msg.preview.Key.Target
+			title += " · Instance " + msg.preview.Key.Target
 		} else if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
 		}
@@ -1188,7 +1216,7 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 			actions := map[string]string{"enter": "status", "s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
 			if action := actions[stroke]; action != "" {
 				if inst.Status == "external" && action != "status" {
-					m.output = "External registrations support status; use profile Actions to configure registrations."
+					m.output = "External registrations support status; use instance Actions to configure registrations."
 					return nil
 				}
 				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.MCPDefinition}

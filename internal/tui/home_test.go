@@ -42,8 +42,8 @@ func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewm
 
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
-	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
-	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
+	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "inspector", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
+	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "inspector", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(msg)
 	return m, msg
@@ -98,7 +98,7 @@ func TestHomeShowsCapabilityPackAndEnvironmentDirectory(t *testing.T) {
 	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capability Pack: one", "Instances: environments"} {
+	for _, want := range []string{"Capability Pack: one", "Instance root: environments"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home does not reveal %q:\n%s", want, view)
 		}
@@ -109,7 +109,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP instances", "── Installation · AACT records", "› View capability details", "Instance"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -121,12 +121,12 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, unwanted := range []string{"Related MCP profiles", "No MCP profiles", "MCP ·", "related MCP profiles"} {
+	for _, unwanted := range []string{"Related MCP instances", "No MCP instances", "MCP · definition", "related MCP instances"} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Install skill", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
@@ -160,7 +160,7 @@ func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
 	v := m.View().Content
-	for _, s := range []string{"Capabilities", "Inspector", "profile", "Main menu", "F2 Open / Focus"} {
+	for _, s := range []string{"Capabilities", "Inspector", "Instance", "Main menu", "F2 Open / Focus"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q: %s", s, v)
 		}
@@ -177,7 +177,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatalf("runtime observation was lost from the selected profile: %q", got)
 	}
 	press(m, tea.KeyDown, "")
-	if strings.Contains(m.View().Content, "Related MCP profiles") {
+	if strings.Contains(m.View().Content, "Related MCP instances") {
 		t.Fatal("skill-only context still shows MCP content", m.View().Content)
 	}
 	press(m, tea.KeyTab, "")
@@ -185,7 +185,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "Configure now") {
+	if !strings.Contains(m.View().Content, "Install skill") {
 		t.Fatal(m.View().Content)
 	}
 }
@@ -354,7 +354,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
 			t.Fatal("short view omitted its scroll cue", v.Content)
 		}
-		if size.Height > 16 && !strings.Contains(v.Content, "Configure now") {
+		if size.Height > 16 && !strings.Contains(v.Content, "Install skill") {
 			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
@@ -389,7 +389,7 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatal("F2 should focus the context list before opening an action")
 	}
-	for _, want := range []string{"Configure now", "View capability details", "MCP · profile", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "MCP · inspector", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}

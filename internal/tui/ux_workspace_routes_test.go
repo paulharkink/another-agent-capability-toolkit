@@ -29,7 +29,7 @@ func TestUXCapabilityAndTargetDetailsContainRealInformation(t *testing.T) {
 		Destinations: []viewmodel.SetupDestination{{ID: "codex", Path: "/home/test/.codex", ConfigPath: "/home/test/.codex/config.toml", Selected: true}},
 	}
 	view := m.setupInformationView().Content
-	for _, want := range []string{"Grafana Inspector", "package grafana-inspector", "team-source", "/envs/home/production.toml", "eu-west", "target-fixed", "/home/test/.codex/config.toml", "selected for apply"} {
+	for _, want := range []string{"Grafana Inspector", "package grafana-inspector", "team-source", "/envs/home/production.toml", "eu-west", "target-fixed", "/home/test/.codex/config.toml", "selected for apply", "Instance information"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("target Information omitted %q:\n%s", want, view)
 		}
@@ -196,6 +196,9 @@ func TestUXOverviewSeparatesConfiguredInstalledRunningAndReachable(t *testing.T)
 		}
 	}
 	profileFacts := strings.Join(workspaceProfileInformationLines(profile), "\n")
+	if strings.Contains(strings.ToLower(profileFacts), "profile") {
+		t.Errorf("workspace information exposes reserved profile terminology:\n%s", profileFacts)
+	}
 	for _, want := range []string{"Local registrations: codex", "Live observation: stale"} {
 		if !strings.Contains(profileFacts, want) {
 			t.Errorf("Information omitted observed profile fact %q:\n%s", want, profileFacts)

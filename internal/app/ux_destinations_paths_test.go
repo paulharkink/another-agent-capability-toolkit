@@ -325,8 +325,8 @@ func TestUXMultipleRecordedHomesRemainProfileSpecific(t *testing.T) {
 		if row.ID != "opencode" {
 			continue
 		}
-		if !strings.Contains(strings.ToLower(row.Note), "multiple") || !strings.Contains(row.Note, "profile") {
-			t.Fatalf("multiple profile homes not explained: %+v", row)
+		if !strings.Contains(strings.ToLower(row.Note), "multiple") || !strings.Contains(row.Note, "instance records") {
+			t.Fatalf("multiple instance homes not explained: %+v", row)
 		}
 		for _, profile := range profiles {
 			wantPath := filepath.Join(profile.home, "opencode", profile.path)

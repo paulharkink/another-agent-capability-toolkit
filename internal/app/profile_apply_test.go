@@ -25,6 +25,7 @@ func (f fixtureAdapters) Adapters() []agents.Adapter             { return []agen
 type profileAdapter struct {
 	calls          []string
 	fail           string
+	failRemove     bool
 	failPlugin     bool
 	pluginRequests []agents.PluginRequest
 	inspect        func()
@@ -87,6 +88,9 @@ func (a *profileAdapter) InstallPlugin(_ context.Context, _ agents.Scope, q agen
 	return agents.PluginInstallResult{Installation: row, Effects: []state.Installation{market}}, err
 }
 func (a *profileAdapter) RemoveSkill(context.Context, agents.Scope, state.Installation) error {
+	if a.failRemove {
+		return errors.New("specific removal failure")
+	}
 	return nil
 }
 func (a *profileAdapter) Unregister(context.Context, agents.Scope, state.Installation) error {
@@ -372,7 +376,7 @@ func TestApplyProfileRecordFailureReportsAchievedEffect(t *testing.T) {
 	}
 }
 
-func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t *testing.T) {
+func TestApplyContinuesAfterFalseContainerHealthAndReportsLoginURL(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
 	p.Skills, p.Skill, p.MCP = nil, nil, nil
@@ -401,8 +405,8 @@ func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t
 	runtime := &authenticationTestRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, results: []string{`{"login_url":"https://login.example/device"}`}}
 	s.Options.Runtime = runtime
 	a.inspect = func() {
-		if healthChecks != 2 {
-			t.Fatalf("MCP registration started after %d health checks, expected explicit true after false", healthChecks)
+		if healthChecks != 1 {
+			t.Fatalf("MCP registration started after %d health checks, want one false-health observation", healthChecks)
 		}
 	}
 	var progress []viewmodel.OperationProgress
@@ -412,7 +416,10 @@ func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t
 		t.Fatal(err)
 	}
 	if len(result.Changes) == 0 {
-		t.Fatalf("confirmed authentication did not produce registration changes: %#v", result)
+		t.Fatalf("false health prevented registration changes: %#v", result)
+	}
+	if result.AuthenticationStatus != viewmodel.AuthenticationFailed {
+		t.Fatalf("authentication status = %q, want AuthenticationFailed", result.AuthenticationStatus)
 	}
 	if len(runtime.keys) != 1 {
 		t.Fatalf("runtime starts = %d", len(runtime.keys))
@@ -423,8 +430,8 @@ func TestApplyPollsSelectedContainerHealthAndReportsLoginURLBeforeRegistration(t
 	if len(runtime.stateDirs) != 1 || runtime.stateDirs[0] != "/state" {
 		t.Fatalf("container authentication state_dir = %#v", runtime.stateDirs)
 	}
-	if healthChecks != 2 {
-		t.Fatalf("health checks = %d, want false then true", healthChecks)
+	if healthChecks != 1 {
+		t.Fatalf("health checks = %d, want one false-health observation", healthChecks)
 	}
 	foundRegistration := false
 	for _, call := range a.calls {
@@ -506,5 +513,207 @@ func TestReconfiguredProfileAuthFailurePreservesSavedStateAndReportsAuthRequired
 	}
 	if data, err := os.ReadFile(filepath.Join(stateDir, "saved-session")); err != nil || string(data) != "prior-session" {
 		t.Fatalf("saved auth state changed: %q %v", data, err)
+	}
+}
+func TestRemoveInstanceDeletesOnlySelectedInstanceStateAfterCleanup(t *testing.T) {
+	s, _, request := profileApplyFixture(t)
+	_, selectedConfig, _, err := s.loadInstance(request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := config.InstanceRef{PackID: request.Ref.PackID, CapabilityID: request.Ref.CapabilityID, Name: "sibling"}
+	if err := s.CreateInstance(context.Background(), sibling); err != nil {
+		t.Fatal(err)
+	}
+	siblingConfig := filepath.Join(s.Source.ProfileRoot, request.Ref.CapabilityID, "sibling.toml")
+	if err := os.WriteFile(siblingConfig, []byte("[inputs]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.Store.ResolveInstanceKey(request.Ref.PackID, request.Ref.CapabilityID, request.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: request.Ref.Name, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	siblingKey, err := s.Store.ResolveInstanceKey(sibling.PackID, sibling.CapabilityID, sibling.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SaveAnswers(key, map[string]any{"token": "selected-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SaveAnswers(siblingKey, map[string]any{"token": "sibling-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	authDir, err := s.Store.EnsureAuthDir(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authFile := filepath.Join(authDir, "token")
+	if err := os.WriteFile(authFile, []byte("selected-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RemoveInstance(context.Background(), InstanceRequest{Ref: request.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Key == key {
+			t.Fatalf("deleted instance record remains: %+v", records)
+		}
+	}
+	foundSibling := false
+	for _, record := range records {
+		if record.Key == siblingKey {
+			foundSibling = true
+		}
+	}
+	if !foundSibling {
+		t.Fatalf("sibling instance was deleted: %+v", records)
+	}
+	if has, err := s.Store.HasAnswers(key); err != nil || has {
+		t.Fatalf("selected answers remain: has=%t err=%v", has, err)
+	}
+	if has, err := s.Store.HasAnswers(siblingKey); err != nil || !has {
+		t.Fatalf("sibling answers changed: has=%t err=%v", has, err)
+	}
+	if _, err := os.Stat(authFile); !os.IsNotExist(err) {
+		t.Fatalf("selected auth file remains: err=%v", err)
+	}
+	if _, err := os.Stat(selectedConfig.Path); !os.IsNotExist(err) {
+		t.Fatalf("selected instance config remains: err=%v", err)
+	}
+	if _, err := os.Stat(siblingConfig); err != nil {
+		t.Fatalf("sibling instance config was removed: %v", err)
+	}
+	if _, err := os.Stat(selectedConfig.Path); !os.IsNotExist(err) {
+		t.Fatalf("selected instance config remains: err=%v", err)
+	}
+	if _, err := os.Stat(siblingConfig); err != nil {
+		t.Fatalf("sibling instance config was removed: %v", err)
+	}
+}
+
+func TestRemoveInstanceConfigurationRejectsSymlinkEscape(t *testing.T) {
+	s, _, _ := profileApplyFixture(t)
+	root := t.TempDir()
+	instances := filepath.Join(root, "instances")
+	pack := filepath.Join(root, "pack")
+	if err := os.MkdirAll(instances, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pack, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(pack, "ota.toml")
+	if err := os.WriteFile(manifest, []byte("[inputs]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(pack, filepath.Join(instances, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	s.Source.InstanceRoot = instances
+	err := s.removeInstanceConfiguration(config.InstanceRef{Name: "ota"}, filepath.Join(instances, "escape", "ota.toml"))
+	if err == nil {
+		t.Fatal("expected symlinked instance directory to be rejected")
+	}
+	if _, err := os.Stat(manifest); err != nil {
+		t.Fatalf("outside pack file was removed: %v", err)
+	}
+}
+
+func TestRemoveInstanceDeletesOnlyLocallyCreatedInstanceTOML(t *testing.T) {
+	s, _, request := profileApplyFixture(t)
+	root := t.TempDir()
+	s.Source.InstanceRoot = root
+	s.Source.ProfileRoot = root
+	ref := config.InstanceRef{PackID: s.Source.ID, CapabilityID: request.Ref.CapabilityID, Name: "local"}
+	instanceDir := filepath.Join(root, ref.CapabilityID)
+	if err := os.MkdirAll(instanceDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(instanceDir, ref.Name+".toml")
+	if err := os.WriteFile(path, []byte("[inputs]\nlabel = 'company'\nenabled = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.Store.ResolveInstanceKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: ref.Name, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RemoveInstance(context.Background(), InstanceRequest{Ref: ref}); err != nil {
+		t.Fatalf("remove local instance: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("locally created instance TOML still exists: %v", err)
+	}
+}
+
+func TestRemoveInstanceFailurePreservesRecoverableState(t *testing.T) {
+	s, adapter, request := profileApplyFixture(t)
+	_, selectedConfig, _, err := s.loadInstance(request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(selectedConfig.Path); err != nil {
+		t.Fatalf("selected config missing before delete: %v", err)
+	}
+	siblingConfig := filepath.Join(s.Source.ProfileRoot, request.Ref.CapabilityID, "sibling.toml")
+	if err := os.WriteFile(siblingConfig, []byte("[inputs]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.Store.ResolveInstanceKey(request.Ref.PackID, request.Ref.CapabilityID, request.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: request.Ref.Name, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SaveAnswers(key, map[string]any{"token": "preserve-me"}); err != nil {
+		t.Fatal(err)
+	}
+	authDir, err := s.Store.EnsureAuthDir(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authFile := filepath.Join(authDir, "token")
+	if err := os.WriteFile(authFile, []byte("credential"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.Record(state.Installation{Key: key, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.failRemove = true
+	if _, err := s.RemoveInstance(context.Background(), InstanceRequest{Ref: request.Ref}); err == nil {
+		t.Fatal("expected binding cleanup failure")
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range records {
+		if record.Key == key {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("instance record was deleted after cleanup failed")
+	}
+	answers, err := s.Store.Answers(key)
+	if err != nil || answers["token"] != "preserve-me" {
+		t.Fatalf("answers were not preserved: %#v %v", answers, err)
+	}
+	if _, err := os.Stat(authFile); err != nil {
+		t.Fatalf("credentials were not preserved: %v", err)
+	}
+	if _, err := os.Stat(selectedConfig.Path); err != nil {
+		t.Fatalf("instance config was not preserved: %v", err)
 	}
 }

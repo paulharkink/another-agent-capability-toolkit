@@ -140,6 +140,12 @@ func (s *Service) loadInstance(ref config.InstanceRef) (catalog.Package, config.
 			return p, config.Instance{Ref: ref, Raw: map[string]any{}}, key, nil
 		}
 	}
+	// A skill-only capability with no inputs has no instance configuration to
+	// create. Allow its default instance reference to be used as a transient
+	// setup request instead of requiring a fabricated TOML file.
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		return p, config.Instance{Ref: ref, Raw: map[string]any{}}, key, nil
+	}
 	return p, instance, key, invalid(err)
 }
 func (s *Service) instancesForCapability(id string) ([]config.Instance, error) {
@@ -203,6 +209,14 @@ func (s *Service) CreateProfile(ctx context.Context, ref config.InstanceRef) err
 }
 
 func (s *Service) instanceValues(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
+	return s.instanceValuesWithIncompleteInputs(p, pr, key, q, false)
+}
+
+func (s *Service) instanceValuesForPreview(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
+	return s.instanceValuesWithIncompleteInputs(p, pr, key, q, true)
+}
+
+func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest, allowIncomplete bool) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
 	known := map[string]bool{}
 	for _, d := range p.Inputs {
 		known[d.Name] = true
@@ -328,10 +342,16 @@ func (s *Service) instanceValues(p catalog.Package, pr config.Instance, key stat
 	if err != nil {
 		return p, pr, nil, inherited, invalid(err)
 	}
-	p, err = catalog.ResolveExpressions(p, values)
-	if err != nil {
-		return p, pr, nil, inherited, invalid(err)
+	resolvedPackage, resolveErr := catalog.ResolveExpressions(p, values)
+	if resolveErr != nil {
+		// Previews must render required controls before runtime expressions have
+		// all their inputs. Apply remains strict and reports the CEL diagnostic.
+		if allowIncomplete && forms.Validate(p.Inputs, values) != nil {
+			return p, pr, values, inherited, nil
+		}
+		return p, pr, nil, inherited, invalid(resolveErr)
 	}
+	p = resolvedPackage
 	return p, pr, values, inherited, nil
 }
 
@@ -538,7 +558,7 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	p, pr, values, inherited, err := s.instanceValues(p, pr, key, q)
+	p, pr, values, inherited, err := s.instanceValuesForPreview(p, pr, key, q)
 	credentialState, credentialNote := s.credentialObservation(p, key)
 	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, InstancePath: pr.Path, ProfilePath: pr.Path, InstanceOrigin: "local", ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
 	if err != nil {
@@ -605,7 +625,7 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 		}
 		profileInputs, _ := pr.Raw["inputs"].(map[string]any)
 		if _, yes := profileInputs[def.Name]; yes {
-			origin = "Profile default"
+			origin = "Instance default"
 		}
 		editable := pr.InputPolicy[def.Name] != "fixed"
 		provenance := origin
@@ -613,7 +633,7 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 			provenance = "Saved override"
 		}
 		if !editable {
-			provenance = "Profile fixed"
+			provenance = "Instance fixed"
 		} else if def.Name == registrationInput && currentRegistration != "" {
 			if _, configured := inherited[def.Name]; !configured {
 				if _, savedValue := saved[def.Name]; !savedValue {
@@ -1199,7 +1219,8 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			for name, value := range headers {
 				healthHeaders.Set(name, value)
 			}
-			if e := mcp.WaitForAuthenticated(ctx, urls[definition.Name], definition.HealthPath, healthHeaders); e != nil {
+			authenticated, e := mcp.WaitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
+			if e != nil {
 				out.AuthenticationStatus = viewmodel.AuthenticationFailed
 				if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
 					return out, saveErr
@@ -1209,21 +1230,30 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				}
 				return out, e
 			}
-			if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-				return out, e
+			if authenticated {
+				if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+					return out, e
+				}
+				remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+				if pendingErr != nil {
+					return out, pendingErr
+				}
+				if len(remaining) > 0 {
+					out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+					out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
+					return out, nil
+				}
+				markAuthenticationComplete(definition.Name)
+			} else {
+				// A successful false health response means the MCP is running but
+				// unauthenticated. Keep the requested credentials and let install
+				// effects proceed; only the later UI health poll waits for login.
+				out.AuthenticationStatus = viewmodel.AuthenticationFailed
 			}
-			remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-			if pendingErr != nil {
-				return out, pendingErr
-			}
-			if len(remaining) > 0 {
-				out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-				out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
-				return out, nil
-			}
-			markAuthenticationComplete(definition.Name)
-			if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
-				return out, fmt.Errorf("MCP health check failed: %w", e)
+			if authenticated {
+				if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
+					return out, fmt.Errorf("MCP health check failed: %w", e)
+				}
 			}
 		}
 	}
@@ -1466,6 +1496,17 @@ func (s *Service) RemoveInstance(ctx context.Context, q InstanceRequest) (out vi
 	if err != nil {
 		return out, err
 	}
+	instanceRecords, err := s.Store.Instances()
+	if err != nil {
+		return out, err
+	}
+	localInstance := false
+	for _, record := range instanceRecords {
+		if record.Key == key && record.Local {
+			localInstance = true
+			break
+		}
+	}
 	for _, row := range rows {
 		if !sameCapabilityKey(row.Key, key) || (q.DestinationIDs != nil && !slices.Contains(q.DestinationIDs, row.AgentID)) {
 			continue
@@ -1489,8 +1530,59 @@ func (s *Service) RemoveInstance(ctx context.Context, q InstanceRequest) (out vi
 			}
 		}
 	}
+	if localInstance {
+		if err = s.removeInstanceConfiguration(pr.Ref, pr.Path); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+	}
+	if err = s.Store.ForgetInstanceState(key); err != nil {
+		out.Errors = append(out.Errors, err.Error())
+		return out, err
+	}
 	out.Step = "complete"
 	return out, nil
+}
+
+func (s *Service) removeInstanceConfiguration(ref config.InstanceRef, path string) error {
+	if path == "" {
+		return nil
+	}
+	root := s.Source.InstanceRoot
+	if root == "" {
+		root = s.Source.ProfileRoot
+	}
+	if root == "" {
+		return errors.New("instance directory is unavailable")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve instance directory: %w", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if filepath.Base(path) != ref.Name+".toml" {
+		return errors.New("instance configuration path does not match the exact instance name")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("resolve instance configuration directory: %w", err)
+	}
+	path = filepath.Join(parent, filepath.Base(path))
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("instance configuration path must be inside the instance directory")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // RemoveProfile is retained for callers built against the previous API name.
@@ -1550,11 +1642,30 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 		cp.MCP = &definition
 		cp.MCPs = nil
 		if action == "start" {
-			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 			if e != nil {
 				return out, e
 			}
 			out.Instances = []mcp.Instance{instance}
+			if definition.HealthPath != "" {
+				headers, headerErr := profileRegistrationHeaders(definition, values)
+				if headerErr != nil {
+					return out, headerErr
+				}
+				healthHeaders := make(http.Header, len(headers))
+				for name, value := range headers {
+					healthHeaders.Set(name, value)
+				}
+				authenticated, healthErr := mcp.WaitForAuthentication(ctx, instance.URL, definition.HealthPath, healthHeaders)
+				if healthErr != nil {
+					return out, fmt.Errorf("MCP authentication health check failed: %w", healthErr)
+				}
+				if authenticated {
+					if protocolErr := mcp.HealthWithHeaders(ctx, instance.URL, definition.Transport, healthHeaders); protocolErr != nil {
+						return out, fmt.Errorf("MCP health check failed: %w", protocolErr)
+					}
+				}
+			}
 		} else {
 			var result mcp.ActionResult
 			var instance mcp.Instance

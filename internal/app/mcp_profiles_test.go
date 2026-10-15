@@ -247,3 +247,11 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 		}
 	}
 }
+
+func TestSelectMCPProfileErrorsUseMCPDefinitionAndInstanceTerminology(t *testing.T) {
+	pkg := catalog.Package{ID: "demo", MCPs: []catalog.MCP{{Name: "one"}, {Name: "two"}}}
+	_, err := selectMCPProfile(pkg, "")
+	if err == nil || err.Error() != "capability \"demo\" has multiple MCP definitions; choose one with --mcp" {
+		t.Fatalf("ambiguous MCP definition error = %v", err)
+	}
+}

@@ -20,6 +20,10 @@ type setupBackend interface {
 	UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
 }
 
+type skillOnlyInstallBackend interface {
+	UIInstallSkillOnly(context.Context, viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error)
+}
+
 type setupPreviewMsg struct {
 	preview viewmodel.SetupPreview
 	err     error
@@ -842,7 +846,7 @@ func setupTargetLabel(key state.Key) string {
 	// Instance references reuse the legacy Target storage slot for identity.
 	// Keep that compatibility detail out of user-facing operation progress.
 	if key.Environment == "" && key.Source != "" && key.Target != "" {
-		parts = append(parts, "Profile "+key.Target)
+		parts = append(parts, "Instance "+key.Target)
 		return strings.Join(parts, " · ")
 	}
 	if key.Environment != "" || key.Target != "" {

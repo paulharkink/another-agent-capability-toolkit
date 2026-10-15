@@ -191,6 +191,7 @@ func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testi
 	m.Update(cmd())
 	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	view := m.View().Content
+	if !strings.Contains(view, "── Information") { t.Fatalf("workspace information section missing: %s", view) }
 	for _, want := range []string{"Endpoint URI: http://127.0.0.1:8765/mcp", "Live runtime status: conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("workspace Information omitted %q:\n%s", want, view)

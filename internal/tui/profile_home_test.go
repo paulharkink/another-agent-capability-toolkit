@@ -95,26 +95,26 @@ func TestPackWorkspaceMergesOnlyExactSavedRegistrationFacts(t *testing.T) {
 	}
 }
 func TestProfileHomeSkillOnlyAndNoSyntheticProfile(t *testing.T) {
-	m, _ := profileHomeFixture(t)
+	m, b := profileHomeFixture(t)
 	m.home.Capabilities.Index = 1
 	m.home.Capabilities.ID = ""
 	m.reconcileHome()
 	rows := m.contextRows()
-	if len(rows) != 2 || rows[0].Kind != "configure" || rows[0].Label != capabilitySetupLabel() {
-		t.Fatalf("skill-only capability must offer setup without a synthetic instance: %+v", rows)
+	if len(rows) != 2 || rows[0].Kind != "configure" || rows[0].Label != "Install skill\u2026" {
+		t.Fatalf("zero-input skill must offer direct installation without a synthetic instance: %+v", rows)
 	}
 	m.home.Focus = ProfilesPane
 	m.home.Context.Index = 0
 	cmd := m.openContextRow()
 	if cmd == nil {
-		t.Fatal("skill-only setup action did not open its setup preview")
+		t.Fatal("skill-only action did not dispatch direct installation")
 	}
 	m.Update(cmd())
-	if m.form == nil || m.workspace == nil {
-		t.Fatal("skill-only setup action did not open the setup form")
+	if b.skillOnlyRequest == nil || b.skillOnlyRequest.PackageID != "plain" || m.form != nil || m.workspace != nil {
+		t.Fatalf("skill-only action created an instance workspace instead of installing directly: request=%+v form=%v workspace=%+v", b.skillOnlyRequest, m.form != nil, m.workspace)
 	}
 	v := m.View().Content
-	for _, bad := range []string{"Environment directory", "Related MCP profiles", "Without an environment", "Set up another target"} {
+	for _, bad := range []string{"Environment directory", "Related MCP instances", "Without an environment", "Set up another target"} {
 		if strings.Contains(v, bad) {
 			t.Fatal("obsolete UI: " + bad)
 		}
@@ -238,4 +238,41 @@ func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.
 	if strings.Contains(view, "Configuration profiles") {
 		t.Fatalf("saved-only capability entered configuration-profile rendering:\n%s", view)
 	}
+}
+
+func TestInstanceHomeShowsCountRuntimeAndAuthenticationSeparately(t *testing.T) {
+	m, b := profileHomeFixture(t)
+	snapshot := b.profiles["inspect"]
+	instances := capabilityInstances(snapshot)
+	instances[0].MCPs = []viewmodel.RuntimeStatus{{MCPID: "server", Status: "running", AuthenticationStatus: viewmodel.AuthenticationFailed}}
+	snapshot.Instances = instances
+	snapshot.Profiles = instances
+	b.profiles["inspect"] = snapshot
+	m.capabilityInstances["inspect"] = snapshot
+	view := m.homeView().Content
+	for _, want := range []string{"2 instances", "server running", "AuthenticationFailed"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("instance view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Configuration profiles") || strings.Contains(view, "configuration profiles") {
+		t.Errorf("selected-instance UI still uses profile terminology:\n%s", view)
+	}
+}
+
+func TestInstanceActionMenuOffersExactDeleteForSelectedInstance(t *testing.T) {
+	m, _ := profileHomeFixture(t)
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
+	m.homeKey("a")
+	if m.home.Modal == nil || m.home.Modal.Kind != "actions" {
+		t.Fatal("A did not open instance actions")
+	}
+	items := m.homeMenuItems()
+	for _, item := range items {
+		if item.Action == "delete-instance" && strings.Contains(item.Label, "ota") {
+			return
+		}
+	}
+	t.Fatalf("selected instance has no exact delete action: %+v", items)
 }

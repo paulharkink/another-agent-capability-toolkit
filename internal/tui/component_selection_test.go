@@ -90,6 +90,21 @@ func TestPluginChoiceRequiresEverySelectedDestinationSupport(t *testing.T) {
 		t.Fatalf("incompatible mixed destination offered: %v", choices)
 	}
 }
+func TestSingleSelectableBundleWithSkillAndMCPIsAutoSelectedAndHidden(t *testing.T) {
+	m := componentForm(t)
+	preview := *m.pendingSetup
+	preview.Items = []catalog.InstallationItem{{ID: "bundle:server", Label: "Server", Skills: []string{"server-skill"}, MCPs: []string{"server-mcp"}}}
+	preview.SelectedItemIDs = nil
+	m.openSetupForm(preview)
+	if m.form.HasSectionID(sectionComponentsID) {
+		t.Fatal("one selectable bundle rendered a redundant Components section")
+	}
+	ids, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+	if len(ids) != 1 || ids[0] != "bundle:server" {
+		t.Fatalf("single selectable bundle was not selected automatically: %v", ids)
+	}
+}
+
 func TestSingleComponentIsAutoSelectedAndHidden(t *testing.T) {
 	m := componentForm(t)
 	preview := *m.pendingSetup

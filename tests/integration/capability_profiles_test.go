@@ -9,6 +9,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +51,11 @@ func (r *integratedRuntime) Logs(context.Context, state.Key) (io.ReadCloser, err
 
 func TestCapabilityProfilesIntegratedImportApplyObserveRemove(t *testing.T) {
 	ctx := context.Background()
-	root, _ := filepath.Abs("../../examples/capability-pack")
+	sourceRoot, err := filepath.Abs("../../examples/capability-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := copyCapabilityPackTree(t, sourceRoot)
 	store, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -112,6 +117,9 @@ func TestCapabilityProfilesIntegratedImportApplyObserveRemove(t *testing.T) {
 	if _, err := svc.RemoveProfile(ctx, app.ProfileRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "environments", "company-guidance", "ota.toml")); err != nil {
+		t.Fatalf("deleting the instance removed the pack-authored environment TOML: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(unrelated, "SKILL.md")); err != nil {
 		t.Fatal("unrelated skill removed:", err)
 	}
@@ -140,4 +148,42 @@ func TestCapabilityProfilesIntegratedImportApplyObserveRemove(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(pack.ProfileRoot, ref.CapabilityID, "local.toml")); !os.IsNotExist(err) {
 		t.Fatal("wrote pack profile")
 	}
+}
+
+func copyCapabilityPackTree(t *testing.T, sourceRoot string) string {
+	t.Helper()
+	destinationRoot := filepath.Join(t.TempDir(), "capability-pack")
+	err := filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(destinationRoot, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0700)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(target, destination)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destination, data, info.Mode().Perm())
+	})
+	if err != nil {
+		t.Fatalf("copy capability pack to isolated test tree: %v", err)
+	}
+	return destinationRoot
 }

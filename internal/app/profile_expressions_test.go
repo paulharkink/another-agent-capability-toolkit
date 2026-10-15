@@ -257,3 +257,82 @@ destination = "SKILL.md"
 		t.Fatalf("rendered template = %q, want computed input in Mustache context", got)
 	}
 }
+
+func TestCreateArgoInstanceThenPreviewShowsAuthModeInput(t *testing.T) {
+	svc, _, store := fixture(t)
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := catalog.Load(filepath.Join(repoRoot, "packages", "argocd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Source = config.Source{
+		ID: "argocd-test", Root: repoRoot,
+		ManifestPath: filepath.Join(repoRoot, "packages", "argocd", "package.toml"),
+		InstanceRoot: t.TempDir(), Catalog: []catalog.Package{pkg},
+		PackageDefaults: map[string]map[string]any{},
+	}
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: pkg.ID, Name: "tui-auth-audit"}
+	if err := svc.CreateInstance(context.Background(), ref); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	preview, err := svc.PreviewInstance(context.Background(), InstanceRequest{Ref: ref})
+	if err != nil {
+		t.Fatalf("preview newly created Argo instance: %v", err)
+	}
+	var hasAuthMode bool
+	for _, input := range preview.Inputs {
+		if input.Definition.Name == "auth_mode" {
+			hasAuthMode = true
+			if input.HasValue {
+				t.Fatalf("auth_mode unexpectedly has a value: %+v", input)
+			}
+		}
+	}
+	if !hasAuthMode {
+		t.Fatalf("preview does not expose required auth_mode control: %+v", preview.Inputs)
+	}
+	if preview.Configured {
+		t.Fatal("new Argo instance unexpectedly considered configured")
+	}
+	instances, err := store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 || instances[0].Name != ref.Name {
+		t.Fatalf("expected only the newly created instance record, got %+v", instances)
+	}
+}
+
+func TestArgoIncompleteInstanceSnapshotStaysActionable(t *testing.T) {
+	svc, _, _ := fixture(t)
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := catalog.Load(filepath.Join(root, "packages", "argocd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Source = config.Source{ID: "argocd-test", Root: root,
+		ManifestPath: filepath.Join(root, "packages", "argocd", "package.toml"),
+		InstanceRoot: t.TempDir(), Catalog: []catalog.Package{pkg},
+		PackageDefaults: map[string]map[string]any{}}
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: pkg.ID, Name: "pending"}
+	if err := svc.CreateInstance(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	svc.Options.Runtime = &fakeRuntime{}
+	snapshot, err := svc.InstanceSnapshot(context.Background(), pkg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Instances) != 1 {
+		t.Fatalf("instances: %+v", snapshot.Instances)
+	}
+	if got := snapshot.Instances[0].ConfigStatus; got != "needs-input" {
+		t.Fatalf("incomplete Argo instance status = %q, want needs-input: %+v", got, snapshot.Instances[0])
+	}
+}

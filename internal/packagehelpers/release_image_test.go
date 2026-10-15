@@ -2,6 +2,7 @@ package packagehelpers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -42,11 +43,29 @@ func TestBundledPrepareLocalSourceStillBuilds(t *testing.T) {
 	}
 	built := false
 	for _, call := range f.Calls {
-		if len(call) > 1 && call[1] == "build" {
+		if len(call) > 1 && call[1] == "build" || len(call) > 2 && call[1] == "buildx" && call[2] == "build" {
 			built = true
 		}
 	}
 	if !built {
 		t.Fatalf("local mode skipped build: %v", f.Calls)
+	}
+}
+
+func TestBundledPrepareLocalSourceFallsBackWhenBuildxUnavailable(t *testing.T) {
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://cluster.example.test"}})
+	q.ImageSource = "local"
+	f := &helperProcess{AuthJSON: `{"auth_required":false}`, BuildxError: errors.New("buildx unavailable")}
+	if _, err := (&Helper{Executor: f}).Run(context.Background(), "cluster-inspector", q); err != nil {
+		t.Fatal(err)
+	}
+	var build []string
+	for _, call := range f.Calls {
+		if len(call) > 1 && call[1] == "build" {
+			build = call
+		}
+	}
+	if len(build) == 0 || strings.Contains(strings.Join(build, " "), "--progress") {
+		t.Fatalf("legacy fallback should build without BuildKit-only flags: %v", f.Calls)
 	}
 }

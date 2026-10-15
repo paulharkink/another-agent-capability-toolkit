@@ -29,13 +29,20 @@ func TestManifestSectionsPreserveDeclaredOrderAndDoNotInferFieldGroups(t *testin
 	}
 }
 
-type zeroInputSkillSetupBackend struct{ fixtureBackend }
+type zeroInputSkillSetupBackend struct {
+	fixtureBackend
+	skillOnlyRequest *viewmodel.SkillOnlyInstallRequest
+}
 
 func (zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	return viewmodel.SetupPreview{Key: setupProfileKey(request)}, nil
 }
 func (zeroInputSkillSetupBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return viewmodel.OperationResult{}, nil
+}
+func (b *zeroInputSkillSetupBackend) UIInstallSkillOnly(_ context.Context, request viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
+	b.skillOnlyRequest = &request
+	return viewmodel.OperationResult{Message: "Installed"}, nil
 }
 
 func TestManifestlessSectionsUseInputOrderAndOnlyMCPAddsRuntimeSections(t *testing.T) {
@@ -82,7 +89,8 @@ func TestDestinationPresentationUsesSkillPathsAndRetainsMCPConfigPaths(t *testin
 
 func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
 	m, _ := homeFixture()
-	m.backend = zeroInputSkillSetupBackend{}
+	backend := &zeroInputSkillSetupBackend{}
+	m.backend = backend
 	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", PackageID: "plain", Name: "staging", Path: "/tmp/staging.toml"}}}
 	rows := m.capabilities()
 	for _, row := range rows {
@@ -93,11 +101,15 @@ func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
 	}
 	m.reconcileHome()
 	cmd := m.homeOperation("parameters")
-	if cmd != nil || m.creatingInstance == nil || m.creatingInstance.PackID != "one" || m.creatingInstance.CapabilityID != "plain" {
-		t.Fatalf("skill-only capability did not enter source-only profile creation: ref=%+v cmd=%v", m.creatingInstance, cmd != nil)
+	if cmd == nil || m.creatingInstance != nil {
+		t.Fatalf("skill-only capability did not dispatch direct install without creating an instance: ref=%+v cmd=%v", m.creatingInstance, cmd != nil)
 	}
-	if m.home.Modal != nil {
-		t.Fatalf("profile creation opened an environment target chooser: %+v", m.home.Modal)
+	m.Update(cmd())
+	if backend.skillOnlyRequest == nil || backend.skillOnlyRequest.PackageID != "plain" || backend.skillOnlyRequest.SourceID != "one" {
+		t.Fatalf("direct skill install request missing or incorrect: %+v", backend.skillOnlyRequest)
+	}
+	if m.form != nil || m.home.Modal != nil {
+		t.Fatalf("direct skill install opened configuration UI: form=%v modal=%+v", m.form != nil, m.home.Modal)
 	}
 }
 

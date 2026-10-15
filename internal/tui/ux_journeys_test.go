@@ -44,7 +44,7 @@ var uxJourneyCases = []struct {
 	{"11", "foreign runtime connection diagnosis and source lookup", TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding},
 	{"12", "runtime empty state and log lifecycle", TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs},
 	{"13", "legacy environment target is not an operational instance", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference},
-	{"14", "agent detection and write destination", TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution},
+	{"14", "concise agent registration details", TestUXAgentsOverviewEnterShowsConciseAgentDetails},
 	{"15", "management, settings and help hierarchy", TestUXSettingsCategoriesHaveRelatedControlsOnly},
 	{"16", "pane-local keyboard navigation and scroll cues", TestHomeLayerTwoScrollShowsContinuationCues},
 	{"17", "capability-specific authentication sections", TestUXAzureAndGitProviderTaskSections},

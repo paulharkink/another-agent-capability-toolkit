@@ -81,7 +81,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 			snapshot.Profiles = append(snapshot.Profiles, row)
 			continue
 		}
-		_, _, values, _, e := s.instanceValues(p, instance, key, InstanceRequest{})
+		_, _, values, _, e := s.instanceValuesForPreview(p, instance, key, InstanceRequest{})
 		if e != nil {
 			row.ConfigStatus = "invalid"
 			row.ConfigError = e.Error()
@@ -222,6 +222,14 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 			} else if registeredURL != "" && runtime.Ownership == "external" {
 				runtime.Status = "unobserved"
 				runtime.URL = registeredURL
+			}
+			if definition.HealthPath != "" && runtime.Status == "running" && runtime.URL != "" {
+				authenticated, healthErr := mcp.CheckAuthentication(ctx, runtime.URL, definition.HealthPath)
+				if healthErr != nil || !authenticated {
+					runtime.AuthenticationStatus = viewmodel.AuthenticationFailed
+				} else {
+					runtime.AuthenticationStatus = viewmodel.AuthenticationComplete
+				}
 			}
 			row.MCPs = append(row.MCPs, runtime)
 		}

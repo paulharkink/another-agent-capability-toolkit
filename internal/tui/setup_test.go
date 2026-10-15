@@ -19,11 +19,12 @@ import (
 
 type setupBackendFixture struct {
 	fixtureBackend
-	previewRequest viewmodel.SetupRequest
-	installRequest *viewmodel.SetupInstallRequest
-	extraInputs    []viewmodel.SetupInput
-	installResult  *viewmodel.OperationResult
-	installErr     error
+	previewRequest   viewmodel.SetupRequest
+	installRequest   *viewmodel.SetupInstallRequest
+	skillOnlyRequest *viewmodel.SkillOnlyInstallRequest
+	extraInputs      []viewmodel.SetupInput
+	installResult    *viewmodel.OperationResult
+	installErr       error
 }
 
 func setupProfileKey(request viewmodel.SetupRequest) state.Key {
@@ -184,6 +185,11 @@ func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInst
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "all", Component: "skill"}}}, nil
 }
 
+func (b *setupBackendFixture) UIInstallSkillOnly(_ context.Context, q viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
+	b.skillOnlyRequest = &q
+	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "codex", Component: "skill"}}}, nil
+}
+
 func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	b := &setupBackendFixture{installResult: &viewmodel.OperationResult{Saved: true}, installErr: errors.New("MCP port 9000 is already allocated")}
 	m := NewContext(context.Background(), b)
@@ -315,12 +321,12 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 		Items:        []catalog.InstallationItem{item},
 		Destinations: []viewmodel.SetupDestination{{ID: "opencode", Name: "OpenCode", Path: "/tmp/opencode", Selected: true}},
 	})
-	m.form.SelectSectionID(sectionComponentsID)
-	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Components", "field-guide", "map-server", "OpenCode", "selected to apply"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("component selection does not explain %q:\n%s", want, view)
-		}
+	if m.form.HasSectionID(sectionComponentsID) {
+		t.Fatal("one selectable bundle with a skill and MCP rendered a redundant Components section")
+	}
+	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+	if len(selected) != 1 || selected[0] != "set:starter" {
+		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", selected)
 	}
 	status, _ := m.installationDetails(m.capabilities()[0])
 	if status != "Partial" {

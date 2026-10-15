@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	healthWaitLimit = 5 * time.Minute
-	healthBodyLimit = 64 << 10
-	wsaConnRefused  = syscall.Errno(10061)
+	healthWaitLimit        = 5 * time.Minute
+	healthStartupWaitLimit = 30 * time.Second
+	healthBodyLimit        = 64 << 10
+	wsaConnRefused         = syscall.Errno(10061)
 )
+
+var ErrMCPUnauthorized = errors.New("MCP returned HTTP 401")
 
 type healthTransportError struct {
 	cause string
@@ -114,6 +117,9 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("MCP health HTTP %d: %w", response.StatusCode, ErrMCPUnauthorized)
+		}
 		return fmt.Errorf("MCP health HTTP %d", response.StatusCode)
 	}
 	if transport == "sse" {
@@ -175,10 +181,23 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 	if err != nil {
 		return err
 	}
-	if !initializeResponse(data) {
-		return errors.New("MCP initialize returned invalid response")
+	if initializeResponse(data) {
+		return nil
 	}
-	return nil
+	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		scanner := bufio.NewScanner(bytes.NewReader(data))
+		scanner.Buffer(make([]byte, 4096), 1<<20)
+		for {
+			event, payload, eventErr := readSSEEvent(scanner)
+			if eventErr != nil {
+				return errors.New("MCP initialize returned invalid response")
+			}
+			if event == "message" && initializeResponse([]byte(strings.Join(payload, "\n"))) {
+				return nil
+			}
+		}
+	}
+	return errors.New("MCP initialize returned invalid response")
 }
 
 func readSSEEvent(scanner *bufio.Scanner) (string, []string, error) {
@@ -259,65 +278,81 @@ func resolveHealthURL(instanceURL, healthPath string) (string, error) {
 	return base.String(), nil
 }
 
-func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL, healthPath string, headers http.Header, interval time.Duration) error {
+func checkAuthenticated(ctx context.Context, client *http.Client, instanceURL, healthPath string, headers http.Header) (bool, error) {
 	endpoint, err := resolveHealthURL(instanceURL, healthPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if client == nil {
 		client = http.DefaultClient
 	}
-	// Health probes may carry profile registration headers, so never follow a
-	// redirect that could send them to another origin. Copy the client to keep
-	// this policy local to the probe and preserve all other caller settings.
 	probeClient := *client
-	probeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-		return http.ErrUseLastResponse
+	probeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, errors.New("could not create MCP health request")
 	}
+	for name, values := range headers {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
+	response, err := probeClient.Do(request)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, safeHealthTransportError(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		return false, fmt.Errorf("MCP health endpoint returned HTTP %d", response.StatusCode)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, healthBodyLimit+1))
+	response.Body.Close()
+	if readErr != nil || len(body) > healthBodyLimit {
+		return false, errors.New("MCP health response was unreadable or too large")
+	}
+	var payload struct {
+		Authenticated *bool `json:"authenticated"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil || payload.Authenticated == nil {
+		return false, errors.New("MCP health response must contain a boolean authenticated field")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return false, errors.New("MCP health response must contain exactly one JSON object")
+	}
+	return *payload.Authenticated, nil
+}
+
+// CheckAuthentication reads a declared health endpoint once. A false value is
+// a valid observation, distinct from a transport or response error.
+func CheckAuthentication(ctx context.Context, instanceURL, healthPath string) (bool, error) {
+	return CheckAuthenticationWithHeaders(ctx, instanceURL, healthPath, nil)
+}
+
+// CheckAuthenticationWithHeaders reads the declared authentication signal once.
+func CheckAuthenticationWithHeaders(ctx context.Context, instanceURL, healthPath string, headers http.Header) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return checkAuthenticated(ctx, http.DefaultClient, instanceURL, healthPath, headers)
+}
+
+func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL, healthPath string, headers http.Header, interval time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, healthWaitLimit)
 	defer cancel()
 	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		authenticated, err := checkAuthenticated(ctx, client, instanceURL, healthPath, headers)
 		if err != nil {
-			return errors.New("could not create MCP health request")
+			return err
 		}
-		for name, values := range headers {
-			for _, value := range values {
-				request.Header.Add(name, value)
-			}
-		}
-		response, err := probeClient.Do(request)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return safeHealthTransportError(err)
-		}
-		if response.StatusCode != http.StatusOK {
-			response.Body.Close()
-			return fmt.Errorf("MCP health endpoint returned HTTP %d", response.StatusCode)
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, healthBodyLimit+1))
-		response.Body.Close()
-		if readErr != nil || len(body) > healthBodyLimit {
-			return errors.New("MCP health response was unreadable or too large")
-		}
-		var payload struct {
-			Authenticated *bool `json:"authenticated"`
-		}
-		decoder := json.NewDecoder(strings.NewReader(string(body)))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&payload); err != nil || payload.Authenticated == nil {
-			return errors.New("MCP health response must contain a boolean authenticated field")
-		}
-		var extra any
-		if err := decoder.Decode(&extra); err != io.EOF {
-			return errors.New("MCP health response must contain exactly one JSON object")
-		}
-		if *payload.Authenticated {
+		if authenticated {
 			return nil
 		}
 		timer := time.NewTimer(interval)
@@ -329,7 +364,42 @@ func waitForAuthenticated(ctx context.Context, client *http.Client, instanceURL,
 		}
 	}
 }
-
 func WaitForAuthenticated(ctx context.Context, instanceURL, healthPath string, headers http.Header) error {
 	return waitForAuthenticated(ctx, http.DefaultClient, instanceURL, healthPath, headers, time.Second)
+}
+
+// WaitForAuthentication waits for a declared health endpoint to become
+// reachable, then returns its current authentication value. A valid false
+// response is ready and returns immediately; only transport failures are
+// retried during startup.
+func WaitForAuthentication(ctx context.Context, instanceURL, healthPath string, headers http.Header) (bool, error) {
+	return waitForAuthentication(ctx, http.DefaultClient, instanceURL, healthPath, headers, 200*time.Millisecond, healthStartupWaitLimit)
+}
+
+func waitForAuthentication(ctx context.Context, client *http.Client, instanceURL, healthPath string, headers http.Header, interval, limit time.Duration) (bool, error) {
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	if limit <= 0 {
+		limit = healthStartupWaitLimit
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	for {
+		authenticated, err := checkAuthenticated(ctx, client, instanceURL, healthPath, headers)
+		if err == nil {
+			return authenticated, nil
+		}
+		var transportErr healthTransportError
+		if !errors.As(err, &transportErr) {
+			return false, err
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

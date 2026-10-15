@@ -116,7 +116,7 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 		}
 	}
 	if owner != "local" || status == "external" {
-		return "Runtime action unavailable: this profile is not locally owned."
+		return "Runtime action unavailable: this instance is not locally owned."
 	}
 	return ""
 }

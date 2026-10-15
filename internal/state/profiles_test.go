@@ -187,3 +187,71 @@ func TestLegacyProfileLedgerMigratesToInstanceLedgerOnWrite(t *testing.T) {
 		t.Fatalf("migrated instances lost: %+v, %v", got, err)
 	}
 }
+
+func TestForgetInstanceStateRejectsAuthenticationAncestorSymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Source: "company", Package: "connector", Target: "east"}
+	if err := store.RecordInstance(InstanceRecord{Key: key, Name: "East"}); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "outside")
+	auth := filepath.Join(external, "auth")
+	if err := os.MkdirAll(auth, 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(auth, "token")
+	if err := os.WriteFile(secret, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	keyDir := store.KeyDir(key)
+	if err := os.MkdirAll(filepath.Dir(keyDir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, keyDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ForgetInstanceState(key); err == nil {
+		t.Fatal("ForgetInstanceState accepted auth path through an external symlink")
+	}
+	if data, err := os.ReadFile(secret); err != nil || string(data) != "keep" {
+		t.Fatalf("external credential changed: %q, %v", data, err)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key != key {
+		t.Fatalf("instance state was removed on rejected path: %+v, %v", instances, err)
+	}
+}
+
+func TestForgetInstanceStateRejectsAnswersDirectorySymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Source: "company", Package: "connector", Target: "east"}
+	if err := store.RecordInstance(InstanceRecord{Key: key, Name: "East"}); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	answer := filepath.Join(external, key.ID()+".json")
+	if err := os.WriteFile(answer, []byte("{\"keep\":true}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "answers")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ForgetInstanceState(key); err == nil {
+		t.Fatal("ForgetInstanceState accepted answers path through an external symlink")
+	}
+	if data, err := os.ReadFile(answer); err != nil || string(data) != "{\"keep\":true}" {
+		t.Fatalf("external answers changed: %q, %v", data, err)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key != key {
+		t.Fatalf("instance state was removed on rejected path: %+v, %v", instances, err)
+	}
+}

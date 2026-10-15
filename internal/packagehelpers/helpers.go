@@ -369,7 +369,11 @@ func (h *Helper) Run(ctx context.Context, id string, q mcp.ActionRequest) (mcp.A
 			return mcp.ActionResult{}, err
 		}
 		defer os.Remove(iidPath)
-		_, buildErr := h.command(ctx, []string{"build", "--progress=plain", "--iidfile", iidPath, "--tag", spec.Image, filepath.Join(p.Dir, p.MCP.BuildContext)}, nil, nil, secrets)
+		buildArgs := []string{"build", "--iidfile", iidPath, "--tag", spec.Image, filepath.Join(p.Dir, p.MCP.BuildContext)}
+		if _, buildxErr := h.command(ctx, []string{"buildx", "version"}, nil, nil, nil); buildxErr == nil {
+			buildArgs = []string{"buildx", "build", "--load", "--progress=plain", "--iidfile", iidPath, "--tag", spec.Image, filepath.Join(p.Dir, p.MCP.BuildContext)}
+		}
+		_, buildErr := h.command(ctx, buildArgs, nil, nil, secrets)
 		if buildErr != nil {
 			return mcp.ActionResult{}, buildErr
 		}

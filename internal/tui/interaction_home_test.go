@@ -52,7 +52,7 @@ func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
 			if m.home.Modal != nil {
 				t.Fatalf("first %s opened a deeper overlay: %#v", test.name, m.home.Modal)
 			}
-			for _, want := range []string{"Configure now", "View capability details", "Related MCP profiles", "MCP · profile"} {
+			for _, want := range []string{"Configure now", "View capability details", "Related MCP instances", "MCP · inspector"} {
 				if !strings.Contains(m.View().Content, want) {
 					t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
 				}
@@ -121,18 +121,22 @@ func TestHomeEscapeAndPaneKeysMoveOneLayerAtATime(t *testing.T) {
 
 func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
 	m, _ := homeFixture()
-	m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: &setupBackendFixture{}}
+	setup := &setupBackendFixture{}
+	m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: setup}
 	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
 	focusHomeContext(t, m)
 	view := m.View().Content
-	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Install skill", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
 	pressAndRun(m, tea.KeyEnter)
-	if m.home.Modal != nil || m.form == nil {
-		t.Fatal("Enter on skill-only Configure / install did not open the setup form")
+	if m.home.Modal != nil || m.form != nil || (m.workspace != nil && m.workspace.Active) {
+		t.Fatalf("skill-only install opened configuration UI: modal=%#v form=%#v workspace=%#v", m.home.Modal, m.form, m.workspace)
+	}
+	if setup.skillOnlyRequest == nil {
+		t.Fatal("skill-only install did not call the install backend directly")
 	}
 }
 
