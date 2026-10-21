@@ -1,0 +1,7 @@
+schema_version = 1
+id = "polyrepo-coordinator"
+name = "Polyrepo Coordinator"
+
+[skill]
+name = "polyrepo-coordinator"
+files = ["SKILL.md"]

@@ -42,6 +42,8 @@ func NewRegistry(deps Dependencies) *Registry {
 			mcp := &mcpAdapter{skillAdapter: skill}
 			if kind == "claude" {
 				r.adapters = append(r.adapters, &claudePluginAdapter{mcpAdapter: mcp})
+			} else if kind == "opencode" {
+				r.adapters = append(r.adapters, &opencodePluginAdapter{mcpAdapter: mcp})
 			} else {
 				r.adapters = append(r.adapters, mcp)
 			}

@@ -3,8 +3,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/repomap"
 	"io"
 	"os"
 	"os/signal"
@@ -20,7 +23,13 @@ type request struct {
 }
 
 type result struct {
-	Repositories []Repository `json:"repositories"`
+	Repositories []RepositoryOutput `json:"repositories"`
+}
+type RepositoryOutput struct {
+	Host   string `json:"host"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	RepoID string `json:"repoId"`
 }
 
 func run(stdin io.Reader, stdout, stderr io.Writer) int {
@@ -61,7 +70,16 @@ func run(stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err.Error())
 	}
-	output, err := json.Marshal(result{rows})
+	identified := make([]RepositoryOutput, 0, len(rows))
+	for _, row := range rows {
+		common, e := repomap.CanonicalGitCommonDir(row.Path)
+		if e != nil {
+			return fail(fmt.Sprintf("identify checkout %q: %v", row.Path, e))
+		}
+		sum := sha256.Sum256([]byte(common))
+		identified = append(identified, RepositoryOutput{row.Host, row.Name, row.Path, hex.EncodeToString(sum[:])})
+	}
+	output, err := json.Marshal(result{identified})
 	if err != nil {
 		return fail("cannot encode repository map")
 	}

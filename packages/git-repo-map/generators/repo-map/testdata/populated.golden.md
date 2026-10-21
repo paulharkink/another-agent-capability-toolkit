@@ -12,14 +12,15 @@ retain their original case.
 
 ## Local checkouts
 
-| Host | Repository | Local path |
-| --- | --- | --- |
-| `git.example` | `team/widget` | `/work/research & development/<widget>` |
+| Host | Repository | Repo ID | Local path |
+| --- | --- | --- | --- |
+| `git.example` | `team/widget` | `fixture-repo-id` | `/work/research & development/<widget>` |
 
 ## Using the map
 
-- Use the host and repository name together, such as `git.example` and
-  `team/widget`, to identify a repository.
+- Use host and repository name together, such as `git.example` and
+  `team/widget`. If several clones match, select an exact checkout by `repoId`;
+  linked worktrees share one `repoId`.
 - When several paths match, inspect their branch and working changes before
   choosing one. Preserve existing changes and follow that checkout's AGENTS.md.
 - Check that the path still exists before using it. A missing entry means the
