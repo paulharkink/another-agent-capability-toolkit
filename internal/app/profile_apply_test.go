@@ -415,6 +415,95 @@ func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
 	}
 }
 
+func TestApplyManifestLocalOpenCodePluginUsesAndCleansOnlyStagedCopy(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	packageDir := t.TempDir()
+	original := filepath.Join(packageDir, "plugin")
+	if err := os.MkdirAll(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(original, "plugin.mjs")
+	if err := os.WriteFile(marker, []byte("export default {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n\n[[plugins]]\nname = \"local\"\nformat = \"opencode\"\nsource = \"./plugin\"\n\n[[inputs]]\nname = \"label\"\ntype = \"string\"\n\n[[inputs]]\nname = \"enabled\"\ntype = \"boolean\"\nrequired = true\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := catalog.Load(packageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0] = p
+	configPath := filepath.Join(t.TempDir(), "opencode.jsonc")
+	if err := os.WriteFile(configPath, []byte(`{"plugins":["npm:unrelated"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Options.Adapters = agents.NewRegistry(agents.Dependencies{Store: s.Store, Probe: *s.Options.DiscoveryProbe})
+	s.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: t.TempDir(), ExplicitHome: true, ConfigPathOverride: configPath}}
+	q.ItemIDs = []string{"plugin:local"}
+	q.DestinationIDs = []string{"opencode"}
+	q.Inputs = nil
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first state.Installation
+	for _, row := range rows {
+		if row.Component == "plugin" {
+			first = row
+		}
+	}
+	if first.SourcePath == "" || first.SourcePath == original || !strings.HasPrefix(filepath.Base(first.SourcePath), ".aact-plugin-") {
+		t.Fatalf("local plugin did not register from AACT's staged copy: source=%s row=%+v", original, first)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("original package source was changed: %v", err)
+	}
+	var cfg map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil || json.Unmarshal(data, &cfg) != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	plugins := cfg["plugins"].([]any)
+	if len(plugins) != 2 || plugins[0] != "npm:unrelated" || plugins[1].(map[string]any)["package"] != first.SourcePath {
+		t.Fatalf("local plugin entry or unrelated plugin changed: %#v", plugins)
+	}
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.SourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("updated plugin retained previous stage root %s: %v", first.SourcePath, err)
+	}
+	rows, err = s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current state.Installation
+	for _, row := range rows {
+		if row.Component == "plugin" {
+			current = row
+		}
+	}
+	if current.SourcePath == "" || current.SourcePath == first.SourcePath {
+		t.Fatalf("update did not replace staged plugin: old=%s current=%+v", first.SourcePath, current)
+	}
+	if _, err := s.RemoveProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(current.SourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained staged plugin root %s: %v", current.SourcePath, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("uninstall changed original package source: %v", err)
+	}
+}
+
 func TestApplyProfilePersistsPartialMarketplaceEffectAndRetries(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	dir := filepath.Join(t.TempDir(), "plugin")

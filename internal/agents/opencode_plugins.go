@@ -26,10 +26,11 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 	}
 	ref := strings.TrimSpace(q.Plugin.Reference)
 	if ref == "" {
-		if q.Plugin.Source != "" && q.StagedDir != "" && !filepath.IsAbs(q.Plugin.Source) && !strings.HasPrefix(q.Plugin.Source, "npm:") {
+		source := strings.TrimSpace(q.Plugin.Source)
+		if source != "" && q.StagedDir != "" && !strings.HasPrefix(source, "npm:") {
 			ref = q.StagedDir
 		} else {
-			ref = q.Plugin.Source
+			ref = source
 		}
 	}
 	if ref == "" {
@@ -245,7 +246,7 @@ func (a *opencodePluginAdapter) removeStagedPlugin(row state.Installation) error
 	if err != nil {
 		return err
 	}
-	for path := filepath.Dir(row.SourcePath); path != filepath.Dir(path); path = filepath.Dir(path) {
+	for path := row.SourcePath; path != filepath.Dir(path); path = filepath.Dir(path) {
 		if !strings.HasPrefix(filepath.Base(path), ".aact-plugin-") {
 			continue
 		}

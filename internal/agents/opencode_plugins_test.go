@@ -82,6 +82,28 @@ func TestOpenCodePluginDoesNotTakeOverForeignSamePackageOptions(t *testing.T) {
 	}
 }
 
+func TestOpenCodePluginKeepsExplicitNPMReference(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "opencode.json")
+	store, err := state.Open(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry(Dependencies{Store: store, Probe: DiscoveryProbe{GOOS: "linux", Home: root, Getenv: func(string) string { return "" }, LookPath: func(string) (string, error) { return "fixture", nil }}})
+	a, _ := r.Adapter("opencode")
+	plugin := catalog.Plugin{Name: "courier", Format: "opencode", Reference: "npm:opencode-courier"}
+	if _, err = a.(PluginManager).InstallPlugin(context.Background(), Scope{ID: "opencode", Home: root, ConfigPathOverride: cfg, ExplicitHome: true}, PluginRequest{Key: state.Key{Source: "fixture", Package: "demo"}, Plugin: plugin}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "npm:opencode-courier") {
+		t.Fatalf("explicit npm package reference was altered: %s", b)
+	}
+}
+
 func TestOpenCodePluginRepeatedUpdateAndRemovalUsesExactOwnedDigest(t *testing.T) {
 	root := t.TempDir()
 	cfg := filepath.Join(root, "opencode.jsonc")
