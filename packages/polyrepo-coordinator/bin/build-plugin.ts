@@ -3,7 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const courierURL = "https://github.com/paulharkink/opencode-courier.git";
-const courierCommit = "ef523d4a6b1d4515167076601dafd4fa6b3a448f";
+const courierCommit = "3414b2e68e4eb2f6ec2625cc0db346b815f686d6";
 
 function run(command: string, args: string[], cwd: string) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
