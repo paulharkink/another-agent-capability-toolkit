@@ -3,8 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const courierURL = "https://github.com/paulharkink/opencode-courier.git";
-// Temporary integration revision. Update to the reviewed pushed Courier feature commit before release.
-const courierCommit = "691385502885cdfb53879b1ff26aa12902104951";
+const courierCommit = "ef523d4a6b1d4515167076601dafd4fa6b3a448f";
 
 function run(command: string, args: string[], cwd: string) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -34,8 +33,12 @@ try {
     const resolvedSource = resolve(localSource);
     if (!statSync(resolvedSource).isDirectory()) throw new Error("Courier source must be a directory");
     cpSync(resolvedSource, source, { recursive: true, filter: (path) => ![".git", "node_modules", "dist"].includes(basename(path)) });
-    try { revision = run("git", ["-C", resolvedSource, "rev-parse", "HEAD"], resolvedSource); }
-    catch { revision = "local-unversioned"; }
+    if (existsSync(join(resolvedSource, ".git"))) {
+      try { revision = run("git", ["-C", resolvedSource, "rev-parse", "HEAD"], resolvedSource); }
+      catch { revision = "local-unversioned"; }
+    } else {
+      revision = "local-unversioned";
+    }
   } else {
     run("git", ["clone", "--no-checkout", courierURL, source], work);
     run("git", ["-C", source, "checkout", "--detach", courierCommit], work);
@@ -46,9 +49,10 @@ try {
   const built = join(source, "dist", "index.js");
   if (!existsSync(built)) throw new Error("Courier build did not produce dist/index.js");
   const id = `${Date.now()}-${process.pid}`;
-  const published = join(stageRoot, `courier-dist-${id}`);
-  renameSync(join(source, "dist"), published);
-  process.stdout.write(JSON.stringify({ reference: join(published, "index.js"), options: { repoMapFile: inventory }, revision }));
+  rmSync(join(source, ".git"), { recursive: true, force: true });
+  const published = join(stageRoot, `courier-build-${id}`);
+  renameSync(source, published);
+  process.stdout.write(JSON.stringify({ reference: published, options: { repoMapFile: inventory }, revision }));
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

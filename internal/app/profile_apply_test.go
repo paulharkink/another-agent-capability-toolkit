@@ -30,11 +30,17 @@ func (f *pluginBuildExecutor) Run(_ context.Context, _ []string, _ string, stdin
 	}
 	stage, _ := request.Context["staging_dir"].(string)
 	f.calls++
-	entry := filepath.Join(stage, "courier-dist", "index.js")
+	entry := filepath.Join(stage, "courier-build-fixture")
+	if err := os.MkdirAll(filepath.Join(entry, "dist"), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(entry, "package.json"), []byte(`{"type":"module","main":"./dist/index.js"}`), 0600); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(entry, []byte("export default {}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(entry, "dist", "index.js"), []byte("export default {}"), 0600); err != nil {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"reference": entry, "options": map[string]any{"repoMapFile": filepath.Join(takeString(request.Context["manager_state_dir"]), "manager", "repo-map-v1.json")}})

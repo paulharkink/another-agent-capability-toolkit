@@ -4,7 +4,6 @@ name = "Polyrepo Coordinator"
 
 [skill]
 name = "polyrepo-coordinator"
-files = ["SKILL.md"]
 
 [[plugins]]
 name = "polyrepo-coordinator"
