@@ -45,6 +45,7 @@ aact agents | settings                   Show supported agents / configuration
 aact config set-instance-directory PATH  Save a default instance configuration directory
 aact config set-image-source release|local  Select MCP image source
 aact polyrepo configure|list|peer add|remove    Manage local repository roots and peers
+aact polyrepo configure --root PATH [--worktree-root PATH] [--host HOST]  Save local repository roots
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
 
 Flags: --config PATH --state-dir PATH --instance-directory PATH
@@ -52,8 +53,8 @@ Flags: --config PATH --state-dir PATH --instance-directory PATH
        --instance NAME --mcp SERVER --item ITEM --agent-home [AGENT=]PATH
        --set name=value (repeat for collections) --interactive
        --external-url URL|NAME=URL --mcp NAME --skills-only --update-source --json --help --version
-       Polyrepo: --root PATH --worktree-root PATH --host HOST --peer-id ID
-       --peer-url URL --secret-file PATH --allowed-root PATH
+       Polyrepo peers: --peer-id ID --peer-url URL --secret-file PATH --allowed-root PATH
+       --peer-url URL --secret-file PATH --allowed-root PATH --worktree-root PATH
 
 Docker is required for container capabilities. Plain skills need no host runtime.
 `

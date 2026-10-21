@@ -153,7 +153,7 @@ func (a *mcpAdapter) unregisterMCPConfig(ctx context.Context, scope Environment,
 }
 
 // readMCPInventory interprets only this adapter's native config format.
-func nativeEntryDigest(entry map[string]any) string {
+func nativeEntryDigest(entry any) string {
 	data, _ := json.Marshal(entry)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

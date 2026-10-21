@@ -16,7 +16,7 @@ import (
 func polyrepoCommand(ctx context.Context, args []string, f flags, store *state.Store, out, errOut io.Writer) int {
 	fail := func(err error) int { fmt.Fprintln(errOut, err); return 1 }
 	if len(args) < 2 {
-		fmt.Fprintln(errOut, "usage: aact polyrepo configure|list|apply")
+		fmt.Fprintln(errOut, "usage: aact polyrepo configure|list|peer add|remove")
 		return 2
 	}
 	s, err := polyrepo.Load(store.Root())
@@ -101,24 +101,8 @@ func polyrepoCommand(ctx context.Context, args []string, f flags, store *state.S
 		}
 		fmt.Fprintln(out, "Added peer", f.peerID)
 		return 0
-	case "apply":
-		if f.opencodeConfig == "" {
-			fmt.Fprintln(errOut, "polyrepo apply requires --opencode-config PATH")
-			return 2
-		}
-		home := polyrepo.OpenCodeHome(f.homes)
-		if home == "" {
-			fmt.Fprintln(errOut, "polyrepo apply requires --agent-home opencode=PATH")
-			return 2
-		}
-		entry, count, nodeID, revision, e := polyrepo.Apply(ctx, store, f.courierSource, f.opencodeConfig, home, errOut)
-		if e != nil {
-			return fail(e)
-		}
-		fmt.Fprintf(out, "Built Courier revision %s at %s; registered OpenCode plugin with %d repositories from node %s\n", revision, entry, count, nodeID)
-		return 0
 	default:
-		fmt.Fprintln(errOut, "usage: aact polyrepo configure|list|apply")
+		fmt.Fprintln(errOut, "usage: aact polyrepo configure|list|peer add|remove")
 		return 2
 	}
 }

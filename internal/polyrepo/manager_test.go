@@ -3,12 +3,27 @@ package polyrepo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWorktreeMetadataFailsInsteadOfPublishingUnknownAsClean(t *testing.T) {
+	failed := false
+	_, err := worktreeMetadata(context.Background(), t.TempDir(), func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "branch" {
+			return []byte("main\n"), nil
+		}
+		failed = true
+		return nil, errors.New("permission denied")
+	})
+	if err == nil || !failed {
+		t.Fatalf("unreadable status was published as clean: err=%v", err)
+	}
+}
 
 func TestRefreshWritesNodeLocalInventoryAndPreservesManagerSettings(t *testing.T) {
 	root := t.TempDir()

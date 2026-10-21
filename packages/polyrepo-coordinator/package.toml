@@ -5,3 +5,28 @@ name = "Polyrepo Coordinator"
 [skill]
 name = "polyrepo-coordinator"
 files = ["SKILL.md"]
+
+[[plugins]]
+name = "polyrepo-coordinator"
+format = "opencode"
+source = "plugin"
+enabled_input = "install_polyrepo_coordinator"
+
+[plugins.build]
+command = ["bun", "bin/build-plugin.ts"]
+timeout_seconds = 900
+
+[[inputs]]
+name = "install_polyrepo_coordinator"
+type = "boolean"
+label = "Install Polyrepo Coordinator in OpenCode"
+hint = "Build and register the local OpenCode plugin."
+required = true
+default = true
+
+[[inputs]]
+name = "courier_source"
+type = "string"
+label = "Courier source checkout (optional)"
+hint = "Use a local Courier checkout for development; leave empty to build the pinned fork revision."
+required = false

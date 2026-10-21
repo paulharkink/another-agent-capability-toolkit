@@ -60,20 +60,24 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 			return PluginInstallResult{}, e
 		}
 		for _, row := range rows {
-			if row.Component == "plugin" && row.Mode == "opencode-v2" && row.Key == q.Key && row.AgentID == scope.ID && row.Destination == path {
-				owned[row.SourcePath] = true
+			if row.Component == "plugin" && row.Mode == "opencode-v2" && row.Key == q.Key && row.AgentID == scope.ID && row.Destination == path && strings.HasPrefix(row.ReleaseID, q.Plugin.Name+"@") {
+				owned[row.Digest] = true
 				previous = append(previous, row)
 			}
 		}
 	}
-	if err := updateOpenCodePlugin(ctx, path, q.Plugin.Name, ref, q.Plugin.Options, owned); err != nil {
+	entry := map[string]any{"package": ref}
+	if len(q.Plugin.Options) > 0 {
+		entry["options"] = q.Plugin.Options
+	}
+	if err := updateOpenCodePlugin(ctx, path, q.Plugin.Name, ref, entry, owned); err != nil {
 		return PluginInstallResult{}, err
 	}
 	id := scope.ID
 	if id == "" {
 		id = "opencode"
 	}
-	row := state.Installation{Key: q.Key, AgentID: id, AgentKind: "opencode", AgentHome: scope.Home, Component: "plugin", SourcePath: ref, Destination: path, Mode: "opencode-v2", ReleaseID: q.Plugin.Name + "@" + ref}
+	row := state.Installation{Key: q.Key, AgentID: id, AgentKind: "opencode", AgentHome: scope.Home, Component: "plugin", SourcePath: ref, Destination: path, Mode: "opencode-v2", ReleaseID: q.Plugin.Name + "@" + ref, Digest: nativeEntryDigest(entry)}
 	result := PluginInstallResult{Installation: row}
 	result.Removed = append(result.Removed, previous...)
 	if q.Existing != nil && len(result.Removed) == 0 {
@@ -82,7 +86,7 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 	return result, nil
 }
 
-func updateOpenCodePlugin(ctx context.Context, path, name, ref string, options map[string]any, owned map[string]bool) error {
+func updateOpenCodePlugin(ctx context.Context, path, name, ref string, entry map[string]any, owned map[string]bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -102,10 +106,6 @@ func updateOpenCodePlugin(ctx context.Context, path, name, ref string, options m
 	plugins, ok := doc["plugins"].([]any)
 	if exists := doc["plugins"]; exists != nil && !ok {
 		return fmt.Errorf("OpenCode config plugins must be an array")
-	}
-	entry := map[string]any{"package": ref}
-	if len(options) > 0 {
-		entry["options"] = options
 	}
 	if _, exists := doc["plugins"]; !exists {
 		patch, _ := json.Marshal([]map[string]any{{"op": "add", "path": "/plugins", "value": []any{entry}}})
@@ -128,8 +128,11 @@ func updateOpenCodePlugin(ctx context.Context, path, name, ref string, options m
 		case map[string]any:
 			pkg, _ = v["package"].(string)
 		}
-		if pkg == ref || owned[pkg] {
+		digest := nativeEntryDigest(p)
+		if owned[digest] {
 			ops = append(ops, map[string]any{"op": "remove", "path": fmt.Sprintf("/plugins/%d", i)})
+		} else if pkg == ref {
+			return fmt.Errorf("OpenCode plugin package %q already exists but is not owned by AACT plugin %q", ref, name)
 		}
 	}
 	ops = append(ops, map[string]any{"op": "add", "path": "/plugins/-", "value": entry})
@@ -156,7 +159,7 @@ func (a *opencodePluginAdapter) RemovePlugin(ctx context.Context, scope Scope, r
 	}
 	data, err := os.ReadFile(row.Destination)
 	if os.IsNotExist(err) {
-		return nil
+		return a.removeStagedPlugin(row)
 	}
 	if err != nil {
 		return err
@@ -174,6 +177,7 @@ func (a *opencodePluginAdapter) RemovePlugin(ctx context.Context, scope Scope, r
 		_, ref, _ = strings.Cut(row.ReleaseID, "@")
 	}
 	ops := []map[string]any{}
+	found := false
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
 		pkg := ""
@@ -183,13 +187,41 @@ func (a *opencodePluginAdapter) RemovePlugin(ctx context.Context, scope Scope, r
 		case map[string]any:
 			pkg, _ = v["package"].(string)
 		}
-		if pkg != ref {
-			continue
+		if pkg == ref && nativeEntryDigest(p) == row.Digest {
+			found = true
+			ops = append(ops, map[string]any{"op": "remove", "path": fmt.Sprintf("/plugins/%d", i)})
 		}
-		ops = append(ops, map[string]any{"op": "remove", "path": fmt.Sprintf("/plugins/%d", i)})
+	}
+	if !found && row.Digest != "" {
+		for _, p := range plugins {
+			pkg := ""
+			switch v := p.(type) {
+			case string:
+				pkg = v
+			case map[string]any:
+				pkg, _ = v["package"].(string)
+			}
+			if pkg == ref {
+				return fmt.Errorf("owned OpenCode plugin %q changed in %s (expected %s, got %s)", row.ReleaseID, row.Destination, row.Digest, nativeEntryDigest(p))
+			}
+		}
+	}
+	if !found && row.Digest == "" {
+		for _, p := range plugins {
+			pkg := ""
+			switch v := p.(type) {
+			case string:
+				pkg = v
+			case map[string]any:
+				pkg, _ = v["package"].(string)
+			}
+			if pkg == ref {
+				return fmt.Errorf("owned OpenCode plugin %q has no ownership digest; refusing to remove an ambiguous entry", row.ReleaseID)
+			}
+		}
 	}
 	if len(ops) == 0 {
-		return nil
+		return a.removeStagedPlugin(row)
 	}
 	v, err := hujson.Parse(data)
 	if err != nil {
@@ -199,7 +231,35 @@ func (a *opencodePluginAdapter) RemovePlugin(ctx context.Context, scope Scope, r
 	if err = v.Patch(patch); err != nil {
 		return err
 	}
-	return writeConfigAtomic(row.Destination, v.Pack())
+	if err := writeConfigAtomic(row.Destination, v.Pack()); err != nil {
+		return err
+	}
+	return a.removeStagedPlugin(row)
+}
+
+func (a *opencodePluginAdapter) removeStagedPlugin(row state.Installation) error {
+	if a.deps.Store == nil || row.SourcePath == "" {
+		return nil
+	}
+	generated, err := filepath.Abs(filepath.Join(a.deps.Store.GeneratedDir(row.Key), ""))
+	if err != nil {
+		return err
+	}
+	for path := filepath.Dir(row.SourcePath); path != filepath.Dir(path); path = filepath.Dir(path) {
+		if !strings.HasPrefix(filepath.Base(path), ".aact-plugin-") {
+			continue
+		}
+		absolute, e := filepath.Abs(path)
+		if e != nil {
+			return e
+		}
+		rel, e := filepath.Rel(generated, absolute)
+		if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return nil
+		}
+		return os.RemoveAll(absolute)
+	}
+	return nil
 }
 
 func writeConfigAtomic(path string, data []byte) error {

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -17,6 +18,32 @@ import (
 	"strings"
 	"testing"
 )
+
+type pluginBuildExecutor struct{ calls int }
+
+func (f *pluginBuildExecutor) Run(_ context.Context, _ []string, _ string, stdin []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	var request struct {
+		Context map[string]any `json:"context"`
+	}
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	stage, _ := request.Context["staging_dir"].(string)
+	f.calls++
+	entry := filepath.Join(stage, "courier-dist", "index.js")
+	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(entry, []byte("export default {}"), 0600); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"reference": entry, "options": map[string]any{"repoMapFile": filepath.Join(takeString(request.Context["manager_state_dir"]), "manager", "repo-map-v1.json")}})
+}
+
+func takeString(value any) string {
+	result, _ := value.(string)
+	return result
+}
 
 type fixtureAdapters struct{ a *profileAdapter }
 
@@ -296,6 +323,70 @@ func TestApplyProfilePluginExplicitAndSavedSelection(t *testing.T) {
 	out, err = s.ApplyProfile(context.Background(), q)
 	if err != nil || len(out.Changes) != 2 || len(a.calls) != 1 {
 		t.Fatalf("saved selection: %+v %v", out, err)
+	}
+}
+
+func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	packageDir := s.Source.Catalog[0].Dir
+	if err := os.MkdirAll(filepath.Join(packageDir, "plugin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "opencode.json")
+	if err := os.WriteFile(configPath, []byte(`{"provider":{"fixture":{}},"mcp":{"fixture":{}},"plugins":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0].Plugins = []catalog.Plugin{{Name: "native", Format: "opencode", Source: "plugin", Build: &catalog.Command{Argv: []string{"builder"}}}}
+	s.Source.Catalog[0].Dir = packageDir
+	build := &pluginBuildExecutor{}
+	s.Options.Runner = build
+	s.Options.Adapters = agents.NewRegistry(agents.Dependencies{Store: s.Store, Probe: *s.Options.DiscoveryProbe})
+	s.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: t.TempDir(), ExplicitHome: true, ConfigPathOverride: configPath}}
+	q.ItemIDs = []string{"plugin:native"}
+	q.DestinationIDs = []string{"opencode"}
+	q.Inputs = map[string]any{"label": "valid", "enabled": false}
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if build.calls != 1 {
+		t.Fatalf("build calls after install = %d", build.calls)
+	}
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if build.calls != 2 {
+		t.Fatalf("build calls after update = %d", build.calls)
+	}
+	var config map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	plugins := config["plugins"].([]any)
+	if len(plugins) != 1 {
+		t.Fatalf("plugins after update: %#v", plugins)
+	}
+	plugin := plugins[0].(map[string]any)
+	options := plugin["options"].(map[string]any)
+	if options["repoMapFile"] != filepath.Join(s.Store.Root(), "manager", "repo-map-v1.json") || config["provider"] == nil || config["mcp"] == nil {
+		t.Fatalf("registration did not preserve config and include inventory: %#v", config)
+	}
+	_, removeErr := s.RemoveProfile(context.Background(), q)
+	if removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if plugins = config["plugins"].([]any); len(plugins) != 0 || config["provider"] == nil || config["mcp"] == nil {
+		t.Fatalf("remove did not preserve unrelated configuration: %#v", config)
 	}
 }
 

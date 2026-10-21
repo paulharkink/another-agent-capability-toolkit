@@ -178,13 +178,11 @@ func Refresh(ctx context.Context, stateRoot string) (Inventory, error) {
 		if x != nil {
 			return inv, x
 		}
-		branch, _ := git(ctx, real, "branch", "--show-current")
-		dirty, _ := git(ctx, real, "status", "--porcelain")
-		kind := "main"
-		if info, x := os.Stat(filepath.Join(real, ".git")); x == nil && !info.IsDir() {
-			kind = "worktree"
+		wt, x := worktreeMetadata(ctx, real, git)
+		if x != nil {
+			return inv, fmt.Errorf("inspect repository state %q: %w", real, x)
 		}
-		inv.Repositories = append(inv.Repositories, Repository{row.Host, row.Name, real, hash(common), []Worktree{{WorktreeID: hash(real), Branch: strings.TrimSpace(string(branch)), Kind: kind, Dirty: len(dirty) > 0}}})
+		inv.Repositories = append(inv.Repositories, Repository{row.Host, row.Name, real, hash(common), []Worktree{wt}})
 	}
 	sort.Slice(inv.Repositories, func(i, j int) bool {
 		a, b := inv.Repositories[i], inv.Repositories[j]
@@ -204,6 +202,26 @@ func Refresh(ctx context.Context, stateRoot string) (Inventory, error) {
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	c := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	return c.Output()
+}
+
+type gitRunner func(context.Context, string, ...string) ([]byte, error)
+
+func worktreeMetadata(ctx context.Context, path string, run gitRunner) (Worktree, error) {
+	branch, err := run(ctx, path, "branch", "--show-current")
+	if err != nil {
+		return Worktree{}, fmt.Errorf("read current branch: %w", err)
+	}
+	dirty, err := run(ctx, path, "status", "--porcelain")
+	if err != nil {
+		return Worktree{}, fmt.Errorf("read working tree status: %w", err)
+	}
+	kind := "main"
+	if info, e := os.Stat(filepath.Join(path, ".git")); e == nil && !info.IsDir() {
+		kind = "worktree"
+	} else if e != nil {
+		return Worktree{}, e
+	}
+	return Worktree{WorktreeID: hash(path), Branch: strings.TrimSpace(string(branch)), Kind: kind, Dirty: len(dirty) > 0}, nil
 }
 func hash(s string) string { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:]) }
 func makeID() string {

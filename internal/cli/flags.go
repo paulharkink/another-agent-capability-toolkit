@@ -13,7 +13,6 @@ type flags struct {
 	sets                                                                      map[string][]string
 	externalURLs                                                              map[string]string
 	config, envroot, state, environment, target, instance, url, mcp           string
-	opencodeConfig, courierSource                                             string
 	peerID, peerURL, peerSecret                                               string
 	worktreeRoot                                                              string
 	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
@@ -49,7 +48,7 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--item", "--instance-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--external-url", "--mcp", "--agent", "--agent-home", "--set", "--opencode-config", "--courier-source", "--root", "--host", "--peer-id", "--peer-url", "--secret-file", "--allowed-root", "--worktree-root":
+		case "--item", "--instance-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--external-url", "--mcp", "--agent", "--agent-home", "--set", "--root", "--host", "--peer-id", "--peer-url", "--secret-file", "--allowed-root", "--worktree-root":
 			if !has {
 				n++
 				if n == len(args) {
@@ -105,10 +104,6 @@ func parse(args []string) (flags, error) {
 					return f, errors.New("--set expects name=value")
 				}
 				f.sets[k] = append(f.sets[k], v)
-			case "--opencode-config":
-				f.opencodeConfig = value
-			case "--courier-source":
-				f.courierSource = value
 			case "--root":
 				f.roots = append(f.roots, value)
 			case "--host":
@@ -127,7 +122,7 @@ func parse(args []string) (flags, error) {
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--item" && name != "--instance-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" && name != "--opencode-config" && name != "--courier-source" && name != "--root" && name != "--host" && name != "--peer-id" && name != "--peer-url" && name != "--secret-file" && name != "--allowed-root" && name != "--worktree-root" {
+		if has && name != "--item" && name != "--instance-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" && name != "--root" && name != "--host" && name != "--peer-id" && name != "--peer-url" && name != "--secret-file" && name != "--allowed-root" && name != "--worktree-root" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}

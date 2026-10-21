@@ -58,6 +58,7 @@ type Plugin struct {
 	Source       string         `toml:"source" json:"source"`
 	Reference    string         `toml:"reference" json:"reference,omitempty"`
 	Options      map[string]any `toml:"options" json:"options,omitempty"`
+	Build        *Command       `toml:"build" json:"build,omitempty"`
 	EnabledInput string         `toml:"enabled_input" json:"enabled_input,omitempty"`
 }
 type Input struct {
