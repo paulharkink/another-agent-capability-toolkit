@@ -41,10 +41,26 @@ func TestOpenCodePluginManagerPreservesJSONCAndRemovesOnlyOwnedEntry(t *testing.
 		t.Fatal(err)
 	}
 	text := string(b)
-	for _, want := range []string{"keep comment", "plugin comment survives edits", "\"provider\"", "\"mcp\"", "npm:other", "npm:keep", plugin.Reference, "repoMapFile"} {
+	for _, want := range []string{"keep comment", "plugin comment survives edits", "\"provider\"", "\"mcp\"", "npm:other", "npm:keep", "repoMapFile"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("preserved/registered config missing %q: %s", want, text)
 		}
+	}
+	doc, err := standardJSON(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugins, ok := doc["plugins"].([]any)
+	if !ok || len(plugins) != 3 {
+		t.Fatalf("unexpected plugin entries: %#v", doc["plugins"])
+	}
+	managed, ok := plugins[2].(map[string]any)
+	if !ok {
+		t.Fatalf("local plugin entry is not an object: %#v", plugins[2])
+	}
+	options, optionsOK := managed["options"].(map[string]any)
+	if !optionsOK || managed["package"] != plugin.Reference || options["repoMapFile"] != plugin.Options["repoMapFile"] {
+		t.Fatalf("local plugin path or options were not preserved exactly: %#v", plugins[2])
 	}
 	if err := a.(PluginManager).RemovePlugin(context.Background(), Scope{ID: "opencode", Home: root, ConfigPathOverride: cfg, ExplicitHome: true}, result.Installation); err != nil {
 		t.Fatal(err)
@@ -59,8 +75,11 @@ func TestOpenCodePluginDoesNotTakeOverForeignSamePackageOptions(t *testing.T) {
 	root := t.TempDir()
 	cfg := filepath.Join(root, "opencode.jsonc")
 	ref := filepath.Join(root, "plugin", "index.js")
-	original := `{"plugins":[{"package":"` + ref + `","options":{"owner":"user"}},"npm:other"]}`
-	if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
+	original, err := json.Marshal(map[string]any{"plugins": []any{map[string]any{"package": ref, "options": map[string]any{"owner": "user"}}, "npm:other"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, original, 0600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := state.Open(filepath.Join(root, "state"))
@@ -77,7 +96,7 @@ func TestOpenCodePluginDoesNotTakeOverForeignSamePackageOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != original {
+	if string(got) != string(original) {
 		t.Fatalf("foreign same-package entry was modified: %s", got)
 	}
 }
