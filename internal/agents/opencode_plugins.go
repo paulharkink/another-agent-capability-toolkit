@@ -262,6 +262,10 @@ func (a *opencodePluginAdapter) removeStagedPlugin(row state.Installation) error
 	return nil
 }
 
+func (a *opencodePluginAdapter) CleanupPluginStage(row state.Installation) error {
+	return a.removeStagedPlugin(row)
+}
+
 func writeConfigAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err

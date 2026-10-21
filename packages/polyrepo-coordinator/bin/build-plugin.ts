@@ -52,7 +52,7 @@ try {
   rmSync(join(source, ".git"), { recursive: true, force: true });
   const published = join(stageRoot, `courier-build-${id}`);
   renameSync(source, published);
-  process.stdout.write(JSON.stringify({ reference: published, options: { repoMapFile: inventory }, revision }));
+  process.stdout.write(JSON.stringify({ reference: join(published, "dist"), options: { repoMapFile: inventory }, revision }));
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

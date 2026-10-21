@@ -1481,6 +1481,13 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			if e = record(pluginResult.Installation); e != nil {
 				return out, e
 			}
+			if cleaner, ok := a.(agents.PluginStageCleaner); ok {
+				for _, removed := range pluginResult.Removed {
+					if cleanupErr := cleaner.CleanupPluginStage(removed); cleanupErr != nil {
+						return out, fmt.Errorf("clean replaced plugin stage %q: %w", removed.ReleaseID, cleanupErr)
+					}
+				}
+			}
 		}
 	}
 	out.Step = "complete"

@@ -103,3 +103,9 @@ type PluginManager interface {
 	InstallPlugin(context.Context, Scope, PluginRequest) (PluginInstallResult, error)
 	RemovePlugin(context.Context, Scope, state.Installation) error
 }
+
+// PluginStageCleaner releases only AACT-owned staging data after an update has
+// successfully replaced its registration and persisted the new installation.
+type PluginStageCleaner interface {
+	CleanupPluginStage(state.Installation) error
+}

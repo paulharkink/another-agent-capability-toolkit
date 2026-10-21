@@ -43,7 +43,7 @@ func (f *pluginBuildExecutor) Run(_ context.Context, _ []string, _ string, stdin
 	if err := os.WriteFile(filepath.Join(entry, "dist", "index.js"), []byte("export default {}"), 0600); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"reference": entry, "options": map[string]any{"repoMapFile": filepath.Join(takeString(request.Context["manager_state_dir"]), "manager", "repo-map-v1.json")}})
+	return json.Marshal(map[string]any{"reference": filepath.Join(entry, "dist"), "options": map[string]any{"repoMapFile": filepath.Join(takeString(request.Context["manager_state_dir"]), "manager", "repo-map-v1.json")}})
 }
 
 func takeString(value any) string {
@@ -354,6 +354,19 @@ func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
 	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
 		t.Fatal(err)
 	}
+	installed, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldPlugin state.Installation
+	for _, row := range installed {
+		if row.Component == "plugin" {
+			oldPlugin = row
+		}
+	}
+	if oldPlugin.SourcePath == "" {
+		t.Fatal("first install did not record its staged plugin path")
+	}
 	if build.calls != 1 {
 		t.Fatalf("build calls after install = %d", build.calls)
 	}
@@ -362,6 +375,9 @@ func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
 	}
 	if build.calls != 2 {
 		t.Fatalf("build calls after update = %d", build.calls)
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(oldPlugin.SourcePath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("previous built plugin directory remains after update: path=%s err=%v", filepath.Dir(filepath.Dir(oldPlugin.SourcePath)), err)
 	}
 	var config map[string]any
 	data, err := os.ReadFile(configPath)
@@ -376,6 +392,9 @@ func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
 		t.Fatalf("plugins after update: %#v", plugins)
 	}
 	plugin := plugins[0].(map[string]any)
+	if !strings.HasSuffix(plugin["package"].(string), string(filepath.Separator)+"dist") {
+		t.Fatalf("OpenCode plugin reference should target built dist directory: %#v", plugin)
+	}
 	options := plugin["options"].(map[string]any)
 	if options["repoMapFile"] != filepath.Join(s.Store.Root(), "manager", "repo-map-v1.json") || config["provider"] == nil || config["mcp"] == nil {
 		t.Fatalf("registration did not preserve config and include inventory: %#v", config)
