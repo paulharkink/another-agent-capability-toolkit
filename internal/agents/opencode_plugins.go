@@ -54,6 +54,7 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 		path = scope.ConfigPathOverride
 	}
 	owned := map[string]bool{}
+	ownedEntries := map[string]string{}
 	var previous []state.Installation
 	if a.deps.Store != nil {
 		rows, e := a.deps.Store.Installations()
@@ -63,6 +64,7 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 		for _, row := range rows {
 			if row.Component == "plugin" && row.Mode == "opencode-v2" && row.Key == q.Key && row.AgentID == scope.ID && row.Destination == path && strings.HasPrefix(row.ReleaseID, q.Plugin.Name+"@") {
 				owned[row.Digest] = true
+				ownedEntries[row.SourcePath] = row.Digest
 				previous = append(previous, row)
 			}
 		}
@@ -71,7 +73,7 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 	if len(q.Plugin.Options) > 0 {
 		entry["options"] = q.Plugin.Options
 	}
-	if err := updateOpenCodePlugin(ctx, path, q.Plugin.Name, ref, entry, owned); err != nil {
+	if err := updateOpenCodePlugin(ctx, path, q.Plugin.Name, ref, entry, owned, ownedEntries); err != nil {
 		return PluginInstallResult{}, err
 	}
 	id := scope.ID
@@ -87,7 +89,7 @@ func (a *opencodePluginAdapter) InstallPlugin(ctx context.Context, scope Scope, 
 	return result, nil
 }
 
-func updateOpenCodePlugin(ctx context.Context, path, name, ref string, entry map[string]any, owned map[string]bool) error {
+func updateOpenCodePlugin(ctx context.Context, path, name, ref string, entry map[string]any, owned map[string]bool, ownedEntries map[string]string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -130,6 +132,9 @@ func updateOpenCodePlugin(ctx context.Context, path, name, ref string, entry map
 			pkg, _ = v["package"].(string)
 		}
 		digest := nativeEntryDigest(p)
+		if expected, wasOwned := ownedEntries[pkg]; wasOwned && digest != expected {
+			return fmt.Errorf("owned OpenCode plugin %q changed in %s (expected %s, got %s); refusing to replace it", name, path, expected, digest)
+		}
 		if owned[digest] {
 			ops = append(ops, map[string]any{"op": "remove", "path": fmt.Sprintf("/plugins/%d", i)})
 		} else if pkg == ref {

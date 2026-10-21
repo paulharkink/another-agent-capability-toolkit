@@ -15,7 +15,9 @@ type flags struct {
 	config, envroot, state, environment, target, instance, url, mcp           string
 	peerID, peerURL, peerSecret                                               string
 	worktreeRoot                                                              string
+	webhookHost, webhookPort, webhookSecret                                   string
 	interactive, skillsOnly, json, dryrun, apply, help, version, updateSource bool
+	disableWebhook                                                            bool
 }
 
 func parse(args []string) (flags, error) {
@@ -48,7 +50,9 @@ func parse(args []string) (flags, error) {
 			f.help = true
 		case "--version":
 			f.version = true
-		case "--item", "--instance-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--external-url", "--mcp", "--agent", "--agent-home", "--set", "--root", "--host", "--peer-id", "--peer-url", "--secret-file", "--allowed-root", "--worktree-root":
+		case "--disable-webhook":
+			f.disableWebhook = true
+		case "--item", "--instance-directory", "--config", "--environment-directory", "--environment-root", "--state-dir", "--environment", "--target", "--instance", "--external-url", "--mcp", "--agent", "--agent-home", "--set", "--root", "--host", "--peer-id", "--peer-url", "--secret-file", "--allowed-root", "--worktree-root", "--webhook-host", "--webhook-port", "--webhook-secret-file":
 			if !has {
 				n++
 				if n == len(args) {
@@ -118,11 +122,17 @@ func parse(args []string) (flags, error) {
 				f.allowedRoots = append(f.allowedRoots, value)
 			case "--worktree-root":
 				f.worktreeRoot = value
+			case "--webhook-host":
+				f.webhookHost = value
+			case "--webhook-port":
+				f.webhookPort = value
+			case "--webhook-secret-file":
+				f.webhookSecret = value
 			}
 		default:
 			return f, fmt.Errorf("unknown flag %s", name)
 		}
-		if has && name != "--item" && name != "--instance-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" && name != "--root" && name != "--host" && name != "--peer-id" && name != "--peer-url" && name != "--secret-file" && name != "--allowed-root" && name != "--worktree-root" {
+		if has && name != "--item" && name != "--instance-directory" && name != "--config" && name != "--environment-directory" && name != "--environment-root" && name != "--state-dir" && name != "--environment" && name != "--target" && name != "--instance" && name != "--external-url" && name != "--mcp" && name != "--agent" && name != "--agent-home" && name != "--set" && name != "--root" && name != "--host" && name != "--peer-id" && name != "--peer-url" && name != "--secret-file" && name != "--allowed-root" && name != "--worktree-root" && name != "--webhook-host" && name != "--webhook-port" && name != "--webhook-secret-file" {
 			return f, fmt.Errorf("%s does not take a value", name)
 		}
 	}

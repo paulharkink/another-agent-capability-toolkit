@@ -55,6 +55,8 @@ Flags: --config PATH --state-dir PATH --instance-directory PATH
        --external-url URL|NAME=URL --mcp NAME --skills-only --update-source --json --help --version
        Polyrepo peers: --peer-id ID --peer-url URL --secret-file PATH --allowed-root PATH
        --peer-url URL --secret-file PATH --allowed-root PATH --worktree-root PATH
+       Optional receiver: --webhook-host HOST --webhook-port PORT --webhook-secret-file PATH
+       --disable-webhook clears this node's optional receiver settings
 
 Docker is required for container capabilities. Plain skills need no host runtime.
 `

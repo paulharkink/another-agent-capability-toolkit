@@ -26,12 +26,18 @@ type Peer struct {
 	SecretFile   string   `json:"secretFile"`
 	AllowedRoots []string `json:"allowedRoots,omitempty"`
 }
+type Listener struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	SecretFile string `json:"secretFile"`
+}
 type Settings struct {
-	NodeID       string   `json:"nodeId,omitempty"`
-	Roots        []string `json:"roots,omitempty"`
-	Hosts        []string `json:"hosts,omitempty"`
-	Peers        []Peer   `json:"peers,omitempty"`
-	WorktreeRoot string   `json:"worktreeRoot,omitempty"`
+	NodeID       string    `json:"nodeId,omitempty"`
+	Roots        []string  `json:"roots,omitempty"`
+	Hosts        []string  `json:"hosts,omitempty"`
+	Peers        []Peer    `json:"peers,omitempty"`
+	WorktreeRoot string    `json:"worktreeRoot,omitempty"`
+	Listener     *Listener `json:"listener,omitempty"`
 }
 type Worktree struct {
 	WorktreeID string `json:"worktreeId"`
@@ -93,6 +99,10 @@ func Save(root string, s Settings) error {
 	for i := range s.Peers {
 		s.Peers[i].AllowedRoots = cleanPaths(s.Peers[i].AllowedRoots)
 		s.Peers[i].SecretFile = filepath.Clean(s.Peers[i].SecretFile)
+	}
+	if s.Listener != nil {
+		s.Listener.Host = strings.TrimSpace(s.Listener.Host)
+		s.Listener.SecretFile = filepath.Clean(s.Listener.SecretFile)
 	}
 	raw, _, e := load(root)
 	if e != nil {

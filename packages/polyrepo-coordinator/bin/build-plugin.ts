@@ -22,6 +22,16 @@ const inventory = join(stateRoot, "manager", "repo-map-v1.json");
 if (!existsSync(inventory)) throw new Error("run `aact polyrepo configure` and `aact polyrepo list` before installing this capability");
 const inventoryData = JSON.parse(readFileSync(inventory, "utf8"));
 if (inventoryData.version !== 1) throw new Error("unsupported Polyrepo Coordinator inventory version");
+const managerSettings = JSON.parse(readFileSync(join(stateRoot, "manager", "settings.json"), "utf8"));
+const polyrepoSettings = managerSettings.polyrepo ?? {};
+const options: Record<string, unknown> = { repoMapFile: inventory };
+if (polyrepoSettings.listener != null) {
+  const listener = polyrepoSettings.listener;
+  if (typeof listener.host !== "string" || !listener.host.trim() || !Number.isInteger(listener.port) || listener.port < 1 || listener.port > 65535 || typeof listener.secretFile !== "string" || !listener.secretFile.trim()) {
+    throw new Error("local webhook settings are incomplete; configure host, port, and secret file with `aact polyrepo configure`");
+  }
+  options.webhook = { host: listener.host, port: listener.port, secretFile: listener.secretFile };
+}
 
 const inputs = request.inputs ?? {};
 const localSource = typeof inputs.courier_source === "string" ? inputs.courier_source.trim() : "";
@@ -52,7 +62,7 @@ try {
   rmSync(join(source, ".git"), { recursive: true, force: true });
   const published = join(stageRoot, `courier-build-${id}`);
   renameSync(source, published);
-  process.stdout.write(JSON.stringify({ reference: join(published, "dist"), options: { repoMapFile: inventory }, revision }));
+  process.stdout.write(JSON.stringify({ reference: join(published, "dist"), options, revision }));
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

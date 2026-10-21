@@ -163,3 +163,66 @@ func TestOpenCodePluginRepeatedUpdateAndRemovalUsesExactOwnedDigest(t *testing.T
 		t.Fatalf("foreign plugin was removed or changed: %#v", plugins)
 	}
 }
+
+func TestOpenCodePluginUpdateRefusesEditedOwnedEntry(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "opencode.jsonc")
+	firstRef := filepath.Join(root, "plugin-v1", "dist", "index.js")
+	secondRef := filepath.Join(root, "plugin-v2", "dist", "index.js")
+	if err := os.WriteFile(cfg, []byte(`{"plugins":["npm:unrelated"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry(Dependencies{Store: store, Probe: DiscoveryProbe{GOOS: "linux", Home: root, Getenv: func(string) string { return "" }, LookPath: func(string) (string, error) { return "fixture", nil }}})
+	a, _ := r.Adapter("opencode")
+	mgr := a.(PluginManager)
+	scope := Scope{ID: "opencode", Home: root, ConfigPathOverride: cfg, ExplicitHome: true}
+	key := state.Key{Source: "x", Package: "y"}
+	first, err := mgr.InstallPlugin(context.Background(), scope, PluginRequest{Key: key, Plugin: catalog.Plugin{Name: "coordinator", Format: "opencode", Reference: firstRef, Options: map[string]any{"owner": "aact"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Record(first.Installation); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := standardJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugins := doc["plugins"].([]any)
+	managed := plugins[1].(map[string]any)
+	managed["options"].(map[string]any)["webhook"] = map[string]any{"host": "127.0.0.1"}
+	encoded, _ := json.Marshal(doc)
+	if err = os.WriteFile(cfg, encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.InstallPlugin(context.Background(), scope, PluginRequest{Key: key, Plugin: catalog.Plugin{Name: "coordinator", Format: "opencode", Reference: secondRef, Options: map[string]any{"owner": "aact", "webhook": map[string]any{"host": "127.0.0.1"}}}})
+	if err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("edited owned entry should block update with an ownership conflict; got %v", err)
+	}
+	after, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("failed update changed OpenCode config\nbefore: %s\nafter: %s", before, after)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].SourcePath != firstRef || rows[0].Digest != first.Installation.Digest {
+		t.Fatalf("failed update replaced prior ownership state: %+v", rows)
+	}
+}

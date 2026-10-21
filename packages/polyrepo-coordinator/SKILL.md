@@ -10,10 +10,17 @@ The plugin reads its node-local inventory from the `repoMapFile` option. AACT
 stores that inventory and peer descriptors under its local manager state; do
 not copy peer credentials or settings into portable skills.
 
-Before remote worktree creation, confirm the receiving Courier node's
-`allowedRoots` explicitly grants both the selected source checkout and that
-node's configured `worktreeRoot`. Keep grants scoped to intended paths; never
-assume that the Head's local peer descriptor grants access on the receiver.
+Before remote worktree creation, confirm the receiving Courier node has a
+peer entry for the Head that grants both the selected source checkout and the
+receiver's configured `worktreeRoot`. Each `allowedRoots` value is a path on
+the node where that peer entry is configured, granting the named peer access
+to that local path. Configure reciprocal grants separately on each node and
+keep them scoped to intended paths.
+
+AACT may configure this node's optional receiver with a local listener host,
+port, and secret-file path before normal capability installation. These
+values stay in local AACT settings; never copy secret contents into the pack
+or OpenCode configuration.
 
 ## Courier coordination
 
