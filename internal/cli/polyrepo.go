@@ -144,6 +144,13 @@ func privateSecretFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("secret file must be a regular file")
 	}
+	contents, err := os.ReadFile(secret)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return "", fmt.Errorf("secret file must not be empty")
+	}
 	// Windows file modes do not report ACL readability using POSIX permission
 	// bits. Windows users must protect the file with the normal user ACL.
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
