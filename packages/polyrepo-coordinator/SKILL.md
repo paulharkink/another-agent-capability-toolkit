@@ -10,6 +10,11 @@ The plugin reads its node-local inventory from the `repoMapFile` option. AACT
 stores that inventory and peer descriptors under its local manager state; do
 not copy peer credentials or settings into portable skills.
 
+Before remote worktree creation, confirm the receiving Courier node's
+`allowedRoots` explicitly grants both the selected source checkout and that
+node's configured `worktreeRoot`. Keep grants scoped to intended paths; never
+assume that the Head's local peer descriptor grants access on the receiver.
+
 ## Courier coordination
 
 The Head Unit owns cross-repository coordination. Workers report to the Head;

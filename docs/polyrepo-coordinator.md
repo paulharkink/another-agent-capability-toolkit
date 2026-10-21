@@ -26,15 +26,26 @@ and configure only its reference:
 aact --state-dir /private/aact-state polyrepo peer add \
   --peer-id windows-node --peer-url https://node.example.invalid \
   --secret-file /private/keys/courier-peer.key \
-  --allowed-root /work/repos
+  --allowed-root /work/repos/team/project \
+  --allowed-root /work/courier-worktrees
 ```
 
 The key file must be a regular file inaccessible to group/other users. AACT
 stores its path in protected local manager settings; key contents are never
 read or copied into the inventory or skill.
 
+For remote managed worktree creation, explicitly grant both the source
+checkout path and that node's configured `worktreeRoot` in the receiving
+Courier node's `allowedRoots`. The example's two `--allowed-root` entries keep
+the Head's local peer descriptor aligned with those remote grants. Listing
+filters worktrees and destinations by the peer grants, and prepare checks both
+the selected checkout and explicit destination against them and the node's
+`worktreeRoot`. Missing grants make the paths unavailable; do not broaden a
+grant implicitly to a shared parent directory.
+
 Install Polyrepo Coordinator as a normal catalog capability. Its declared
-plugin build hook copies the pinned Courier fork to the capability's private
+plugin build hook checks out pinned Courier revision
+`0b91b0c2e7a6c6c4b56e99634172a19d7e4bad72` into the capability's private
 staging area, builds it there, and hands the local entrypoint and inventory
 path to AACT's generic OpenCode plugin manager. The capability is selected by
 default when installing it. For development, pass an explicit local Courier
