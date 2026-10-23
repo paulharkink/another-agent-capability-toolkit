@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,9 +21,9 @@ func TestSnapshotBuildUsesNormalizedBranchSemVer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script, "--clean", "--skip=publish")
+	cmd := snapshotScriptCommand(t, repo, script, "--clean", "--skip=publish")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "CAPTURE="+capture)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"), "CAPTURE="+capture)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("snapshot wrapper failed: %s: %v", output, err)
 	}
@@ -71,7 +72,7 @@ func TestSnapshotBuildUsesLatestFetchedStableTagEvenWhenNotMerged(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script, "--print-image-version")
+	cmd := snapshotScriptCommand(t, repo, script, "--print-image-version")
 	cmd.Dir = repo
 	output, err := cmd.CombinedOutput()
 	if err != nil || string(output) != "0.5.0\n" {
@@ -116,7 +117,7 @@ func TestSnapshotBuildFetchesReleaseTagsFromOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script, "--print-image-version")
+	cmd := snapshotScriptCommand(t, repo, script, "--print-image-version")
 	cmd.Dir = repo
 	output, err := cmd.CombinedOutput()
 	if err != nil || string(output) != "0.5.0\n" {
@@ -144,9 +145,9 @@ func TestSnapshotBuildRejectsDetachedHeadWithoutHashFallback(t *testing.T) {
 	if pathErr != nil {
 		t.Fatal(pathErr)
 	}
-	cmd := exec.Command("/bin/sh", script)
+	cmd := snapshotScriptCommand(t, repo, script)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "CAPTURE="+capture)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"), "CAPTURE="+capture)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "requires an attached branch") {
 		t.Fatalf("detached snapshot was not rejected clearly: %q, %v", output, err)
@@ -173,9 +174,9 @@ func TestSnapshotBuildUsesExplicitBranchForDetachedBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script)
+	cmd := snapshotScriptCommand(t, repo, script)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "CAPTURE="+capture, "AACT_SNAPSHOT_SOURCE_BRANCH=Feature/Explicit_Branch")
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"), "CAPTURE="+capture, "AACT_SNAPSHOT_SOURCE_BRANCH=Feature/Explicit_Branch")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("explicit-branch snapshot failed: %s: %v", output, err)
 	}
@@ -195,7 +196,7 @@ func TestSnapshotBuildPrintsLatestStableReleaseImageVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script, "--print-image-version")
+	cmd := snapshotScriptCommand(t, repo, script, "--print-image-version")
 	cmd.Dir = repo
 	output, err := cmd.CombinedOutput()
 	if err != nil || string(output) != "0.5.0\n" {
@@ -214,7 +215,7 @@ func TestSnapshotBuildRequiresStableTagForReleaseImagePin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", script, "--print-image-version")
+	cmd := snapshotScriptCommand(t, repo, script, "--print-image-version")
 	cmd.Dir = repo
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "requires a stable vMAJOR.MINOR.PATCH tag") {
@@ -282,4 +283,48 @@ func initSnapshotTestRepository(t *testing.T, branch string) string {
 	run("branch", "-m", branch)
 	run("tag", "v0.5.0")
 	return repo
+}
+
+func snapshotScriptCommand(t *testing.T, repo, script string, args ...string) *exec.Cmd {
+	t.Helper()
+	shell := "/bin/sh"
+	scriptPath := script
+	if runtime.GOOS == "windows" {
+		shell = gitForWindowsShell(t)
+		scriptPath = msysPath(script)
+	}
+	cmd := exec.Command(shell, append([]string{scriptPath}, args...)...)
+	cmd.Dir = repo
+	return cmd
+}
+
+func gitForWindowsShell(t *testing.T) string {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("Git for Windows is required for snapshot shell tests: %v", err)
+	}
+	for root := filepath.Dir(gitPath); ; root = filepath.Dir(root) {
+		for _, relative := range []string{filepath.Join("bin", "sh.exe"), filepath.Join("usr", "bin", "sh.exe")} {
+			candidate := filepath.Join(root, relative)
+			if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			break
+		}
+	}
+	t.Fatal("Git for Windows sh.exe was not found beside the Git executable")
+	return ""
+}
+
+func msysPath(path string) string {
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	if len(volume) == 2 && volume[1] == ':' {
+		return "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(strings.TrimPrefix(clean, volume))
+	}
+	return filepath.ToSlash(clean)
 }
