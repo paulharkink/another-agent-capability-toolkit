@@ -28,6 +28,21 @@ The Head Unit owns cross-repository coordination. Workers report to the Head;
 in repo-map mode, a worker must ask the Head to dispatch sibling or follow-up
 work instead of spawning children itself.
 
+When work targets a repository managed through the repo map, assign it to a
+Courier Worker even when the task is small or sequential. Generic Courier advice
+to handle small tasks yourself applies to work in the Head's own checkout; it
+does not override this managed-repository workflow. Keep the exact advertised
+node ID and full session ID in assignment and follow-up messages (use
+`nodeId/sessionID` for a remote session; never substitute a hostname or short
+peer label).
+
+While a Worker owns a branch or worktree, send follow-up, review, test, and
+verification requests to that same assigned Worker. Do not start another
+Worker against its owned checkout. If the assignment has been closed and more
+work is needed, inspect the repo map and make a new explicit assignment to the
+retained branch/worktree when that is the user's chosen checkout. Closing an
+assignment retains its branch and worktree; do not clean them up automatically.
+
 Group tasks only when they are truly independent: each task must be able to
 finish without another task's report, a decision or relay from the Head, or a
 follow-up dispatch. A group holds completed, partial, and failed reports until
