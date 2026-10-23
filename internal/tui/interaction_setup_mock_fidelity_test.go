@@ -41,7 +41,7 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	if strings.Contains(view, "L3") || strings.Contains(view, "L4") || strings.Contains(view, "FOCUSED") || !strings.Contains(view, "Sections") {
 		t.Fatalf("section navigation heading should use its configured title:\n%s", view)
 	}
-	sections := []string{"Connection", "Authentication", "Databases", "Agents"}
+	sections := []string{"Inputs", "Agent access", "Runtime", "Logs", "Information"}
 	leftItems := []string{}
 	for _, line := range strings.Split(view, "\n") {
 		left, _, found := strings.Cut(line, "│")
@@ -58,22 +58,15 @@ func TestInteractionClusterSetupMatchesMockSectionsAndAuthCues(t *testing.T) {
 	if strings.Join(leftItems, ",") != strings.Join(sections, ",") {
 		t.Fatalf("setup section list order should be %v, got %v:\n%s", sections, leftItems, view)
 	}
-	if !strings.Contains(view, "> Connection") {
-		t.Fatalf("Cluster Inspector setup should initially select the first declared section:\n%s", view)
+	if !strings.Contains(view, "> Inputs") {
+		t.Fatalf("Cluster Inspector setup should initially select Inputs:\n%s", view)
 	}
-	setupKey(m, tea.KeyRight, "") // Open the first declared Connection section.
+	setupKey(m, tea.KeyRight, "") // Open the Inputs stage details.
 	view = m.View().Content
-	for _, label := range []string{"Listen address", "Listen port"} {
+	for _, label := range []string{"Listen address", "Listen port", "API server", "Token", "Source kubeconfig"} {
 		if !strings.Contains(view, label) {
-			t.Fatalf("Connection detail missing mock label %q:\n%s", label, view)
+			t.Fatalf("Inputs detail missing mock label %q:\n%s", label, view)
 		}
-	}
-	setupKey(m, tea.KeyLeft, "")
-	setupKey(m, tea.KeyDown, "")
-	setupKey(m, tea.KeyRight, "") // Authentication.
-	view = m.View().Content
-	if strings.Contains(view, "Inputs") {
-		t.Fatalf("Cluster Inspector mock layout should not expose a generic Inputs section:\n%s", view)
 	}
 	if !strings.Contains(view, "Active method") || !strings.Contains(view, "Type a value to switch to Source kubeconfig") || !strings.Contains(view, "Import source; not a live path") {
 		t.Fatalf("authentication details should identify the active method and how to switch methods:\n%s", view)

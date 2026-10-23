@@ -17,6 +17,9 @@ import (
 // asking the runtime for logs. A stale UI row can therefore never turn a
 // not-yet-created target into a Docker logs request.
 func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, error) {
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
+	}
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
@@ -32,20 +35,23 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 		if instance.Ownership != "local" {
 			return "", fmt.Errorf("refusing logs: runtime ownership is %s", instance.Ownership)
 		}
-		result, err := source.RunProfileMCP(ctx, "logs", profileRequestForStateKey(key), mcpNameForStateKey(key))
+		result, err := source.RunInstanceMCP(ctx, "logs", instanceRequestForStateKey(key), mcpNameForStateKey(key))
 		return result.Logs, err
 	}
 	return "", errors.New("No MCP container has been created for this target; configure this target and start it before opening logs")
 }
 
-// UIProfileRun performs a lifecycle action for one observed MCP child profile.
+// UIInstanceRun performs a lifecycle action for one observed MCP child definition.
 // The child key is preserved so a named MCP action never affects a sibling.
-func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
+func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Key) (string, error) {
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
+	}
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
 	}
-	result, err := source.RunProfileMCP(ctx, action, profileRequestForStateKey(key), mcpNameForStateKey(key))
+	result, err := source.RunInstanceMCP(ctx, action, instanceRequestForStateKey(key), mcpNameForStateKey(key))
 	if err != nil {
 		return "", err
 	}
@@ -55,23 +61,111 @@ func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key
 	return result.Message, nil
 }
 
-func profileRequestForStateKey(key state.Key) ProfileRequest {
-	return ProfileRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+// UIRemoveRuntimeRecord removes one exact runtime identity for a declared MCP
+// child. Missing containers lose only their local ledger row; a live container
+// is removed only through the runtime's exact-ID ownership-checked operation.
+func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runtimeID string) (string, error) {
+	if runtimeID == "" {
+		return "", errors.New("runtime ID is required")
+	}
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
+	}
+	source, err := s.forSource(key.Source)
+	if err != nil {
+		return "", err
+	}
+	if !source.declaredMCPChild(key) {
+		return "", errors.New("runtime record does not link to a declared MCP instance")
+	}
+	rows, err := source.Store.Installations()
+	if err != nil {
+		return "", err
+	}
+	var record *state.Installation
+	for i := range rows {
+		row := rows[i]
+		if row.Component == "runtime" && row.AgentID == "docker" && row.Key == key && row.SourcePath == runtimeID {
+			copy := row
+			record = &copy
+			break
+		}
+	}
+	if record == nil {
+		return "", errors.New("exact runtime ledger record was not found")
+	}
+	instances, err := source.Options.Runtime.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("refresh runtime observation before removing record: %w", err)
+	}
+	for _, instance := range instances {
+		if instance.ID != runtimeID {
+			continue
+		}
+		if instance.Key != key {
+			return "", fmt.Errorf("refusing to forget runtime %s: it is still observed under a different instance key", runtimeID)
+		}
+		if instance.Status == "missing" {
+			continue
+		}
+		if instance.Ownership != "local" {
+			return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+		}
+		exact, ok := source.Options.Runtime.(interface {
+			StopExact(context.Context, state.Key, string) error
+		})
+		if !ok {
+			return "", errors.New("runtime does not support exact-ID removal; record was left unchanged")
+		}
+		if err := exact.StopExact(ctx, key, runtimeID); err != nil {
+			return "", fmt.Errorf("remove exact runtime %s: %w", runtimeID, err)
+		}
+		return "Removed exact AACT-owned runtime " + runtimeID, nil
+	}
+	if err := source.Store.Remove(*record); err != nil {
+		return "", fmt.Errorf("forget missing runtime %s: %w", runtimeID, err)
+	}
+	return "Forgot exact missing runtime record " + runtimeID + "; no container was removed", nil
+}
+
+func (s *Service) declaredMCPChild(key state.Key) bool {
+	base := key
+	base.MCP = ""
+	base.MCPDefinition = ""
+	for _, p := range s.Source.Catalog {
+		if p.ID != key.Package {
+			continue
+		}
+		for _, definition := range p.MCPDefinitions() {
+			if mcpDefinitionKey(base, p, definition) == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
+	return s.UIInstanceRun(ctx, action, key)
+}
+
+func instanceRequestForStateKey(key state.Key) InstanceRequest {
+	return InstanceRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
 }
 
 func mcpNameForStateKey(key state.Key) string {
 	if key.MCP != "" {
 		return key.MCP
 	}
-	return key.Profile
+	return key.MCPDefinition
 }
 
-// UIProfileSnapshot merges configured profiles and registrations with a Docker
+// UIInstanceSnapshot merges configured instances and registrations with a Docker
 // observation. A Docker failure leaves configured rows and the last successful
 // observation visible, marked stale.
-func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
-	var snapshot viewmodel.ProfileSnapshot
-	configured, err := s.Store.Profiles()
+func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSnapshot, error) {
+	var snapshot viewmodel.InstanceSnapshot
+	configured, err := s.Store.Instances()
 	if err != nil {
 		return snapshot, err
 	}
@@ -99,16 +193,16 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 	s.observationMu.Unlock()
 	snapshot.ObservationStale = stale
 
-	byKey := map[state.Key]*viewmodel.Profile{}
-	add := func(k state.Key) *viewmodel.Profile {
+	byKey := map[state.Key]*viewmodel.Instance{}
+	add := func(k state.Key) *viewmodel.Instance {
 		if profile := byKey[k]; profile != nil {
 			return profile
 		}
-		profile := &viewmodel.Profile{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
+		profile := &viewmodel.Instance{Key: k, Name: k.Package, RuntimeStatus: "never-started", Ownership: "local"}
 		if k.Source == s.Source.ID {
 			for _, packageInfo := range s.Source.Catalog {
 				if packageInfo.ID == k.Package {
-					profileName := k.Profile
+					profileName := k.MCPDefinition
 					if profileName == "" {
 						profileName = k.MCP
 					}
@@ -202,7 +296,7 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 			case stale:
 				profile.StartDisabledReason = "Docker observation is unavailable"
 			case profile.RuntimeStatus == "conflict":
-				profile.StartDisabledReason = "Multiple running containers claim this profile"
+				profile.StartDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
 				profile.StartDisabledReason = "Runtime belongs to another AACT installation"
 			case profile.Ownership != "local":
@@ -216,7 +310,7 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 			case stale:
 				profile.StopDisabledReason = "Docker observation is unavailable"
 			case profile.RuntimeStatus == "conflict":
-				profile.StopDisabledReason = "Multiple running containers claim this profile"
+				profile.StopDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
 				profile.StopDisabledReason = "Runtime belongs to another AACT installation"
 			case profile.Ownership != "local":
@@ -227,16 +321,17 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		}
 		if !profile.CanConfigureRegistrations {
 			if profile.RuntimeStatus == "conflict" {
-				profile.RegistrationDisabledReason = "Multiple running containers claim this profile"
+				profile.RegistrationDisabledReason = "Multiple running containers claim this MCP definition"
 			} else {
 				profile.RegistrationDisabledReason = "No MCP endpoint is configured"
 			}
 		}
 		sort.Strings(profile.RegisteredAgents)
+		snapshot.Instances = append(snapshot.Instances, *profile)
 		snapshot.Profiles = append(snapshot.Profiles, *profile)
 	}
-	sort.Slice(snapshot.Profiles, func(i, j int) bool {
-		a, b := snapshot.Profiles[i].Key, snapshot.Profiles[j].Key
+	sort.Slice(snapshot.Instances, func(i, j int) bool {
+		a, b := snapshot.Instances[i].Key, snapshot.Instances[j].Key
 		if a.Source != b.Source {
 			return a.Source < b.Source
 		}
@@ -248,5 +343,11 @@ func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnaps
 		}
 		return a.Target < b.Target
 	})
+	snapshot.Profiles = append([]viewmodel.Instance(nil), snapshot.Instances...)
 	return snapshot, nil
+}
+
+// UIProfileSnapshot is retained for callers of the former selected-instance API.
+func (s *Service) UIProfileSnapshot(ctx context.Context) (viewmodel.ProfileSnapshot, error) {
+	return s.UIInstanceSnapshot(ctx)
 }

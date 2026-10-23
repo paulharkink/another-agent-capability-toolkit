@@ -23,7 +23,7 @@ func openForeignRegistrationInteraction(t *testing.T) (*Model, *profileBackend) 
 
 func TestInteractionCapabilityEndpointAndAgentsAreSeparateSections(t *testing.T) {
 	m, _ := openForeignRegistrationInteraction(t)
-	m.form.SelectSection("Endpoint")
+	m.form.SelectSectionID(sectionInformationID)
 	view := m.View().Content
 	for _, want := range []string{"Endpoint URI", "http://127.0.0.1:8765/mcp"} {
 		if !strings.Contains(view, want) {
@@ -33,7 +33,7 @@ func TestInteractionCapabilityEndpointAndAgentsAreSeparateSections(t *testing.T)
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
 	view = m.View().Content
-	for _, want := range []string{"Agents", "Codex", "Claude Code"} {
+	for _, want := range []string{"Agent access", "codex", "claude"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("complete binding section missing %q:\n%s", want, view)
 		}
@@ -97,7 +97,7 @@ func TestInteractionCapabilityAgentListShowsScrollCues(t *testing.T) {
 	}
 }
 
-func TestInteractionCapabilityMouseWheelScrollsDestinationDetail(t *testing.T) {
+func TestInteractionCapabilityMouseWheelKeepsDestinationChoicesWithoutDuplicateDetails(t *testing.T) {
 	m, b := typedProfileFixture()
 	backend := openCapabilityProfileWorkspace(t, m, b, "foreign", "Agents")
 	backend.preview.Key = m.workspace.Key
@@ -107,14 +107,9 @@ func TestInteractionCapabilityMouseWheelScrollsDestinationDetail(t *testing.T) {
 	m.openSetupFormWithValues(backend.preview, nil)
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	m.View()
-	x, y, width, height, ok := m.setupOverlayBounds()
-	if !ok {
-		t.Fatal("setup workspace has no mouse hit region")
-	}
-	m.Update(tea.MouseWheelMsg{X: x + width - 4, Y: y + height/2, Button: tea.MouseWheelDown})
-	if view := m.View().Content; !strings.Contains(strings.ToLower(view), "↑ more") {
-		t.Fatalf("mouse wheel did not scroll the destination details:\n%s", view)
+	view := m.View().Content
+	if strings.Contains(view, "Detection:") || strings.Contains(view, "Config path:") {
+		t.Fatalf("Agents repeats details already shown with destination choices: %s", view)
 	}
 }
 
@@ -145,20 +140,14 @@ func TestInteractionRuntimeConnectionCheckIsIndependentOfAgentSelection(t *testi
 	m.form.FocusSection()
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeySpace, " ") // This only changes the unsaved destination draft.
-	m.form.SelectSectionID(sectionRuntimeID)
-	m.form.FocusSection()
-	press(m, tea.KeyRight, "")
-	if m.form.FocusArea() != 1 || !strings.Contains(m.View().Content, "Check plain connection") {
+	selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
+	if !strings.Contains(m.View().Content, "Check plain connection") {
 		t.Fatalf("Runtime child diagnostic is not isolated in its section:\n%s", m.View().Content)
 	}
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	_, action := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if action != nil {
-		_, check := m.Update(action())
-		if check != nil {
-			m.Update(runTeaCmd(t, m, check))
-		}
+	action := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
+	_, check := m.Update(action)
+	if check != nil {
+		m.Update(runTeaCmd(t, m, check))
 	}
 	if b.checkedURL != "http://127.0.0.1:8765/mcp" || b.request != nil {
 		t.Fatalf("connection check touched capability bindings: url=%q legacy request=%+v", b.checkedURL, b.request)
@@ -192,10 +181,13 @@ func TestInteractionProfileInformationKeepsLiveAndLocalFactsInWorkspace(t *testi
 	base := m.backend.(*profileBackend)
 	m.backend = &registrationWorkspaceBackend{Backend: base, profileBackend: base, setupBackendFixture: &setupBackendFixture{}}
 	m.selectPane(ProfilesPane, 1)
-	cmd := m.openTargetWorkspace(m.packProfileRequest(profile.Key), "Information")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(profile.Key), "Information")
 	m.Update(cmd())
 	m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	view := m.View().Content
+	if !strings.Contains(view, "── Information") {
+		t.Fatalf("workspace information section missing: %s", view)
+	}
 	for _, want := range []string{"Endpoint URI: http://127.0.0.1:8765/mcp", "Live runtime status: conflict", "Local last action: stop", "2026-10-02", "Multiple runtime endpoints"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("workspace Information omitted %q:\n%s", want, view)
@@ -217,25 +209,24 @@ func TestInteractionUnknownOwnerOffersDiagnosisAndBindingButNotLifecycleControl(
 	m.Update(m.load()())
 	key := b.snapshot.Profiles[1].Key
 	openCapabilityProfileWorkspace(t, m, b, key.Target, "Overview")
-	if m.workspace == nil || m.workspace.Profile == nil || m.workspace.Profile.Ownership != "unknown" {
+	if m.workspace == nil || m.workspace.Instance == nil || m.workspace.Instance.Ownership != "unknown" {
 		t.Fatalf("Overview lost the unknown ownership observation: %+v", m.workspace)
 	}
-	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Profile: &b.snapshot.Profiles[1], Status: "foreign"}
+	row := ProfileRow{Key: key, URL: b.snapshot.Profiles[1].URL, Instance: &b.snapshot.Profiles[1], Status: "foreign"}
 	for _, action := range []string{"check-connection"} {
-		if reason := m.profileActionReason(row, action); reason != "" {
+		if reason := m.instanceActionReason(row, action); reason != "" {
 			t.Fatalf("unknown owner blocked local diagnosis %q: %s", action, reason)
 		}
 	}
-	startReason := m.profileActionReason(row, "s")
+	startReason := m.instanceActionReason(row, "s")
 	if startReason == "" {
 		t.Fatal("unknown owner unexpectedly permits Start")
 	}
-	if handled, _ := m.workspaceOverviewAction("g"); !handled || m.form == nil || !m.form.HasSectionID(sectionAgentsID) {
-		t.Fatalf("unknown-owner Overview did not route to complete capability Agents configuration: handled=%t", handled)
-	}
-	m.form.SelectSectionID(sectionOverviewID)
-	if !strings.Contains(m.form.View().Content, "Save and apply") {
-		t.Fatal("unknown-owner workspace did not retain the Save and apply capability action")
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+	view := collectWorkspacePages(t, m)
+	if !strings.Contains(view, "Install selected") || strings.Contains(view, "Start") || strings.Contains(view, "Stop") {
+		t.Fatalf("unknown-owner workspace must allow local agent install while withholding runtime lifecycle controls: %s", view)
 	}
 }
 

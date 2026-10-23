@@ -22,20 +22,25 @@ import (
 	"strings"
 )
 
-type profileOperationLockKey struct{}
+type instanceOperationLockKey struct{}
 
 type AdapterProvider interface {
 	Adapter(string) (agents.Adapter, error)
 	Adapters() []agents.Adapter
 }
-type ProfileRequest struct {
-	Ref                                  config.ProfileRef
+type InstanceRequest struct {
+	Ref                                  config.InstanceRef
 	Inputs                               map[string]any
 	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
 	Interactive, SkillsOnly              bool
+	Uninstall                            bool
 	ExternalURLs                         map[string]string
 }
+
+// ProfileRequest remains as a source-compatibility alias for callers compiled
+// against the previous selected-instance API.
+type ProfileRequest = InstanceRequest
 
 func isDynamicChoice(input catalog.Input) bool {
 	switch input.Type {
@@ -93,106 +98,139 @@ func (s *Service) agentScope(id string) agents.Scope {
 	}
 	return agents.Scope{ID: id}
 }
-func (s *Service) loadProfile(ref config.ProfileRef) (catalog.Package, config.Profile, state.Key, error) {
+func (s *Service) loadInstance(ref config.InstanceRef) (catalog.Package, config.Instance, state.Key, error) {
 	p, err := s.packageByID(ref.CapabilityID)
 	if err != nil {
-		return p, config.Profile{}, state.Key{}, err
+		return p, config.Instance{}, state.Key{}, err
 	}
 	if ref.PackID != "" && ref.PackID != s.Source.ID {
-		return p, config.Profile{}, state.Key{}, invalid(fmt.Errorf("Capability Pack %q is not selected", ref.PackID))
+		return p, config.Instance{}, state.Key{}, invalid(fmt.Errorf("Capability Pack %q is not selected", ref.PackID))
 	}
 	ref.PackID = s.Source.ID
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 && ref.Name != "" && ref.Name != "default" {
+		return p, config.Instance{}, state.Key{}, invalid(errors.New("zero-input skill capabilities use the single default instance"))
+	}
 	if ref.Name == "" {
-		profiles, err := s.profilesForCapability(p.ID)
+		instances, err := s.instancesForCapability(p.ID)
 		if err != nil {
-			return p, config.Profile{}, state.Key{}, err
+			return p, config.Instance{}, state.Key{}, err
 		}
-		if len(profiles) != 1 {
+		if len(instances) != 1 {
 			names := []string{}
-			for _, pr := range profiles {
+			for _, pr := range instances {
 				names = append(names, pr.Ref.Name)
 			}
-			return p, config.Profile{}, state.Key{}, invalid(fmt.Errorf("select a profile for %s (available: %s); create another profile if none exist", p.ID, strings.Join(names, ", ")))
+			return p, config.Instance{}, state.Key{}, invalid(fmt.Errorf("select an instance for %s (available: %s); create another instance if none exist", p.ID, strings.Join(names, ", ")))
 		}
-		ref.Name = profiles[0].Ref.Name
+		ref.Name = instances[0].Ref.Name
 	}
-	key, err := s.Store.ResolveProfileKey(s.Source.ID, p.ID, ref.Name)
+	key, err := s.Store.ResolveInstanceKey(s.Source.ID, p.ID, ref.Name)
 	if err != nil {
-		return p, config.Profile{}, key, err
+		return p, config.Instance{}, key, err
 	}
-	profile, err := config.LoadProfile(s.Source.CapabilityPack(), p.ID, ref.Name)
+	instance, err := config.LoadInstance(s.Source.CapabilityPack(), p.ID, ref.Name)
 	if err == nil {
-		return p, profile, key, nil
+		return p, instance, key, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return p, profile, key, invalid(err)
+		return p, instance, key, invalid(err)
 	}
-	records, e := s.Store.Profiles()
+	records, e := s.Store.Instances()
 	if e != nil {
-		return p, profile, key, e
+		return p, instance, key, e
 	}
 	for _, record := range records {
 		if record.Key == key && record.Local {
-			return p, config.Profile{Ref: ref, Raw: map[string]any{}}, key, nil
+			return p, config.Instance{Ref: ref, Raw: map[string]any{}}, key, nil
 		}
 	}
-	return p, profile, key, invalid(err)
+	// A skill-only capability with no inputs has no instance configuration to
+	// create. Allow its default instance reference to be used as a transient
+	// setup request instead of requiring a fabricated TOML file.
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		return p, config.Instance{Ref: ref, Raw: map[string]any{}}, key, nil
+	}
+	return p, instance, key, invalid(err)
 }
-func (s *Service) profilesForCapability(id string) ([]config.Profile, error) {
-	profiles, err := config.DiscoverProfiles(s.Source.CapabilityPack(), id)
+func (s *Service) instancesForCapability(id string) ([]config.Instance, error) {
+	instances, err := config.DiscoverInstances(s.Source.CapabilityPack(), id)
 	if err != nil {
 		return nil, err
 	}
-	records, err := s.Store.Profiles()
+	if p, packageErr := s.packageByID(id); packageErr == nil && p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		// A plain skill has one ordinary default Capability Instance, even if
+		// stale TOMLs or state records from older versions name other targets.
+		instances = []config.Instance{{Ref: config.InstanceRef{PackID: s.Source.ID, CapabilityID: id, Name: "default"}, Raw: map[string]any{}}}
+		return instances, nil
+	}
+	records, err := s.Store.Instances()
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range records {
-		if r.Key.Source != s.Source.ID || r.Key.Package != id || !r.Local || r.Key.MCP != "" || r.Key.Profile != "" {
+		if r.Key.Source != s.Source.ID || r.Key.Package != id || !r.Local || r.Key.MCP != "" || r.Key.MCPDefinition != "" {
 			continue
 		}
 		found := false
-		for _, p := range profiles {
+		for _, p := range instances {
 			if p.Ref.Name == r.Key.Target {
 				found = true
 			}
 		}
 		if !found {
-			profiles = append(profiles, config.Profile{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: id, Name: r.Key.Target}, Raw: map[string]any{}})
+			instances = append(instances, config.Instance{Ref: config.InstanceRef{PackID: s.Source.ID, CapabilityID: id, Name: r.Key.Target}, Raw: map[string]any{}})
 		}
 	}
-	slices.SortFunc(profiles, func(a, b config.Profile) int { return strings.Compare(a.Ref.Name, b.Ref.Name) })
-	return profiles, nil
+	slices.SortFunc(instances, func(a, b config.Instance) int { return strings.Compare(a.Ref.Name, b.Ref.Name) })
+	return instances, nil
 }
-func (s *Service) CreateProfile(ctx context.Context, ref config.ProfileRef) error {
+func (s *Service) CreateInstance(ctx context.Context, ref config.InstanceRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if ref.PackID != "" && ref.PackID != s.Source.ID {
-		return invalid(errors.New("select this Capability Pack before creating a profile"))
+		return invalid(errors.New("select this Capability Pack before creating an instance"))
 	}
-	if _, err := s.packageByID(ref.CapabilityID); err != nil {
+	p, err := s.packageByID(ref.CapabilityID)
+	if err != nil {
 		return err
 	}
-	if !config.ValidProfileName(ref.Name) {
-		return invalid(fmt.Errorf("invalid profile name %q", ref.Name))
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		return invalid(errors.New("zero-input skill capabilities use one default instance and cannot create another instance"))
 	}
-	existing, err := s.profilesForCapability(ref.CapabilityID)
+	if !config.ValidInstanceName(ref.Name) {
+		return invalid(fmt.Errorf("invalid instance name %q", ref.Name))
+	}
+	existing, err := s.instancesForCapability(ref.CapabilityID)
 	if err != nil {
 		return err
 	}
 	for _, p := range existing {
 		if p.Ref.Name == ref.Name {
-			return invalid(fmt.Errorf("profile %q already exists", ref.Name))
+			return invalid(fmt.Errorf("instance %q already exists", ref.Name))
 		}
 	}
-	key, err := s.Store.ResolveProfileKey(s.Source.ID, ref.CapabilityID, ref.Name)
+	key, err := s.Store.ResolveInstanceKey(s.Source.ID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		return err
 	}
-	return s.Store.WithLock(ctx, func() error { return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: ref.Name, Local: true}) })
+	return s.Store.WithLock(ctx, func() error {
+		return s.Store.RecordInstance(state.InstanceRecord{Key: key, Name: ref.Name, Local: true})
+	})
 }
-func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.Key, q ProfileRequest) (catalog.Package, config.Profile, map[string]any, map[string]any, error) {
+func (s *Service) CreateProfile(ctx context.Context, ref config.InstanceRef) error {
+	return s.CreateInstance(ctx, ref)
+}
+
+func (s *Service) instanceValues(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
+	return s.instanceValuesWithIncompleteInputs(p, pr, key, q, false)
+}
+
+func (s *Service) instanceValuesForPreview(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
+	return s.instanceValuesWithIncompleteInputs(p, pr, key, q, true)
+}
+
+func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr config.Instance, key state.Key, q InstanceRequest, allowIncomplete bool) (catalog.Package, config.Instance, map[string]any, map[string]any, error) {
 	known := map[string]bool{}
 	for _, d := range p.Inputs {
 		known[d.Name] = true
@@ -318,10 +356,16 @@ func (s *Service) profileValues(p catalog.Package, pr config.Profile, key state.
 	if err != nil {
 		return p, pr, nil, inherited, invalid(err)
 	}
-	p, err = catalog.ResolveExpressions(p, values)
-	if err != nil {
-		return p, pr, nil, inherited, invalid(err)
+	resolvedPackage, resolveErr := catalog.ResolveExpressions(p, values)
+	if resolveErr != nil {
+		// Previews must render required controls before runtime expressions have
+		// all their inputs. Apply remains strict and reports the CEL diagnostic.
+		if allowIncomplete && forms.Validate(p.Inputs, values) != nil {
+			return p, pr, values, inherited, nil
+		}
+		return p, pr, nil, inherited, invalid(resolveErr)
 	}
+	p = resolvedPackage
 	return p, pr, values, inherited, nil
 }
 
@@ -520,17 +564,17 @@ func invalidIf(err error) error {
 	}
 	return nil
 }
-func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmodel.SetupPreview, error) {
+func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewmodel.SetupPreview, error) {
 	if err := ctx.Err(); err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
-	p, pr, values, inherited, err := s.profileValues(p, pr, key, q)
+	p, pr, values, inherited, err := s.instanceValuesForPreview(p, pr, key, q)
 	credentialState, credentialNote := s.credentialObservation(p, key)
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, ProfilePath: pr.Path, ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, InstancePath: pr.Path, ProfilePath: pr.Path, InstanceOrigin: "local", ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
 	if err != nil {
 		return preview, err
 	}
@@ -551,11 +595,13 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		preview.HasManifestUI = len(p.UI.Sections) > 0
 	}
 	if pr.Path != "" {
+		preview.InstanceOrigin = "pack"
 		preview.ProfileOrigin = "pack"
 		b, e := os.ReadFile(pr.Path)
 		if e != nil {
 			return preview, e
 		}
+		preview.InstanceTOML = string(b)
 		preview.ProfileTOML = string(b)
 	}
 	installations, err := s.Store.Installations()
@@ -593,7 +639,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		profileInputs, _ := pr.Raw["inputs"].(map[string]any)
 		if _, yes := profileInputs[def.Name]; yes {
-			origin = "Profile default"
+			origin = "Instance default"
 		}
 		editable := pr.InputPolicy[def.Name] != "fixed"
 		provenance := origin
@@ -601,7 +647,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 			provenance = "Saved override"
 		}
 		if !editable {
-			provenance = "Profile fixed"
+			provenance = "Instance fixed"
 		} else if def.Name == registrationInput && currentRegistration != "" {
 			if _, configured := inherited[def.Name]; !configured {
 				if _, savedValue := saved[def.Name]; !savedValue {
@@ -619,7 +665,7 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 		}
 		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path})
 	}
-	records, _ := s.Store.Profiles()
+	records, _ := s.Store.Instances()
 	ids := q.ItemIDs
 	for _, r := range records {
 		if r.Key == key && r.Selection != nil && ids == nil {
@@ -739,6 +785,13 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 				if hadSelection {
 					scope := s.agentScope(id)
 					scope.ID = id
+					if recorded, ok := profileRegistrationConfig(achievedRows, key, id); ok {
+						scope.ConfigPathOverride = recorded.Destination
+						if recorded.AgentHome != "" {
+							scope.Home = recorded.AgentHome
+							scope.ExplicitHome = true
+						}
+					}
 					observation, e := a.Observe(ctx, scope, agents.ObservationRequest{IncludeInventory: true, Key: key, Managed: profileManagedRows(achievedRows, key, id)})
 					row.Selected = e == nil && observedSelectionComplete(p, preview.SelectedItemIDs, values, key, observation)
 				}
@@ -781,14 +834,21 @@ func (s *Service) PreviewProfile(ctx context.Context, q ProfileRequest) (viewmod
 	}
 	return preview, nil
 }
-func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
+
+// PreviewProfile is retained for source compatibility; selected capability
+// configuration is exposed through PreviewInstance.
+func (s *Service) PreviewProfile(ctx context.Context, q InstanceRequest) (viewmodel.SetupPreview, error) {
+	return s.PreviewInstance(ctx, q)
+}
+
+func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
 	if observer := viewmodel.OperationProgressObserver(ctx); observer != nil && ctx.Value(operationProgressScopeContextKey{}) != true {
 		scoped, progress := s.withOperationProgress(ctx, observer)
-		return scoped.ApplyProfile(progress, q)
+		return scoped.ApplyInstance(progress, q)
 	}
-	if ctx.Value(profileOperationLockKey{}) != s.Store {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.ApplyProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			out, err = s.ApplyInstance(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
 			return err
 		})
 		if err != nil && len(out.Errors) == 0 && !ordinaryCancellation(err) {
@@ -804,16 +864,16 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			out.Errors = append(out.Errors, err.Error())
 		}
 	}()
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
-	p, pr, values, _, err := s.profileValues(p, pr, key, q)
+	p, pr, values, _, err := s.instanceValues(p, pr, key, q)
 	if err != nil {
 		return out, err
 	}
-	records, err := s.Store.Profiles()
+	records, err := s.Store.Instances()
 	if err != nil {
 		return out, err
 	}
@@ -882,7 +942,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if choiceErr != nil {
 					return out, choiceErr
 				}
-				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpProfileKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
+				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpDefinitionKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
 				if runErr != nil {
 					return out, runErr
 				}
@@ -952,8 +1012,11 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			}
 		}
 	}
-	if len(items) > 0 && len(destIDs) == 0 {
+	if len(items) > 0 && len(destIDs) == 0 && q.DestinationIDs == nil {
 		return out, invalid(errors.New("select an agent destination"))
+	}
+	if len(items) > 0 && len(destIDs) == 0 && q.DestinationIDs != nil && !q.Uninstall {
+		return out, invalid(errors.New("Install requires at least one agent; use Uninstall to remove registrations"))
 	}
 	adapters := map[string]agents.Adapter{}
 	for _, id := range destIDs {
@@ -1016,7 +1079,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 			return e
 		}
-		return s.Store.RecordProfile(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
+		return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
 	}()
 	if err != nil {
 		return out, err
@@ -1056,7 +1119,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		if !mcps[definition.Name] {
 			continue
 		}
-		child := mcpProfileKey(key, p, definition)
+		child := mcpDefinitionKey(key, p, definition)
 		externalURL := q.ExternalURLs[definition.Name]
 		if externalURL != "" {
 			if e := validateEndpointURL(externalURL); e != nil {
@@ -1106,7 +1169,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
 					out.Step = "authenticate"
 					reportOperationStep(ctx, out.Step)
-					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
 					if e != nil {
 						if containerAuthentication {
 							if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
@@ -1180,7 +1243,8 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			for name, value := range headers {
 				healthHeaders.Set(name, value)
 			}
-			if e := mcp.WaitForAuthenticated(ctx, urls[definition.Name], definition.HealthPath, healthHeaders); e != nil {
+			authenticated, e := mcp.WaitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
+			if e != nil {
 				out.AuthenticationStatus = viewmodel.AuthenticationFailed
 				if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
 					return out, saveErr
@@ -1190,21 +1254,30 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 				}
 				return out, e
 			}
-			if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-				return out, e
+			if authenticated {
+				if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+					return out, e
+				}
+				remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+				if pendingErr != nil {
+					return out, pendingErr
+				}
+				if len(remaining) > 0 {
+					out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+					out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
+					return out, nil
+				}
+				markAuthenticationComplete(definition.Name)
+			} else {
+				// A successful false health response means the MCP is running but
+				// unauthenticated. Keep the requested credentials and let install
+				// effects proceed; only the later UI health poll waits for login.
+				out.AuthenticationStatus = viewmodel.AuthenticationFailed
 			}
-			remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-			if pendingErr != nil {
-				return out, pendingErr
-			}
-			if len(remaining) > 0 {
-				out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-				out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
-				return out, nil
-			}
-			markAuthenticationComplete(definition.Name)
-			if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
-				return out, fmt.Errorf("MCP health check failed: %w", e)
+			if authenticated {
+				if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
+					return out, fmt.Errorf("MCP health check failed: %w", e)
+				}
 			}
 		}
 	}
@@ -1243,7 +1316,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 		case "mcp":
 			found := false
 			for _, d := range p.MCPDefinitions() {
-				if mcps[d.Name] && mcpProfileKey(key, p, d) == row.Key {
+				if mcps[d.Name] && mcpDefinitionKey(key, p, d) == row.Key {
 					found = true
 				}
 			}
@@ -1299,7 +1372,7 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 			}
 			out.Step = "register"
 			reportOperationStep(ctx, out.Step)
-			child := mcpProfileKey(key, p, d)
+			child := mcpDefinitionKey(key, p, d)
 			name, e := declaredRegistrationName(d, child, values)
 			if e != nil {
 				return out, invalid(e)
@@ -1377,6 +1450,12 @@ func (s *Service) ApplyProfile(ctx context.Context, q ProfileRequest) (out viewm
 	out.Step = "complete"
 	return out, nil
 }
+
+// ApplyProfile is retained for source compatibility; new callers should use
+// ApplyInstance.
+func (s *Service) ApplyProfile(ctx context.Context, q InstanceRequest) (viewmodel.OperationResult, error) {
+	return s.ApplyInstance(ctx, q)
+}
 func (s *Service) removeProfileBinding(ctx context.Context, row state.Installation) error {
 	a, err := s.registrationAdapterFor(row.AgentID, row.AgentKind)
 	if err != nil {
@@ -1423,15 +1502,15 @@ func validateEndpointURL(value string) error {
 	return nil
 }
 
-func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out viewmodel.OperationResult, err error) {
-	if ctx.Value(profileOperationLockKey{}) != s.Store {
+func (s *Service) RemoveInstance(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.RemoveProfile(context.WithValue(ctx, profileOperationLockKey{}, s.Store), q)
+			out, err = s.RemoveInstance(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
 			return err
 		})
 		return out, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
@@ -1440,6 +1519,17 @@ func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out view
 	rows, err := s.Store.Installations()
 	if err != nil {
 		return out, err
+	}
+	instanceRecords, err := s.Store.Instances()
+	if err != nil {
+		return out, err
+	}
+	localInstance := false
+	for _, record := range instanceRecords {
+		if record.Key == key && record.Local {
+			localInstance = true
+			break
+		}
 	}
 	for _, row := range rows {
 		if !sameCapabilityKey(row.Key, key) || (q.DestinationIDs != nil && !slices.Contains(q.DestinationIDs, row.AgentID)) {
@@ -1464,13 +1554,128 @@ func (s *Service) RemoveProfile(ctx context.Context, q ProfileRequest) (out view
 			}
 		}
 	}
+	if localInstance {
+		if err = s.removeInstanceConfiguration(pr.Ref, pr.Path); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+	}
+	if err = s.Store.ForgetInstanceState(key); err != nil {
+		out.Errors = append(out.Errors, err.Error())
+		return out, err
+	}
 	out.Step = "complete"
 	return out, nil
 }
-func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileRequest, mcpName string) (out Result, err error) {
-	if ctx.Value(profileOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
+
+func (s *Service) removeInstanceConfiguration(ref config.InstanceRef, path string) error {
+	if path == "" {
+		return nil
+	}
+	root := s.Source.InstanceRoot
+	if root == "" {
+		root = s.Source.ProfileRoot
+	}
+	if root == "" {
+		return errors.New("instance directory is unavailable")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve instance directory: %w", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if filepath.Base(path) != ref.Name+".toml" {
+		return errors.New("instance configuration path does not match the exact instance name")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("resolve instance configuration directory: %w", err)
+	}
+	path = filepath.Join(parent, filepath.Base(path))
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("instance configuration path must be inside the instance directory")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// ResetInstanceToPreset removes exact AACT-managed registration rows and saved
+// state for a pack-provided instance without stopping or probing its runtime.
+func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
-			out, err = s.RunProfileMCP(context.WithValue(ctx, profileOperationLockKey{}, s.Store), action, q, mcpName)
+			out, err = s.ResetInstanceToPreset(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), q)
+			return err
+		})
+		return out, err
+	}
+	p, preset, key, err := s.loadInstance(q.Ref)
+	if err != nil {
+		return out, err
+	}
+	if preset.Path == "" {
+		return out, invalid(fmt.Errorf("instance %q has no pack preset to restore", q.Ref.Name))
+	}
+	out.Target = s.Source.ID + "/" + p.ID + "  " + preset.Ref.Name
+	out.Step = "reset to preset"
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return out, err
+	}
+	keys := map[state.Key]bool{key: true}
+	for _, row := range rows {
+		if !sameCapabilityKey(row.Key, key) {
+			continue
+		}
+		keys[row.Key] = true
+		if row.Component == "runtime" {
+			// Forget only AACT's exact observation. Never stop a runtime whose
+			// current ownership cannot be established by this reset action.
+			if err := s.Store.Remove(row); err != nil {
+				return out, err
+			}
+			out.Changes = append(out.Changes, row)
+			continue
+		}
+		if row.ExternalRegistration {
+			continue
+		}
+		if err := s.removeProfileBinding(ctx, row); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+		out.Changes = append(out.Changes, row)
+	}
+	for child := range keys {
+		if err := s.Store.ForgetInstanceState(child); err != nil {
+			out.Errors = append(out.Errors, err.Error())
+			return out, err
+		}
+	}
+	out.Step = "complete"
+	out.Message = fmt.Sprintf("Reset instance %s to its pack preset. AACT-managed registrations and saved inputs were cleared; external registrations were left unchanged, and an unknown runtime may remain running.", preset.Ref.Name)
+	return out, nil
+}
+
+// RemoveProfile is retained for callers built against the previous API name.
+func (s *Service) RemoveProfile(ctx context.Context, q InstanceRequest) (viewmodel.OperationResult, error) {
+	return s.RemoveInstance(ctx, q)
+}
+
+func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceRequest, mcpName string) (out Result, err error) {
+	if ctx.Value(instanceOperationLockKey{}) != s.Store && action != "list" && action != "status" && action != "logs" {
+		err = s.Store.WithLock(ctx, func() error {
+			out, err = s.RunInstanceMCP(context.WithValue(ctx, instanceOperationLockKey{}, s.Store), action, q, mcpName)
 			return err
 		})
 		return out, err
@@ -1479,7 +1684,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		out.Instances, err = s.Options.Runtime.List(ctx)
 		return out, err
 	}
-	p, pr, key, err := s.loadProfile(q.Ref)
+	p, pr, key, err := s.loadInstance(q.Ref)
 	if err != nil {
 		return out, err
 	}
@@ -1487,7 +1692,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 	if err != nil {
 		return out, invalid(err)
 	}
-	child := mcpProfileKey(key, p, definition)
+	child := mcpDefinitionKey(key, p, definition)
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name + " / " + definition.Name
 	out.Step = action
 	switch action {
@@ -1503,7 +1708,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			err = e
 		}
 	case "start", "prepare", "authenticate":
-		p, pr, values, _, e := s.profileValues(p, pr, key, q)
+		p, pr, values, _, e := s.instanceValues(p, pr, key, q)
 		if e != nil {
 			return out, e
 		}
@@ -1511,7 +1716,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		if e != nil {
 			return out, invalid(e)
 		}
-		child = mcpProfileKey(key, p, definition)
+		child = mcpDefinitionKey(key, p, definition)
 		if e = forms.Validate(p.Inputs, values); e != nil {
 			return out, invalid(e)
 		}
@@ -1519,11 +1724,30 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		cp.MCP = &definition
 		cp.MCPs = nil
 		if action == "start" {
-			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
 			if e != nil {
 				return out, e
 			}
 			out.Instances = []mcp.Instance{instance}
+			if definition.HealthPath != "" {
+				headers, headerErr := profileRegistrationHeaders(definition, values)
+				if headerErr != nil {
+					return out, headerErr
+				}
+				healthHeaders := make(http.Header, len(headers))
+				for name, value := range headers {
+					healthHeaders.Set(name, value)
+				}
+				authenticated, healthErr := mcp.WaitForAuthentication(ctx, instance.URL, definition.HealthPath, healthHeaders)
+				if healthErr != nil {
+					return out, fmt.Errorf("MCP authentication health check failed: %w", healthErr)
+				}
+				if authenticated {
+					if protocolErr := mcp.HealthWithHeaders(ctx, instance.URL, definition.Transport, healthHeaders); protocolErr != nil {
+						return out, fmt.Errorf("MCP health check failed: %w", protocolErr)
+					}
+				}
+			}
 		} else {
 			var result mcp.ActionResult
 			var instance mcp.Instance
@@ -1539,7 +1763,7 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 			if choiceErr != nil {
 				return out, choiceErr
 			}
-			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Profile: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+			result, err = (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: action, Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
 			if err == nil {
 				out.LoginURL = result.LoginURL
 				if result.AuthRequired {
@@ -1551,6 +1775,11 @@ func (s *Service) RunProfileMCP(ctx context.Context, action string, q ProfileReq
 		err = invalid(fmt.Errorf("unknown MCP action %q", action))
 	}
 	return out, err
+}
+
+// RunProfileMCP is retained for source compatibility; use RunInstanceMCP.
+func (s *Service) RunProfileMCP(ctx context.Context, action string, q InstanceRequest, mcpName string) (Result, error) {
+	return s.RunInstanceMCP(ctx, action, q, mcpName)
 }
 
 func profileManagedRows(rows []state.Installation, key state.Key, id string) []state.Installation {
@@ -1584,7 +1813,7 @@ func observedSelectionComplete(p catalog.Package, ids []string, values map[strin
 		for _, name := range item.MCPs {
 			for _, d := range p.MCPDefinitions() {
 				if d.Name == name {
-					registration, e := declaredRegistrationName(d, mcpProfileKey(key, p, d), values)
+					registration, e := declaredRegistrationName(d, mcpDefinitionKey(key, p, d), values)
 					if e != nil || !installed("mcp", registration) {
 						return false
 					}

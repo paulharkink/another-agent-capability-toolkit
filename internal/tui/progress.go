@@ -224,7 +224,7 @@ func operationEffectText(effect state.Installation) string {
 	}
 	componentName := effect.Key.MCP
 	if componentName == "" {
-		componentName = effect.Key.Profile
+		componentName = effect.Key.MCPDefinition
 	}
 	if componentName == "" && effect.Component == "skill" && effect.Destination != "" {
 		componentName = filepath.Base(effect.Destination)

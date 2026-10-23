@@ -42,8 +42,8 @@ func (b *homeWorkspaceSetupBackend) UIInstall(ctx context.Context, request viewm
 
 func homeFixture() (*Model, loadedMsg) {
 	m := NewContext(context.Background(), fixtureBackend{})
-	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
-	msg.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "profile", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
+	msg := loadedMsg{settings: map[string]string{"source": "one", "checkout": "/checkout"}, labels: map[string]string{"/one": "one", "/plain": "one", "/empty": "one"}, catalog: []catalog.Package{{ID: "inspect", Name: "Inspector", Dir: "/one", MCP: &catalog.MCP{}}, {ID: "plain", Name: "Plain", Dir: "/plain", Skill: &catalog.Skill{Name: "plain"}}, {ID: "empty", Name: "Empty", Dir: "/empty", MCP: &catalog.MCP{}}}, mcps: []mcp.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "inspector", Status: "running"}, {Key: state.Key{Source: "other", Package: "inspect", Target: "wrong-source"}, Status: "running"}, {Key: state.Key{Source: "one", Package: "else", Target: "wrong-package"}, Status: "running"}}}
+	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "one", Package: "inspect", Target: "production"}, Name: "inspector", RuntimeStatus: "running", Ownership: "local", URL: "http://127.0.0.1:8765/mcp", CanStart: true}}}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(msg)
 	return m, msg
@@ -98,7 +98,7 @@ func TestHomeShowsCapabilityPackAndEnvironmentDirectory(t *testing.T) {
 	msg.settings["environment-root"] = "/Users/test/sources/agent-skills/environments"
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Capability Pack: one", "Profiles: environments"} {
+	for _, want := range []string{"Capability Pack: one", "Instance root: environments"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home does not reveal %q:\n%s", want, view)
 		}
@@ -109,7 +109,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP profiles", "── Installation · AACT records", "› View capability details", "profile"} {
+	for _, want := range []string{"── Capability", "── Related MCP instances", "── Installation · AACT records", "› View capability details", "Instance"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -121,12 +121,12 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, unwanted := range []string{"Related MCP profiles", "No MCP profiles", "MCP ·", "related MCP profiles"} {
+	for _, unwanted := range []string{"Related MCP instances", "No MCP instances", "MCP · definition", "related MCP instances"} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
 	}
-	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Install skill", "View capability details", "Installation · AACT records"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("skill-only L2 missing %q:\n%s", want, view)
 		}
@@ -160,7 +160,7 @@ func TestHomeHighlightsFocusedSelectionAndMenu(t *testing.T) {
 func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 	m, _ := homeFixture()
 	v := m.View().Content
-	for _, s := range []string{"Capabilities", "Inspector", "profile", "Main menu", "F2 Open / Focus"} {
+	for _, s := range []string{"Capabilities", "Inspector", "Instance", "Main menu", "Enter Open", "F3 Details"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q: %s", s, v)
 		}
@@ -177,7 +177,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatalf("runtime observation was lost from the selected profile: %q", got)
 	}
 	press(m, tea.KeyDown, "")
-	if strings.Contains(m.View().Content, "Related MCP profiles") {
+	if strings.Contains(m.View().Content, "Related MCP instances") {
 		t.Fatal("skill-only context still shows MCP content", m.View().Content)
 	}
 	press(m, tea.KeyTab, "")
@@ -185,8 +185,26 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal("Tab did not focus the context list")
 	}
 	press(m, tea.KeyDown, "")
-	if !strings.Contains(m.View().Content, "Configure now") {
+	if !strings.Contains(m.View().Content, "Install skill") {
 		t.Fatal(m.View().Content)
+	}
+}
+
+func TestHomeCatalogNeverInventsCapabilitiesFromRuntimeRecords(t *testing.T) {
+	m, msg := homeFixture()
+	msg.instanceSnapshot.Profiles = append(msg.instanceSnapshot.Profiles, viewmodel.Instance{
+		Key: state.Key{Source: "bundled", Package: "argocd", Target: "test-cluster"}, Name: "orphan runtime",
+		RuntimeStatus: "running", Ownership: "local",
+	})
+	m.Update(msg)
+	rows := m.capabilities()
+	if len(rows) != len(msg.catalog) {
+		t.Fatalf("L1 invented capabilities from runtime state: rows=%+v", rows)
+	}
+	for _, row := range rows {
+		if row.Source == "bundled" || row.Package == "argocd" {
+			t.Fatalf("runtime-only capability appeared in Pack catalog: %+v", row)
+		}
 	}
 }
 func TestHomePaneFocusAndStableScrolling(t *testing.T) {
@@ -194,7 +212,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		key := state.Key{Source: "one", Package: "inspect", Target: fmt.Sprintf("target-%02d", i)}
 		msg.mcps = append(msg.mcps, mcp.Instance{Key: key, Status: "running"})
-		msg.profileSnapshot.Profiles = append(msg.profileSnapshot.Profiles, viewmodel.Profile{Key: key, Name: key.Target, RuntimeStatus: "running", Ownership: "local"})
+		msg.instanceSnapshot.Profiles = append(msg.instanceSnapshot.Profiles, viewmodel.Instance{Key: key, Name: key.Target, RuntimeStatus: "running", Ownership: "local"})
 	}
 	m.Update(msg)
 	press(m, tea.KeyEnter, "")
@@ -214,7 +232,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 		t.Fatal("resize/refresh lost selection")
 	}
 	msg.mcps = msg.mcps[:len(msg.mcps)-1]
-	msg.profileSnapshot.Profiles = msg.profileSnapshot.Profiles[:len(msg.profileSnapshot.Profiles)-1]
+	msg.instanceSnapshot.Profiles = msg.instanceSnapshot.Profiles[:len(msg.instanceSnapshot.Profiles)-1]
 	m.Update(msg)
 	if m.home.Context.Index != lastProfileRow-1 || !strings.Contains(m.output, "removed") {
 		t.Fatal("deleted selected profile not explained", m.View().Content)
@@ -312,7 +330,7 @@ func TestMouseRightPaneDoesNotMoveCapabilityAndFooterQuitMatchesText(t *testing.
 		t.Fatal("wrong footer action")
 	}
 }
-func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
+func TestHomeEnterSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.View()
@@ -323,9 +341,9 @@ func TestHomeMouseSelectsCapabilityWithoutMarkingAndModalRetainsFocus(t *testing
 	press(m, tea.KeyTab, "")
 	m.selectContext(2)
 	id := m.home.Profiles.ID
-	pressAndRun(m, tea.KeyF2)
+	pressAndRun(m, tea.KeyEnter)
 	if m.form == nil || m.workspace == nil {
-		t.Fatal("F2 did not open the selected target workspace")
+		t.Fatal("Enter did not open the selected target workspace")
 	}
 	pressAndRun(m, tea.KeyEscape)
 	if m.home.Focus != ProfilesPane || m.home.Profiles.ID != id {
@@ -354,7 +372,7 @@ func TestResizedViewsFitTerminalAndEmptyExplanationIsReadable(t *testing.T) {
 		if size.Height == 16 && !strings.Contains(v.Content, "More below") {
 			t.Fatal("short view omitted its scroll cue", v.Content)
 		}
-		if size.Height > 16 && !strings.Contains(v.Content, "Configure now") {
+		if size.Height > 16 && !strings.Contains(v.Content, "Install skill") {
 			t.Fatal("skill-only action was truncated", v.Content)
 		}
 	}
@@ -385,22 +403,22 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 		t.Fatalf("main menu: %v", got)
 	}
 	press(m, tea.KeyEscape, "")
-	press(m, tea.KeyF2, "")
-	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
-		t.Fatal("F2 should focus the context list before opening an action")
+	m.focusPane(ProfilesPane)
+	if m.home.Modal != nil {
+		t.Fatal("focusing the context pane opened an unexpected overlay")
 	}
-	for _, want := range []string{"Configure now", "View capability details", "MCP · profile", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "MCP · inspector", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
 	}
 	m.selectContext(2)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
-	pressAndRun(m, tea.KeyF2)
-	if m.form == nil || m.workspace == nil || m.form.SectionTitle() != "Overview" {
-		t.Fatalf("F2 on a target did not open the shared Overview workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	pressAndRun(m, tea.KeyEnter)
+	if m.form == nil || m.workspace == nil || m.workspace.Section != "Agent access" || m.workspace.SectionID != sectionAgentsID {
+		t.Fatalf("Enter on an input-saved target did not open the next incomplete Agent access stage: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	for _, want := range []string{"Configure ·", "Overview", "Agents", "Runtime", "Logs", "Information"} {
+	for _, want := range []string{"Agent access", "Install selected", "Uninstall selected", "Runtime", "Logs", "Information"} {
 		if !strings.Contains(ansi.Strip(m.View().Content), want) {
 			t.Fatalf("shared target workspace omitted %q:\n%s", want, ansi.Strip(m.View().Content))
 		}
@@ -410,18 +428,22 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
 	msg.mcps[0].Ownership = "foreign"
-	msg.profileSnapshot.Profiles[0].Ownership = "other-aact"
-	msg.profileSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
+	msg.instanceSnapshot.Profiles[0].Ownership = "other-aact"
+	msg.instanceSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
 	m.Update(msg)
 	m.backend = &homeWorkspaceSetupBackend{Backend: m.backend, setup: &setupBackendFixture{}}
 	m.selectContext(2)
-	pressAndRun(m, tea.KeyF2)
+	pressAndRun(m, tea.KeyEnter)
 	if m.form == nil || m.workspace == nil {
-		t.Fatalf("F2 did not open the shared workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+		t.Fatalf("Enter did not open the selected target workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
-	handled, cmd := m.workspaceOverviewAction("s")
-	if !handled || cmd != nil || m.busy || !strings.Contains(strings.ToLower(m.output), "another installation") {
-		t.Fatalf("disabled Start activated or hid reason: handled=%t cmd=%v busy=%t output=%q", handled, cmd != nil, m.busy, m.output)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	view := ansi.Strip(m.form.View().Content)
+	for _, want := range []string{"Owned by another installation"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Runtime disabled Start omitted %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -429,27 +451,45 @@ func TestHomeTopControlsAndContextPaneFocus(t *testing.T) {
 	m, _ := homeFixture()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Settings | Help", "F2 Open / Focus"} {
+	for _, want := range []string{"AACT · Another Agent Capability Toolkit", "F9 Main menu: Agents | Settings | Help", "a Actions", "F3 Details"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home missing %q:\n%s", want, view)
 		}
 	}
-	m.focusPane(ProfilesPane)
-	m.View()
-	x := -1
-	for _, hit := range m.home.Hits {
-		if hit.Control == "actions" && hit.Y == 1 {
-			x = hit.X + 1
-			break
+	if !strings.Contains(view, "a Actions") {
+		t.Fatal("Actions shortcut is not discoverable in the home view")
+	}
+}
+
+func TestHomeRemovesDuplicateOpenAndParametersShortcuts(t *testing.T) {
+	m, _ := homeFixture()
+	view := ansi.Strip(m.View().Content)
+	for _, unwanted := range []string{"F2 Open", "F4 Parameters", "Enter Open / Focus"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("home advertises duplicate or unrequested control %q:\n%s", unwanted, view)
 		}
 	}
-	if x < 0 {
-		t.Fatal("top Actions control has no hit region")
+	press(m, tea.KeyF2, "")
+	if m.home.Modal != nil {
+		t.Fatalf("F2 still opens an action/menu overlay: %#v", m.home.Modal)
 	}
-	if cmd := m.homeMouse(tea.MouseClickMsg{X: x, Y: 1, Button: tea.MouseLeft}); cmd != nil {
-		t.Fatal("Actions click dispatched unexpected command")
+	press(m, tea.KeyF4, "")
+	if m.home.Modal != nil {
+		t.Fatalf("F4 still opens an action/menu overlay: %#v", m.home.Modal)
 	}
-	if m.home.Modal != nil || m.home.Focus != ProfilesPane {
-		t.Fatal("top Open / Focus control did not focus the context list")
+}
+
+func TestF3OpensUsefulSelectedCapabilityDetails(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyF3, "")
+	if m.home.Modal == nil || m.home.Modal.Kind != "details" {
+		t.Fatalf("F3 did not open selected capability details: %#v", m.home.Modal)
+	}
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Details", "Inspector", "Capability Pack: one", "Package: inspect", "Components: MCP"} {
+		if strings.Contains(view, want) {
+			continue
+		}
+		t.Fatalf("F3 did not show useful details for the selected capability:\n%s", view)
 	}
 }

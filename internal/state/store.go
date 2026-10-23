@@ -19,12 +19,39 @@ import (
 )
 
 type Key struct {
-	Source      string `json:"source"`
-	Package     string `json:"package"`
-	Environment string `json:"environment"`
-	Target      string `json:"target"`
-	MCP         string `json:"mcp,omitempty"`
-	Profile     string `json:"profile,omitempty"`
+	Source        string `json:"source"`
+	Package       string `json:"package"`
+	Environment   string `json:"environment"`
+	Target        string `json:"target"`
+	MCP           string `json:"mcp,omitempty"`
+	MCPDefinition string `json:"mcp_definition,omitempty"`
+}
+
+func (k *Key) UnmarshalJSON(data []byte) error {
+	type keyAlias Key
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	hasMCPDefinition := false
+	for name := range fields {
+		if strings.EqualFold(name, "mcp_definition") {
+			hasMCPDefinition = true
+			break
+		}
+	}
+	var decoded struct {
+		keyAlias
+		LegacyProfile string `json:"profile,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*k = Key(decoded.keyAlias)
+	if k.MCPDefinition == "" && !hasMCPDefinition {
+		k.MCPDefinition = decoded.LegacyProfile
+	}
+	return nil
 }
 
 func (k Key) ID() string {
@@ -32,8 +59,8 @@ func (k Key) ID() string {
 	if k.MCP != "" {
 		parts = append(parts, k.MCP)
 	}
-	if k.Profile != "" {
-		parts = append(parts, k.Profile)
+	if k.MCPDefinition != "" {
+		parts = append(parts, k.MCPDefinition)
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:])
@@ -365,7 +392,13 @@ func (s *Store) Installations() ([]Installation, error) {
 	return l.Installations, e
 }
 func sameInstallation(a, b Installation) bool {
-	return a.Key == b.Key && a.AgentID == b.AgentID && a.Component == b.Component && a.Destination == b.Destination
+	if a.Key != b.Key || a.AgentID != b.AgentID || a.Component != b.Component || a.Destination != b.Destination {
+		return false
+	}
+	// A runtime row represents one exact container. Multiple containers may
+	// share a declared MCP key and destination, so the runtime ID (SourcePath)
+	// participates in identity for those rows.
+	return a.Component != "runtime" || a.SourcePath == b.SourcePath
 }
 
 // Record/Remove serialize writes within this Store. Multi-operation callers use
@@ -408,6 +441,60 @@ func (s *Store) Remove(i Installation) error {
 		if !sameInstallation(v, i) {
 			out = append(out, v)
 		}
+	}
+	l.Installations = out
+	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)
+}
+
+// RekeyRuntimeRecord updates one exact runtime ledger identity using fresh
+// runtime observation metadata. Duplicate rows for the same key and container
+// ID are collapsed into that authoritative observation.
+func (s *Store) RekeyRuntimeRecord(old, updated Installation) error {
+	if old.Component != "runtime" || old.SourcePath == "" || updated.Component != "runtime" || updated.AgentID != old.AgentID || updated.SourcePath != old.SourcePath || updated.Key.Source == "" || updated.Key.Package == "" || updated.Key.Target == "" {
+		return errors.New("rekey requires an exact runtime record and complete observed target")
+	}
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, err := s.loadLedger()
+	if err != nil {
+		return err
+	}
+	index := -1
+	for i, row := range l.Installations {
+		if sameInstallation(row, old) {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return errors.New("exact runtime ledger record was not found for rekey")
+	}
+	if l.Installations[index].AgentID != updated.AgentID {
+		return errors.New("observed target runtime has a different ledger owner")
+	}
+	out := make([]Installation, 0, len(l.Installations))
+	inserted := false
+	for i, row := range l.Installations {
+		if i == index {
+			continue
+		}
+		if row.Component == "runtime" && row.Key == updated.Key && row.SourcePath == updated.SourcePath {
+			if row.AgentID != updated.AgentID {
+				return errors.New("target MCP runtime ID is recorded under a different ledger owner")
+			}
+			if !inserted {
+				out = append(out, updated)
+				inserted = true
+			}
+			continue
+		}
+		out = append(out, row)
+	}
+	if !inserted {
+		out = append(out, updated)
 	}
 	l.Installations = out
 	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)

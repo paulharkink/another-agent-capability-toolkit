@@ -192,18 +192,24 @@ func TestMCPStatusAuthLogsActions(t *testing.T) {
 	}
 	m.Update(open())
 	text := m.View().Content
-	for _, part := range []string{"Endpoint: http://127.0.0.1:8765/mcp", "Authentication", "Logs", "Information"} {
+	for _, part := range []string{"AUTHENTICATION", "Logs", "Information", "Inputs", "[ Save ]"} {
 		if !strings.Contains(text, part) {
-			t.Fatalf("missing %s: %s", part, text)
+			t.Fatalf("Inputs stage missing %s: %s", part, text)
 		}
 	}
-	if m.workspace == nil || m.workspace.Key.Target != "production" || m.form == nil || m.form.SectionTitle() != "Overview" {
-		t.Fatalf("MCP status workspace lost the selected profile: workspace=%+v form=%v", m.workspace, m.form != nil)
+	if m.workspace == nil || m.workspace.Key.Target != "production" || m.form == nil || m.form.SectionTitle() != "Inputs" {
+		t.Fatalf("MCP workspace lost selected instance or opened wrong initial stage: workspace=%+v form=%v", m.workspace, m.form != nil)
 	}
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
-	if !strings.Contains(m.View().Content, "status: running") {
-		t.Fatalf("profile Runtime section did not preserve runtime status: %s", m.View().Content)
+	if !strings.Contains(m.View().Content, "Status: Running") {
+		t.Fatalf("Runtime stage did not preserve runtime liveness: %s", m.View().Content)
+	}
+	m.workspace.SectionID = sectionInformationID
+	m.form.SelectSectionID(sectionInformationID)
+	m.form.FocusSection()
+	if !strings.Contains(m.View().Content, "Endpoint URI: http://127.0.0.1:8765/mcp") {
+		t.Fatalf("Information stage omitted the selected MCP endpoint: %s", m.View().Content)
 	}
 }
 func TestSettingsEnvironmentRootEditable(t *testing.T) {
@@ -212,7 +218,7 @@ func TestSettingsEnvironmentRootEditable(t *testing.T) {
 	press(m, tea.KeyEnter, "")
 	press(m, tea.KeyEnd, "")
 	press(m, tea.KeyEnter, "")
-	if m.form == nil || !strings.Contains(m.View().Content, "Profile configuration directory") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Instance configuration directory") {
 		t.Fatalf("%s", m.View().Content)
 	}
 }

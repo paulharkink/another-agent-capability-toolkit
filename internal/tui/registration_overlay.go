@@ -17,7 +17,7 @@ import (
 // registrationState is a presentation draft. The adapter receives a request
 // only after Apply; moving between rows never changes an agent config file.
 type registrationState struct {
-	Profile           ProfileRow
+	Instance          InstanceRow
 	Agents            []string
 	Choices           []registrationChoice
 	Marked            map[string]bool
@@ -144,7 +144,7 @@ func (m *Model) registrationAgentName(id string) string {
 	return agents.DisplayName(id)
 }
 
-func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
+func (m *Model) openRegistrationOverlay(p InstanceRow, removing bool) {
 	rows := make([]string, 0, len(m.agents))
 	seen := map[string]bool{}
 	add := func(id string) {
@@ -160,7 +160,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 		seenChoices := map[string]bool{}
 		recordedAgents := map[string]bool{}
 		for _, row := range m.inventory {
-			if row.Key != p.Profile.Key || row.Component != "mcp" || row.AgentID == "" || row.Destination == "" {
+			if row.Key != p.Instance.Key || row.Component != "mcp" || row.AgentID == "" || row.Destination == "" {
 				continue
 			}
 			choice := registrationChoice{AgentID: row.AgentID, Destination: row.Destination}
@@ -171,7 +171,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 			seenChoices[choice.key()] = true
 			recordedAgents[row.AgentID] = true
 		}
-		for _, id := range p.Profile.RegisteredAgents {
+		for _, id := range p.Instance.RegisteredAgents {
 			if strings.TrimSpace(id) == "" || recordedAgents[id] {
 				continue
 			}
@@ -182,19 +182,19 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 			choices = append(choices, choice)
 			seenChoices[choice.key()] = true
 		}
-		m.registration = &registrationState{Profile: p, Choices: choices, Marked: map[string]bool{}, OriginalMarked: map[string]bool{}, Remove: true, Transport: p.Profile.Transport, OriginalTransport: p.Profile.Transport}
+		m.registration = &registrationState{Instance: p, Choices: choices, Marked: map[string]bool{}, OriginalMarked: map[string]bool{}, Remove: true, Transport: p.Instance.Transport, OriginalTransport: p.Instance.Transport}
 		return
 	} else {
 		for _, id := range m.agents {
 			add(id)
 		}
-		for _, id := range p.Profile.RegisteredAgents {
+		for _, id := range p.Instance.RegisteredAgents {
 			add(id)
 		}
 	}
 	marked := map[string]bool{}
 	if !removing {
-		for _, id := range p.Profile.RegisteredAgents {
+		for _, id := range p.Instance.RegisteredAgents {
 			marked[id] = true
 		}
 	}
@@ -202,7 +202,7 @@ func (m *Model) openRegistrationOverlay(p ProfileRow, removing bool) {
 	if removing {
 		message = ""
 	}
-	m.registration = &registrationState{Profile: p, Agents: rows, Marked: marked, OriginalMarked: cloneRegistrationMarks(marked), Remove: removing, NeedsTransport: p.Profile.Transport == "", Transport: p.Profile.Transport, OriginalTransport: p.Profile.Transport, Message: message}
+	m.registration = &registrationState{Instance: p, Agents: rows, Marked: marked, OriginalMarked: cloneRegistrationMarks(marked), Remove: removing, NeedsTransport: p.Instance.Transport == "", Transport: p.Instance.Transport, OriginalTransport: p.Instance.Transport, Message: message}
 }
 
 func (m *Model) registrationKey(stroke string) tea.Cmd {
@@ -318,7 +318,7 @@ func (m *Model) checkRegistrationEndpoint() tea.Cmd {
 		r.Message = "Connection check unavailable: backend has no connection adapter"
 		return nil
 	}
-	url, transport := r.Profile.URL, r.Transport
+	url, transport := r.Instance.URL, r.Transport
 	r.Message = "Checking connection…"
 	return func() tea.Msg {
 		return registrationCheckMsg{observation: backend.CheckConnection(m.ctx, url, transport)}
@@ -334,9 +334,9 @@ func (m *Model) applyRegistrationOverlay() tea.Cmd {
 		r.Message = "Select an MCP transport before applying registrations."
 		return nil
 	}
-	request := viewmodel.RegistrationRequest{Ref: config.ProfileRef{PackID: r.Profile.Key.Source, CapabilityID: r.Profile.Key.Package, Name: r.Profile.Key.Target}, Key: r.Profile.Key, URL: r.Profile.URL, Transport: r.Transport}
-	if r.Profile.Configuration != nil {
-		request.Ref = r.Profile.Configuration.Ref
+	request := viewmodel.RegistrationRequest{Ref: config.InstanceRef{PackID: r.Instance.Key.Source, CapabilityID: r.Instance.Key.Package, Name: r.Instance.Key.Target}, Key: r.Instance.Key, URL: r.Instance.URL, Transport: r.Transport}
+	if r.Instance.Configuration != nil {
+		request.Ref = r.Instance.Configuration.Ref
 	}
 	if r.Remove {
 		exact := []viewmodel.RegistrationIdentity{}
@@ -508,7 +508,7 @@ func (m *Model) registrationOverlay(lines []string) []string {
 	if r.Area == 0 {
 		leftTitle = "► " + leftTitle
 	}
-	rightTitle, details := "Endpoint", []string{"Endpoint URI", r.Profile.URL, "Check connection", "Last check: " + r.Message}
+	rightTitle, details := "Endpoint", []string{"Endpoint URI", r.Instance.URL, "Check connection", "Last check: " + r.Message}
 	if r.Remove {
 		rightTitle = "Removal effect"
 		details = []string{"Only selected local agent files and ledger entries are removed", "The MCP endpoint is left running"}
@@ -587,7 +587,7 @@ func (m *Model) registrationOverlay(lines []string) []string {
 			details = append(details, "Agent home: "+home)
 		}
 		registered := false
-		for _, registeredID := range r.Profile.Profile.RegisteredAgents {
+		for _, registeredID := range r.Instance.Instance.RegisteredAgents {
 			registered = registered || registeredID == id
 		}
 		achieved := "not registered"

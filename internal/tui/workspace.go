@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -42,8 +43,9 @@ func firstNonempty(values ...string) string {
 }
 
 const (
+	sectionInputsID      = "tool:inputs"
 	sectionOverviewID    = "tool:overview"
-	sectionAgentsID      = "tool:agents"
+	sectionAgentsID      = "tool:agent-access"
 	sectionEndpointID    = "tool:endpoint"
 	sectionRuntimeID     = "tool:runtime"
 	sectionLogsID        = "tool:logs"
@@ -54,27 +56,43 @@ const (
 // the invoking layer and profile observation beside the target draft so later
 // route handling can restore Back without losing the parent selection.
 type workspaceState struct {
-	Reference         config.ProfileRef
-	Key               state.Key
-	Section           string
-	SectionID         string
-	InvokingView      string
-	InvokingSelection int
-	Active            bool
-	Existing          bool
-	Installed         bool
-	ObservedOnly      bool
-	Preview           *viewmodel.SetupPreview
-	Profile           *viewmodel.Profile
-	ProfileSnapshot   *viewmodel.ProfileSnapshot
-	Draft             map[string]any
+	InstanceRef          config.InstanceRef
+	Key                  state.Key
+	SelectedMCP          string
+	SelectedRuntimeID    string
+	RuntimeRecordTargets []runtimeRecordTarget
+	Section              string
+	SectionID            string
+	InvokingView         string
+	InvokingSelection    int
+	Active               bool
+	Existing             bool
+	Installed            bool
+	RegisteredMCPs       map[string]bool
+	InputsSaved          bool
+	AgentActionsKnown    bool
+	AgentActionsDisabled bool
+	ObservedOnly         bool
+	Preview              *viewmodel.SetupPreview
+	Instance             *viewmodel.Instance
+	InstanceSnapshot     *viewmodel.InstanceSnapshot
+	Draft                map[string]any
+}
+
+type runtimeRecordTarget struct {
+	Key state.Key
+	ID  string
+}
+
+type runtimeRecordRemovalBackend interface {
+	UIRemoveRuntimeRecord(context.Context, state.Key, string) (string, error)
 }
 
 func (m *Model) refreshObservedWorkspaceFacts() {
-	if m.workspace == nil || !m.workspace.ObservedOnly || m.workspace.Profile == nil || m.form == nil {
+	if m.workspace == nil || !m.workspace.ObservedOnly || m.workspace.Instance == nil || m.form == nil {
 		return
 	}
-	profile := m.workspace.Profile
+	profile := m.workspace.Instance
 	key := m.workspace.Key
 	registered := "none observed"
 	if len(profile.RegisteredAgents) > 0 {
@@ -108,7 +126,7 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 		"Observed transport: " + nonempty(profile.Transport, "unknown"),
 		"Runtime status: " + nonempty(profile.RuntimeStatus, "unknown"),
 		"Runtime ownership: " + nonempty(profile.Ownership, "unknown"),
-		"This workspace reflects observed profile facts; it does not imply package installation or local runtime ownership.",
+		"This workspace reflects observed instance facts; it does not imply package installation or local runtime ownership.",
 	})
 	m.form.SetSectionActionsID(sectionOverviewID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
 	m.form.SetSectionActionsID(sectionAgentsID, forms.FormAction{ID: "locate-source", Label: "Locate Capability Pack"})
@@ -134,16 +152,24 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	if preview.CredentialNote != "" {
 		lines = append(lines, splitDisplayLine("Credential note: "+preview.CredentialNote, inner)...)
 	}
-	if preview.ProfilePath != "" {
-		lines = append(lines, "Profile: "+preview.Key.Target, "Pack profile TOML (read-only): "+preview.ProfilePath)
+	instancePath := preview.InstancePath
+	if instancePath == "" {
+		instancePath = preview.ProfilePath
+	}
+	if instancePath != "" {
+		lines = append(lines, "Instance: "+preview.Key.Target, "Pack instance TOML (read-only): "+instancePath)
 	} else if preview.TargetPath != "" {
 		lines = append(lines, "Environment: "+preview.Key.Environment+" · Target: "+preview.Key.Target, "Exact TOML: "+preview.TargetPath)
 	} else if preview.Key.Environment != "" && preview.Key.Target != "" && preview.Key.Target != "default" {
 		lines = append(lines, "Selected preset: "+preview.Key.Environment+" / "+preview.Key.Target)
 	}
-	if preview.ProfileTOML != "" {
-		lines = append(lines, "Read-only profile TOML")
-		for _, line := range strings.Split(strings.TrimSuffix(preview.ProfileTOML, "\n"), "\n") {
+	instanceTOML := preview.InstanceTOML
+	if instanceTOML == "" {
+		instanceTOML = preview.ProfileTOML
+	}
+	if instanceTOML != "" {
+		lines = append(lines, "Read-only instance TOML")
+		for _, line := range strings.Split(strings.TrimSuffix(instanceTOML, "\n"), "\n") {
 			lines = append(lines, splitDisplayLine(line, inner)...)
 		}
 	} else if preview.TargetTOML != "" {
@@ -199,7 +225,7 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	return lines
 }
 
-func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, profile *viewmodel.Profile) []string {
+func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, profile *viewmodel.Instance) []string {
 	configuration := "not saved"
 	if preview.Configured {
 		configuration = "saved"
@@ -230,14 +256,14 @@ func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, prof
 	return lines
 }
 
-func workspaceProfileInformationLines(profile *viewmodel.Profile) []string {
+func workspaceProfileInformationLines(profile *viewmodel.Instance) []string {
 	if profile == nil {
 		return nil
 	}
 	status := nonempty(profile.RuntimeStatus, "unknown")
 	owner := nonempty(profile.Ownership, "unknown")
 	endpoint := nonempty(profile.URL, "not configured")
-	lines := []string{"Selected MCP profile", "Endpoint URI: " + endpoint, "Live runtime status: " + status, "Runtime ownership: " + owner}
+	lines := []string{"Selected MCP definition", "Endpoint URI: " + endpoint, "Live runtime status: " + status, "Runtime ownership: " + owner}
 	if profile.RegistrationDisabledReason != "" {
 		lines = append(lines, "Registration availability: "+profile.RegistrationDisabledReason)
 	}
@@ -276,26 +302,25 @@ func nonempty(value, fallback string) string {
 	return value
 }
 
-func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
+func (m *Model) instanceForMCPName(name string) *viewmodel.Instance {
 	if m.workspace == nil {
 		return nil
 	}
-	if m.workspace.Reference.CapabilityID != "" {
-		for _, p := range m.capabilityProfiles[m.workspace.Key.Package].Profiles {
+	if m.workspace.InstanceRef.CapabilityID != "" {
+		for _, p := range m.capabilityInstances[m.workspace.Key.Package].Instances {
 			if p.Key != m.workspace.Key {
 				continue
 			}
 			for _, r := range p.MCPs {
 				if r.MCPID == name {
-					return configurationRuntimeProfile(p, r, m.workspace.Preview)
+					return configurationRuntimeInstance(p, r, m.workspace.Preview)
 				}
 			}
 		}
 	}
 	key := m.workspace.Key
-	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
-		for i := range snapshot.Profiles {
-			profile := snapshot.Profiles[i]
+	if snapshot := m.workspace.InstanceSnapshot; snapshot != nil {
+		for _, profile := range runtimeInstances(snapshot) {
 			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target && profile.Key.MCP == name {
 				copy := profile
 				return &copy
@@ -304,35 +329,56 @@ func (m *Model) profileForMCPName(name string) *viewmodel.Profile {
 	}
 	for _, instance := range m.mcps {
 		if instance.Key.Source == key.Source && instance.Key.Package == key.Package && instance.Key.Environment == key.Environment && instance.Key.Target == key.Target && instance.Key.MCP == name {
-			return &viewmodel.Profile{Key: instance.Key, Name: instance.Name, URL: instance.URL, RuntimeStatus: instance.Status, Ownership: instance.Ownership}
+			return &viewmodel.Instance{Key: instance.Key, Name: instance.Name, URL: instance.URL, RuntimeStatus: instance.Status, Ownership: instance.Ownership}
 		}
 	}
-	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == name {
-		copy := *m.workspace.Profile
+	if m.workspace.Instance != nil && m.workspace.Instance.Key.MCP == name {
+		copy := *m.workspace.Instance
 		return &copy
 	}
-	if m.workspace.Profile != nil && m.workspace.Profile.Key.MCP == "" && m.workspace.Preview != nil && len(m.workspace.Preview.MCPDefinitions) == 1 {
-		copy := *m.workspace.Profile
+	if m.workspace.Instance != nil && m.workspace.Instance.Key.MCP == "" && m.workspace.Preview != nil && len(m.workspace.Preview.MCPDefinitions) == 1 {
+		copy := *m.workspace.Instance
 		copy.Key.MCP = name
 		return &copy
 	}
 	return nil
 }
 
-func (m *Model) legacyWorkspaceMCP() *viewmodel.Profile {
+func (m *Model) runtimeStatusForMCP(name string) *viewmodel.RuntimeStatus {
+	if m.workspace == nil {
+		return nil
+	}
+	snapshot, ok := m.capabilityInstances[m.workspace.Key.Package]
+	if !ok {
+		return nil
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if instance.Key != m.workspace.Key {
+			continue
+		}
+		for i := range instance.MCPs {
+			if instance.MCPs[i].MCPID == name {
+				return &instance.MCPs[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Model) legacyWorkspaceMCP() *viewmodel.Instance {
 	if m.workspace == nil {
 		return nil
 	}
 	key := m.workspace.Key
-	if m.workspace.Profile != nil {
-		profile := *m.workspace.Profile
+	if m.workspace.Instance != nil {
+		profile := *m.workspace.Instance
 		if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
 			return &profile
 		}
 	}
-	matches := []viewmodel.Profile{}
-	if snapshot := m.workspace.ProfileSnapshot; snapshot != nil {
-		for _, profile := range snapshot.Profiles {
+	matches := []viewmodel.Instance{}
+	if snapshot := m.workspace.InstanceSnapshot; snapshot != nil {
+		for _, profile := range runtimeInstances(snapshot) {
 			if profile.Key.Source == key.Source && profile.Key.Package == key.Package && profile.Key.Environment == key.Environment && profile.Key.Target == key.Target {
 				matches = append(matches, profile)
 			}
@@ -350,11 +396,15 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 	}
 	switch strings.ToLower(stroke) {
 	case "g", "r":
-		m.workspace.Section = "Agents"
+		m.workspace.Section = "Agent access"
 		m.workspace.SectionID = sectionAgentsID
+		m.form.SelectSectionID(sectionAgentsID)
+		m.form.FocusSection()
 	case "i":
 		m.workspace.Section = "Information"
 		m.workspace.SectionID = sectionInformationID
+		m.form.SelectSectionID(sectionInformationID)
+		m.form.FocusSection()
 	case "l":
 		if !m.form.HasSectionID(sectionLogsID) {
 			return false, nil
@@ -367,9 +417,9 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			m.output = "Choose a specific MCP under Runtime to view its logs."
 			return true, nil
 		}
-		var profile *viewmodel.Profile
+		var profile *viewmodel.Instance
 		if len(m.workspace.Preview.MCPDefinitions) == 1 {
-			profile = m.profileForMCPName(m.workspace.Preview.MCPDefinitions[0].Name)
+			profile = m.instanceForMCPName(m.workspace.Preview.MCPDefinitions[0].Name)
 		} else {
 			profile = m.legacyWorkspaceMCP()
 		}
@@ -378,7 +428,7 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			return true, nil
 		}
 		m.workspace.cacheDraft(m.form.Values())
-		return true, m.openProfileLogs(ProfileRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		return true, m.openProfileLogs(InstanceRow{Key: m.workspace.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 	case "s", "x":
 		shortcut := strings.ToLower(stroke)
 		if shortcut == "s" {
@@ -387,43 +437,43 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			}
 			definitions := m.workspace.Preview.MCPDefinitions
 			if len(definitions) > 1 {
-				parent := m.workspace.Profile
-				row := ProfileRow{}
+				parent := m.workspace.Instance
+				row := InstanceRow{}
 				if parent != nil {
-					row = ProfileRow{Key: parent.Key, Profile: parent, URL: parent.URL, Status: parent.RuntimeStatus}
+					row = InstanceRow{Key: parent.Key, Instance: parent, URL: parent.URL, Status: parent.RuntimeStatus}
 				}
-				if reason := m.profileActionReason(row, "s"); reason != "" {
+				if reason := m.instanceActionReason(row, "s"); reason != "" {
 					m.output = reason
 					return true, nil
 				}
 				m.output = "Choose a specific MCP under Runtime to start it."
 				return true, nil
 			}
-			profile := (*viewmodel.Profile)(nil)
+			profile := (*viewmodel.Instance)(nil)
 			mcpName := ""
 			if len(definitions) == 1 {
 				mcpName = definitions[0].Name
-				profile = m.profileForMCPName(mcpName)
+				profile = m.instanceForMCPName(mcpName)
 			} else {
 				profile = m.legacyWorkspaceMCP()
 				if profile != nil {
 					mcpName = profile.Key.MCP
 				}
 			}
-			if profile == nil && m.workspace.Profile != nil {
-				parent := *m.workspace.Profile
+			if profile == nil && m.workspace.Instance != nil {
+				parent := *m.workspace.Instance
 				profile = &parent
 			}
-			row := ProfileRow{}
+			row := InstanceRow{}
 			if profile != nil {
-				row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+				row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 			}
-			if reason := m.profileActionReason(row, "s"); reason != "" {
+			if reason := m.instanceActionReason(row, "s"); reason != "" {
 				m.output = reason
 				return true, nil
 			}
-			if m.profileError != nil {
-				m.output = "Runtime observation failed: " + m.profileError.Error() + "; refresh this target before starting it."
+			if m.instanceError != nil {
+				m.output = "Runtime observation failed: " + m.instanceError.Error() + "; refresh this target before starting it."
 				return true, nil
 			}
 			if mcpName == "" && len(definitions) > 0 {
@@ -438,10 +488,10 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			return true, nil
 		}
 		definition := catalog.MCP{}
-		var profile *viewmodel.Profile
+		var profile *viewmodel.Instance
 		if len(m.workspace.Preview.MCPDefinitions) == 1 {
 			definition = m.workspace.Preview.MCPDefinitions[0]
-			profile = m.profileForMCPName(definition.Name)
+			profile = m.instanceForMCPName(definition.Name)
 		} else {
 			profile = m.legacyWorkspaceMCP()
 			if profile != nil {
@@ -452,7 +502,7 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 			m.output = "No locally owned MCP runtime is available to stop."
 			return true, nil
 		}
-		reason := m.profileActionReason(ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}, shortcut)
+		reason := m.instanceActionReason(InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}, shortcut)
 		if reason != "" {
 			m.output = reason
 			return true, nil
@@ -482,8 +532,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.configureComponentActions()
 	m.form.SetSectionHeading("Workspace sections")
 	if m.workspace.Section == "" {
-		m.workspace.Section = "Agents"
-		m.workspace.SectionID = sectionAgentsID
+		m.workspace.Section = "Inputs"
+		m.workspace.SectionID = sectionInputsID
 		for _, section := range sections {
 			if len(section.Fields) > 0 {
 				m.workspace.Section = section.Title
@@ -492,38 +542,70 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 		}
 	}
-	if m.workspace.Profile != nil {
-		m.workspace.Profile.Key = preview.Key
+	if m.workspace.Instance != nil {
+		m.workspace.Instance.Key = preview.Key
 	}
-	m.form.SetSectionContentID(sectionOverviewID, workspaceOverviewLines(preview, m.workspace.Installed, m.workspace.Profile))
+	m.workspace.InputsSaved = preview.Configured
+	ready, required := 0, 0
+	for _, input := range preview.Inputs {
+		if !input.Definition.Required {
+			continue
+		}
+		required++
+		if input.HasValue {
+			ready++
+		}
+	}
+	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
+	if m.workspace.SelectedMCP != "" {
+		inputLines = append(inputLines, "Editing inputs for MCP "+m.workspace.SelectedMCP+" · answers are saved at this capability instance.")
+	}
+	for _, section := range preview.Sections {
+		if len(section.Fields) > 0 {
+			inputLines = append(inputLines, strings.ToUpper(section.Title))
+		}
+	}
+	m.form.SetSectionContentID(sectionInputsID, inputLines)
 
-	agents := []string{}
+	agentAccess := []string{"Select agents to install this capability for.", "Agent install edits configuration only; it does not start Docker.", "Agent          Target   Skill         MCP config"}
 	for _, destination := range workspaceDestinations(preview) {
-		state := "Not selected"
+		status := "Not installed"
+		marker := "[ ]"
 		if destination.Selected {
-			state = "Selected for Save"
+			status, marker = "Installed", "[x]"
 		}
-		path := destinationDisplayPath(preview, destination)
-		agents = append(agents, destination.ID+" · "+state+" · "+path)
-		if destination.Detection != "" {
-			agents = append(agents, destination.ID+" · Detection: "+destination.Detection)
+		mcpStatus := "Not installed"
+		if !preview.MCP {
+			mcpStatus = "—"
+		} else if destination.Selected {
+			mcpStatus = "Installed"
 		}
-		if destination.Note != "" {
-			agents = append(agents, destination.ID+" · Note: "+destination.Note)
+		name := firstNonempty(destination.Name, destination.ID)
+		agentAccess = append(agentAccess, fmt.Sprintf("%-14s %-8s %-13s %s", name, marker, status, mcpStatus))
+		details := []string{}
+		detectionFailed := strings.HasPrefix(strings.ToLower(destination.Detection), "failed")
+		if detectionFailed {
+			details = append(details, destination.Detection)
+		}
+		note := strings.ToLower(destination.Note)
+		if detectionFailed || strings.Contains(note, "conflict") || strings.Contains(note, "permission") || strings.Contains(note, "failed") {
+			details = append(details, destination.Note)
 		}
 		if destination.DisabledReason != "" {
-			agents = append(agents, destination.ID+" · Unavailable for new setup: "+destination.DisabledReason)
+			details = append(details, destination.DisabledReason)
+		}
+		for _, detail := range details {
+			agentAccess = append(agentAccess, "  "+name+": "+detail)
 		}
 	}
-	if len(agents) == 0 {
-		agents = []string{"No named agent destinations are available."}
-	}
-	m.form.SetSectionContentID(sectionAgentsID, agents)
+	m.form.SetSectionContentID(sectionAgentsID, agentAccess)
+	m.refreshAgentAccessActions()
 
 	if preview.MCP {
 		runtime := []string{}
 		logs := []string{}
 		runtimeActions := []forms.FormAction{}
+		m.workspace.RuntimeRecordTargets = nil
 		definitions := append([]catalog.MCP(nil), preview.MCPDefinitions...)
 		if len(definitions) == 0 {
 			if profile := m.legacyWorkspaceMCP(); profile != nil {
@@ -531,7 +613,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 		}
 		for _, definition := range definitions {
-			profile := m.profileForMCPName(definition.Name)
+			profile := m.instanceForMCPName(definition.Name)
 			if len(preview.MCPDefinitions) == 0 {
 				profile = m.legacyWorkspaceMCP()
 			}
@@ -543,25 +625,77 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if profile != nil {
 				status, owner, endpoint = nonempty(profile.RuntimeStatus, "unknown"), nonempty(profile.Ownership, "unknown"), nonempty(profile.URL, "not configured")
 			}
-			runtime = append(runtime, label+" · status: "+status+" · ownership: "+owner+" · endpoint: "+endpoint)
+			child := m.runtimeStatusForMCP(definition.Name)
+			runtimeLine := label + " · status: " + status + " · ownership: " + owner + " · endpoint: " + endpoint
+			if m.workspace.SelectedMCP == definition.Name {
+				runtimeLine = "> " + runtimeLine
+			}
+			runtime = append(runtime, runtimeLine)
+			if child != nil {
+				if child.Error != "" {
+					runtime = append(runtime, "  MCP observation: "+child.Error)
+				}
+				for _, record := range child.RuntimeRecords {
+					line := fmt.Sprintf("  Runtime ID: %s · %s · ownership: %s", record.ID, record.Status, record.Ownership)
+					if record.Name != "" {
+						line += " · container: " + record.Name
+					}
+					if record.URL != "" {
+						line += " · endpoint: " + record.URL
+					}
+					if record.LastAction != "" {
+						line += " · last action: " + record.LastAction
+					}
+					if record.ID == m.workspace.SelectedRuntimeID {
+						line = "> " + line
+					}
+					runtime = append(runtime, line)
+					if strings.TrimSpace(record.ID) == "" {
+						continue
+					}
+					targetIndex := len(m.workspace.RuntimeRecordTargets)
+					m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: child.Key, ID: record.ID})
+					deleteLabel := "Delete runtime " + record.ID
+					deleteID := "delete-runtime:" + fmt.Sprint(targetIndex)
+					disabled := ""
+					switch {
+					case child.Stale:
+						disabled = "Runtime observation is stale; refresh before deleting"
+					case record.Status == "missing":
+						deleteLabel = "Forget missing runtime " + record.ID
+					case record.Ownership != "local":
+						disabled = "Runtime ownership is " + record.Ownership + "; AACT cannot delete it"
+					}
+					runtimeActions = append(runtimeActions, forms.FormAction{ID: deleteID, Label: deleteLabel, Disabled: disabled})
+				}
+			}
+			runtimeActions = append(runtimeActions, forms.FormAction{ID: "edit-inputs:" + definition.Name, Label: "Edit capability inputs for " + definition.Name})
 			startProfile := profile
-			if startProfile == nil && m.workspace.Profile != nil {
-				parent := *m.workspace.Profile
+			if startProfile == nil && m.workspace.Instance != nil {
+				parent := *m.workspace.Instance
 				startProfile = &parent
 			}
-			startRow := ProfileRow{}
+			startRow := InstanceRow{}
 			if startProfile != nil {
-				startRow = ProfileRow{Key: startProfile.Key, Profile: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
+				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
-			startDisabled := m.profileActionReason(startRow, "s")
+			startDisabled := m.instanceActionReason(startRow, "s")
+			if !m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(definition.Name) || m.hasUnsavedSetupInputs() {
+				if startDisabled != "" {
+					startDisabled += " · "
+				}
+				startDisabled += "Save inputs and install this capability for an agent first"
+			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
-			if profile != nil && profile.CanStop {
+			if profile != nil && profile.CanStop && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
+			} else if profile != nil && profile.RuntimeStatus == "running" && child != nil && len(child.RuntimeRecords) > 1 {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name, Disabled: "Multiple runtime records are linked; select one exact record"})
 			}
-			if profile != nil && profile.RuntimeStatus == "running" {
+			if profile != nil && profile.RuntimeStatus == "running" && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "logs:" + definition.Name, Label: "View " + definition.Name + " logs"})
 			}
-			if profile != nil && profile.URL != "" {
+			if profile != nil && profile.URL != "" && (child == nil || len(child.RuntimeRecords) <= 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "check-connection:" + definition.Name, Label: "Check " + definition.Name + " connection"})
 			}
 			logs = append(logs, label+" · "+status)
@@ -572,28 +706,48 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		if len(logs) == 0 {
 			logs = []string{"No runtime logs are available."}
 		}
+		status := "Stopped"
+		authentication := ""
+		if len(definitions) > 0 {
+			if profile := m.instanceForMCPName(definitions[0].Name); profile != nil {
+				if profile.RuntimeStatus == "running" {
+					status = "Running"
+				}
+				if label := authenticationDisplayStatus(profile.AuthenticationStatus); label != "" {
+					authentication = "Authentication: " + label
+				}
+			}
+		}
+		inputStatus, installStatus := "Not saved", "Not installed"
+		if m.workspace.InputsSaved {
+			inputStatus = "Saved"
+		}
+		if m.workspace.Installed {
+			installStatus = "Complete"
+		}
+		header := []string{"Status: " + status}
+		if authentication != "" {
+			header = append(header, authentication)
+		}
+		header = append(header, "Inputs: "+inputStatus, "Agent install: "+installStatus, "This starts the Docker instance. It does not edit agent configuration.")
+		runtime = append(header, runtime...)
 		m.form.SetSectionContentID(sectionRuntimeID, runtime)
 		m.form.SetSectionActionsID(sectionRuntimeID, runtimeActions...)
 		m.form.SetSectionContentID(sectionLogsID, logs)
 	}
 	information := workspaceInformationLines(preview, m.form.SectionContentWidth())
 	if preview.MCP {
-		if profileInformation := workspaceProfileInformationLines(m.workspace.Profile); len(profileInformation) > 0 {
+		if profileInformation := workspaceProfileInformationLines(m.workspace.Instance); len(profileInformation) > 0 {
 			information = append(profileInformation, information...)
 		}
 	}
 	m.form.SetSectionContentID(sectionInformationID, information)
-	actions := []forms.FormAction{}
-	if !m.workspace.ObservedOnly {
-		actions = append(actions, forms.FormAction{ID: "agents", Label: "Configure agent destinations"})
-	}
-	m.form.SetSectionActionsID(sectionOverviewID, actions...)
 	if m.workspace.SectionID != "" && !m.form.HasSectionID(m.workspace.SectionID) {
 		m.workspace.SectionID = ""
 	}
 	if m.workspace.SectionID == "" && !m.form.HasSection(m.workspace.Section) {
-		m.workspace.Section = "Overview"
-		m.workspace.SectionID = sectionOverviewID
+		m.workspace.Section = "Inputs"
+		m.workspace.SectionID = sectionInputsID
 	}
 	if m.workspace.SectionID != "" {
 		m.form.SelectSectionID(m.workspace.SectionID)
@@ -601,6 +755,29 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		m.form.SelectSection(m.workspace.Section)
 	}
 	m.form.FocusSection()
+	m.form.SetSubmitLabel("Save")
+	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+}
+
+func (m *Model) refreshAgentAccessActions() {
+	if m.form == nil || m.workspace == nil || !m.workspace.Active {
+		return
+	}
+	disabled := m.hasUnsavedSetupInputs()
+	if m.workspace.AgentActionsKnown && m.workspace.AgentActionsDisabled == disabled {
+		return
+	}
+	m.workspace.AgentActionsKnown = true
+	m.workspace.AgentActionsDisabled = disabled
+	reason := ""
+	if disabled {
+		reason = dirtyInputsAgentActionReason
+	}
+	m.form.SetSectionActionsID(sectionAgentsID,
+		forms.FormAction{ID: "install-selected", Label: "Install selected", Disabled: reason},
+		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected", Disabled: reason},
+	)
 }
 
 func formSectionFields(sections []forms.FormSection, title string) []string {
@@ -627,30 +804,18 @@ func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input,
 		known[def.Name] = true
 		ordered = append(ordered, def.Name)
 	}
-	sections := []forms.FormSection{{ID: sectionOverviewID, Title: "Overview"}}
-	if preview.HasManifestUI {
-		for _, section := range preview.Sections {
-			fields := make([]string, 0, len(section.Fields))
-			for _, name := range section.Fields {
-				if known[name] {
-					fields = append(fields, name)
-				}
-			}
-			if len(fields) > 0 {
-				sections = append(sections, forms.FormSection{ID: "package:" + section.ID, Title: section.Title, Fields: fields})
-			}
-		}
-	} else if len(ordered) > 0 {
-		sections = append(sections, forms.FormSection{ID: "tool:inputs", Title: "Inputs", Fields: ordered})
+	sections := []forms.FormSection{}
+	if len(ordered) > 0 {
+		sections = append(sections, forms.FormSection{ID: sectionInputsID, Title: "Inputs", Fields: ordered})
 	}
-	if preview.ItemFieldName != "" {
+	if preview.ItemFieldName != "" && len(preview.Items) > 1 {
 		sections = append(sections, forms.FormSection{ID: sectionComponentsID, Title: "Components", Fields: []string{preview.ItemFieldName}})
 	}
 	var agentFields []string
 	if hasDestination {
 		agentFields = []string{destinationField}
 	}
-	sections = append(sections, forms.FormSection{ID: sectionAgentsID, Title: "Agents", Fields: agentFields})
+	sections = append(sections, forms.FormSection{ID: sectionAgentsID, Title: "Agent access", Fields: agentFields})
 	if preview.MCP {
 		sections = append(sections, forms.FormSection{ID: sectionRuntimeID, Title: "Runtime"}, forms.FormSection{ID: sectionLogsID, Title: "Logs"})
 	}

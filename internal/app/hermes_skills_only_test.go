@@ -93,7 +93,7 @@ func TestSkillsOnlyInstallsBundledClusterInspectorWithoutMCPEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 1 || profiles[0].Key.Profile != "" || profiles[0].Key.MCP != "" || profiles[0].Selection == nil {
+	if len(profiles) != 1 || profiles[0].Key.MCPDefinition != "" || profiles[0].Key.MCP != "" || profiles[0].Selection == nil {
 		t.Fatalf("skills-only intent should be saved once at capability profile scope, without MCP child rows: %#v", profiles)
 	}
 	if result.Saved != true || len(result.Changes) != 1 {

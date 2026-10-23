@@ -39,8 +39,10 @@ type SetupDestination struct {
 }
 
 type SetupPreview struct {
-	ItemFieldName                                     string
-	PluginDefinitions                                 []catalog.Plugin
+	ItemFieldName                              string
+	PluginDefinitions                          []catalog.Plugin
+	InstancePath, InstanceTOML, InstanceOrigin string
+	// Profile fields are compatibility aliases for existing backend callers.
 	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
 	Items                                             []catalog.InstallationItem
 	SelectedItemIDs, ValidationIssues                 []string
@@ -68,6 +70,21 @@ type SetupInstallRequest struct {
 	ActiveInputGroups map[string]string
 	ResetInputs       []string
 	DestinationIDs    []string
+	Uninstall         bool
 	ExternalURL       string
 	ExternalURLs      map[string]string
+}
+
+// SkillOnlyInstallRequest installs a capability with no configuration inputs
+// directly into the selected agent destinations, without creating an instance.
+type SkillOnlyInstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
+}
+
+// SkillOnlyUninstallRequest removes a zero-input skill from the exact selected
+// agent destinations without requiring or changing an instance record.
+type SkillOnlyUninstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
 }

@@ -86,7 +86,7 @@ func TestManagementScreensShareFullHeaderAndWiderDetailPane(t *testing.T) {
 	for _, screen := range []string{"Agents", "Environments", "Settings"} {
 		m.navigate(screen)
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || !strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Profiles:") {
+		if !strings.Contains(lines[0], "AACT · Another Agent Capability Toolkit") || !strings.Contains(lines[1], "F9 Main menu") || strings.Contains(lines[1], "F2 Open / Focus") || !strings.Contains(lines[2], "Capability Pack:") || !strings.Contains(lines[2], "Instance root:") {
 			t.Fatalf("%s lacks shared title, menu, or scope: %q", screen, lines[:3])
 		}
 		if screen != "Settings" {
@@ -133,11 +133,11 @@ func TestManagementUsesCanonicalEnvironmentRootSetting(t *testing.T) {
 	delete(m.settings, "environment_root")
 	m.settings["environment-root"] = "/actual/environments"
 	m.navigate("Environments")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Instance configuration directory:") || !strings.Contains(view, "/actual/environments") {
 		t.Fatalf("Environments omitted canonical root: %s", view)
 	}
 	m.navigate("Settings")
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Profile configuration directory: /actual/environments") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Instance configuration directory:") || !strings.Contains(view, "/actual/environments") {
 		t.Fatalf("Settings omitted canonical root: %s", view)
 	}
 	m.editEnvironmentRoot()
@@ -151,7 +151,7 @@ func TestSavedProfileDoesNotBecomeSetupTarget(t *testing.T) {
 	m := New(b).(*Model)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.Update(m.Init()())
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "saved"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
@@ -259,14 +259,14 @@ func TestAgentsDoesNotInventDetectionOrConfigEvidence(t *testing.T) {
 	m := fixtureModel(t)
 	m.navigate("Agents")
 	view := m.View().Content
-	if !strings.Contains(view, "codex") || !strings.Contains(view, "Detection unavailable") {
-		t.Fatalf("agent evidence was invented or hidden: %s", view)
+	if !strings.Contains(view, "codex") || !strings.Contains(view, "Unverified") {
+		t.Fatalf("agent destination status was hidden: %s", view)
 	}
 	press(m, tea.KeyEnter, "")
 	view = m.View().Content
 	stripped := strings.ReplaceAll(ansi.Strip(view), "\n", " ")
-	if !strings.Contains(stripped, "Configure location") || !strings.Contains(stripped, "unavailable") || strings.Contains(stripped, "View exact configuration") {
-		t.Fatalf("unsupported configuration controls were offered: %s", view)
+	if !strings.Contains(stripped, "Registrations: None") || strings.Contains(stripped, "View configuration") {
+		t.Fatalf("empty agent detail should show only registration state: %s", view)
 	}
 	press(m, tea.KeyEscape, "")
 	if m.view != "Agents" || m.selected != 0 || m.management.Focus != CapabilitiesPane {
@@ -278,9 +278,14 @@ func TestAgentsDoesNotInventDetectionOrConfigEvidence(t *testing.T) {
 func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	view := m.View().Content
-	for _, want := range []string{"Codex", "Detected", "CLI at /usr/bin/codex", "/home/test/config.json", "team / inspect / dev / production"} {
+	for _, want := range []string{"Codex", "Detected", "team / inspect / dev / production"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q from agent details: %s", want, view)
+		}
+	}
+	for _, redundant := range []string{"CLI at /usr/bin/codex", "/home/test/config.json"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("destination detail %q was repeated in Agents: %s", redundant, view)
 		}
 	}
 }
@@ -288,21 +293,36 @@ func TestAgentsShowsTypedDetectionSeparateFromConfigExistence(t *testing.T) {
 func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"╦ Codex", "Status: Detected", "Config candidates: 1", "/home/test/config.json", "Intended write config", "Observed registrations:"} {
+	for _, want := range []string{"╦ Codex", "Registrations:", "team / inspect / dev / production", "View configuration"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("agent detail summary missing %q: %s", want, view)
 		}
 	}
-	if strings.Contains(view, "Resolution note:") || !strings.Contains(view, "Observed registrations:") {
-		t.Fatalf("agent detail shows an empty note or unlabeled registrations: %s", view)
+	for _, redundant := range []string{"Resolution note:", "Active home:", "Effective config:", "Config candidates:", "/home/test/config.json"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("agent detail repeats destination details %q: %s", redundant, view)
+		}
 	}
 	m = fixtureModel(t)
 	m.navigate("Agents")
 	press(m, tea.KeyDown, "")
 	view = ansi.Strip(m.View().Content)
 	stripped := strings.ReplaceAll(ansi.Strip(view), "\n", " ")
-	if !strings.Contains(stripped, "╦ claude") || !strings.Contains(stripped, "Status: Unverified") || !strings.Contains(stripped, "supported location editor") {
+	if !strings.Contains(stripped, "╦ claude") || !strings.Contains(stripped, "Unverified") || !strings.Contains(stripped, "Registrations: None") || strings.Contains(stripped, "supported location editor") {
 		t.Fatalf("selected fallback agent summary is misleading: %s", view)
+	}
+}
+
+func TestAgentsDetailDoesNotRepeatDestinationDiscoveryDetails(t *testing.T) {
+	m, _ := typedAgentModel(t)
+	view := ansi.Strip(m.View().Content)
+	for _, redundant := range []string{"CLI at /usr/bin/codex", "Active home:", "Effective config:", "Intended write config:", "Config candidates:"} {
+		if strings.Contains(view, redundant) {
+			t.Fatalf("Agents detail repeats destination discovery/configuration detail %q:\n%s", redundant, view)
+		}
+	}
+	if !strings.Contains(view, "Registrations") {
+		t.Fatalf("Agents detail omitted its relevant registration summary:\n%s", view)
 	}
 }
 
@@ -310,13 +330,10 @@ func TestAgentsDetailPaneUsesSelectedAgentSummary(t *testing.T) {
 func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 	m, _ := typedAgentModel(t)
 	press(m, tea.KeyEnter, "")
-	if m.management.Focus != ProfilesPane || !strings.Contains(m.View().Content, "View exact configuration candidate 1") {
+	if m.management.Focus != ProfilesPane || !strings.Contains(m.View().Content, "View configuration") {
 		t.Fatal("verified config viewer unavailable")
 	}
 	press(m, tea.KeyEnter, "")
-	if !strings.Contains(ansi.Strip(m.View().Content), "/home/test/config.json") {
-		t.Fatal("agent detail omitted exact config path")
-	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("file viewer did not request file content")
@@ -335,7 +352,7 @@ func TestAgentConfigViewerShowsExactContent(t *testing.T) {
 // This catches treating a saved profile as proof that an environment TOML exists.
 func TestEnvironmentsShowsNoFileAndSeparatesSavedTargets(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "company", Target: "production"}, Name: "production"}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "company", Target: "production"}, Name: "production"}}}
 	m.navigate("Environments")
 	view := m.View().Content
 	if !strings.Contains(view, "No environment file") || !strings.Contains(view, "Pack: team · Environment: company") || !strings.Contains(view, "Saved · Pack: team") {
@@ -360,7 +377,7 @@ func TestManagementHelpReturnsToOrigin(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	selected := m.selected
 	press(m, tea.KeyF1, "")
-	if m.view != "Help" || !strings.Contains(m.View().Content, "Open / focus") || strings.Contains(m.View().Content, "fixed:") {
+	if m.view != "Help" {
 		t.Fatal("context help not shown")
 	}
 	press(m, tea.KeyEscape, "")
@@ -403,15 +420,9 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 	if m.selected != 1 {
 		t.Fatalf("mouse selected row %d, want second agent", m.selected)
 	}
-	m.View()
-	for _, hit := range m.management.Hits {
-		if hit.Control == "actions" {
-			m.Update(tea.MouseClickMsg{X: hit.X + 1, Y: hit.Y, Button: tea.MouseLeft})
-			break
-		}
-	}
-	if m.management.Focus != ProfilesPane || !strings.Contains(ansi.Strip(m.View().Content), "View exact configuration candidate 1") {
-		t.Fatal("Open / Focus control did not reveal the selected agent action")
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "View configuration") {
+		t.Fatalf("selected agent's direct configuration action is not visible: %s", view)
 	}
 	for _, hit := range m.management.Hits {
 		if hit.Control == "agent-config" {
@@ -432,7 +443,7 @@ func TestAgentManagementMouseSelectAndAction(t *testing.T) {
 // This catches private and public Capability Packs being collapsed into one environment.
 func TestEnvironmentBrowserKeepsCapabilityPackIdentity(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "public", Package: "inspect", Environment: "dev", Target: "one"}},
 		{Key: state.Key{Source: "company", Package: "inspect", Environment: "dev", Target: "two"}},
 	}}
@@ -443,7 +454,7 @@ func TestEnvironmentBrowserKeepsCapabilityPackIdentity(t *testing.T) {
 	}
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
-	if !strings.Contains(m.View().Content, "two") || strings.Contains(m.View().Content, "one · Saved profile") {
+	if !strings.Contains(m.View().Content, "two") || strings.Contains(m.View().Content, "one · Saved instance") {
 		t.Fatal("targets from two sources mixed")
 	}
 }
@@ -490,9 +501,8 @@ func TestSettingsOffersReleaseOrLocalMCPImageSource(t *testing.T) {
 	for range 4 {
 		press(m, tea.KeyDown, "")
 	}
-	press(m, tea.KeyF2, "")
-	press(m, tea.KeyEnd, "")
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnter, "") // Focus selected category's detail action.
+	press(m, tea.KeyEnter, "") // Open visible image-source control.
 	if m.form == nil || !strings.Contains(m.View().Content, "Prebuilt release image") {
 		t.Fatalf("image source choice missing: %s", m.View().Content)
 	}
@@ -518,9 +528,8 @@ func TestSettingsDefaultNamedAgentsFormSavesSelection(t *testing.T) {
 	m.Update(m.Init()())
 	m.navigate("Settings")
 	press(m, tea.KeyDown, "")
-	press(m, tea.KeyF2, "")
-	press(m, tea.KeyEnd, "")
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyEnter, "") // Focus selected category's detail action.
+	press(m, tea.KeyEnter, "") // Open visible default-agent control.
 	if m.form == nil || !strings.Contains(m.View().Content, "Default named agents") || !strings.Contains(m.View().Content, "[claude]") {
 		t.Fatalf("default-agent form missing or not prefilled: %s", m.View().Content)
 	}
@@ -544,7 +553,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatal("Environment directory editor did not open as a management overlay")
 	}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose profile configuration directory") {
+	if !strings.Contains(view, "F9 Main menu: Agents") || !strings.Contains(view, "Capability Pack · Choose instance configuration directory") {
 		t.Fatalf("editor replaced its management origin or lost its task title:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc cancel") || strings.Contains(view, "Esc back") {
@@ -554,7 +563,7 @@ func TestManagementSettingsEditorIsCenteredOverlayAndKeepsOrigin(t *testing.T) {
 		t.Fatalf("overlay changed terminal height: %d", got)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 35})
-	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose profile configuration directory") {
+	if !strings.Contains(ansi.Strip(m.View().Content), "Capability Pack · Choose instance configuration directory") {
 		t.Fatal("resize discarded the management editor overlay")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -679,7 +688,7 @@ func TestHelpVisibleBackControlIsClickable(t *testing.T) {
 // This catches Help reopening the environment browser at a different target.
 func TestHelpRestoresEnvironmentPaneAndSelection(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
@@ -693,11 +702,11 @@ func TestHelpRestoresEnvironmentPaneAndSelection(t *testing.T) {
 // This catches stale target-pane indexes after an environment disappears on refresh.
 func TestEnvironmentRefreshClampsRemovedSelection(t *testing.T) {
 	m := fixtureModel(t)
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "team", Package: "inspect", Environment: "dev", Target: "production"}}}}
 	m.navigate("Environments")
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyRight, "")
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{}
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{}
 	press(m, tea.KeyDown, "")
 	if m.management.EnvironmentIndex != 0 || !strings.Contains(m.View().Content, "No environment file") {
 		t.Fatal("removed environment did not clamp selection")

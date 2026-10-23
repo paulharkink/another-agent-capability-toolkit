@@ -15,6 +15,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,13 +37,17 @@ type agentManagementBackend interface {
 	UIAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
 	UIAgentConfig(context.Context, string, string) (string, error)
 }
+type instanceRunBackend interface {
+	UIInstanceRun(context.Context, string, state.Key) (string, error)
+}
 type profileRunBackend interface {
 	UIProfileRun(context.Context, string, state.Key) (string, error)
 }
 type Model struct {
 	pendingSetupItemsField     string
-	capabilityProfiles         map[string]viewmodel.CapabilityProfileSnapshot
-	creatingProfile            *config.ProfileRef
+	capabilityInstances        map[string]viewmodel.CapabilityInstanceSnapshot
+	creatingInstance           *config.InstanceRef
+	deletingInstance           *config.InstanceRef
 	home                       homeState
 	backend                    Backend
 	ctx                        context.Context
@@ -51,8 +56,8 @@ type Model struct {
 	catalog                    []catalog.Package
 	inventory                  []state.Installation
 	mcps                       []mcp.Instance
-	profileSnapshot            *viewmodel.ProfileSnapshot
-	profileError               error
+	instanceSnapshot           *viewmodel.InstanceSnapshot
+	instanceError              error
 	inventoryError             error
 	environmentSnapshot        *viewmodel.EnvironmentSnapshot
 	environmentError           error
@@ -61,6 +66,7 @@ type Model struct {
 	registration               *registrationState
 	pendingSetup               *viewmodel.SetupPreview
 	pendingSetupField          string
+	uninstallingAgents         bool
 	workspace                  *workspaceState
 	setupRetry                 *setupRetryDraft
 	setupInformation           bool
@@ -98,13 +104,13 @@ type Model struct {
 }
 type operation struct{ action, source, packageID, agent, environment, target, mcp, profile string }
 type loadedMsg struct {
-	capabilityProfiles  map[string]viewmodel.CapabilityProfileSnapshot
+	capabilityInstances map[string]viewmodel.CapabilityInstanceSnapshot
 	catalog             []catalog.Package
 	inventory           []state.Installation
 	inventoryError      error
 	mcps                []mcp.Instance
-	profileSnapshot     *viewmodel.ProfileSnapshot
-	profileError        error
+	instanceSnapshot    *viewmodel.InstanceSnapshot
+	instanceError       error
 	environmentSnapshot *viewmodel.EnvironmentSnapshot
 	environmentError    error
 	agents              []string
@@ -162,22 +168,26 @@ func (m *Model) load() tea.Cmd {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		if profiles, ok := backend.(capabilityProfilesBackend); ok {
-			msg.capabilityProfiles, e = profiles.UICapabilityProfiles(ctx)
-			if legacy, ok := backend.(profileSnapshotBackend); ok {
-				snapshot, err := legacy.UIProfileSnapshot(ctx)
-				if err == nil {
-					msg.profileSnapshot = &snapshot
-				}
-			}
-		} else if profileBackend, ok := backend.(profileSnapshotBackend); ok {
-			snapshot, err := profileBackend.UIProfileSnapshot(ctx)
+		if profiles, ok := backend.(capabilityInstancesBackend); ok {
+			msg.capabilityInstances, e = profiles.UICapabilityInstances(ctx)
+		} else if legacy, ok := backend.(capabilityProfilesBackend); ok {
+			msg.capabilityInstances, e = legacy.UICapabilityProfiles(ctx)
+		}
+		if modern, ok := backend.(instanceSnapshotBackend); ok {
+			snapshot, err := modern.UIInstanceSnapshot(ctx)
 			e = err
-			msg.profileError = err
+			msg.instanceError = err
 			if err == nil {
-				msg.profileSnapshot = &snapshot
+				msg.instanceSnapshot = &snapshot
 			}
-		} else {
+		} else if legacy, ok := backend.(profileSnapshotBackend); ok {
+			snapshot, err := legacy.UIProfileSnapshot(ctx)
+			e = err
+			msg.instanceError = err
+			if err == nil {
+				msg.instanceSnapshot = &snapshot
+			}
+		} else if _, ok := backend.(capabilityInstancesBackend); !ok {
 			msg.mcps, e = backend.UIMCPs(ctx)
 		}
 		if e != nil {
@@ -198,7 +208,7 @@ func (m *Model) load() tea.Cmd {
 				errs = append(errs, e)
 			}
 		}
-		if environmentBackend, ok := backend.(environmentBrowserBackend); ok && !m.profileMode() {
+		if environmentBackend, ok := backend.(environmentBrowserBackend); ok && !m.instanceMode() {
 			snapshot, err := environmentBackend.UIEnvironmentSnapshot(ctx)
 			msg.environmentError = err
 			if err == nil {
@@ -230,6 +240,31 @@ func (m *Model) load() tea.Cmd {
 		return msg
 	}
 }
+
+func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
+	m.busy = false
+	if msg.err != nil {
+		m.output = "Could not save inputs: " + msg.err.Error()
+		return nil
+	}
+	if m.workspace != nil && m.workspace.Key == msg.key {
+		m.workspace.InputsSaved = true
+		if msg.inputsChanged {
+			m.workspace.Installed = false
+			m.workspace.RegisteredMCPs = nil
+		}
+	}
+	m.pendingSetup = &msg.preview
+	m.pendingSetupField = msg.destinationField
+	m.output = "Inputs saved. Install this capability for selected agents to enable Start."
+	if m.form != nil {
+		m.form.ReopenAfterSave()
+		m.form.MarkClean()
+		m.configureWorkspaceForm(msg.preview)
+	}
+	return nil
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
 	case setupProgressMsg:
@@ -274,6 +309,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if loaded, ok := msg.(loadedMsg); ok {
 		m.applyLoaded(loaded)
 		return m, nil
+	}
+	if saved, ok := msg.(setupInputsSavedMsg); ok {
+		return m, m.handleSetupInputsSaved(saved)
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		stroke := key.String()
@@ -399,45 +437,105 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if action, ok := msg.(forms.ActionMsg); ok && action.SectionID == sectionComponentsID && action.ID == "select-all-skills" {
-		m.selectAllSkills()
+	if action, ok := msg.(forms.ActionMsg); ok && action.SectionID == sectionComponentsID && action.ID == "select-all-components" {
+		m.selectAllComponents()
 		return m, nil
 	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionInputsID {
+		if action.ID == "save-inputs" && m.form != nil {
+			return m, m.saveSetupInputs(m.form.Values())
+		}
+	}
+	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionAgentsID {
+		if action.ID == "install-selected" || action.ID == "uninstall-selected" {
+			if m.guardAgentAccessForDirtyInputs() {
+				return m, nil
+			}
+		}
+		switch action.ID {
+		case "install-selected":
+			if m.form != nil {
+				return m, m.applySetup(m.form.Values())
+			}
+		case "uninstall-selected":
+			if m.form != nil && m.pendingSetup != nil {
+				return m, m.uninstallSelectedAgents()
+			}
+			m.output = "Uninstall is unavailable until the agent selection is loaded."
+			return m, nil
+		}
+	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && (action.SectionID == sectionRuntimeID || action.SectionID == sectionEndpointID) {
-		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Profile != nil {
-			profile := m.workspace.Profile
-			return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+		if action.ID == "check-connection" && action.SectionID == sectionEndpointID && m.workspace.Instance != nil {
+			profile := m.workspace.Instance
+			return m, m.checkProfileConnection(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 		}
 		parts := strings.SplitN(action.ID, ":", 2)
 		if len(parts) == 2 {
+			if parts[0] == "edit-inputs" {
+				m.workspace.SelectedMCP = parts[1]
+				m.workspace.Section = "Inputs"
+				m.workspace.SectionID = sectionInputsID
+				if m.form != nil && m.form.HasSectionID(sectionInputsID) {
+					m.configureWorkspaceForm(*m.workspace.Preview)
+				}
+				return m, nil
+			}
+			if parts[0] == "delete-runtime" {
+				index, err := strconv.Atoi(parts[1])
+				if err != nil || index < 0 || index >= len(m.workspace.RuntimeRecordTargets) {
+					m.output = "The selected runtime record is no longer available; refresh this instance and try again."
+					return m, nil
+				}
+				backend, ok := m.backend.(runtimeRecordRemovalBackend)
+				if !ok {
+					m.output = "Exact runtime record deletion is unavailable in this backend."
+					return m, nil
+				}
+				target := m.workspace.RuntimeRecordTargets[index]
+				return m, func() tea.Msg {
+					output, err := backend.UIRemoveRuntimeRecord(m.ctx, target.Key, target.ID)
+					return operationMsg{origin: m.view, output: output, err: err, step: "delete runtime record", target: target.ID}
+				}
+			}
 			if parts[0] == "check-connection" {
-				if profile := m.profileForMCPName(parts[1]); profile != nil {
-					return m, m.checkProfileConnection(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				if profile := m.instanceForMCPName(parts[1]); profile != nil {
+					return m, m.checkProfileConnection(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 				}
 				return m, nil
 			}
 			if parts[0] == "logs" {
-				if profile := m.profileForMCPName(parts[1]); profile != nil {
-					return m, m.openProfileLogs(ProfileRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Profile: profile})
+				if profile := m.instanceForMCPName(parts[1]); profile != nil {
+					m.workspace.Section = "Logs"
+					m.workspace.SectionID = sectionLogsID
+					if m.form != nil && m.form.HasSectionID(sectionLogsID) {
+						m.form.SelectSectionID(sectionLogsID)
+						m.form.FocusSection()
+					}
+					return m, m.openProfileLogs(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})
 				}
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
-				profile := m.profileForMCPName(parts[1])
-				if profile == nil && m.workspace.Profile != nil {
-					parent := *m.workspace.Profile
+				profile := m.instanceForMCPName(parts[1])
+				if profile == nil && m.workspace.Instance != nil {
+					parent := *m.workspace.Instance
 					profile = &parent
 				}
-				row := ProfileRow{}
+				row := InstanceRow{}
 				if profile != nil {
-					row = ProfileRow{Key: profile.Key, Profile: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
 				guardAction := "s"
 				if parts[0] == "stop" {
 					guardAction = "x"
 				}
-				if reason := m.profileActionReason(row, guardAction); reason != "" {
+				if reason := m.instanceActionReason(row, guardAction); reason != "" {
 					m.output = reason
+					return m, nil
+				}
+				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(parts[1]) || m.hasUnsavedSetupInputs()) {
+					m.output = "Save inputs and install this capability for an agent before starting the runtime."
 					return m, nil
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
@@ -579,7 +677,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case "s", "x":
-				m.output = "Runtime lifecycle actions are unavailable from this observed profile workspace."
+				m.output = "Runtime lifecycle actions are unavailable from this observed instance workspace."
 				return m, nil
 			}
 		}
@@ -608,8 +706,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg = event
 			}
 		}
+		// FormModel clears its active section when Save completes, so preserve
+		// the submitting stage before updating it. Inputs Save must persist only
+		// answers and leave installation to the separate Agent access action.
+		submittedSectionID := m.form.SectionID()
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
+		if m.workspace != nil && m.workspace.Active {
+			m.workspace.SectionID = m.form.SectionID()
+			m.workspace.Section = m.form.SectionTitle()
+			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
+			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
+		}
+		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
@@ -628,6 +737,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+		if !m.unsavedExitApplying && m.form != nil && m.workspace != nil && m.workspace.Active && submittedSectionID == sectionInputsID && m.pendingSetup != nil {
+			return m, m.saveSetupInputs(values)
+		}
 		if !m.unsavedExitApplying {
 			if m.pendingSetup != nil {
 				m.pendingSetup.ActiveInputGroups = m.form.ActiveInputGroups()
@@ -642,7 +754,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSetupField = ""
 			m.pendingDefaultAgents = false
 			m.pendingMCPImageSource = false
-			m.creatingProfile = nil
+			m.creatingInstance = nil
+			m.deletingInstance = nil
 			m.workspace = nil
 			m.output = "Cancelled"
 			return m, nil
@@ -653,13 +766,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = e.Error()
 			return m, nil
 		}
-		if m.creatingProfile != nil {
-			ref := *m.creatingProfile
+		if m.creatingInstance != nil {
+			ref := *m.creatingInstance
 			ref.Name, _ = values["name"].(string)
-			m.creatingProfile = nil
-			m.action = "create profile"
+			m.creatingInstance = nil
+			m.management.FormOverlay = false
+			m.action = "create instance"
 			return m, func() tea.Msg {
-				return profileCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
+				if modern, ok := m.backend.(capabilityInstancesBackend); ok {
+					return instanceCreatedMsg{ref: ref, err: modern.UICreateInstance(m.ctx, ref)}
+				}
+				return instanceCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
 			}
 		}
 		if m.pendingRegistration != nil {
@@ -744,9 +861,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session == m.logSession && m.home.Modal != nil && m.home.Modal.Kind == "logs" && m.home.Modal.Follow {
 			return m, m.fetchLogs(msg.session)
 		}
-	case profileCreatedMsg:
+	case instanceRemovedMsg:
 		if msg.err != nil {
-			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create profile"})
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "delete instance", target: msg.ref.Name})
+			return m, nil
+		}
+		if msg.resetPreset {
+			m.output = msg.message
+			if m.output == "" {
+				m.output = "Reset instance " + msg.ref.Name + " to pack preset. Unknown runtime may remain; inspect its owner before starting another."
+			}
+		} else {
+			m.output = "Deleted instance " + msg.ref.Name
+		}
+		return m, m.load()
+	case instanceCreatedMsg:
+		if msg.err != nil {
+			m.showOperationResult(operationMsg{origin: m.view, err: msg.err, step: "create instance"})
 			return m, nil
 		}
 		return m, m.openTargetWorkspace(viewmodel.SetupRequest{Ref: msg.ref}, "Overview")
@@ -761,24 +892,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.retryOperation = nil
-		if m.workspace != nil && m.workspace.Reference.CapabilityID != "" {
+		if m.workspace != nil && m.workspace.InstanceRef.CapabilityID != "" {
 			m.workspace.Key = msg.preview.Key
+		}
+		if m.workspace != nil && m.workspace.SectionID == sectionInputsID && msg.preview.Configured {
+			m.workspace.Section = "Agent access"
+			m.workspace.SectionID = sectionAgentsID
 		}
 		m.openSetupForm(msg.preview)
 		name := msg.preview.PackageName
 		if name == "" {
 			name = msg.preview.Key.Package
 		}
-		title := "New setup · " + name
+		title := name
 		if msg.preview.Configured || (m.workspace != nil && m.workspace.Key == msg.preview.Key && m.workspace.Existing) {
-			title = "Configure · " + name
+			title = name
 		}
-		if m.profileMode() {
-			title += " · Profile " + msg.preview.Key.Target
+		if m.instanceMode() {
+			title += " · Instance " + msg.preview.Key.Target
 		} else if msg.preview.MCP && strings.TrimSpace(msg.preview.Key.Environment) != "" && strings.TrimSpace(msg.preview.Key.Target) != "" && msg.preview.Key.Target != "default" {
 			title += " · " + msg.preview.Key.Environment + " / " + msg.preview.Key.Target
 		}
-		m.form.SetTitle(title + " · F3 Information")
+		m.form.SetTitle(title)
+		m.form.SetContext("Instance: " + msg.preview.Key.Target)
 	case loadedMsg:
 		m.applyLoaded(msg)
 	case agentConfigMsg:
@@ -881,19 +1017,19 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 	if m.action == "load" {
 		m.busy = false
 	}
-	m.capabilityProfiles = msg.capabilityProfiles
+	m.capabilityInstances = msg.capabilityInstances
 	m.catalog = msg.catalog
 	m.inventory = msg.inventory
 	m.inventoryError = msg.inventoryError
 	m.mcps = msg.mcps
-	m.profileError = msg.profileError
+	m.instanceError = msg.instanceError
 	m.environmentError = msg.environmentError
 	m.environmentSnapshot = msg.environmentSnapshot
-	if msg.profileSnapshot != nil {
-		m.profileSnapshot = msg.profileSnapshot
+	if msg.instanceSnapshot != nil {
+		m.instanceSnapshot = msg.instanceSnapshot
 		if m.workspace != nil {
-			m.workspace.ProfileSnapshot = copyProfileSnapshot(m.profileSnapshot)
-			m.workspace.Profile = m.profileForWorkspace(m.workspace.Key)
+			m.workspace.InstanceSnapshot = copyInstanceSnapshot(m.instanceSnapshot)
+			m.workspace.Instance = m.instanceForWorkspace(m.workspace.Key)
 			if m.workspace.ObservedOnly {
 				m.refreshObservedWorkspaceFacts()
 			} else if m.workspace.Preview != nil && m.form != nil {
@@ -1006,6 +1142,30 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 		return nil
 	}
 	if succeeded {
+		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
+			m.workspace.Installed = true
+			m.workspace.RegisteredMCPs = map[string]bool{}
+			registeredMCP := false
+			if msg.result != nil {
+				for _, change := range msg.result.Changes {
+					if change.Component != "mcp" || change.AgentID == "" {
+						continue
+					}
+					registeredMCP = true
+					name := firstNonempty(change.Key.MCP, change.RegistrationName)
+					if name != "" {
+						m.workspace.RegisteredMCPs[name] = true
+					}
+				}
+			}
+			if registeredMCP && len(m.workspace.RegisteredMCPs) == 0 && m.setupRetry.preview.MCP {
+				for _, definition := range m.setupRetry.preview.MCPDefinitions {
+					m.workspace.RegisteredMCPs[definition.Name] = true
+				}
+			}
+			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
+			m.configureWorkspaceForm(m.setupRetry.preview)
+		}
 		// Keep the retained workspace actionable after its result is dismissed.
 		// applySetup consumes pendingSetup while the operation runs, so restore
 		// the preview and destination field from the submitted draft on success.
@@ -1119,7 +1279,7 @@ func (m *Model) rows() []string {
 	case "Environments":
 		rows = append(rows, "Environment directory: "+m.environmentRoot(), "Target browsing awaits the environment service.")
 	case "Help":
-		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter / F2: Actions; Actions includes Details and Parameters", "m / F9: Main menu", "Mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
+		rows = append(rows, "Tab / Left / Right: focus home panes", "Up / Down / PageUp / PageDown / Home / End: select", "Enter: open selected row · a: Actions · F3: Details", "m / F9: Main menu", "Mouse click/wheel: select/scroll", "Esc: Back; F10: Quit")
 	case "Settings":
 		rows = append(rows, "Environment directory: "+m.environmentRoot())
 		keys := []string{}
@@ -1178,10 +1338,10 @@ func (m *Model) handleAction(stroke string) tea.Cmd {
 			actions := map[string]string{"enter": "status", "s": "start", "x": "stop", "a": "authenticate", "l": "logs"}
 			if action := actions[stroke]; action != "" {
 				if inst.Status == "external" && action != "status" {
-					m.output = "External registrations support status; use profile Actions to configure registrations."
+					m.output = "External registrations support status; use instance Actions to configure registrations."
 					return nil
 				}
-				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.Profile}
+				op := operation{action: action, source: inst.Key.Source, packageID: inst.Key.Package, environment: inst.Key.Environment, target: inst.Key.Target, mcp: inst.Key.MCP, profile: inst.Key.MCPDefinition}
 				return m.run(op)
 			}
 		}
@@ -1275,14 +1435,18 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.profileMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
-			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.ProfileRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
+		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+			output, err = instanceBackend.UIConfigurationInstanceRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
+		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
 		} else if op.mcp != "" || op.profile != "" {
-			profileBackend, ok := backend.(profileRunBackend)
-			if !ok {
+			if instanceBackend, ok := backend.(instanceRunBackend); ok {
+				output, err = instanceBackend.UIInstanceRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, MCPDefinition: op.profile})
+			} else if profileBackend, ok := backend.(profileRunBackend); ok {
+				output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, MCPDefinition: op.profile})
+			} else {
 				return operationMsg{origin: origin, err: errors.New("backend does not support MCP-specific runtime actions"), target: op.target}
 			}
-			output, err = profileBackend.UIProfileRun(ctx, op.action, state.Key{Source: op.source, Package: op.packageID, Environment: op.environment, Target: op.target, MCP: op.mcp, Profile: op.profile})
 		} else {
 			output, err = backend.UIRun(ctx, op.action, op.source, op.packageID, op.profile, op.agent, op.environment, op.target)
 		}

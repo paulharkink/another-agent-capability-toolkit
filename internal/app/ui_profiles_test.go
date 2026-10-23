@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,6 +80,178 @@ func (r *profileRuntime) List(context.Context) ([]mcp.Instance, error) { return 
 func (r *profileRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
 	r.logsCalls++
 	return nil, errors.New("unexpected logs")
+}
+
+type exactProfileRuntime struct {
+	profileRuntime
+	removedIDs []string
+	store      *state.Store
+}
+
+func (r *exactProfileRuntime) StopExact(_ context.Context, key state.Key, id string) error {
+	r.removedIDs = append(r.removedIDs, id)
+	for i := range r.instances {
+		if r.instances[i].Key == key && r.instances[i].ID == id {
+			r.instances = append(r.instances[:i], r.instances[i+1:]...)
+			if r.store != nil {
+				rows, err := r.store.Installations()
+				if err != nil {
+					return err
+				}
+				for _, row := range rows {
+					if row.Component == "runtime" && row.Key == key && row.SourcePath == id {
+						return r.store.Remove(row)
+					}
+				}
+			}
+			return nil
+		}
+	}
+	if r.store != nil {
+		rows, err := r.store.Installations()
+		if err == nil {
+			for _, row := range rows {
+				if row.Component == "runtime" && row.Key == key && row.SourcePath == id {
+					return r.store.Remove(row)
+				}
+			}
+		}
+	}
+	return errors.New("exact runtime not found")
+}
+
+func TestUIRemoveRuntimeRecordDeletesOnlyExactLocallyOwnedRecord(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
+	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	rows := []state.Installation{
+		{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-demo-a", SourcePath: "container-a"},
+		{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-demo-b", SourcePath: "container-b"},
+	}
+	for _, row := range rows {
+		if err := store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{Key: child, ID: "container-a", Name: "aact-demo-a", Status: "running", Ownership: "local"}}}, store: store}
+	svc.Options.Runtime = runtime
+
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "container-a"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runtime.removedIDs, []string{"container-a"}) {
+		t.Fatalf("runtime removal was not exact: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || len(remaining) != 1 || remaining[0].SourcePath != "container-b" {
+		t.Fatalf("exact deletion removed sibling runtime ledger rows: %+v, %v", remaining, err)
+	}
+}
+
+func TestUIRemoveRuntimeRecordRejectsInactivePackEvenWhenRegistered(t *testing.T) {
+	svc, _, store := fixture(t)
+	root := filepath.Join(t.TempDir(), "remembered")
+	packageDir := filepath.Join(root, "demo")
+	if err := os.MkdirAll(packageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = 'other-demo'\nname = 'Remembered demo'\n[mcp]\nname = 'remembered-server'\ntransport = 'streamable-http'\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "sources.json"), []sourceRef{{ID: "remembered", Root: root, PackageDirs: []string{packageDir}}}); err != nil {
+		t.Fatal(err)
+	}
+	parent := state.Key{Source: "remembered", Package: "other-demo", Target: "test-cluster"}
+	child := parent
+	if err := store.Record(state.Installation{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-remembered", SourcePath: "remembered-container"}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{Key: child, ID: "remembered-container", Status: "running", Ownership: "local"}}}, store: store}
+	svc.Options.Runtime = runtime
+
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "remembered-container"); err == nil {
+		t.Fatal("UI action accepted a runtime reference from an inactive Pack")
+	}
+	if len(runtime.removedIDs) != 0 {
+		t.Fatalf("foreign Pack runtime was stopped: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || len(remaining) != 1 || remaining[0].Key != child {
+		t.Fatalf("inactive Pack runtime ledger row was mutated: %+v, %v", remaining, err)
+	}
+}
+
+func TestUIInstanceRunRejectsInactivePackReference(t *testing.T) {
+	svc, _, store := fixture(t)
+	root := filepath.Join(t.TempDir(), "remembered")
+	packageDir := filepath.Join(root, "demo")
+	if err := os.MkdirAll(packageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = 'other-demo'\nname = 'Remembered demo'\n[mcp]\nname = 'remembered-server'\ntransport = 'streamable-http'\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "sources.json"), []sourceRef{{ID: "remembered", Root: root, PackageDirs: []string{packageDir}}}); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "remembered", Package: "other-demo", Target: "default", MCP: "remembered-server"}
+	if _, err := svc.UIInstanceRun(context.Background(), "start", key); err == nil {
+		t.Fatal("UI lifecycle action accepted a forged reference to an inactive Pack")
+	}
+}
+
+func TestUIRemoveRuntimeRecordRefusesLiveIDObservedUnderDifferentKey(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
+	key := state.Key{Source: "fixture", Package: "demo", Target: "selected"}
+	child := mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	row := state.Installation{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-demo", SourcePath: "same-container-id"}
+	if err := store.Record(row); err != nil {
+		t.Fatal(err)
+	}
+	otherKey := child
+	otherKey.Target = "sibling"
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{
+		Key: otherKey, ID: row.SourcePath, Status: "running", Ownership: "local",
+	}}}, store: store}
+	svc.Options.Runtime = runtime
+
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, row.SourcePath); err == nil {
+		t.Fatal("live runtime observed under a different key was treated as missing")
+	}
+	if len(runtime.removedIDs) != 0 {
+		t.Fatalf("mismatched live runtime was stopped: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || !reflect.DeepEqual(remaining, []state.Installation{row}) {
+		t.Fatalf("mismatched live runtime ledger evidence was removed: %+v, %v", remaining, err)
+	}
+}
+
+func TestUIRemoveRuntimeRecordRefusesUnknownOwnerAndPreservesLedger(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
+	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	row := state.Installation{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "unknown-container", SourcePath: "unknown-id"}
+	if err := store.Record(row); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{Key: child, ID: "unknown-id", Name: "unknown-container", Status: "running", Ownership: "unknown"}}}, store: store}
+	svc.Options.Runtime = runtime
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "unknown-id"); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown owner deletion should fail clearly, got %v", err)
+	}
+	if len(runtime.removedIDs) != 0 {
+		t.Fatalf("unknown runtime was destructively removed: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || len(remaining) != 1 || remaining[0].SourcePath != "unknown-id" {
+		t.Fatalf("unknown-owner ledger evidence was lost: %+v, %v", remaining, err)
+	}
 }
 
 func TestUIProfileSnapshotIncludesNeverStartedSavedProfile(t *testing.T) {
@@ -194,5 +370,36 @@ func TestUIProfileSnapshotExplainsDisabledForeignStop(t *testing.T) {
 	snapshot, err := svc.UIProfileSnapshot(context.Background())
 	if err != nil || len(snapshot.Profiles) != 1 || snapshot.Profiles[0].CanStop || snapshot.Profiles[0].StopDisabledReason == "" {
 		t.Fatalf("foreign Stop lacks visible reason: %+v, %v", snapshot, err)
+	}
+}
+func TestUICapabilityInstancesReportsAuthFailureAndKeepsRuntimeRunning(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo", Transport: "streamable-http", HealthPath: "/health"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "smoke"}
+	if err := store.RecordInstance(state.InstanceRecord{Key: key, Name: "smoke", Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte("{\"authenticated\":false}"))
+	}))
+	defer server.Close()
+	svc.Options.Runtime = &profileRuntime{instances: []mcp.Instance{{Key: key, ID: "smoke-container", Name: "demo", Status: "running", URL: server.URL + "/mcp", Ownership: "local"}}}
+	snapshots, err := svc.UICapabilityInstances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := snapshots["demo"]
+	if len(snapshot.Instances) != 1 || len(snapshot.Instances[0].MCPs) != 1 {
+		t.Fatalf("capability snapshot = %+v", snapshot)
+	}
+	runtime := snapshot.Instances[0].MCPs[0]
+	if runtime.Status != "running" {
+		t.Fatalf("auth failure changed runtime state: %+v", runtime)
+	}
+	if runtime.AuthenticationStatus != "failed" {
+		t.Fatalf("auth status = %q, want failed", runtime.AuthenticationStatus)
 	}
 }

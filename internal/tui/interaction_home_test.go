@@ -24,7 +24,7 @@ func startHomeSetup(m *Model) {
 	if !ok {
 		return
 	}
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: capability.Source, CapabilityID: capability.Package, Name: "test-profile"}}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: capability.Source, CapabilityID: capability.Package, Name: "test-profile"}}, "Overview")
 	if cmd != nil {
 		m.Update(cmd())
 	}
@@ -38,26 +38,16 @@ func focusHomeContext(t *testing.T, m *Model) {
 	}
 }
 
-func TestHomeEnterAndF2FocusLayerTwoBeforeOpeningAnAction(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		key  rune
-	}{{"Enter", tea.KeyEnter}, {"F2", tea.KeyF2}} {
-		t.Run(test.name, func(t *testing.T) {
-			m, _ := homeFixture()
-			press(m, test.key, "")
-			if m.home.Focus != ProfilesPane {
-				t.Fatalf("first %s should focus layer 2, got %v", test.name, m.home.Focus)
-			}
-			if m.home.Modal != nil {
-				t.Fatalf("first %s opened a deeper overlay: %#v", test.name, m.home.Modal)
-			}
-			for _, want := range []string{"Configure now", "View capability details", "Related MCP profiles", "MCP · profile"} {
-				if !strings.Contains(m.View().Content, want) {
-					t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
-				}
-			}
-		})
+func TestHomeEnterFocusesLayerTwoBeforeOpeningAnAction(t *testing.T) {
+	m, _ := homeFixture()
+	press(m, tea.KeyEnter, "")
+	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
+		t.Fatalf("Enter should focus layer 2 before opening an action, got focus=%v modal=%#v", m.home.Focus, m.home.Modal)
+	}
+	for _, want := range []string{"Configure now", "View capability details", "Related MCP instances"} {
+		if !strings.Contains(m.View().Content, want) {
+			t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
+		}
 	}
 }
 
@@ -119,20 +109,28 @@ func TestHomeEscapeAndPaneKeysMoveOneLayerAtATime(t *testing.T) {
 	}
 }
 
-func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
+func TestPlainSkillAgentAccessUsesPackOwnedDefaultInstanceWorkspace(t *testing.T) {
 	m, _ := homeFixture()
-	m.backend = homeSetupBackend{Backend: m.backend, setupBackendFixture: &setupBackendFixture{}}
-	press(m, tea.KeyDown, "") // Plain is skill-only and has no MCP profile.
-	focusHomeContext(t, m)
+	m.backend = skillOnlyInstanceBackend{&zeroInputSkillSetupBackend{}}
+	selectPlainSkill(t, m)
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
 	view := m.View().Content
-	for _, want := range []string{"Configure now", "View capability details", "Installation · AACT records"} {
+	for _, want := range []string{"Instances", "View capability details", "default · Not installed"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
-	pressAndRun(m, tea.KeyEnter)
-	if m.home.Modal != nil || m.form == nil {
-		t.Fatal("Enter on skill-only Configure / install did not open the setup form")
+	cmd := m.openContextRow()
+	if cmd == nil {
+		t.Fatal("opening the default instance did not load the ordinary setup workspace")
+	}
+	m.Update(cmd())
+	if m.form == nil || m.workspace == nil || m.workspace.Key.Target != "default" || m.workspace.Key.Package != "plain" {
+		t.Fatalf("Agent access did not use the default Pack Instance: workspace=%+v form=%v", m.workspace, m.form != nil)
+	}
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("plain skill did not open on Agent Access stage: %q", m.form.SectionID())
 	}
 }
 

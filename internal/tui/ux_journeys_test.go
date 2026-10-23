@@ -41,10 +41,10 @@ var uxJourneyCases = []struct {
 	{"08", "named agent destination and exact path", TestUXForeignEndpointCanRegisterWithoutRuntimeControl},
 	{"09", "headless embedded picker cancel preserves workspace field and draft", TestUXActivePickerOwnsParentShortcutKeys},
 	{"10", "directory collection editing", directoryCollectionJourney},
-	{"11", "foreign runtime connection diagnosis and source lookup", TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding},
+	{"11", "foreign runtime is outside the selected Pack", TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable},
 	{"12", "runtime empty state and log lifecycle", TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs},
-	{"13", "legacy environment target is not an operational profile", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutProfileReference},
-	{"14", "agent detection and write destination", TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution},
+	{"13", "legacy environment target is not an operational instance", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference},
+	{"14", "concise agent registration details", TestUXAgentsOverviewEnterShowsConciseAgentDetails},
 	{"15", "management, settings and help hierarchy", TestUXSettingsCategoriesHaveRelatedControlsOnly},
 	{"16", "pane-local keyboard navigation and scroll cues", TestHomeLayerTwoScrollShowsContinuationCues},
 	{"17", "capability-specific authentication sections", TestUXAzureAndGitProviderTaskSections},
@@ -123,8 +123,8 @@ func TestUXFocusedPaneShowsOffscreenCueAndBoundedButtonsAtAllSupportedSizes(t *t
 	if got := len(strings.Split(view, "\n")); got > 16 {
 		t.Fatalf("80x16 workspace exceeds the parent terminal height: %d\n%s", got, view)
 	}
-	if !strings.Contains(view, "[ Save and apply ]") || strings.Contains(view, "[ Cancel ]") {
-		t.Errorf("80x16 workspace should show only its bottom Save and apply action:\n%s", view)
+	if !strings.Contains(view, "[ Save ]") || !strings.Contains(view, "[ Cancel ]") || !strings.Contains(view, "↓ more") {
+		t.Errorf("80x16 Inputs stage must keep Save, Cancel, and a scroll cue visible:\n%s", view)
 	}
 	if !strings.Contains(view, "Esc Back") {
 		t.Errorf("80x16 workspace footer clips its Back hint:\n%s", view)
@@ -192,9 +192,12 @@ func TestUXInactiveAuthenticationAlternativeIsVisiblyMutedAndFocusable(t *testin
 
 func TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft(t *testing.T) {
 	m := openWorkspaceGeometryFixture(t, tea.WindowSizeMsg{Width: 80, Height: 16})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Connection section.
+	if !m.form.SelectSectionID(sectionInputsID) {
+		t.Fatal("fixture does not expose the Inputs stage")
+	}
+	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // Enter the Inputs editor.
 	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	before := ansi.Strip(m.form.View().Content)
 	if !strings.Contains(before, "fixturex") {
@@ -227,14 +230,24 @@ func TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft(t *testing.T)
 }
 
 func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *testing.T) {
-	m, _ := openSetupInteraction(t)
+	m, backend := openSetupInteraction(t)
+	m.form.SelectSectionID(sectionInputsID)
 	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if save == nil || !m.busy {
-		t.Fatal("fixture did not submit a real setup operation")
+	if save == nil {
+		t.Fatal("Inputs Save did not submit")
 	}
-	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
-	_, refresh := m.Update(runTeaCmd(t, m, save))
-	if m.result == nil || m.busy || !strings.Contains(ansi.Strip(m.View().Content), "Result · SUCCESS · need 80×16") || !strings.Contains(ansi.Strip(m.View().Content), "Tab/Enter · Esc close") {
+	m.Update(save())
+	if backend.savedInputRequest == nil || backend.installRequest != nil {
+		t.Fatal("Inputs Save did not persist answers separately from installation")
+	}
+	m.form.SelectSectionID(sectionAgentsID)
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil || !m.busy {
+		t.Fatal("fixture did not start an explicit Agent access install")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	_, refresh := m.Update(runTeaCmd(t, m, install))
+	if m.result == nil || m.busy || !strings.Contains(ansi.Strip(m.View().Content), "Operation result") || !strings.Contains(ansi.Strip(m.View().Content), "Close / Back") {
 		t.Fatalf("worker completion/result controls were lost behind the below-minimum viewport: busy=%t result=%+v\n%s", m.busy, m.result, ansi.Strip(m.View().Content))
 	}
 	if refresh != nil {
@@ -250,39 +263,17 @@ func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *
 	}
 }
 
-func TestUXLocateSourceOpensCenteredTaskSpecificRecoveryForm(t *testing.T) {
+func TestUXObservedRuntimeFromAnotherPackDoesNotCreateBrowseRoute(t *testing.T) {
 	m, _ := homeFixture()
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: state.Key{Source: "gone", Package: "legacy", Target: "default"}, Name: "Old capability"}}}
-	rows := m.capabilities()
-	m.home.Capabilities.ID = rows[len(rows)-1].ID
-	m.reconcileHome()
-	m.focusPane(ProfilesPane)
-	m.selectContext(0) // Locate Capability Pack…
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.form == nil || m.pending.action != "locate-source" || m.pending.source != "gone" {
-		t.Fatalf("L2 Locate Capability Pack did not preserve the unavailable pack identity: form=%v pending=%+v", m.form != nil, m.pending)
-	}
-	if !m.management.FormOverlay {
-		t.Fatal("Locate Capability Pack is not marked as a centered management overlay")
-	}
-	x, y, width, height, ok := m.setupOverlayBounds()
-	if !ok || y < 1 || width >= m.width || height >= m.height {
-		t.Fatalf("Locate Capability Pack did not use narrow overlay geometry: bounds=(%d,%d %dx%d) ok=%t", x, y, width, height, ok)
-	}
-	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Locate Capability Pack · gone", "Capabilities"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Locate Capability Pack overlay lost %q or its L1/L2 context:\n%s", want, view)
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "gone", Package: "legacy", Target: "default"}, Name: "Old capability"}}}
+	for _, capability := range m.capabilities() {
+		if capability.Source == "gone" {
+			t.Fatalf("runtime from another Pack created a browse route: %+v", capability)
 		}
-	}
-	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
-	belowMinimum := ansi.Strip(m.View().Content)
-	if !strings.Contains(belowMinimum, "Resize to continue") || strings.Contains(belowMinimum, "Capability Pack directory") {
-		t.Fatalf("below-minimum Locate Capability Pack form exposed hidden controls instead of recovery:\n%s", belowMinimum)
 	}
 }
 
-func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding(t *testing.T) {
+func TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -303,85 +294,11 @@ func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresS
 	m := NewContext(t.Context(), svc)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 28})
 	m.Update(m.Init()())
-	if got := m.profileSnapshot; got == nil || len(got.Profiles) != 1 || got.Profiles[0].Key != key || got.Profiles[0].URL != endpoint || got.Profiles[0].Ownership != "other-aact" {
+	if got := m.instanceSnapshot; got == nil || len(got.Profiles) != 1 || got.Profiles[0].Key != key || got.Profiles[0].URL != endpoint || got.Profiles[0].Ownership != "other-aact" {
 		t.Fatalf("real service did not expose the exact foreign runtime facts: %+v", got)
 	}
-	capabilities := m.capabilities()
-	if len(capabilities) != 1 || capabilities[0].CatalogIndex >= 0 {
-		t.Fatalf("fixture accidentally supplied a local catalog package: %+v", capabilities)
-	}
-	m.home.Capabilities.ID = capabilities[0].ID
-	m.reconcileHome()
-	profileIndex := -1
-	for i, row := range m.contextRows() {
-		if row.Kind == "profile" && row.ProfileIndex >= 0 {
-			profileIndex = i
-			break
-		}
-	}
-	if profileIndex < 0 {
-		t.Fatal("observed foreign profile was not reachable in the selected capability's L2")
-	}
-	m.focusPane(ProfilesPane)
-	m.selectContext(profileIndex)
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.result != nil || m.form == nil || m.workspace == nil || m.workspace.Key != key || m.workspace.Profile == nil || m.workspace.Profile.URL != endpoint {
-		t.Fatalf("foreign endpoint route did not preserve observed target into its workspace: result=%+v workspace=%+v output=%q", m.result, m.workspace, m.output)
-	}
-	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Overview", "Endpoint", "Agents", "Information"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("read-only observed workspace is missing section %q:\n%s", want, view)
-		}
-	}
-	for _, forbidden := range []string{"Configure named registrations", "Remove named registrations", "Start MCP", "Stop MCP"} {
-		if strings.Contains(view, forbidden) {
-			t.Errorf("observed-only workspace offers unsupported action %q:\n%s", forbidden, view)
-		}
-	}
-	m.workspace.SectionID = sectionEndpointID
-	m.form.SelectSectionID(sectionEndpointID)
-	m.form.FocusSection()
-	_, check := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if check != nil {
-		m.Update(check()) // L3 selection focuses the Endpoint details pane.
-	}
-	_, check = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if check == nil || !strings.Contains(ansi.Strip(m.View().Content), "> [ Check connection ]") {
-		t.Fatalf("Endpoint L4 does not expose its diagnostic action (cmd=%v area=%d):\n%s", check != nil, m.form.FocusArea(), ansi.Strip(m.View().Content))
-	}
-	_, runCheck := m.Update(check())
-	if runCheck == nil {
-		t.Fatal("Endpoint action did not call the connection service")
-	}
-	_, refresh := m.Update(runCheck())
-	if refresh != nil {
-		m.Update(refresh())
-	}
-	if m.result == nil || !strings.Contains(strings.Join(m.result.Rows, "\n"), endpoint) {
-		t.Fatalf("endpoint check did not retain its exact observed URL/result: %+v", m.result)
-	}
-	if runtime.starts != 0 || runtime.stops != 0 {
-		t.Fatalf("endpoint diagnosis changed foreign runtime lifecycle: starts=%d stops=%d", runtime.starts, runtime.stops)
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.result != nil {
-		t.Fatalf("Esc did not dismiss endpoint diagnostic before returning to Agents: %+v", m.result)
-	}
-	m.workspace.SectionID = sectionAgentsID
-	m.form.SelectSectionID(sectionAgentsID)
-	m.form.FocusSection()
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	view = ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Locate Capability Pack") || !strings.Contains(view, "Complete agent bindings require") {
-		t.Fatalf("Agents does not explain source requirement and recovery action:\n%s", view)
-	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.pending.action != "locate-source" || m.pending.source != key.Source || m.registration != nil {
-		t.Fatalf("observed-only Agents bypassed source recovery: pending=%+v registration=%+v", m.pending, m.registration)
-	}
-	if runtime.starts != 0 || runtime.stops != 0 {
-		t.Fatalf("agent source lookup changed foreign runtime lifecycle: starts=%d stops=%d", runtime.starts, runtime.stops)
+	if capabilities := m.capabilities(); len(capabilities) != 0 {
+		t.Fatalf("runtime without a selected Capability Pack appeared in L1: %+v", capabilities)
 	}
 }
 
@@ -507,60 +424,160 @@ func TestUXSettingsHighlightsOnlyTheFocusedAction(t *testing.T) {
 	t.Fatalf("focused settings action disappeared:\n%s", ansi.Strip(view))
 }
 
+func TestUXWorkspacePrimaryActionTracksNavigatedStage(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
+	sectionOrder := []string{sectionInputsID, sectionAgentsID, sectionRuntimeID}
+	for i, sectionID := range sectionOrder {
+		m.form.FocusSection()
+		for m.form.SectionID() != sectionID {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if m.workspace.SectionID != sectionID {
+			t.Fatalf("navigation did not sync selected section: want %q, got %q", sectionID, m.workspace.SectionID)
+		}
+		view := ansi.Strip(m.View().Content)
+		switch sectionID {
+		case sectionInputsID:
+			if !strings.Contains(view, "[ Save ]") || !strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs does not show its primary actions:\n%s", view)
+			}
+		case sectionAgentsID:
+			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs form actions leaked into Agent access:\n%s", view)
+			}
+			if !strings.Contains(collectWorkspacePages(t, m), "Install selected") {
+				t.Fatalf("Agent access does not show Install selected:\n%s", view)
+			}
+		case sectionRuntimeID:
+			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+				t.Fatalf("Inputs form actions leaked into Runtime:\n%s", view)
+			}
+			if !strings.Contains(collectWorkspacePages(t, m), "Start cluster-inspector") {
+				t.Fatalf("Runtime does not show its Start action:\n%s", view)
+			}
+		}
+		if i < len(sectionOrder)-1 {
+			m.form.FocusSection()
+		}
+	}
+}
+
+func collectWorkspacePages(t *testing.T, m *Model) string {
+	t.Helper()
+	if m.form.FocusArea() != 1 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	var b strings.Builder
+	for i := 0; i < 24; i++ {
+		v := m.View().Content
+		b.WriteString(v)
+		if !strings.Contains(ansi.Strip(v), "\u2193 more") {
+			break
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	return ansi.Strip(b.String())
+}
+
+func collectWorkspaceANSI(t *testing.T, m *Model) string {
+	t.Helper()
+	if m.form.FocusArea() != 1 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	var b strings.Builder
+	for i := 0; i < 24; i++ {
+		v := m.View().Content
+		b.WriteString(v)
+		if !strings.Contains(ansi.Strip(v), "\u2193 more") {
+			break
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	return b.String()
+}
+
 func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	for _, screen := range []struct {
 		name      string
 		sectionID string
 		size      tea.WindowSizeMsg
 	}{
-		{"Overview at minimum", sectionOverviewID, tea.WindowSizeMsg{Width: 80, Height: 16}},
-		{"Connection", "package:connection", tea.WindowSizeMsg{Width: 100, Height: 23}},
-		{"Authentication", "package:authentication", tea.WindowSizeMsg{Width: 100, Height: 23}},
-		{"Agents destinations", sectionAgentsID, tea.WindowSizeMsg{Width: 100, Height: 23}},
+		{"Inputs", sectionInputsID, tea.WindowSizeMsg{Width: 120, Height: 36}},
+		{"Agent access", sectionAgentsID, tea.WindowSizeMsg{Width: 120, Height: 36}},
+		{"Runtime", sectionRuntimeID, tea.WindowSizeMsg{Width: 120, Height: 36}},
 		{"Information", sectionInformationID, tea.WindowSizeMsg{Width: 170, Height: 42}},
 	} {
 		t.Run(screen.name, func(t *testing.T) {
 			m, _ := actualClusterWorkspace(t, screen.size)
-			if !m.form.SelectSectionID(screen.sectionID) {
-				t.Fatalf("fixture did not expose declared section ID %q", screen.sectionID)
-			}
 			m.form.FocusSection()
+			for attempts := 0; m.form.SectionID() != screen.sectionID && attempts < 24; attempts++ {
+				m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			}
+			if m.form.SectionID() != screen.sectionID || m.workspace.SectionID != screen.sectionID {
+				t.Fatalf("keyboard did not select/sync section %q (form=%q workspace=%q)", screen.sectionID, m.form.SectionID(), m.workspace.SectionID)
+			}
 			t.Logf("FIXTURE VIEW · actual packages/cluster-inspector/package.toml · %s · %dx%d\n%s", screen.name, screen.size.Width, screen.size.Height, ansi.Strip(m.View().Content))
 			t.Logf("ANSI_CELLS[%s]\n%s", screen.name, m.View().Content)
 			writeUXCapture(t, screen.name, m.View().Content)
-			if screen.name == "Authentication" {
+			if screen.name == "Inputs" {
+				view := ansi.Strip(m.View().Content)
+				for _, want := range []string{"[ Save ]", "[ Cancel ]"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("Inputs action %q missing:\n%s", want, view)
+					}
+				}
+				if !strings.Contains(collectWorkspacePages(t, m), "Save stores these inputs") {
+					t.Fatal("Inputs save-only explanation is not reachable while scrolling")
+				}
+			}
+			if screen.name == "Agent access" {
+				view := ansi.Strip(m.View().Content)
+				if !strings.Contains(view, "Select agents to install") {
+					t.Fatalf("Agent access instructions missing:\n%s", view)
+				}
+				if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+					t.Fatalf("Inputs actions leaked into Agent access:\n%s", view)
+				}
+				pages := collectWorkspacePages(t, m)
+				for _, want := range []string{"Install selected", "Uninstall selected"} {
+					if !strings.Contains(pages, want) {
+						t.Fatalf("Agent access action %q is not reachable by scrolling:\n%s", want, pages)
+					}
+				}
+				for _, destination := range m.workspace.Preview.Destinations {
+					name := firstNonempty(destination.Name, destination.ID)
+					if !strings.Contains(pages, name) {
+						t.Errorf("Agent access stage does not show target %q:\n%s", name, view)
+					}
+				}
+			}
+			if screen.name == "Runtime" {
+				view := ansi.Strip(m.View().Content)
+				if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
+					t.Fatalf("Inputs actions leaked into Runtime:\n%s", view)
+				}
+				pages := collectWorkspacePages(t, m)
+				for _, want := range []string{"Status: Stopped", "Inputs: Not saved", "Agent install: Not installed", "This starts the Docker instance.", "Start cluster-inspector"} {
+					if !strings.Contains(pages, want) {
+						t.Fatalf("Runtime mockup missing %q:\n%s", want, pages)
+					}
+				}
+			}
+			if screen.name == "Inputs" {
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp}) // Start at the top of L4 without changing L3 selection.
-				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Authentication" {
-					t.Fatal("detail scrolling changed the focused L3 section or surrendered L4 focus")
+				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Inputs" {
+					t.Fatal("detail scrolling changed the focused Inputs stage or surrendered L4 focus")
 				}
-				writeUXCapture(t, "Authentication detail page 1", m.View().Content)
+				writeUXCapture(t, "Inputs detail page 1", m.View().Content)
 				m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Authentication" {
-					t.Fatalf("PageDown changed Authentication L3 selection or left L4 focus (area=%d section=%q)", m.form.FocusArea(), m.form.SectionTitle())
+				if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Inputs" {
+					t.Fatalf("PageDown changed Inputs selection or left L4 focus (area=%d section=%q)", m.form.FocusArea(), m.form.SectionTitle())
 				}
-				writeUXCapture(t, "Authentication detail page 2", m.View().Content)
+				writeUXCapture(t, "Inputs detail page 2", m.View().Content)
 			}
-			if screen.name == "Agents destinations" {
-				paths := destinationDisplayPaths(m.workspace.Preview.Destinations)
-				var allAgentViews strings.Builder
-				allAgentViews.WriteString(m.View().Content)
-				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				if m.form.FocusArea() != 1 {
-					t.Fatal("Enter in L3 did not transfer focus to L4 for keyboard path inspection")
-				}
-				for i := 0; i < len(paths)*6+30; i++ {
-					allAgentViews.WriteString(m.form.View().Content + "\n<FRAME>\n")
-					m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-					if m.form.FocusArea() != 1 || m.form.SectionTitle() != "Agents" {
-						t.Fatalf("PageDown %d changed Agents L3 selection or left L4 focus (area=%d section=%q)", i, m.form.FocusArea(), m.form.SectionTitle())
-					}
-					if i == 0 || i == 2 || i == 4 {
-						writeUXCapture(t, fmt.Sprintf("Agents destinations page %d", i/2+1), m.View().Content)
-					}
-				}
-				assertRenderedTextIsComplete(t, allAgentViews.String(), paths...)
-			}
+
 			if screen.name == "Information" && m.workspace.Preview.CredentialNote != "" {
 				chunks := []string{"Credential note:", "Managed credential", "is missing at"}
 				visible := strings.NewReplacer("\\", "/", "\n", "", "\r", "").Replace(ansi.Strip(m.View().Content))
@@ -620,11 +637,23 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 
 	failure, backend := openSetupInteraction(t)
 	backend.installErr = errors.New("fixture connection rejected")
-	_, submit := failure.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if submit == nil {
-		t.Fatal("failure fixture did not execute the production setup submit route")
+	_, saveInputs := failure.Update(forms.ActionMsg{SectionID: sectionInputsID, ID: "save-inputs"})
+	if saveInputs == nil {
+		t.Fatal("Inputs Save did not execute the save-only route")
 	}
-	_, refresh := failure.Update(runTeaCmd(t, failure, submit))
+	failure.Update(saveInputs())
+	if backend.installRequest != nil || backend.savedInputRequest == nil {
+		t.Fatalf("Inputs Save must persist values without installing: saved=%+v installed=%+v", backend.savedInputRequest, backend.installRequest)
+	}
+	failure.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if failure.form.SectionID() != sectionAgentsID {
+		t.Fatalf("Down did not navigate to Agent access: %q", failure.form.SectionID())
+	}
+	_, install := failure.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Agent access Install did not execute the install route")
+	}
+	_, refresh := failure.Update(runTeaCmd(t, failure, install))
 	if refresh != nil {
 		failure.Update(refresh())
 	}
@@ -639,14 +668,27 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	// Model keyboard route. The values are synthetic fixture data; no credential
 	// or native chooser is involved.
 	auth, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 28})
-	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyDown}, {Code: tea.KeyRight}} {
-		auth.Update(key)
+	auth.form.FocusSection()
+	for attempts := 0; auth.form.SectionID() != sectionInputsID && attempts < 12; attempts++ {
+		auth.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if auth.form.SectionID() != sectionInputsID {
+		t.Fatalf("keyboard did not select Inputs before editing authentication: %q", auth.form.SectionID())
+	}
+	auth.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if auth.form.FocusArea() != 1 {
+		t.Fatal("Right did not focus Inputs details")
+	}
+	// The packaged Inputs are one staged screen; move from the first
+	// connection field to Token within its detail controls.
+	for i := 0; i < 5; i++ {
+		auth.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	const fixtureToken = "fixture-token-not-a-credential"
 	for _, msg := range []tea.Msg{tea.KeyPressMsg{Code: tea.KeyEnter}, tea.PasteStartMsg{}, tea.PasteMsg{Content: fixtureToken}, tea.PasteEndMsg{}, tea.KeyPressMsg{Code: tea.KeyEnter}} {
 		auth.Update(msg)
 	}
-	tokenView := auth.View().Content
+	tokenView := collectWorkspaceANSI(t, auth)
 	if got := fmt.Sprint(auth.form.Values()["token"]); got != fixtureToken {
 		t.Fatalf("keyboard paste/commit did not preserve the synthetic token fixture: %q\n%s", got, ansi.Strip(auth.View().Content))
 	}
@@ -669,7 +711,7 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 	} {
 		auth.Update(msg)
 	}
-	kubeconfigView := auth.View().Content
+	kubeconfigView := collectWorkspaceANSI(t, auth)
 	values := auth.form.Values()
 	if fmt.Sprint(values["kubeconfig"]) != fixtureKubeconfig || fmt.Sprint(values["token"]) != "" {
 		t.Fatalf("keyboard edit/commit did not switch to the synthetic kubeconfig choice: %#v", values)
@@ -827,7 +869,7 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	m := NewContext(t.Context(), svc)
 	m.Update(size)
 	m.Update(m.Init()())
-	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}, "Overview")
+	cmd := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}, "Overview")
 	if cmd == nil {
 		t.Fatal("real app service did not expose the fixture Cluster Inspector workspace")
 	}
@@ -839,17 +881,27 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 }
 
 func TestUXAllScreensKeyboardOnlyNoBatch(t *testing.T) {
-	// The setup route is submitted by a single keyboard Ctrl-S and the fixture
-	// records one concrete SetupInstallRequest; there is no batch confirmation
-	// or extra apply step between the form and service request.
+	// Inputs Save persists only. Agent installation is a separate stage action.
 	m, backend := openSetupInteraction(t)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("keyboard Ctrl-S did not submit the setup form")
+	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save == nil {
+		t.Fatal("keyboard Ctrl-S did not save Inputs")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
+	m.Update(save())
+	if backend.savedInputRequest == nil || backend.installRequest != nil {
+		t.Fatalf("keyboard Inputs Save did not remain separate: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("keyboard navigation did not reach Agent access: %q", m.form.SectionID())
+	}
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install == nil {
+		t.Fatal("Agent access Install did not reach its service boundary")
+	}
+	m.Update(runTeaCmd(t, m, install))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.CapabilityID == "" || backend.installRequest.SetupRequest.Ref.Name == "" {
-		t.Fatalf("keyboard setup did not reach the real UI service boundary: %+v", backend.installRequest)
+		t.Fatalf("explicit Agent access install did not preserve capability identity: %+v", backend.installRequest)
 	}
 	if strings.Contains(strings.ToLower(m.View().Content), "batch") {
 		t.Fatalf("single-target keyboard flow exposed an unrelated batch step:\n%s", m.View().Content)
@@ -864,7 +916,7 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	// makes it return ErrUnavailable before it can build or open an OS dialog.
 	t.Setenv("PATH", t.TempDir())
 	m, _ := openSetupInteraction(t)
-	m.form.SelectSection("Authentication")
+	m.form.SelectSectionID(sectionInputsID)
 	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Source kubeconfig.
@@ -891,12 +943,12 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	})
 	p.Send(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	state := waitJourneyView(t, spy.states, func(s journeyViewState) bool { return strings.Contains(s.content, "Browse file") })
-	if state.section != "Authentication" {
+	if state.section != "Inputs" {
 		t.Fatalf("picker opened from the wrong section: %q\n%s", state.section, state.content)
 	}
 	p.Send(tea.KeyPressMsg{Code: tea.KeyF3})
 	state = queryJourneyProgram(t, p)
-	if state.section != "Authentication" {
+	if state.section != "Inputs" {
 		t.Fatalf("F3 escaped the active picker and changed the parent section to %q:\n%s", state.section, state.content)
 	}
 	if !strings.Contains(state.content, "Browse file") {
@@ -904,7 +956,7 @@ func TestUXActivePickerOwnsParentShortcutKeys(t *testing.T) {
 	}
 	p.Send(tea.KeyPressMsg{Code: tea.KeyEscape})
 	state = queryJourneyProgram(t, p)
-	if state.section != "Authentication" || strings.Contains(state.content, "Browse file") || !strings.Contains(state.content, "Source kubeconfig") {
+	if state.section != "Inputs" || strings.Contains(state.content, "Browse file") || !strings.Contains(state.content, "Source kubeconfig") {
 		t.Fatalf("Escape did not cancel only the browser and restore its parent field:\n%s", state.content)
 	}
 	p.Quit()
@@ -1023,14 +1075,14 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 			return "", os.ErrNotExist
 		}
 	}
-	ref := config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}
+	ref := config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}
 	svc := app.New(config.Source{ID: key.Source, Root: root, ProfileRoot: filepath.Join(root, "profiles"), Catalog: []catalog.Package{pkg}, PackageDefaults: map[string]map[string]any{}}, store, app.Options{Runtime: journeySetupRuntime{}, Runner: journeyAgentRunner{}, DiscoveryProbe: &probe})
 	if err := svc.CreateProfile(t.Context(), ref); err != nil {
 		t.Fatal(err)
 	}
 	m := NewContext(t.Context(), svc)
 	m.Update(m.Init()())
-	preview := m.packProfileRequest(key)
+	preview := m.packInstanceRequest(key)
 	cmd := m.openTargetWorkspace(preview, "Overview")
 	if cmd == nil {
 		t.Fatal("could not open target workspace from the real service")
@@ -1041,15 +1093,14 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
-	if m.form == nil || !strings.Contains(m.View().Content, "Agents") || !strings.Contains(m.View().Content, "codex") {
+	if m.form == nil || !strings.Contains(m.View().Content, "Agents") {
 		t.Fatalf("manifest-backed Agents section did not open: %s", m.View().Content)
 	}
-	// Select Codex and Claude using only the complete Agents form controls.
-	press(m, tea.KeyRight, "")
-	press(m, tea.KeySpace, " ")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeySpace, " ")
+	// Select the intended destinations directly; this integration test checks
+	// apply effects, while keyboard destination navigation has its own tests.
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex", "claude"}}); err != nil {
+		t.Fatalf("could not select test destinations: %v", err)
+	}
 	_, apply := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if apply == nil {
 		t.Fatalf("keyboard Save did not call complete capability install:\n%s", m.View().Content)
@@ -1064,7 +1115,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	}
 	stored, storedErr := store.Installations()
 	serviceSnapshot, serviceSnapshotErr := svc.UIProfileSnapshot(t.Context())
-	var childProfile *viewmodel.Profile
+	var childProfile *viewmodel.Instance
 	for i := range serviceSnapshot.Profiles {
 		profile := &serviceSnapshot.Profiles[i]
 		if profile.Key == (state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "demo"}) {
@@ -1073,7 +1124,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 		}
 	}
 	if serviceSnapshotErr != nil || childProfile == nil || len(childProfile.RegisteredAgents) != 1 || childProfile.RegisteredAgents[0] != "codex" {
-		t.Fatalf("refreshed MCP child achievements do not match actual config effects: snapshot=%+v serviceSnapshot=%+v serviceSnapshotErr=%v stored=%+v storeErr=%v result=%+v output=%q", m.profileSnapshot, serviceSnapshot, serviceSnapshotErr, stored, storedErr, m.result, m.output)
+		t.Fatalf("refreshed MCP child achievements do not match actual config effects: snapshot=%+v serviceSnapshot=%+v serviceSnapshotErr=%v stored=%+v storeErr=%v result=%+v output=%q", m.instanceSnapshot, serviceSnapshot, serviceSnapshotErr, stored, storedErr, m.result, m.output)
 	}
 	if !containsInstallation(t, store, key, "codex", "mcp") {
 		t.Fatal("successful Codex MCP binding was not recorded")
@@ -1228,8 +1279,8 @@ func editPasteJourney(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("in-place Unicode edit did not submit through the production Model.Update path")
 	}
-	m.Update(runTeaCmd(t, m, cmd))
-	if backend.installRequest == nil || backend.installRequest.Inputs["token"] != want {
-		t.Fatalf("Model.Update edit/paste/save changed or lost the exact value: request=%+v", backend.installRequest)
+	m.Update(cmd())
+	if backend.savedInputRequest == nil || backend.savedInputRequest.Inputs["token"] != want || backend.installRequest != nil {
+		t.Fatalf("Model.Update edit/paste/save changed the exact value or triggered installation: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
 	}
 }

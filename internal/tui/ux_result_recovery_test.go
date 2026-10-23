@@ -436,13 +436,18 @@ func TestUXProfileActionsUseObservedOwnerAndRuntimeStatus(t *testing.T) {
 		{"foreign running start", "other-aact", "running", "s", "another installation"},
 		{"unknown running logs", "unknown", "running", "l", "locally owned"},
 		{"foreign running logs", "other-aact", "running", "l", "locally owned"},
+		{"foreign generic action", "other-aact", "running", "restart", "not locally owned"},
 		{"local running logs", "local", "running", "l", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			row := ProfileRow{Profile: &viewmodel.Profile{Ownership: tc.owner, RuntimeStatus: tc.status}}
-			if got := m.profileActionReason(row, tc.action); !strings.Contains(got, tc.want) {
+			row := ProfileRow{Instance: &viewmodel.Instance{Ownership: tc.owner, RuntimeStatus: tc.status}}
+			got := m.instanceActionReason(row, tc.action)
+			if !strings.Contains(got, tc.want) {
 				t.Fatalf("reason=%q, want it to contain %q", got, tc.want)
+			}
+			if strings.Contains(strings.ToLower(got), "profile") {
+				t.Fatalf("user-facing instance action still says profile: %q", got)
 			}
 		})
 	}
@@ -489,13 +494,13 @@ func TestUXWorkspaceConnectionFailureActionsStayInForegroundOverActiveForm(t *te
 	backend := &unreachableConnectionBackend{registrationWorkspaceBackend: base}
 	m.backend = backend
 	key := profile.snapshot.Profiles[1].Key
-	cmd := m.openTargetWorkspace(m.packProfileRequest(key), "Connection")
+	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Connection")
 	m.Update(cmd())
 	if m.form == nil {
 		t.Fatal("workspace form did not open")
 	}
 	form := m.form
-	row := ProfileRow{Profile: &profile.snapshot.Profiles[1], Key: key, URL: profile.snapshot.Profiles[1].URL}
+	row := ProfileRow{Instance: &profile.snapshot.Profiles[1], Key: key, URL: profile.snapshot.Profiles[1].URL}
 	m.Update(m.checkProfileConnection(row)())
 	if m.result == nil || !m.result.Failed || !strings.Contains(ansi.Strip(m.View().Content), "connection refused") {
 		t.Fatalf("connection error did not become foreground result: result=%+v output=%q", m.result, m.output)
@@ -588,7 +593,7 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 	progress := batch[1]()
 	m.Update(progress)
 	plain := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Overview", "Agents", "Elapsed", "Quiet"} {
+	for _, want := range []string{"Operation in progress", "Current step: start", "builder: applying configured settings", "Target: team / plain", "Install · Plain", "Agent access", "Elapsed", "Quiet"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("blocked operation overlay omitted %q:\n%s", want, plain)
 		}

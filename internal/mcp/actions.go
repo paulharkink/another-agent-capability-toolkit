@@ -17,16 +17,16 @@ import (
 )
 
 type ActionRequest struct {
-	ProtocolVersion int            `json:"protocol_version"`
-	Action          string         `json:"action"`
-	Target          config.Target  `json:"target,omitzero"`
-	Profile         config.Profile `json:"profile"`
-	Inputs          map[string]any `json:"inputs"`
-	PackageDir      string         `json:"package_dir"`
-	StateDir        string         `json:"state_dir"`
-	Interactive     bool           `json:"interactive"`
-	ImageSource     string         `json:"image_source,omitempty"`
-	ReleaseImage    string         `json:"release_image,omitempty"`
+	ProtocolVersion int             `json:"protocol_version"`
+	Action          string          `json:"action"`
+	Target          config.Target   `json:"target,omitzero"`
+	Instance        config.Instance `json:"instance"`
+	Inputs          map[string]any  `json:"inputs"`
+	PackageDir      string          `json:"package_dir"`
+	StateDir        string          `json:"state_dir"`
+	Interactive     bool            `json:"interactive"`
+	ImageSource     string          `json:"image_source,omitempty"`
+	ReleaseImage    string          `json:"release_image,omitempty"`
 }
 type ActionResult struct {
 	LoginURL     string                      `json:"login_url,omitempty"`
@@ -64,13 +64,13 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 	// Capability-pack action helpers still consume the legacy target-shaped
 	// profile context. Profile-driven callers have the same values in Profile,
 	// so expose them through Target for helpers that read the v1 envelope.
-	if q.Target.Path == "" && q.Profile.Path != "" {
+	if q.Target.Path == "" && q.Instance.Path != "" {
 		q.Target = config.Target{
-			Environment: q.Profile.Ref.PackID,
-			Name:        q.Profile.Ref.Name,
-			Path:        q.Profile.Path,
-			Raw:         q.Profile.Raw,
-			InputPolicy: q.Profile.InputPolicy,
+			Environment: q.Instance.Ref.PackID,
+			Name:        q.Instance.Ref.Name,
+			Path:        q.Instance.Path,
+			Raw:         q.Instance.Raw,
+			InputPolicy: q.Instance.InputPolicy,
 		}
 	}
 	cmd, ok := p.MCP.Actions[q.Action]

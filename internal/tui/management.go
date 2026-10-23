@@ -120,8 +120,8 @@ func (m *Model) selectedAgentManagement() (viewmodel.AgentManagementRow, bool) {
 
 func (m *Model) agentRegistrations(id string) []string {
 	seen := map[string]bool{}
-	if m.profileSnapshot != nil {
-		for _, p := range m.profileSnapshot.Profiles {
+	if m.instanceSnapshot != nil {
+		for _, p := range m.instanceSnapshot.Profiles {
 			for _, registered := range p.RegisteredAgents {
 				if registered == id {
 					seen[p.Key.Source+" / "+p.Key.Package+" / "+p.Key.Environment+" / "+p.Key.Target] = true
@@ -178,8 +178,8 @@ func (m *Model) environmentEntries() []environmentEntry {
 		entries = append(entries, *actual[name])
 	}
 	byName := map[string]map[string]bool{}
-	if m.profileSnapshot != nil {
-		for _, p := range m.profileSnapshot.Profiles {
+	if m.instanceSnapshot != nil {
+		for _, p := range m.instanceSnapshot.Profiles {
 			if p.Key.Environment == "" {
 				continue
 			}
@@ -187,7 +187,7 @@ func (m *Model) environmentEntries() []environmentEntry {
 			if byName[key] == nil {
 				byName[key] = map[string]bool{}
 			}
-			byName[key][p.Key.Package+" / "+p.Key.Target+" · Saved profile"] = true
+			byName[key][p.Key.Package+" / "+p.Key.Target+" · Saved instance"] = true
 		}
 	}
 	names := make([]string, 0, len(byName))
@@ -251,25 +251,12 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 			}
 			return m.activateSettingsDetail()
 		}
-		fallthrough
-	case "f2":
-		if m.view != "Help" {
-			if m.view == "Agents" && m.management.Focus == CapabilitiesPane {
-				m.management.Focus = ProfilesPane
-				m.management.AgentDetailIndex = m.agentDetailInitialIndex()
-			} else if m.view == "Settings" && m.management.Focus == CapabilitiesPane {
-				m.focusSettingsDetails()
-			} else if m.view == "Agents" {
-				return m.activateAgentDetail()
-			} else if m.view == "Settings" {
-				return m.activateSettingsDetail()
-			} else if m.view == "Environments" {
-				m.management.Modal = "actions"
-				m.management.ModalSelected = 0
-			}
+		if m.view == "Environments" {
+			m.management.Modal = "actions"
+			m.management.ModalSelected = 0
 		}
 	case "space", " ":
-		// Category controls are activated explicitly with Enter / F2.
+		// Category controls are activated explicitly with Enter.
 	case "f5", "R":
 		if m.view == "Agents" {
 			if _, ok := m.backend.(agentManagementBackend); !ok {
@@ -415,7 +402,7 @@ func (m *Model) agentManagementDisplayLines() (details, controls []string, first
 		registrations = row.Registrations
 		details = agentManagementDetails(row)
 	} else {
-		details = []string{"Status: Unverified", "Evidence: Detection unavailable", "Active home: Not reported", "Effective config: Not resolved", "Intended write config: Not supported or not resolved", "Config candidates: None reported", "Observed registrations: None reported"}
+		details = []string{"Registrations: None"}
 	}
 	if !ok && len(registrations) > 0 {
 		details = append(details, "Observed AACT registrations:")
@@ -430,15 +417,14 @@ func (m *Model) agentManagementDisplayLines() (details, controls []string, first
 	details = wrapManagementDetails(details, right-1)
 	firstControl = len(details)
 	if ok {
-		for i, file := range row.ConfigFiles {
+		for _, file := range row.ConfigFiles {
 			if file.Exists {
-				controls = append(controls, fmt.Sprintf("View exact configuration candidate %d", i+1))
+				controls = append(controls, "View configuration")
+				break
 			}
 		}
 	}
-	if len(controls) == 0 {
-		details = append(details, wrapManagementDetails([]string{"Configure location: unavailable; this backend has no supported location editor"}, right-1)...)
-	} else {
+	if len(controls) > 0 {
 		details = append(details, controls...)
 	}
 	return details, controls, firstControl
@@ -778,7 +764,7 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 				return m.beginSetup(capability.Source, capability.Package, "", "")
 			}
 			target := selected.TargetDefs[m.management.TargetIndex]
-			return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: target.SourceID, CapabilityID: target.PackageID, Name: target.Name}}, "Overview")
+			return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: target.SourceID, CapabilityID: target.PackageID, Name: target.Name}}, "Overview")
 		}
 		if entries[i] == "Environment directory" || entries[i] == "Edit environment directory" {
 			m.management.Modal = ""
@@ -803,8 +789,8 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 func (m *Model) editEnvironmentRoot() {
 	m.pending = operation{action: "set-environment-root"}
 	m.management.FormOverlay = true
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Profile configuration directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
-	m.form.SetTitle("Capability Pack · Choose profile configuration directory")
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Instance configuration directory", Type: "directory", Required: true}}, map[string]any{"root": m.environmentRoot()})
+	m.form.SetTitle("Capability Pack · Choose instance configuration directory")
 	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
 	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
 }
@@ -868,7 +854,7 @@ func (m *Model) managementSettingsRows() []string {
 func (m *Model) managementSettingsDetails() []string {
 	switch m.selected {
 	case 0:
-		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not configured"), "Profiles usually live in <Capability Pack>/environments/<capability>/<profile>.toml; choose an external directory to keep them elsewhere.", "[ Change profile directory… ]"}
+		return []string{"Capability Pack", "Capability Pack ID: " + nonempty(m.settings["source"], "not selected"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not configured"), "Instances usually live in <Capability Pack>/instances/<capability>/<instance>.toml; choose an external directory to keep them elsewhere.", "[ Change instance directory… ]"}
 	case 1:
 		lines := []string{"Agent defaults", "Default named agents affect future MCP installations only.", "Existing registrations are unchanged.", "Skill-only installations use All — ~/.agents/skills."}
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
@@ -878,11 +864,11 @@ func (m *Model) managementSettingsDetails() []string {
 	case 2:
 		return []string{"Runtime backend", "Backend selection and health checks are unavailable from this service.", "Use the CLI runtime commands to inspect or change the backend."}
 	case 3:
-		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	case 4:
 		return []string{"MCP images", "Use the version-pinned GHCR image when a capability declares one. Capabilities without a release image continue to build locally.", "Current source: " + nonempty(m.settings["image_source"], "release (default)"), "[ Change MCP image source… ]"}
 	default:
-		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Profile configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
+		return []string{"Diagnostics", "Capability Pack ID: " + nonempty(m.settings["source"], "not reported"), "Capability Pack directory: " + nonempty(m.settings["checkout"], "not reported"), "Catalog TOML: " + nonempty(m.settings["catalog-file"], "not reported"), "Instance configuration directory: " + nonempty(m.environmentRoot(), "not reported"), "State directory: " + nonempty(m.settings["state-dir"], "not reported"), "Platform: " + runtime.GOOS + " / " + runtime.GOARCH, "Other Capability Packs are separate catalogs AACT remembers so installations from another pack remain manageable when that pack is not active."}
 	}
 }
 
@@ -907,7 +893,7 @@ func (m *Model) managementHelpRows() []string {
 	return []string{
 		"Agents / Settings: Left / Right or Tab changes focused pane",
 		"Up / Down / PageUp / PageDown / Home / End selects and scrolls the focused pane",
-		"Enter / F2: Open / focus the highlighted row or control; Environments opens target actions",
+		"Enter activates the highlighted row or control; Environments opens target actions",
 		"Text editors: arrows move the cursor · Backspace edits · Esc leaves the editor",
 		"Pickers: arrows choose · Enter accepts · Esc returns to the previous layer",
 		"Agents: choose an agent before opening a config · Settings: choose a category before its control",
@@ -937,14 +923,13 @@ func (m *Model) managementView() tea.View {
 		}
 		return filepath.Base(path)
 	}
-	menubar := " F9 Main menu: Agents | Settings | Help   F2 Open / Focus"
-	scope := " Capability Pack: " + m.settings["source"] + " · Profiles: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	menubar := " F9 Main menu: Agents | Settings | Help"
+	scope := " Capability Pack: " + m.settings["source"] + " · Instance root: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
 	lines[0] = "╔" + managementGold.Render(fit(" AACT · Another Agent Capability Toolkit", width-2)) + "╗"
 	lines[1] = "║" + fit(menubar, width-2) + "║"
 	lines[2] = "║" + fit(scope, width-2) + "║"
 	lines[3] = "╠" + strings.Repeat("═", width-2) + "╣"
-	actionsStart := strings.Index(menubar, "F2 Open / Focus")
-	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: actionsStart, Height: 1, Control: "main"}, hitRegion{X: actionsStart + 1, Y: 1, Width: len("F2 Open / Focus"), Height: 1, Control: "actions"})
+	m.management.Hits = append(m.management.Hits, hitRegion{X: 1, Y: 1, Width: width - 2, Height: 1, Control: "main"})
 	visible := height - 12
 	if m.view == "Agents" {
 		m.renderAgentManagement(lines, visible)
@@ -962,7 +947,7 @@ func (m *Model) managementView() tea.View {
 	lines[height-6] = "╠" + strings.Repeat("═", width-2) + "╣"
 	lines[height-5] = "║" + fit(" "+m.output, width-2) + "║"
 	lines[height-4] = "╠" + strings.Repeat("═", width-2) + "╣"
-	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F2 Open / Focus", "actions"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
+	footer := []struct{ label, control string }{{"F1 Help", "help"}, {"F5 Refresh", "refresh"}, {"F9 Main menu", "main"}, {"F10 Quit", "quit"}}
 	x, content := 2, " "
 	for _, item := range footer {
 		content += item.label + "  "
@@ -970,7 +955,7 @@ func (m *Model) managementView() tea.View {
 		x += len(item.label) + 2
 	}
 	lines[height-3] = "║" + fit(content, width-2) + "║"
-	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select focused pane · Enter / F2 Open / Focus", width-2) + "║"
+	lines[height-2] = "║" + fit(" Esc Back · ↑↓ Select focused pane · Enter Activate", width-2) + "║"
 	m.management.Hits = append(m.management.Hits, hitRegion{X: 2, Y: height - 2, Width: len("Esc Back"), Height: 1, Control: "back"})
 	lines[height-1] = "╚" + strings.Repeat("═", width-2) + "╝"
 	if m.management.Modal != "" {
@@ -1320,7 +1305,7 @@ func (m *Model) renderEnvironmentManagement(lines []string, visible int) {
 		}
 		lines[y+5] = "║" + leftCell + "║" + rightCell + "║"
 	}
-	root := " Profile configuration directory: " + m.environmentRoot() + " · saved profiles are separate from TOML files"
+	root := " Instance configuration directory: " + m.environmentRoot() + " · saved instances are separate from TOML files"
 	if m.management.TargetIndex < len(selected.Errors) && selected.Errors[m.management.TargetIndex] != "" {
 		root = " Invalid TOML: " + selected.Errors[m.management.TargetIndex]
 	}

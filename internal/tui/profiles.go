@@ -11,7 +11,10 @@ import (
 
 // Optional extensions keep the original Backend compatible with older callers.
 type profileSnapshotBackend interface {
-	UIProfileSnapshot(context.Context) (viewmodel.ProfileSnapshot, error)
+	UIProfileSnapshot(context.Context) (viewmodel.InstanceSnapshot, error)
+}
+type instanceSnapshotBackend interface {
+	UIInstanceSnapshot(context.Context) (viewmodel.InstanceSnapshot, error)
 }
 type registrationBackend interface {
 	UIConfigureRegistrations(context.Context, viewmodel.RegistrationRequest) (viewmodel.OperationResult, error)
@@ -20,13 +23,13 @@ type connectionBackend interface {
 	CheckConnection(context.Context, string, string) viewmodel.ConnectionObservation
 }
 
-func (m *Model) profileActionReason(p ProfileRow, action string) string {
-	owner, status := p.Instance.Ownership, p.Status
-	if p.Profile != nil {
-		owner, status = p.Profile.Ownership, p.Profile.RuntimeStatus
+func (m *Model) instanceActionReason(p InstanceRow, action string) string {
+	owner, status := "unknown", p.Status
+	if p.Instance != nil {
+		owner, status = p.Instance.Ownership, p.Instance.RuntimeStatus
 	}
-	if m.profileError != nil {
-		return "Profile refresh failed: " + m.profileError.Error()
+	if m.instanceError != nil {
+		return "Instance refresh failed: " + m.instanceError.Error()
 	}
 	if action == "parameters" {
 		if _, ok := m.backend.(setupBackend); !ok {
@@ -48,22 +51,22 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 		return ""
 	}
 	if action == "registrations" || action == "remove-registrations" {
-		if _, ok := m.backend.(registrationBackend); !ok || p.Profile == nil {
+		if _, ok := m.backend.(registrationBackend); !ok || p.Instance == nil {
 			return "registration-only service support pending"
 		}
 		if action == "remove-registrations" {
-			if len(p.Profile.RegisteredAgents) == 0 {
+			if len(p.Instance.RegisteredAgents) == 0 {
 				return "No local registrations to remove"
 			}
 			return ""
 		}
-		if !p.Profile.CanConfigureRegistrations {
-			if p.Profile.RegistrationDisabledReason != "" {
-				return p.Profile.RegistrationDisabledReason
+		if !p.Instance.CanConfigureRegistrations {
+			if p.Instance.RegistrationDisabledReason != "" {
+				return p.Instance.RegistrationDisabledReason
 			}
 			return "No MCP endpoint is configured"
 		}
-		if len(m.agents) == 0 && len(p.Profile.RegisteredAgents) == 0 {
+		if len(m.agents) == 0 && len(p.Instance.RegisteredAgents) == 0 {
 			return "No named agents are available"
 		}
 		return ""
@@ -74,51 +77,51 @@ func (m *Model) profileActionReason(p ProfileRow, action string) string {
 		}
 		return ""
 	}
-	if p.Profile != nil {
+	if p.Instance != nil {
 		if action == "s" {
 			if owner != "local" {
-				if p.Profile.StartDisabledReason != "" {
-					return p.Profile.StartDisabledReason
+				if p.Instance.StartDisabledReason != "" {
+					return p.Instance.StartDisabledReason
 				}
 				if owner == "unknown" || owner == "" {
 					return "Runtime owner is unknown"
 				}
 				return "Runtime belongs to another installation"
 			}
-			if p.Profile.CanStart {
+			if p.Instance.CanStart {
 				return ""
 			}
-			if p.Profile.StartDisabledReason != "" {
-				return p.Profile.StartDisabledReason
+			if p.Instance.StartDisabledReason != "" {
+				return p.Instance.StartDisabledReason
 			}
 			return "Start is unavailable"
 		}
 		if action == "x" {
 			if owner != "local" {
-				if p.Profile.StopDisabledReason != "" {
-					return p.Profile.StopDisabledReason
+				if p.Instance.StopDisabledReason != "" {
+					return p.Instance.StopDisabledReason
 				}
 				if owner == "unknown" || owner == "" {
 					return "Runtime owner is unknown"
 				}
 				return "Runtime belongs to another installation"
 			}
-			if p.Profile.CanStop {
+			if p.Instance.CanStop {
 				return ""
 			}
-			if p.Profile.StopDisabledReason != "" {
-				return p.Profile.StopDisabledReason
+			if p.Instance.StopDisabledReason != "" {
+				return p.Instance.StopDisabledReason
 			}
 			return "Stop is unavailable"
 		}
 	}
 	if owner != "local" || status == "external" {
-		return "Runtime action unavailable: this profile is not locally owned."
+		return "Runtime action unavailable: this instance is not locally owned."
 	}
 	return ""
 }
-func (m *Model) checkProfileConnection(p ProfileRow) tea.Cmd {
-	if reason := m.profileActionReason(p, "check-connection"); reason != "" {
+func (m *Model) checkProfileConnection(p InstanceRow) tea.Cmd {
+	if reason := m.instanceActionReason(p, "check-connection"); reason != "" {
 		m.output = reason
 		return nil
 	}
@@ -129,8 +132,8 @@ func (m *Model) checkProfileConnection(p ProfileRow) tea.Cmd {
 	m.home.Modal = nil
 	origin := m.view
 	url, transport := p.URL, ""
-	if p.Profile != nil {
-		transport = p.Profile.Transport
+	if p.Instance != nil {
+		transport = p.Instance.Transport
 	}
 	return func() tea.Msg {
 		observation := backend.CheckConnection(m.ctx, url, transport)
@@ -149,15 +152,15 @@ func (m *Model) checkProfileConnection(p ProfileRow) tea.Cmd {
 		return operationMsg{origin: origin, output: output, failed: !observation.Reachable, step: result.Step, target: result.Target, result: &result}
 	}
 }
-func (m *Model) registrationForm(p ProfileRow) {
-	if reason := m.profileActionReason(p, "registrations"); reason != "" {
+func (m *Model) registrationForm(p InstanceRow) {
+	if reason := m.instanceActionReason(p, "registrations"); reason != "" {
 		m.output = reason
 		return
 	}
 	m.openRegistrationOverlay(p, false)
 }
-func (m *Model) removeRegistrationForm(p ProfileRow) {
-	if reason := m.profileActionReason(p, "remove-registrations"); reason != "" {
+func (m *Model) removeRegistrationForm(p InstanceRow) {
+	if reason := m.instanceActionReason(p, "remove-registrations"); reason != "" {
 		m.output = reason
 		return
 	}
@@ -201,12 +204,12 @@ func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, re
 	}
 }
 
-func (m *Model) profileDetails() []string {
+func (m *Model) instanceDetails() []string {
 	row, ok := m.selectedContextProfile()
-	if m.home.Focus != ProfilesPane || !ok || row.Profile == nil {
+	if m.home.Focus != ProfilesPane || !ok || row.Instance == nil {
 		return []string{m.selectedDetail(), "Enter / Esc Back"}
 	}
-	p := row.Profile
+	p := row.Instance
 	lines := []string{p.Key.Source + " / " + p.Key.Package, p.Key.Environment + " / " + p.Key.Target, "Runtime: " + p.RuntimeStatus + " · owner: " + p.Ownership, p.URL}
 	if p.LocalLastAction != "" {
 		lines = append(lines, "Local last action: "+p.LocalLastAction+" · "+p.LocalLastActionAt.Format("2006-01-02 15:04:05"))

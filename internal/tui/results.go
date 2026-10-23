@@ -123,6 +123,7 @@ func (m *Model) retryResult() tea.Cmd {
 		m.result = nil
 		m.pendingSetup = &draft.preview
 		m.pendingSetupField = draft.destinationField
+		m.uninstallingAgents = draft.uninstall
 		return m.applySetupWithReset(draft.values, draft.resetInputs)
 	}
 	retry := m.retryOperation

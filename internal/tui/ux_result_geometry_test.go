@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -16,23 +17,46 @@ import (
 func TestUXResultDialogFitsConfigurationInsetAcrossTerminalSizes(t *testing.T) {
 	for _, size := range []tea.WindowSizeMsg{{Width: 200, Height: 34}, {Width: 120, Height: 36}, {Width: 80, Height: 16}} {
 		t.Run(fmt.Sprintf("%dx%d", size.Width, size.Height), func(t *testing.T) {
-			m := NewContext(t.Context(), &setupBackendFixture{installErr: errors.New("registration failed")})
+			backend := &setupBackendFixture{installErr: errors.New("registration failed")}
+			m := NewContext(t.Context(), backend)
 			m.view = "Catalog"
 			m.Update(size)
 			preview := viewmodel.SetupPreview{
-				PackageName: "Demo", Key: state.Key{Source: "team", Package: "demo", Environment: "qa", Target: "local"},
-				Inputs: []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string"}, Editable: true}},
+				PackageName: "Demo", MCP: true, Key: state.Key{Source: "team", Package: "demo", Environment: "qa", Target: "local"},
+				Inputs:       []viewmodel.SetupInput{{Definition: catalog.Input{Name: "repo", Label: "Repository", Type: "string"}, Editable: true}},
+				Destinations: []viewmodel.SetupDestination{{ID: "codex", Name: "Codex", Path: "/repos/codex", Selected: true}},
 			}
-			m.workspace = &workspaceState{Key: preview.Key, InvokingView: "Catalog", Active: true, Section: "Inputs"}
+			m.workspace = &workspaceState{Key: preview.Key, InvokingView: "Catalog", Active: true, Section: "Inputs", SectionID: sectionInputsID, Preview: &preview}
 			m.openSetupForm(preview)
 			m.pendingSetup = &preview
 			m.pendingSetupField = "__aact_destinations"
+			if err := m.form.ApplyValues(map[string]any{"repo": "/repos/demo"}); err != nil {
+				t.Fatal(err)
+			}
+			_, save := m.Update(forms.ActionMsg{SectionID: sectionInputsID, ID: "save-inputs"})
+			if save == nil {
+				t.Fatal("Inputs Save did not execute")
+			}
+			m.Update(save())
+			if backend.savedInputRequest == nil || backend.installRequest != nil {
+				t.Fatalf("Inputs Save did not remain separate from install: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
+			}
+			m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			if m.form.SectionID() != sectionAgentsID {
+				t.Fatalf("Down did not select Agent access: %q", m.form.SectionID())
+			}
 			beforeX, beforeY, beforeWidth, beforeHeight, beforeOK := m.setupOverlayBounds()
 			parentRows := strings.Split(ansi.Strip(m.View().Content), "\n")
-			cmd := m.applySetup(map[string]any{"repo": "/repos/demo", "__aact_destinations": []string{"codex"}})
-			m.Update(runTeaCmd(t, m, cmd))
-			if m.result == nil || !m.result.CanReturn {
-				t.Fatal("setup completion did not open a recoverable result")
+			_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+			if install == nil {
+				t.Fatal("Agent access Install did not execute")
+			}
+			m.Update(runTeaCmd(t, m, install))
+			if m.result == nil || !m.result.CanReturn || !m.result.Failed {
+				t.Fatal("Agent access install failure did not open a recoverable result")
+			}
+			if !strings.Contains(strings.Join(m.result.Rows, "\\n"), "registration failed") {
+				t.Fatalf("result lost the install error: %#v", m.result.Rows)
 			}
 			if x, y, width, height, ok := m.setupOverlayBounds(); !ok || !beforeOK || x != beforeX || y != beforeY || width != beforeWidth || height != beforeHeight {
 				t.Errorf("retained configuration frame moved after save: bounds=(%d,%d %dx%d) ok=%t", x, y, width, height, ok)
@@ -104,9 +128,16 @@ func TestUXResultDialogFitsConfigurationInsetAcrossTerminalSizes(t *testing.T) {
 			if m.result != nil || m.form == nil || m.pendingSetup == nil {
 				t.Fatal("return action did not restore the setup editor")
 			}
+			m.form.FocusSection()
+			m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+			if m.form.SectionID() != sectionInputsID {
+				t.Fatalf("could not return to Inputs after result: selected %q", m.form.SectionID())
+			}
+			m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 			view := ansi.Strip(m.View().Content)
-			if !strings.Contains(view, "Repository") || !strings.Contains(view, "/repos/demo") {
-				t.Fatalf("configuration frame lost its submitted value after returning:\n%s", view)
+			pages := collectWorkspacePages(t, m)
+			if !strings.Contains(pages, "Repository") || !strings.Contains(pages, "/repos/demo") {
+				t.Fatalf("Inputs lost the submitted Repository value after returning from result:\n%s", pages)
 			}
 			for index, row := range strings.Split(view, "\n") {
 				if got := ansi.StringWidth(row); got != size.Width {

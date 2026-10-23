@@ -123,7 +123,7 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 				Runner: integratedAuthActionExecutor{diagnostic: scenario.withDiagnostic}, Runtime: runtime,
 				Adapters: integratedAuthAdapters{adapter: integratedAuthAdapter{}},
 			})
-			ref := config.ProfileRef{PackID: "fixture-pack", CapabilityID: "demo", Name: "default"}
+			ref := config.InstanceRef{PackID: "fixture-pack", CapabilityID: "demo", Name: "default"}
 			if err := service.CreateProfile(t.Context(), ref); err != nil {
 				t.Fatal(err)
 			}
@@ -259,7 +259,7 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 		Runner: executor, Runtime: &integratedAuthRuntime{},
 		Adapters: integratedAuthAdapters{adapter: integratedAuthAdapter{}},
 	})
-	ref := config.ProfileRef{PackID: "fixture-pack", CapabilityID: "grafana", Name: "production"}
+	ref := config.InstanceRef{PackID: "fixture-pack", CapabilityID: "grafana", Name: "production"}
 	key := state.Key{Source: ref.PackID, Package: ref.CapabilityID, Target: ref.Name}
 	if err := store.SaveAnswers(key, map[string]any{"grafana_session": profileCookie, "session_expiry": profileExpiry}); err != nil {
 		t.Fatal(err)
@@ -292,6 +292,14 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 	if values["grafana_session"] != formCookie || values["session_expiry"] != profileExpiry {
 		t.Fatalf("form overrides were not retained: %#v", values)
 	}
+	save := model.saveSetupInputs(values)
+	if save == nil {
+		t.Fatal("Save Inputs did not persist the edited authentication values")
+	}
+	model.Update(save())
+	if model.form.HasUnsavedChanges() {
+		t.Fatal("explicit Inputs Save did not clear the saved form draft")
+	}
 	cmd := model.applySetup(values)
 	batch, ok := cmd().(tea.BatchMsg)
 	if !ok || len(batch) == 0 {
@@ -304,8 +312,8 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 	if executor.request.Action != "authenticate" {
 		t.Fatalf("action helper did not receive auth request: %+v; operation err=%v output=%q", executor.request, message.err, message.output)
 	}
-	if executor.request.Profile.Ref != ref || executor.request.Target.Environment != ref.PackID || executor.request.Target.Name != ref.Name || executor.request.Target.Path != profilePath {
-		t.Fatalf("authentication request lost selected profile identity: profile=%+v target=%+v", executor.request.Profile, executor.request.Target)
+	if executor.request.Instance.Ref != ref || executor.request.Target.Environment != ref.PackID || executor.request.Target.Name != ref.Name || executor.request.Target.Path != profilePath {
+		t.Fatalf("authentication request lost selected profile identity: profile=%+v target=%+v", executor.request.Instance, executor.request.Target)
 	}
 	if executor.request.Inputs["grafana_session"] != formCookie || executor.request.Inputs["session_expiry"] != profileExpiry {
 		t.Fatalf("authentication request lost resolved form overrides: %#v", executor.request.Inputs)

@@ -17,8 +17,9 @@ type Source struct {
 	ID              string                    `json:"id"`
 	Root            string                    `json:"root"`
 	ManifestPath    string                    `json:"manifest_path"`
-	EnvironmentRoot string                    `json:"environment_root"`
-	ProfileRoot     string                    `json:"profile_root"`
+	InstanceRoot    string                    `json:"instance_root"`
+	EnvironmentRoot string                    `json:"environment_root,omitempty"`
+	ProfileRoot     string                    `json:"profile_root,omitempty"`
 	Catalog         []catalog.Package         `json:"catalog"`
 	PackageDefaults map[string]map[string]any `json:"package_defaults"`
 }
@@ -28,7 +29,10 @@ type sourceManifest struct {
 	PackID        string          `toml:"pack_id"`
 	Catalog       []catalogEntry  `toml:"catalog"`
 	Imports       []catalogImport `toml:"imports"`
-	Environments  struct {
+	Instances     struct {
+		Root string `toml:"root"`
+	} `toml:"instances"`
+	Environments struct {
 		Root string `toml:"root"`
 	} `toml:"environments"`
 	Packages map[string]struct {
@@ -131,21 +135,45 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	if err != nil {
 		return Source{}, err
 	}
-	s := Source{ID: id, Root: root, ManifestPath: manifest, ProfileRoot: filepath.Join(root, "environments"), PackageDefaults: map[string]map[string]any{}}
+	instanceRoot := filepath.Join(root, "instances")
+	legacyInstancesRoot := filepath.Join(root, "environments")
+	if _, statErr := os.Stat(legacyInstancesRoot); statErr == nil {
+		instanceRoot = legacyInstancesRoot
+	}
+	s := Source{ID: id, Root: root, ManifestPath: manifest, InstanceRoot: instanceRoot, EnvironmentRoot: instanceRoot, ProfileRoot: instanceRoot, PackageDefaults: map[string]map[string]any{}}
 	for name, values := range m.Packages {
 		s.PackageDefaults[name] = values.Inputs
 	}
-	if m.Environments.Root != "" {
-		s.EnvironmentRoot, err = resolvePath(m.Environments.Root, manifest)
+	if m.Instances.Root != "" && m.Environments.Root != "" {
+		newRoot, e1 := resolvePath(m.Instances.Root, manifest)
+		oldRoot, e2 := resolvePath(m.Environments.Root, manifest)
+		if e1 != nil {
+			return Source{}, e1
+		}
+		if e2 != nil {
+			return Source{}, e2
+		}
+		if newRoot != oldRoot {
+			return Source{}, fmt.Errorf("%s: instances.root conflicts with legacy environments.root", manifest)
+		}
+	}
+	configuredRoot := m.Instances.Root
+	if configuredRoot == "" {
+		configuredRoot = m.Environments.Root
+	}
+	if configuredRoot != "" {
+		s.InstanceRoot, err = resolvePath(configuredRoot, manifest)
 		if err != nil {
 			return Source{}, err
 		}
-		s.ProfileRoot = s.EnvironmentRoot
+		s.EnvironmentRoot = s.InstanceRoot
+		s.ProfileRoot = s.InstanceRoot
 	} else {
-		s.EnvironmentRoot = legacyRoot(stateRoot)
-		if s.EnvironmentRoot == "" {
-			s.EnvironmentRoot = filepath.Join(root, "environments")
+		legacyConfigRoot := legacyRoot(stateRoot)
+		if legacyConfigRoot != "" {
+			s.InstanceRoot = legacyConfigRoot
 		}
+		s.EnvironmentRoot, s.ProfileRoot = s.InstanceRoot, s.InstanceRoot
 	}
 	entries, err := resolveCatalog(manifest, m, bundledRoot, map[string]bool{})
 	if err != nil {
@@ -162,7 +190,7 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	return s, nil
 }
 func bundledSource(root, stateRoot string) (Source, error) {
-	s := Source{ID: "bundled", EnvironmentRoot: legacyRoot(stateRoot), PackageDefaults: map[string]map[string]any{}}
+	s := Source{ID: "bundled", InstanceRoot: legacyRoot(stateRoot), EnvironmentRoot: legacyRoot(stateRoot), ProfileRoot: legacyRoot(stateRoot), PackageDefaults: map[string]map[string]any{}}
 	if root == "" {
 		return s, nil
 	}
@@ -171,7 +199,11 @@ func bundledSource(root, stateRoot string) (Source, error) {
 		return Source{}, e
 	}
 	s.Root = abs
-	s.ProfileRoot = filepath.Join(abs, "environments")
+	s.InstanceRoot = filepath.Join(abs, "instances")
+	if _, statErr := os.Stat(filepath.Join(abs, "environments")); statErr == nil {
+		s.InstanceRoot = filepath.Join(abs, "environments")
+	}
+	s.EnvironmentRoot, s.ProfileRoot = s.InstanceRoot, s.InstanceRoot
 	entries, e := os.ReadDir(abs)
 	if e != nil {
 		return Source{}, e
@@ -213,16 +245,19 @@ func legacyRoot(stateRoot string) string {
 	return resolved
 }
 
-// WithEnvironmentRoot applies the explicit CLI root, which has highest precedence.
-func WithEnvironmentRoot(s Source, root string) (Source, error) {
+// WithInstanceRoot applies the explicit CLI root, which has highest precedence.
+func WithInstanceRoot(s Source, root string) (Source, error) {
 	if root == "" {
 		return s, nil
 	}
 	var err error
-	s.EnvironmentRoot, err = resolvePath(root, filepath.Join(s.Root, "aact.toml"))
-	s.ProfileRoot = s.EnvironmentRoot
+	s.InstanceRoot, err = resolvePath(root, filepath.Join(s.Root, "aact.toml"))
+	s.EnvironmentRoot, s.ProfileRoot = s.InstanceRoot, s.InstanceRoot
 	return s, err
 }
+
+// WithEnvironmentRoot is retained for callers using the legacy name.
+func WithEnvironmentRoot(s Source, root string) (Source, error) { return WithInstanceRoot(s, root) }
 func resolvePath(path, declaringFile string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is empty")

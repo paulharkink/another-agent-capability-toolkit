@@ -98,8 +98,27 @@ func TestHealthWithHeadersRejectsRedirectWithoutForwardingCredentials(t *testing
 func TestHealthWithHeadersRejectsUnauthorizedInitialize(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
 	defer server.Close()
-	if err := HealthWithHeaders(context.Background(), server.URL, "streamable-http", nil); err == nil || !strings.Contains(err.Error(), "HTTP 401") {
-		t.Fatalf("unauthorized initialize result = %v, want HTTP 401 error", err)
+	if err := HealthWithHeaders(context.Background(), server.URL, "streamable-http", nil); err == nil || !strings.Contains(err.Error(), "HTTP 401") || !errors.Is(err, ErrMCPUnauthorized) {
+		t.Fatalf("unauthorized initialize result = %v, want typed HTTP 401 error", err)
+	}
+}
+
+func TestStreamableHTTPInitializeAcceptsSSEResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/" {
+			t.Errorf("unexpected streamable HTTP initialize request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Accept"); got != "application/json, text/event-stream" {
+			t.Errorf("Accept header = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}\n\n")
+	}))
+	defer server.Close()
+
+	if err := Health(context.Background(), server.URL, "streamable-http"); err != nil {
+		t.Fatalf("streamable HTTP SSE initialize response rejected: %v", err)
 	}
 }
 
@@ -285,5 +304,61 @@ func TestWaitForAuthenticatedHonorsContextCancellation(t *testing.T) {
 	cancel()
 	if err := waitForAuthenticated(ctx, server.Client(), server.URL, "/health", nil, time.Millisecond); err == nil {
 		t.Fatal("cancelled wait succeeded")
+	}
+}
+func TestCheckAuthenticationReturnsBooleanWithoutWaitingForTrue(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		name := "unauthenticated"
+		if authenticated {
+			name = "authenticated"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/health" {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				if authenticated {
+					_, _ = w.Write([]byte("{\"authenticated\":true}"))
+				} else {
+					_, _ = w.Write([]byte("{\"authenticated\":false}"))
+				}
+			}))
+			defer server.Close()
+			start := time.Now()
+			got, err := CheckAuthentication(context.Background(), server.URL+"/mcp", "/health")
+			if err != nil || got != authenticated {
+				t.Fatalf("got %t err=%v, want %t", got, err, authenticated)
+			}
+			if time.Since(start) > 500*time.Millisecond {
+				t.Fatal("read-only health observation waited instead of returning the current state")
+			}
+		})
+	}
+}
+
+func TestWaitForAuthenticationRetriesStartupTransportFailureAndReturnsFalse(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, &url.Error{Op: "Get", URL: request.URL.String(), Err: syscall.ECONNREFUSED}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"authenticated":false}`)),
+			Request:    request,
+		}, nil
+	})}
+
+	authenticated, err := waitForAuthentication(context.Background(), client, "http://example.test/mcp", "/health", nil, time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("waitForAuthentication returned error: %v", err)
+	}
+	if authenticated {
+		t.Fatal("authenticated = true, want false")
+	}
+	if attempts != 3 {
+		t.Fatalf("health attempts = %d, want 3", attempts)
 	}
 }

@@ -88,6 +88,24 @@ func TestUXSectionActionRowsAreKeyboardAndMouseSelectable(t *testing.T) {
 	t.Fatalf("section action was not visible:\n%s", ansi.Strip(m.View().Content))
 }
 
+func TestUXSectionActionRowsAreKeyboardSelectableAlongsideFields(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "targets", Label: "Target agents", Type: "multichoice", Multiple: true, Options: []catalog.Choice{{Label: "Codex", Value: "codex"}, {Label: "OpenCode", Value: "opencode"}}}}, nil)
+	m.SetSections(FormSection{ID: "agents", Title: "Agent access", Fields: []string{"targets"}})
+	m.SetSectionContentID("agents", []string{"Selection chooses targets; it does not install them."})
+	m.SetSectionActionsID("agents", FormAction{ID: "install-selected", Label: "Install selected"}, FormAction{ID: "uninstall-selected", Label: "Uninstall selected"})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.Update(key(tea.KeyRight, "")) // Focus the details/action pane.
+	m.Update(key(tea.KeyDown, ""))  // Move through the selected destination choices.
+	m.Update(key(tea.KeyDown, ""))  // Move past the final destination to Install selected.
+	_, cmd := m.Update(key(tea.KeyEnter, ""))
+	if cmd == nil {
+		t.Fatalf("keyboard could not reach Install selected beside a field (area=%d selected=%d choice=%d focusedAction=%v actionIndex=%d):\n%s", m.area, m.selected, m.choiceIndex["targets"], m.focusedAction, m.sectionActionIndex, ansi.Strip(m.View().Content))
+	}
+	if msg, ok := cmd().(ActionMsg); !ok || msg != (ActionMsg{Section: "Agent access", SectionID: "agents", ID: "install-selected"}) {
+		t.Fatalf("keyboard activation returned %#v", msg)
+	}
+}
+
 func TestReadOnlySectionCanActivateItsDiagnosticAction(t *testing.T) {
 	m := NewForm(context.Background(), nil, nil)
 	m.SetSections(FormSection{ID: "tool:endpoint", Title: "Endpoint"})

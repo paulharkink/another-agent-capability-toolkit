@@ -697,7 +697,7 @@ func TestRegistrationRenameLedgerFailureReportsAchievedNewMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := mcpProfileKey(key, *pkg, pkg.MCPDefinitions()[0])
+	child := mcpDefinitionKey(key, *pkg, pkg.MCPDefinitions()[0])
 	old := state.Installation{Key: child, AgentID: env.ID, AgentHome: env.Home, AgentKind: env.Kind, Component: "mcp", Destination: env.ConfigPath, RegistrationName: "old-name", URL: "https://old.invalid/mcp", Transport: "streamable-http", TimeoutMS: 30000}
 	if err := store.Record(old); err != nil {
 		t.Fatal(err)
@@ -1074,7 +1074,7 @@ func TestProfileApplyDoesNotRelocatePackUntilExplicitLocate(t *testing.T) {
 		t.Fatal(err)
 	}
 	copySvc := New(next, store, Options{})
-	ref := profileRefForFixture(copySvc, next.ID, "demo", "copied")
+	ref := profileRefForFixture(copySvc, next.ID, "demo", "default")
 	if _, err := copySvc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1179,6 +1179,7 @@ func TestPartialAgentFailureRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	probeHome := t.TempDir()
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string"}}
 	svc.Options.DiscoveryProbe = &agents.DiscoveryProbe{GOOS: "linux", Home: probeHome, Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
 		if name == "codex" || name == "opencode" {
 			return filepath.Join(probeHome, "bin", name), nil

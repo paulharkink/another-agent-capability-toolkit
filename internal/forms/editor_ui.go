@@ -53,6 +53,7 @@ type FormModel struct {
 	unsavedExitGuard            bool
 	readOnly                    bool
 	hideCancel                  bool
+	hideSubmit                  bool
 	result                      map[string]any
 	err                         error
 	sections                    []FormSection
@@ -342,6 +343,10 @@ func (m *FormModel) SetCancelHidden(hidden bool) {
 	}
 }
 
+// SetSubmitHidden hides the global submit control when a section owns its
+// explicit action button.
+func (m *FormModel) SetSubmitHidden(hidden bool) { m.hideSubmit = hidden }
+
 // ApplyValues loads a saved or restored draft through the declared field
 // normalizers while keeping the existing dirty baseline intact.
 func (m *FormModel) ApplyValues(values map[string]any) error {
@@ -470,6 +475,15 @@ func (m *FormModel) HasUnsavedChanges() bool {
 	return m.editor.HasUnsavedChanges() || len(m.ResetFields()) > 0 || (m.editing && m.buffer != m.editOriginal)
 }
 
+// HasUnsavedField reports whether one named input differs from its saved
+// baseline, including an active edit buffer or an explicit inherited-value reset.
+func (m *FormModel) HasUnsavedField(name string) bool {
+	if !answerValueEqual(m.editor.original[name], m.editor.values[name]) || m.resetApplied[name] {
+		return true
+	}
+	return m.editing && m.selected < len(m.defs) && m.defs[m.selected].Name == name && m.buffer != m.editOriginal
+}
+
 // ChangedFieldSummary returns changed field labels in declaration order and
 // the number omitted by limit. It deliberately never returns field values.
 func (m *FormModel) ChangedFieldSummary(limit int) ([]string, int) {
@@ -498,6 +512,14 @@ func (m *FormModel) ChangedFieldSummary(limit int) ([]string, int) {
 
 // MarkClean records the current semantic form values as the clean baseline.
 func (m *FormModel) MarkClean() { m.editor.MarkClean() }
+
+// ReopenAfterSave clears the completed submit result while keeping the form and
+// its clean answer baseline available for the next workspace stage.
+func (m *FormModel) ReopenAfterSave() {
+	m.done = false
+	m.result = nil
+	m.err = nil
+}
 
 // PrepareRetry reopens a submitted form after its parent operation fails,
 // retaining the submitted values and the existing clean baseline.
@@ -836,8 +858,8 @@ func (m *FormModel) moveSplitControl(delta int) {
 	m.detailOffset = 0
 	m.detailScrolled = false
 	indices := m.splitFieldIndices(m.sectionIndex)
+	actions := m.sectionActions[m.currentSectionKey()]
 	if len(indices) == 0 {
-		actions := m.sectionActions[m.currentSectionKey()]
 		if len(actions) > 0 {
 			m.focusedAction = true
 			m.sectionActionIndex = min(max(0, m.sectionActionIndex+delta), len(actions)-1)
@@ -849,11 +871,38 @@ func (m *FormModel) moveSplitControl(delta int) {
 		}
 		return
 	}
+	if m.focusedAction {
+		next := m.sectionActionIndex + delta
+		if next >= 0 && next < len(actions) {
+			m.sectionActionIndex = next
+			return
+		}
+		if delta < 0 && len(actions) > 0 {
+			// Actions appear after section fields, so Up from the first action
+			// returns to the final field/control.
+			m.focusedAction = false
+			m.selected = indices[len(indices)-1]
+			if m.selected < len(m.defs) {
+				def := m.defs[m.selected]
+				if isChoiceList(def) || isScalarChoice(def) {
+					m.choiceIndex[def.Name] = max(0, len(def.Options)-1)
+				} else if isEditableCollection(def) {
+					m.rowIndex[def.Name] = len(collectionRows(m.editor.Values()[def.Name]))
+				}
+			}
+		}
+		return
+	}
 	if m.selected < len(m.defs) && (isChoiceList(m.defs[m.selected]) || isScalarChoice(m.defs[m.selected])) {
 		def := m.defs[m.selected]
 		next := m.choiceIndex[def.Name] + delta
 		if next >= 0 && next < len(def.Options) {
 			m.choiceIndex[def.Name] = next
+			return
+		}
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
 			return
 		}
 	}
@@ -863,6 +912,11 @@ func (m *FormModel) moveSplitControl(delta int) {
 		next := m.rowIndex[def.Name] + delta
 		if next >= 0 && next <= last {
 			m.rowIndex[def.Name] = next
+			return
+		}
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
 			return
 		}
 	}
@@ -879,6 +933,11 @@ func (m *FormModel) moveSplitControl(delta int) {
 		return
 	}
 	if next >= len(indices) {
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
+			return
+		}
 		m.selected = indices[len(indices)-1]
 		return
 	}
@@ -1312,7 +1371,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.area = 1
 					return m, nil
 				}
-				if m.area == 1 && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
+				if m.area == 1 && (m.focusedAction || len(m.splitFieldIndices(m.sectionIndex)) == 0) {
 					return m, m.activateSectionAction()
 				}
 			}
@@ -1740,7 +1799,7 @@ func (m *FormModel) mouseUpdate(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.cancel()
 		}
 		saveText := "[ " + m.submitActionLabel() + " ]"
-		if mouse.X >= 1 && mouse.X < 1+len(saveText) {
+		if !m.hideSubmit && mouse.X >= 1 && mouse.X < 1+len(saveText) {
 			if m.editing {
 				m.commitBuffer()
 				if m.editing {
@@ -2028,9 +2087,15 @@ func (m *FormModel) layout() formLayout {
 		escapeAction = "Esc back"
 	}
 	saveControl := "[ " + m.submitActionLabel() + " ]"
-	actionsControl := saveControl
+	actionsControl := ""
+	if !m.hideSubmit {
+		actionsControl = "[ " + m.submitActionLabel() + " ]"
+	}
 	if !m.hideCancel {
-		actionsControl += "  [ Cancel ]"
+		if actionsControl != "" {
+			actionsControl += "  "
+		}
+		actionsControl += "[ Cancel ]"
 	}
 	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · " + escapeAction
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
@@ -2176,24 +2241,6 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLineChoices = append(rightLineChoices, -1)
 		}
 	}
-	sectionActions := m.sectionActions[m.currentSectionKey()]
-	for actionIndex, action := range sectionActions {
-		label := "› [ " + action.Label + " ]"
-		if action.Disabled != "" {
-			label += " · " + action.Disabled
-		}
-		if actionIndex == m.sectionActionIndex && m.focusedAction {
-			label = "> [ " + action.Label + " ]"
-			if action.Disabled != "" {
-				label += " · " + action.Disabled
-			}
-		}
-		for _, wrapped := range wrapCellText(label, rightContentWidth) {
-			rightLines = append(rightLines, wrapped)
-			rightFields = append(rightFields, -1)
-			rightLineChoices = append(rightLineChoices, actionIndex)
-		}
-	}
 	for _, index := range indices {
 		def := m.defs[index]
 		label := def.Label
@@ -2331,6 +2378,24 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLineChoices = append(rightLineChoices, -2)
 		}
 	}
+	sectionActions := m.sectionActions[m.currentSectionKey()]
+	for actionIndex, action := range sectionActions {
+		label := "› [ " + action.Label + " ]"
+		if action.Disabled != "" {
+			label += " · " + action.Disabled
+		}
+		if actionIndex == m.sectionActionIndex && m.focusedAction {
+			label = "> [ " + action.Label + " ]"
+			if action.Disabled != "" {
+				label += " · " + action.Disabled
+			}
+		}
+		for _, wrapped := range wrapCellText(label, rightContentWidth) {
+			rightLines = append(rightLines, wrapped)
+			rightFields = append(rightFields, -1)
+			rightLineChoices = append(rightLineChoices, actionIndex)
+		}
+	}
 	if len(indices) == 0 {
 		if len(sectionContent) == 0 {
 			rightLines = append(rightLines, "· No fields in this section")
@@ -2366,9 +2431,15 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	saveControl := "[ " + m.submitActionLabel() + " ]"
-	actionsControl := saveControl
+	actionsControl := ""
+	if !m.hideSubmit {
+		actionsControl = "[ " + m.submitActionLabel() + " ]"
+	}
 	if !m.hideCancel {
-		actionsControl += "  [ Cancel ]"
+		if actionsControl != "" {
+			actionsControl += "  "
+		}
+		actionsControl += "[ Cancel ]"
 	}
 	actions := actionsControl
 	if m.readOnly {
@@ -2546,7 +2617,7 @@ func (m *FormModel) splitLayout() formLayout {
 	content := strings.Join(framed, "\n")
 	footerY := -1
 	for y, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, saveControl) {
+		if strings.Contains(line, saveControl) || (!m.hideCancel && strings.Contains(line, "[ Cancel ]")) {
 			footerY = y
 			break
 		}

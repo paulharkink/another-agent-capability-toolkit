@@ -17,7 +17,7 @@ func TestLegacyKeyReusesAnswersAndAuthDirectory(t *testing.T) {
 	if err := s.SaveAnswers(legacy, map[string]any{"enabled": false}); err != nil {
 		t.Fatal(err)
 	}
-	k, err := s.ResolveProfileKey("company", "guidance", "ota")
+	k, err := s.ResolveInstanceKey("company", "guidance", "ota")
 	if err != nil || k.ID() != legacy.ID() || s.AuthDir(k) != s.AuthDir(legacy) {
 		t.Fatalf("lost legacy identity: %#v %v", k, err)
 	}
@@ -32,12 +32,12 @@ func TestLegacyKeyChildIdentityAndAmbiguity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := Key{Source: "company", Package: "guidance", Environment: "old-home", Target: "ota", Profile: "api-child"}
+	child := Key{Source: "company", Package: "guidance", Environment: "old-home", Target: "ota", MCPDefinition: "api-child"}
 	if err := s.RecordProfile(ProfileRecord{Key: child}); err != nil {
 		t.Fatal(err)
 	}
 	k, err := s.ResolveProfileKey("company", "guidance", "ota")
-	if err != nil || k.Profile != "" || k.Target != "ota" || k.Environment != "old-home" {
+	if err != nil || k.MCPDefinition != "" || k.Target != "ota" || k.Environment != "old-home" {
 		t.Fatalf("child repurposed: %#v %v", k, err)
 	}
 	records, _ := s.Profiles()
@@ -48,7 +48,7 @@ func TestLegacyKeyChildIdentityAndAmbiguity(t *testing.T) {
 	if err := s.RecordProfile(ProfileRecord{Key: other}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResolveProfileKey("company", "guidance", "ota"); err == nil || !strings.Contains(err.Error(), "old-home") || !strings.Contains(err.Error(), "different-home") {
+	if _, err := s.ResolveInstanceKey("company", "guidance", "ota"); err == nil || !strings.Contains(err.Error(), "old-home") || !strings.Contains(err.Error(), "different-home") {
 		t.Fatalf("ambiguous records guessed: %v", err)
 	}
 }
@@ -58,7 +58,7 @@ func TestProfileKeyNewIdentityUsesExistingStorageShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := s.ResolveProfileKey("company", "guidance", "ota")
+	k, err := s.ResolveInstanceKey("company", "guidance", "ota")
 	if err != nil || k != (Key{Source: "company", Package: "guidance", Target: "ota"}) {
 		t.Fatalf("unexpected new key: %#v %v", k, err)
 	}

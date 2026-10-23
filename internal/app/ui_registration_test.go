@@ -22,8 +22,8 @@ func TestUIConfigureRegistrationsTargetsCurrentEnvironmentOnly(t *testing.T) {
 	result, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{
 		Ref: profileRefFromTestKey("foreign-windows", "demo", "cluster"), Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") || result.Connection.CheckedAt.IsZero() {
-		t.Fatalf("unavailable source did not request locating the package: %+v, %v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not selected") || !result.Connection.CheckedAt.IsZero() {
+		t.Fatalf("inactive Capability Pack was not rejected before registration: %+v, %v", result, err)
 	}
 	if runtime.starts != 0 || runtime.stops != 0 {
 		t.Fatalf("foreign endpoint registration changed the MCP runtime: starts=%d stops=%d", runtime.starts, runtime.stops)
@@ -43,8 +43,8 @@ func TestUIConfigureRegistrationsRequiresSourceForCompleteCapability(t *testing.
 		Ref: profileRefFromTestKey("missing-source", "demo", "cluster"), Key: state.Key{Source: "missing-source", Package: "demo", Target: "cluster"},
 		URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
-		t.Fatalf("missing source did not provide an actionable error: %+v %v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not selected") {
+		t.Fatalf("inactive Capability Pack was not rejected: %+v %v", result, err)
 	}
 	rows, readErr := store.Installations()
 	if readErr != nil || len(rows) != 0 || runtime.starts != 0 || runtime.stops != 0 {
@@ -118,8 +118,8 @@ func TestUIConfigureRegistrationsReportsUnreachableEndpointWithoutClaimingRuntim
 		Key: state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"},
 		URL: url, Transport: "streamable-http", AgentIDs: []string{"claude"},
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") || result.Connection.Reachable || result.Connection.Error == "" {
-		t.Fatalf("source or endpoint diagnosis absent: %+v, %v", result, err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not selected") || !result.Connection.CheckedAt.IsZero() {
+		t.Fatalf("inactive Capability Pack was not rejected before connection checks: %+v, %v", result, err)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestUIConfigureRegistrationsRejectsAmbiguousAgentConfigPaths(t *testing.T) 
 		t.Fatalf("fixture lost one config path: %+v, %v", before, err)
 	}
 	_, err = configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{Ref: profileRefFromTestKey(key.Source, key.Package, key.Target), Key: key, URL: "http://127.0.0.1:8765/mcp", Transport: "streamable-http", AgentIDs: []string{"claude"}})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locate") {
-		t.Fatalf("unavailable source did not request locating the package: %v", err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not selected") {
+		t.Fatalf("inactive Capability Pack was not rejected: %v", err)
 	}
 	after, readErr := store.Installations()
 	if readErr != nil || len(after) != 2 {

@@ -21,37 +21,54 @@ func TestManifestSectionsPreserveDeclaredOrderAndDoNotInferFieldGroups(t *testin
 	}
 	defs := []catalog.Input{{Name: "credential", Label: "Token", Type: "secret"}, {Name: "endpoint", Label: "Endpoint", Type: "string"}, {Name: "__agents", Type: "multichoice"}}
 	got := workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 5 || got[0].Title != "Overview" || got[1].Title != "Remote Control" || got[2].Title != "Extra Options" || got[3].Title != "Agents" || got[4].Title != "Information" {
-		t.Fatalf("sections did not follow manifest declaration: %#v", got)
+	if len(got) != 3 || got[0].Title != "Inputs" || got[1].Title != "Agent access" || got[2].Title != "Information" {
+		t.Fatalf("staged workspace sections did not group manifest settings under Inputs: %#v", got)
 	}
-	if got[1].Fields[0] != "endpoint" || got[2].Fields[0] != "credential" {
-		t.Fatalf("fields were regrouped heuristically: %#v", got)
+	if len(got[0].Fields) != 2 || got[0].Fields[0] != "credential" || got[0].Fields[1] != "endpoint" {
+		t.Fatalf("Inputs did not preserve declared input order: %#v", got)
 	}
 }
 
-type zeroInputSkillSetupBackend struct{ fixtureBackend }
-
-func (zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: setupProfileKey(request)}, nil
+type zeroInputSkillSetupBackend struct {
+	fixtureBackend
+	installRequest *viewmodel.SetupInstallRequest
+	installed      bool
+	mcp            bool
 }
-func (zeroInputSkillSetupBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
-	return viewmodel.OperationResult{}, nil
+
+type skillOnlyInstanceBackend struct{ *zeroInputSkillSetupBackend }
+
+func (skillOnlyInstanceBackend) UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error) {
+	return map[string]viewmodel.CapabilityInstanceSnapshot{}, nil
+}
+func (skillOnlyInstanceBackend) UICreateInstance(context.Context, config.InstanceRef) error {
+	return nil
+}
+func (b *zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), MCP: b.mcp, PackageName: request.Ref.CapabilityID, Destinations: []viewmodel.SetupDestination{{ID: "codex", Name: "Codex", Selected: b.installed, Detected: true}}}, nil
+}
+func (b *zeroInputSkillSetupBackend) UIInstall(_ context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.installRequest = &request
+	b.installed = len(request.DestinationIDs) > 0
+	return viewmodel.OperationResult{Saved: true}, nil
 }
 
 func TestManifestlessSectionsUseInputOrderAndOnlyMCPAddsRuntimeSections(t *testing.T) {
 	preview := viewmodel.SetupPreview{Key: state.Key{Package: "arbitrary-name"}}
 	defs := []catalog.Input{{Name: "token", Label: "Access token", Type: "secret"}, {Name: "host", Label: "Host", Type: "string"}}
 	got := workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 4 || got[1].Title != "Inputs" || got[1].Fields[0] != "token" || got[1].Fields[1] != "host" {
+	if len(got) != 3 || got[0].Title != "Inputs" || got[0].Fields[0] != "token" || got[0].Fields[1] != "host" {
 		t.Fatalf("legacy inputs were not kept in declared order: %#v", got)
 	}
 	preview.MCP = true
 	got = workspaceFormSections(preview, defs, "__agents")
-	if len(got) != 6 || got[3].Title != "Runtime" || got[4].Title != "Logs" {
+	if len(got) != 5 || got[2].Title != "Runtime" || got[3].Title != "Logs" {
 		t.Fatalf("MCP runtime sections missing: %#v", got)
 	}
-	if len(workspaceFormSections(preview, nil, "__agents")) == 6 {
-		t.Fatal("zero-input MCP capability received an empty Inputs menu")
+	for _, section := range workspaceFormSections(preview, nil, "__agents") {
+		if section.ID == sectionInputsID {
+			t.Fatal("zero-input MCP capability received an empty Inputs menu")
+		}
 	}
 }
 
@@ -80,24 +97,145 @@ func TestDestinationPresentationUsesSkillPathsAndRetainsMCPConfigPaths(t *testin
 	}
 }
 
-func TestSkillOnlyZeroInputOpensAgentsWithoutTargetChooser(t *testing.T) {
-	m, _ := homeFixture()
-	m.backend = zeroInputSkillSetupBackend{}
-	m.environmentSnapshot = &viewmodel.EnvironmentSnapshot{SourceID: "one", Targets: []viewmodel.EnvironmentTarget{{SourceID: "one", PackageID: "plain", Name: "staging", Path: "/tmp/staging.toml"}}}
-	rows := m.capabilities()
-	for _, row := range rows {
-		if row.Package == "plain" {
-			m.home.Capabilities.ID = row.ID
-			break
+func TestPlainSkillAgentActionsUseDefaultInstanceWorkspace(t *testing.T) {
+	for _, scenario := range []struct {
+		label     string
+		installed bool
+		mcp       bool
+	}{
+		{label: "plain skill keyboard install"},
+		{label: "plain skill mouse uninstall", installed: true},
+		{label: "MCP-backed keyboard install", mcp: true},
+		{label: "MCP-backed mouse uninstall", installed: true, mcp: true},
+	} {
+		t.Run(scenario.label, func(t *testing.T) {
+			m, _ := homeFixture()
+			m.Update(tea.WindowSizeMsg{Width: 120, Height: 42})
+			backend := &zeroInputSkillSetupBackend{installed: scenario.installed, mcp: scenario.mcp}
+			m.backend = skillOnlyInstanceBackend{backend}
+			var request viewmodel.SetupRequest
+			if scenario.mcp {
+				request = viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "cluster", Name: "default"}}
+				m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{}
+				cmd := m.openTargetWorkspace(request, "Agents")
+				if cmd == nil {
+					t.Fatal("opening the MCP-backed instance did not open setup workspace")
+				}
+				m.Update(cmd())
+			} else {
+				selectPlainSkill(t, m)
+				m.home.Focus = ProfilesPane
+				m.home.Context.Index = 0
+				cmd := m.openContextRow()
+				if cmd == nil {
+					t.Fatal("opening the default instance did not open setup workspace")
+				}
+				m.Update(cmd())
+				request = viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"}}
+			}
+			if m.workspace == nil || m.workspace.Key.Target != "default" || m.pendingSetup == nil || m.form.SectionID() != sectionAgentsID {
+				t.Fatalf("Agent Access did not bind the default Capability Instance: workspace=%+v pending=%+v section=%q", m.workspace, m.pendingSetup, m.form.SectionID())
+			}
+			if m.pendingSetup.MCP != scenario.mcp {
+				t.Fatalf("fixture did not exercise expected capability kind: MCP=%t want %t", m.pendingSetup.MCP, scenario.mcp)
+			}
+			var actionCmd tea.Cmd
+			if scenario.installed {
+				// Click the visible button using screen coordinates through the
+				// same overlay translation used by the running TUI.
+				plain := ansi.Strip(m.form.View().Content)
+				button := "[ Uninstall selected ]"
+				x, y, _, _, ok := m.setupOverlayBounds()
+				if !ok {
+					t.Fatal("Agent Access overlay has no click bounds")
+				}
+				for lineNo, line := range strings.Split(plain, "\n") {
+					if at := strings.Index(line, button); at >= 0 {
+						_, actionCmd = m.Update(tea.MouseClickMsg{X: x + at, Y: y + lineNo, Button: tea.MouseLeft})
+						break
+					}
+				}
+				if actionCmd == nil {
+					t.Fatalf("mouse could not activate %q:\n%s", button, plain)
+				}
+			} else {
+				for _, key := range []tea.KeyPressMsg{{Code: tea.KeyRight}, {Code: tea.KeySpace}} {
+					_, _ = m.Update(key)
+				}
+				if got, _ := m.form.Values()[m.pendingSetupField].([]string); len(got) != 1 || got[0] != "codex" {
+					t.Fatalf("keyboard could not select destination through focused Agent Access form: field=%q area=%d values=%+v view:\n%s", m.pendingSetupField, m.form.FocusArea(), m.form.Values(), ansi.Strip(m.View().Content))
+				}
+				for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyEnter}} {
+					_, actionCmd = m.Update(key)
+					if key.Code != tea.KeyEnter && actionCmd != nil {
+						m.Update(actionCmd)
+					}
+				}
+				if actionCmd == nil {
+					t.Fatalf("keyboard could not reach Install selected:\n%s", ansi.Strip(m.form.View().Content))
+				}
+			}
+			_, operationCmd := m.Update(actionCmd())
+			if operationCmd == nil {
+				t.Fatalf("Agent Access action was not dispatched to install: %q", m.output)
+			}
+			m.Update(runTeaCmd(t, m, operationCmd))
+			wantCapability := "plain"
+			if scenario.mcp {
+				wantCapability = "cluster"
+			}
+			if backend.installRequest == nil || backend.installRequest.Ref.PackID != "one" || backend.installRequest.Ref.CapabilityID != wantCapability || backend.installRequest.Ref.Name != "default" {
+				t.Fatalf("agent action bypassed the ordinary Pack-owned default instance: request=%+v output=%q pending=%+v form=%v", backend.installRequest, m.output, m.pendingSetup, m.form != nil)
+			}
+			if scenario.installed && len(backend.installRequest.DestinationIDs) != 0 {
+				t.Fatalf("uninstall left selected agents installed: %+v", backend.installRequest)
+			}
+			if !scenario.installed && (len(backend.installRequest.DestinationIDs) != 1 || backend.installRequest.DestinationIDs[0] != "codex") {
+				t.Fatalf("install did not submit selected agent: %+v", backend.installRequest)
+			}
+		})
+	}
+}
+
+func selectPlainSkill(t *testing.T, m *Model) {
+	t.Helper()
+	m.agents = []string{"codex", "opencode"}
+	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"},
+		Key: state.Key{Source: "one", Package: "plain", Target: "default"}, ConfigStatus: "configured",
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "plain", Status: "absent"}},
+	}}}}
+	for index, capability := range m.capabilities() {
+		if capability.Package == "plain" {
+			m.home.Capabilities.ID = capability.ID
+			m.home.Capabilities.Index = index
+			m.home.Focus = CapabilitiesPane
+			m.reconcileHome()
+			return
 		}
 	}
-	m.reconcileHome()
-	cmd := m.homeOperation("parameters")
-	if cmd != nil || m.creatingProfile == nil || m.creatingProfile.PackID != "one" || m.creatingProfile.CapabilityID != "plain" {
-		t.Fatalf("skill-only capability did not enter source-only profile creation: ref=%+v cmd=%v", m.creatingProfile, cmd != nil)
+	t.Fatal("plain skill capability missing")
+}
+
+func firstSelectableAgent(t *testing.T, m *Model) string {
+	t.Helper()
+	for _, agent := range m.agents {
+		if agent != "" && agent != "all" {
+			return agent
+		}
 	}
-	if m.home.Modal != nil {
-		t.Fatalf("profile creation opened an environment target chooser: %+v", m.home.Modal)
+	t.Fatal("no selectable agent destination")
+	return ""
+}
+
+func assertAgentTargetSelector(t *testing.T, m *Model) {
+	t.Helper()
+	content := ansi.Strip(m.View().Content)
+	if !strings.Contains(content, "Target agents") {
+		t.Fatalf("agent target selector label missing from rendered view:\n%s", content)
+	}
+	if strings.Contains(content, "All agents") {
+		t.Fatalf("selector unexpectedly offers a broadcast destination:\n%s", content)
 	}
 }
 
@@ -112,8 +250,8 @@ func TestFixedManifestControllerExposesRequiredEditableInputWithoutSubmittingCon
 		},
 	}
 	m.openSetupForm(preview)
-	if m.form == nil || !m.form.HasSection("Credential Settings") {
-		t.Fatal("fixed controller hid its required editable field section")
+	if m.form == nil || !m.form.HasSection("Inputs") || !strings.Contains(ansi.Strip(m.form.View().Content), "Credential") {
+		t.Fatal("fixed controller hid its required editable field from the Inputs stage")
 	}
 	if _, submitted := m.form.Values()["mode"]; submitted {
 		t.Fatal("fixed controller leaked into editable answers")
@@ -127,17 +265,17 @@ func TestFixedManifestControllerExposesRequiredEditableInputWithoutSubmittingCon
 func TestDeclaredSectionIDCannotOverwriteBuiltinAgentsWithSameName(t *testing.T) {
 	preview := viewmodel.SetupPreview{HasManifestUI: true, Sections: []catalog.Section{{ID: "tool:agents", Title: "Agents", Fields: []string{"endpoint"}}}}
 	sections := workspaceFormSections(preview, []catalog.Input{{Name: "endpoint", Type: "string"}}, "")
-	foundBuiltin, foundPublisher := false, false
+	foundBuiltin, foundInput := false, false
 	for _, section := range sections {
 		if section.ID == sectionAgentsID {
-			foundBuiltin = section.Title == "Agents" && len(section.Fields) == 0
+			foundBuiltin = section.Title == "Agent access" && len(section.Fields) == 0
 		}
-		if section.ID == "package:tool:agents" {
-			foundPublisher = section.Title == "Agents" && len(section.Fields) == 1 && section.Fields[0] == "endpoint"
+		if section.ID == sectionInputsID {
+			foundInput = section.Title == "Inputs" && len(section.Fields) == 1 && section.Fields[0] == "endpoint"
 		}
 	}
-	if !foundBuiltin || !foundPublisher {
-		t.Fatalf("declared ID/title collision overwrote a tool section: %#v", sections)
+	if !foundBuiltin || !foundInput {
+		t.Fatalf("declared ID/title collision overwrote a staged tool section: %#v", sections)
 	}
 }
 
@@ -198,15 +336,19 @@ func TestRuntimeControlsAddressTheSelectedManifestMCPChild(t *testing.T) {
 	backend := &multiMCPRuntimeBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "local", CanStart: true, CanStop: true},
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "local", CanStop: true},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
 	m.Update(open())
+	m.workspace.Preview.Configured = true
+	m.workspace.Installed = true
+	m.workspace.RegisteredMCPs = map[string]bool{"alpha": true, "beta": true}
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
 	if !strings.Contains(ansi.Strip(m.View().Content), "beta · status: running") {
@@ -237,12 +379,15 @@ func TestMissingNamedChildInheritsParentOwnershipForLifecycleGuards(t *testing.T
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 			parentKey := state.Key{Source: "one", Package: "bundle", Target: "staging"}
-			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{{Key: parentKey, Name: "Bundle", RuntimeStatus: "running", Ownership: test.owner, URL: "https://parent.example/mcp"}}}
-			open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+			m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: parentKey, Name: "Bundle", RuntimeStatus: "running", Ownership: test.owner, URL: "https://parent.example/mcp"}}}
+			open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}
 			m.Update(open())
+			m.workspace.Preview.Configured = true
+			m.workspace.Installed = true
+			m.configureWorkspaceForm(*m.workspace.Preview)
 			m.form.SelectSectionID(sectionRuntimeID)
 			m.form.FocusSection()
 			view := ansi.Strip(m.View().Content)
@@ -271,11 +416,11 @@ func TestRuntimeConnectionCheckUsesExactManifestMCPChild(t *testing.T) {
 	backend := &multiMCPRuntimeBackend{}
 	m := NewContext(t.Context(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-	m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "alpha"}, Name: "Alpha", RuntimeStatus: "running", Ownership: "foreign", URL: "https://alpha.example/mcp", Transport: "streamable-http"},
 		{Key: state.Key{Source: "one", Package: "bundle", Target: "staging", MCP: "beta"}, Name: "Beta", RuntimeStatus: "running", Ownership: "foreign", URL: "https://beta.example/mcp", Transport: "sse"},
 	}}
-	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
+	open := m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "bundle", Name: "staging"}}, "Overview")
 	if open == nil {
 		t.Fatal("workspace preview did not start")
 	}
@@ -310,12 +455,12 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 			m := NewContext(t.Context(), backend)
 			m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
 			key := state.Key{Source: "one", Package: "bundle", Target: "staging"}
-			m.profileSnapshot = &viewmodel.ProfileSnapshot{Profiles: []viewmodel.Profile{
+			m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
 				{Key: key, Name: "Bundle", Ownership: "local", URL: "http://127.0.0.1:7777/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "alpha"}, Name: "Alpha", Ownership: "other-aact", URL: "https://alpha.example/mcp"},
 				{Key: state.Key{Source: key.Source, Package: key.Package, Environment: key.Environment, Target: key.Target, MCP: "beta"}, Name: "Beta", Ownership: test.betaOwner},
 			}}
-			open := m.openTargetWorkspace(m.packProfileRequest(key), "Overview")
+			open := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 			if open == nil {
 				t.Fatal("workspace preview did not start")
 			}
@@ -338,5 +483,25 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 				t.Fatalf("local companion received a broadcast external URL: %+v", backend.installRequest.ExternalURLs)
 			}
 		})
+	}
+}
+
+func TestPlainSkillActionsOfferOrdinaryAgentAccessOnly(t *testing.T) {
+	m, _ := homeFixture()
+	m.backend = skillOnlyInstanceBackend{&zeroInputSkillSetupBackend{}}
+	selectPlainSkill(t, m)
+	m.home.Focus = CapabilitiesPane
+	m.home.Modal = &modalState{Kind: "actions"}
+	actions := map[string]string{}
+	for _, item := range m.homeMenuItems() {
+		actions[item.Action] = item.Label
+	}
+	if label, exists := actions["agents"]; !exists || label != "Agent access…" {
+		t.Errorf("plain-skill instance lacks ordinary Agent Access: %#v", actions)
+	}
+	for _, forbidden := range []string{"install-skill-only", "uninstall-skill-only", "create-profile"} {
+		if _, exists := actions[forbidden]; exists {
+			t.Errorf("plain-skill actions retain bypass %q: %#v", forbidden, actions)
+		}
 	}
 }

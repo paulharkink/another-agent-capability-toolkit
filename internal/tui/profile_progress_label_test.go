@@ -8,7 +8,7 @@ import (
 
 func TestSetupTargetLabelUsesProfileTerminologyForProfileKey(t *testing.T) {
 	got := setupTargetLabel(state.Key{Source: "example-company", Package: "guidance", Target: "ota"})
-	if got != "example-company / guidance · Profile ota" {
+	if got != "example-company / guidance · Instance ota" {
 		t.Fatalf("setupTargetLabel() = %q", got)
 	}
 }

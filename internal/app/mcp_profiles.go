@@ -13,11 +13,11 @@ import (
 func selectMCPProfile(p catalog.Package, name string) (catalog.MCP, error) {
 	profiles := p.MCPProfiles()
 	if len(profiles) == 0 {
-		return catalog.MCP{}, fmt.Errorf("capability %q has no MCP profiles", p.ID)
+		return catalog.MCP{}, fmt.Errorf("capability %q has no MCP definitions", p.ID)
 	}
 	if name == "" {
 		if len(profiles) != 1 {
-			return catalog.MCP{}, fmt.Errorf("capability %q has multiple MCP profiles; choose one with --profile", p.ID)
+			return catalog.MCP{}, fmt.Errorf("capability %q has multiple MCP definitions; choose one with --mcp", p.ID)
 		}
 		return profiles[0], nil
 	}
@@ -26,16 +26,16 @@ func selectMCPProfile(p catalog.Package, name string) (catalog.MCP, error) {
 			return profile, nil
 		}
 	}
-	return catalog.MCP{}, fmt.Errorf("capability %q has no MCP profile %q", p.ID, name)
+	return catalog.MCP{}, fmt.Errorf("capability %q has no MCP definition %q", p.ID, name)
 }
 
-func mcpProfileKey(base state.Key, p catalog.Package, profile catalog.MCP) state.Key {
+func mcpDefinitionKey(base state.Key, p catalog.Package, profile catalog.MCP) state.Key {
 	if p.MCP != nil && len(p.MCPs) == 0 {
 		return base
 	}
 	profileSemantics := profile.EnabledInput != "" || profile.TokenInput != "" || profile.TokenFileInput != "" || profile.TokenEnvInput != "" || profile.TokenHeader != "" || profile.TokenContainerEnv != "" || len(profile.Args) > 0 || len(profile.EnvInputs) > 0 || len(profile.SecretEnvInputs) > 0
 	if profileSemantics {
-		base.Profile = profile.Name
+		base.MCPDefinition = profile.Name
 	} else {
 		// Existing [[mcps]] declarations use the original MCP child key.
 		base.MCP = profile.Name

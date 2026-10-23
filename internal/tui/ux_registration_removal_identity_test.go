@@ -22,7 +22,7 @@ func TestUXExactRegistrationRemovalRequestIsPathScoped(t *testing.T) {
 	}
 	profile := backend.snapshot.Profiles[1]
 	profile.RegisteredAgents = []string{"claude", "claude"}
-	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Profile: &profile}, true)
+	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Instance: &profile}, true)
 	if m.registration == nil {
 		t.Fatal("removal overlay did not open")
 	}
@@ -80,7 +80,7 @@ func TestUXMouseRemovalSelectsExactRegistrationPath(t *testing.T) {
 	}
 	profile := backend.snapshot.Profiles[1]
 	profile.RegisteredAgents = []string{"claude", "claude"}
-	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Profile: &profile}, true)
+	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Instance: &profile}, true)
 	view := ansi.Strip(m.View().Content)
 	var checkboxY int
 	for index, row := range strings.Split(view, "\n") {
@@ -141,7 +141,7 @@ func TestUXRemovalShowsLongSelectedConfigPathAtMinimumSupportedSize(t *testing.T
 	}}
 	profile := backend.snapshot.Profiles[1]
 	profile.RegisteredAgents = []string{"claude"}
-	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Profile: &profile}, true)
+	m.openRegistrationOverlay(ProfileRow{Key: key, URL: profile.URL, Instance: &profile}, true)
 	press(m, tea.KeyRight, "")
 	view := ansi.Strip(m.View().Content)
 	rightW := m.registration.W - m.registration.LeftW - 3

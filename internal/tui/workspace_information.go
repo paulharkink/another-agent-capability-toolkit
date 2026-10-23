@@ -15,7 +15,7 @@ func (m *Model) setupInformationView() tea.View {
 	visible := max(1, height-8)
 	start := min(max(0, m.setupInfoOffset), max(0, len(lines)-visible))
 	m.setupInfoOffset = start
-	box := []string{"╔" + fit(" Profile information · F3 / Esc Back", width-2) + "╗"}
+	box := []string{"╔" + fit(" Instance information · F3 / Esc Back", width-2) + "╗"}
 	for i := 0; i < visible; i++ {
 		line := ""
 		if start+i < len(lines) {

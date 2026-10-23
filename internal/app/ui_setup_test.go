@@ -95,19 +95,162 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	t.Fatal("codex destination missing")
 }
 
-func TestPublicSetupOperationsRequireProfileReference(t *testing.T) {
+func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 	svc, _, _ := fixture(t)
-	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("preview without a profile reference: %v", err)
+	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("preview without an instance reference: %v", err)
 	}
-	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("install without a profile reference: %v", err)
+	if _, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, DestinationIDs: []string{"codex"}}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("install without an instance reference: %v", err)
 	}
-	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("public install without a profile reference: %v", err)
+	if _, err := svc.Install(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("public install without an instance reference: %v", err)
 	}
-	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "profile reference") {
-		t.Fatalf("public uninstall without a profile reference: %v", err)
+	if _, err := svc.Uninstall(context.Background(), InstallRequest{Package: "demo"}); err == nil || !strings.Contains(err.Error(), "instance reference") {
+		t.Fatalf("public uninstall without an instance reference: %v", err)
+	}
+}
+
+func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: false}}
+	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
+	if err := svc.UISaveInputs(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref},
+		Inputs:       map[string]any{"label": "saved-only"},
+	}); err != nil {
+		t.Fatalf("save-only input operation failed: %v", err)
+	}
+	key, err := store.ResolveInstanceKey(svc.Source.ID, "demo", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := store.Answers(key)
+	if err != nil || answers["label"] != "saved-only" {
+		t.Fatalf("answers were not saved: answers=%v err=%v", answers, err)
+	}
+	installations, err := store.Installations()
+	if err != nil || len(installations) != 0 {
+		t.Fatalf("save-only operation created installation effects: %+v err=%v", installations, err)
+	}
+}
+
+func TestUIInstallPlainSkillUsesPackOwnedDefaultInstance(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{"codex"},
+	})
+	if err != nil {
+		t.Fatalf("install default skill instance through ordinary setup: %v", err)
+	}
+	if !result.Saved || len(result.Changes) != 1 || result.Changes[0].Component != "skill" || result.Changes[0].AgentID != "codex" {
+		t.Fatalf("ordinary default-instance install did not report its registered skill: %+v", result)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key.Source != svc.Source.ID || instances[0].Key.Package != "demo" || instances[0].Key.Target != "default" {
+		t.Fatalf("skill installation did not retain its Pack-owned default Instance: %+v, %v", instances, err)
+	}
+}
+
+func TestPlainSkillCannotCreateAdditionalCapabilityInstances(t *testing.T) {
+	svc, _, store := fixture(t)
+	if err := svc.CreateInstance(context.Background(), config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "another"}); err == nil {
+		t.Fatal("plain skill created an extra instance instead of enforcing its single default")
+	}
+	rows, err := store.Instances()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rejected extra instance changed Pack state: %+v %v", rows, err)
+	}
+}
+
+func TestUIInstallWithNoRemainingAgentsUninstallsBindingsButKeepsInstance(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}
+	first, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{"codex"},
+	})
+	if err != nil || len(first.Changes) != 1 {
+		t.Fatalf("prepare first agent registration: %+v %v", first, err)
+	}
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{},
+	})
+	if err == nil {
+		t.Fatal("empty Install request unexpectedly removed the agent registration")
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].AgentID != "codex" {
+		t.Fatalf("rejected empty Install changed the existing agent binding: %+v %v", rows, err)
+	}
+	result, err = svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{}, Uninstall: true,
+	})
+	if err != nil {
+		t.Fatalf("uninstall final agent registration: %+v %v", result, err)
+	}
+	rows, err = store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("agent binding remained after uninstall: %+v %v", rows, err)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("agent uninstall removed the Capability Instance: %+v %v", instances, err)
+	}
+}
+
+func TestUIInstallSkillOnlyCompatibilityUsesDefaultInstance(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	result, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex"}})
+	if err != nil {
+		t.Fatalf("install skill-only capability: %v", err)
+	}
+	if len(result.Changes) == 0 {
+		t.Fatalf("skill install did not report applied effects: %+v", result)
+	}
+	if !result.Saved {
+		t.Fatal("default Capability Instance install did not report a saved instance")
+	}
+	if _, err := os.Stat(filepath.Join(result.Changes[0].Destination, "SKILL.md")); err != nil {
+		t.Fatalf("installed skill content is missing: %v", err)
+	}
+	instances, err := store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("skill install did not create its ordinary default instance record: %+v", instances)
+	}
+}
+
+func TestUIUninstallSkillOnlyRemovesOnlySelectedAgent(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	_, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{
+		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex", "opencode"},
+	})
+	if err != nil {
+		t.Fatalf("install for selected agents: %v", err)
+	}
+	_, err = svc.UIUninstallSkillOnly(context.Background(), viewmodel.SkillOnlyUninstallRequest{
+		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex"},
+	})
+	if err != nil {
+		t.Fatalf("uninstall selected agent: %v", err)
+	}
+	rows, err := store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "opencode" || rows[0].Component != "skill" {
+		t.Fatalf("uninstall changed unrelated destinations: %+v", rows)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("agent uninstall did not preserve the default Capability Instance: %+v %v", instances, err)
 	}
 }
 
@@ -134,7 +277,7 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	profilePath := filepath.Join(svc.Source.ProfileRoot, "demo", "production.toml")
-	if got.Key != key || got.ProfilePath != profilePath || got.PackRoot != svc.Source.Root || len(got.Inputs) != 5 {
+	if got.Key != key || got.InstancePath != profilePath || got.ProfilePath != profilePath || got.PackRoot != svc.Source.Root || len(got.Inputs) != 5 {
 		t.Fatalf("preview identity or fields: %#v", got)
 	}
 	wants := []struct {
@@ -145,7 +288,7 @@ func TestUISetupPreviewShowsEveryInputWithWinningProvenance(t *testing.T) {
 		{"public", "Capability definition", "public-default", true},
 		{"saved", "Saved override", "saved-value", true},
 		{"source", "Saved override", "stale-saved", true},
-		{"certificate", "Profile default", filepath.Join(filepath.Dir(profilePath), "certs", "ca.pem"), true},
+		{"certificate", "Instance default", filepath.Join(filepath.Dir(profilePath), "certs", "ca.pem"), true},
 		{"missing", "Capability definition", nil, false},
 	}
 	for i, want := range wants {
@@ -325,7 +468,7 @@ func TestFixedProfileInputWinsSavedAnswersAndSubmittedOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref})
-	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "Profile fixed" {
+	if err != nil || len(preview.Inputs) != 1 || preview.Inputs[0].Editable || preview.Inputs[0].Value != "https://fixed.example" || preview.Inputs[0].Provenance != "Instance fixed" {
 		t.Fatalf("fixed preview: %+v %v", preview, err)
 	}
 	if _, err = svc.ApplyProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"api_server": "https://other.example"}, ItemIDs: []string{}, DestinationIDs: []string{}}); err != nil {
@@ -608,7 +751,7 @@ func TestUISetupPreviewRegistrationNameFallbackRequiresMatchingUnambiguousRows(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			mcpKey := mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+			mcpKey := mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 			for _, row := range tc.rows {
 				sibling := row.Key.MCP
 				row.Key = mcpKey
@@ -857,5 +1000,17 @@ func TestUIInstallRejectsGlobalDestinationForMCPBeforeStartingIt(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot install every selected capability component") || runtime.starts != 0 {
 		t.Fatalf("invalid global MCP install: %v, starts=%d", err, runtime.starts)
+	}
+}
+
+func TestUISetupPreviewAllowsUnconfiguredZeroInputSkill(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	got, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}})
+	if err != nil {
+		t.Fatalf("zero-input skill preview requires a fabricated instance TOML: %v", err)
+	}
+	if got.MCP || len(got.Inputs) != 0 || !got.Configured {
+		t.Fatalf("zero-input skill preview should be configured without settings: %#v", got)
 	}
 }

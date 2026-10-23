@@ -126,14 +126,14 @@ func (s *Service) UIAgentManagement(ctx context.Context) ([]viewmodel.AgentManag
 					if row.Note != "" {
 						row.Note += "; "
 					}
-					row.Note += "AACT has profile-specific records using custom home " + home + "; effective config shown above is the process-native candidate"
+					row.Note += "AACT has instance-specific records using custom home " + home + "; effective config shown above is the process-native candidate"
 				}
 			}
 		} else if len(recordedHomes) > 1 {
 			if row.Note != "" {
 				row.Note += "; "
 			}
-			row.Note += "AACT profile-specific records span multiple homes; Home shows the process-native home, and each recorded profile's home and config path are listed below"
+			row.Note += "AACT instance records span multiple homes; Home shows the process-native home, and each instance's home and config path are listed below"
 		}
 		if len(recordedPaths) == 1 {
 			for path := range recordedPaths {

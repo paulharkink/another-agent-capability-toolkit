@@ -22,7 +22,7 @@ func registrationExitFixture(t *testing.T) (*Model, *profileBackend, *registrati
 	}
 	m.form = forms.NewForm(t.Context(), []catalog.Input{{Name: "endpoint", Label: "Endpoint", Type: "string"}}, map[string]any{"endpoint": "underlying setup draft"})
 	m.agents = []string{"codex", "opencode"}
-	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Profile: &profile}, false)
+	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Instance: &profile}, false)
 	if m.registration == nil {
 		t.Fatal("registration overlay did not open")
 	}
@@ -92,8 +92,8 @@ func TestRegistrationSuccessfulApplyClearsOnlyRegistrationOverlay(t *testing.T) 
 	m, backend, r := registrationExitFixture(t)
 	dirtyRegistration(r)
 	key := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
-	if r.Profile.Key != key {
-		t.Fatalf("fixture target changed: %+v", r.Profile.Key)
+	if r.Instance.Key != key {
+		t.Fatalf("fixture target changed: %+v", r.Instance.Key)
 	}
 	m.registrationKey("esc")
 	cmd := m.chooseUnsavedExit(0)
@@ -148,7 +148,7 @@ func TestRegistrationExitPromptIsVisibleWithoutHostForm(t *testing.T) {
 	m, backend := typedProfileFixture()
 	profile := backend.snapshot.Profiles[1]
 	m.agents = []string{"codex"}
-	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Profile: &profile}, false)
+	m.openRegistrationOverlay(ProfileRow{Key: profile.Key, URL: profile.URL, Instance: &profile}, false)
 	if m.form != nil {
 		t.Fatal("fixture unexpectedly has a host configuration form")
 	}

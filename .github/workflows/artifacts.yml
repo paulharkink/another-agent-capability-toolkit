@@ -7,6 +7,7 @@ on:
       - 'cmd/**'
       - 'packages/**'
       - 'tools/**'
+      - 'scripts/snapshot-release.sh'
       - '.goreleaser.yaml'
       - 'install.sh'
       - 'install.ps1'
@@ -18,15 +19,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
       - run: go test ./... -count=1
+      - id: snapshot-branch
+        env:
+          AACT_SNAPSHOT_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          echo "slug=$(./scripts/snapshot-release.sh --print-branch "$AACT_SNAPSHOT_SOURCE_BRANCH")" >> "$GITHUB_OUTPUT"
+          echo "image-version=$(./scripts/snapshot-release.sh --print-image-version)" >> "$GITHUB_OUTPUT"
       - uses: goreleaser/goreleaser-action@v6.2.1
         with:
           version: v2.18.2
           args: release --snapshot --clean --skip=publish
+        env:
+          AACT_SNAPSHOT_BRANCH: ${{ steps.snapshot-branch.outputs.slug }}
+          AACT_RELEASE_IMAGE_VERSION: ${{ steps.snapshot-branch.outputs.image-version }}
       - uses: actions/upload-artifact@v4
         with:
           name: aact-development-archives

@@ -1,23 +1,26 @@
 #!/bin/sh
 # Bootstrap only: installed Unix launchers point directly to the native binary.
 set -eu
-VERSION=${AACT_VERSION:-0.1.0-dev}
+VERSION=${AACT_VERSION:-}
+LOCAL_ARCHIVE=
 BASE=${AACT_DOWNLOAD_BASE:-https://github.com/paulharkink/another-agent-capability-toolkit/releases/download}
 ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 MIGRATE_USER_BIN=1
 [ "${AACT_INSTALL_DIR+x}" != x ] || MIGRATE_USER_BIN=0
 PRINT_TARGET=0
+FORCE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v|--version) [ "$#" -ge 2 ] || { echo '-v/--version needs a value' >&2; exit 1; }; VERSION=$2; shift 2 ;;
+    --local-archive) [ "$#" -ge 2 ] || { echo '--local-archive needs a path' >&2; exit 1; }; LOCAL_ARCHIVE=$2; shift 2 ;;
     --base-url) [ "$#" -ge 2 ] || { echo '--base-url needs a value' >&2; exit 1; }; BASE=$2; shift 2 ;;
     --install-dir) [ "$#" -ge 2 ] || { echo '--install-dir needs a value' >&2; exit 1; }; ROOT=$2; MIGRATE_USER_BIN=0; shift 2 ;;
+    --force) FORCE=1; shift ;;
     --print-target) PRINT_TARGET=1; shift ;;
-    --help) echo 'Usage: install.sh [-v|--version VERSION] [--install-dir ROOT] [--base-url URL] [--print-target]'; exit 0 ;;
+    --help) echo 'Usage: install.sh (-v|--version VERSION | --local-archive ARCHIVE) [--install-dir ROOT] [--base-url URL] [--force] [--print-target]'; exit 0 ;;
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
-case "$VERSION" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version' >&2; exit 1 ;; esac
 system=${AACT_OS:-$(uname -s)}
 case "$system" in Darwin|darwin|macos) platform=darwin ;; Linux|linux) platform=linux ;; MINGW*|MSYS*|CYGWIN*|Windows_NT|windows) platform=windows ;; *) printf 'Unsupported operating system: %s\n' "$system" >&2; exit 1 ;; esac
 machine=${AACT_ARCH:-$(uname -m)}
@@ -25,6 +28,25 @@ case "$machine" in x86_64|amd64|AMD64|x64) arch=amd64 ;; aarch64|arm64|ARM64) ar
 if [ "$PRINT_TARGET" = 1 ]; then printf '%s_%s\n' "$platform" "$arch"; exit 0; fi
 extension=tar.gz
 [ "$platform" != windows ] || extension=zip
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  archive_name=$(basename "$LOCAL_ARCHIVE")
+  suffix="_${platform}_${arch}.${extension}"
+  case "$archive_name" in
+    aact_*"$suffix") ;;
+    *) printf 'Local archive does not match this platform (%s/%s): %s\n' "$platform" "$arch" "$archive_name" >&2; exit 1 ;;
+  esac
+  archive_version=${archive_name#aact_}
+  archive_version=${archive_version%"$suffix"}
+  case "$archive_version" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version in local archive name' >&2; exit 1 ;; esac
+  if [ -n "$VERSION" ] && [ "$VERSION" != "$archive_version" ]; then
+    printf 'Requested version %s does not match local archive version %s\n' "$VERSION" "$archive_version" >&2
+    exit 1
+  fi
+  VERSION=$archive_version
+else
+  [ -n "$VERSION" ] || { echo 'Specify --version or --local-archive' >&2; exit 1; }
+  case "$VERSION" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version' >&2; exit 1 ;; esac
+fi
 filename="aact_${VERSION}_${platform}_${arch}.${extension}"
 download() {
   if command -v curl >/dev/null 2>&1; then curl --fail --location --silent --show-error "$1" -o "$2"
@@ -34,12 +56,38 @@ download() {
 mkdir -p "$ROOT/releases" "$ROOT/bin"
 ROOT=$(cd "$ROOT" && pwd)
 ROOT_PHYSICAL=$(CDPATH= cd -P "$ROOT" && pwd -P)
+release="$ROOT/releases/${VERSION}-${platform}-${arch}"
 work=$(mktemp -d "$ROOT/releases/.install-XXXXXX")
 launcher="$ROOT/bin/.aact-next-$$"
-trap 'rm -rf "$work"; rm -f "$launcher"' EXIT HUP INT TERM
-download "${BASE%/}/v${VERSION}/${filename}" "$work/$filename"
-download "${BASE%/}/v${VERSION}/checksums.txt" "$work/checksum"
-expected=$(awk -v name="$filename" '$2 == name { print $1; exit }' "$work/checksum")
+release_backup=
+release_committed=0
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$release_committed" = 0 ] && [ -n "$release_backup" ] && [ -d "$release_backup" ]; then
+    if [ -e "$release" ] || [ -L "$release" ]; then rm -rf "$release"; fi
+    if ! mv "$release_backup" "$release"; then
+      printf 'Install failed and rollback could not restore the previous version directory: %s\n' "$release_backup" >&2
+      status=1
+    fi
+  fi
+  rm -rf "$work"
+  rm -f "$launcher"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  [ -f "$LOCAL_ARCHIVE" ] || { printf 'Local archive is not a regular file: %s\n' "$LOCAL_ARCHIVE" >&2; exit 1; }
+  checksum_source="$(dirname "$LOCAL_ARCHIVE")/checksums.txt"
+  [ -f "$checksum_source" ] || { printf 'Adjacent checksums.txt is missing: %s\n' "$checksum_source" >&2; exit 1; }
+  cp "$LOCAL_ARCHIVE" "$work/$filename"
+else
+  download "${BASE%/}/v${VERSION}/${filename}" "$work/$filename"
+  download "${BASE%/}/v${VERSION}/checksums.txt" "$work/checksum"
+  checksum_source="$work/checksum"
+fi
+expected=$(awk -v name="$filename" '$2 == name { print $1; exit }' "$checksum_source")
 case "$expected" in *[!a-fA-F0-9]*|'') echo 'Invalid release checksum' >&2; exit 1 ;; esac
 [ "${#expected}" = 64 ] || { echo 'Invalid release checksum length' >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$work/$filename" | sed 's/[[:space:]].*//')
@@ -70,10 +118,27 @@ fi
 binary=aact
 [ "$platform" != windows ] || binary=aact.exe
 [ -f "$work/tree/bin/$binary" ] && [ -d "$work/tree/packages" ] || { echo 'Release archive is incomplete' >&2; exit 1; }
-release="$ROOT/releases/${VERSION}-${platform}-${arch}"
 printf '%s\n' "$expected" > "$work/tree/.archive-sha256"
 if [ -e "$release" ]; then
-  [ -f "$release/.archive-sha256" ] && [ "$(cat "$release/.archive-sha256")" = "$expected" ] || { echo 'Existing version directory differs; refusing to replace referenced resources' >&2; exit 1; }
+  existing_hash_file="$release/.archive-sha256"
+  if [ -f "$existing_hash_file" ] && [ "$(cat "$existing_hash_file")" = "$expected" ]; then
+    :
+  else
+    if [ "$FORCE" != 1 ]; then
+      echo 'Existing version directory differs; refusing to replace referenced resources without --force' >&2
+      exit 1
+    fi
+    [ -f "$existing_hash_file" ] || { echo 'Existing version directory is not an AACT-managed release; refusing to replace it with --force' >&2; exit 1; }
+    release_backup="$ROOT/releases/.aact-backup-${VERSION}-${platform}-${arch}-$$"
+    [ ! -e "$release_backup" ] || { echo "Replacement backup already exists: $release_backup" >&2; exit 1; }
+    mv "$release" "$release_backup" || { echo 'Could not stage the existing version directory; close any running AACT processes and retry with --force' >&2; exit 1; }
+    if ! mv "$work/tree" "$release"; then
+      echo 'Could not activate the staged release; restoring the previous version directory' >&2
+      mv "$release_backup" "$release" || { echo "Rollback failed; previous release remains at $release_backup" >&2; release_backup=; exit 1; }
+      release_backup=
+      exit 1
+    fi
+  fi
 else mv "$work/tree" "$release"; fi
 if [ "$platform" != windows ]; then
   canonical="$ROOT/bin/aact"
@@ -192,3 +257,9 @@ if [ "$platform" != windows ] && [ "$MIGRATE_USER_BIN" = 1 ]; then
 fi
 printf 'Installed AACT %s (%s/%s) at %s\n' "$VERSION" "$platform" "$arch" "$release"
 case ":${PATH:-}:" in *":$ROOT/bin:"*) ;; *) printf 'Add %s to PATH to run aact. Your shell profiles were not modified.\n' "$ROOT/bin" ;; esac
+release_committed=1
+if [ -n "$release_backup" ] && [ -d "$release_backup" ]; then
+  if ! rm -rf "$release_backup"; then
+    printf 'Installed successfully, but could not remove the previous release backup: %s\n' "$release_backup" >&2
+  fi
+fi

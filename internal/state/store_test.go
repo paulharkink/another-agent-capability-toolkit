@@ -236,6 +236,33 @@ func TestInstallationsRoundTripAndRemoveOnlySelected(t *testing.T) {
 		t.Fatalf("got=%v", got)
 	}
 }
+
+func TestRuntimeInstallationsKeepDistinctContainerIdentityForSameMCPKey(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := Installation{Key: sampleKey("runtime"), AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "container-a", Mode: "docker"}
+	second := first
+	second.SourcePath = "container-b"
+	if err := s.Record(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(second); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 2 || rows[0].SourcePath != "container-a" || rows[1].SourcePath != "container-b" {
+		t.Fatalf("same MCP key lost distinct runtime identities: rows=%+v err=%v", rows, err)
+	}
+	if err := s.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "container-b" {
+		t.Fatalf("exact runtime removal did not preserve sibling container record: rows=%+v err=%v", rows, err)
+	}
+}
 func TestKeyCannotEscapeRoot(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	k := sampleKey("../../foreign")
@@ -251,9 +278,9 @@ func TestProfileKeyKeepsLegacyIDsAndSeparatesProfiles(t *testing.T) {
 	base := Key{Source: "catalog", Package: "git-provider", Environment: "sample-env", Target: "target-a"}
 	legacyID := base.ID()
 	withGitHub := base
-	withGitHub.Profile = "github"
+	withGitHub.MCPDefinition = "github"
 	withGitLab := base
-	withGitLab.Profile = "gitlab"
+	withGitLab.MCPDefinition = "gitlab"
 	if legacyID == "" || withGitHub.ID() == legacyID || withGitLab.ID() == legacyID {
 		t.Fatalf("profile IDs must be distinct from legacy key: legacy=%q github=%q gitlab=%q", legacyID, withGitHub.ID(), withGitLab.ID())
 	}
@@ -336,5 +363,53 @@ func TestSecretValuesAreAbsentFromLedger(t *testing.T) {
 	}
 	if strings.Contains(string(b), "SecretEnv") || strings.Contains(string(b), "token") {
 		t.Fatalf("ledger has secret fields: %s", b)
+	}
+}
+
+func TestRekeyRuntimeRecordPreservesExactRuntimeMetadata(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	oldKey := sampleKey("source")
+	oldKey.MCP = "old-child"
+	newKey := oldKey
+	newKey.MCP = "observed-child"
+	row := Installation{Key: oldKey, AgentID: "docker", Component: "runtime", Destination: "aact-runtime", SourcePath: "container-123", Mode: "docker", URL: "http://localhost:8765/mcp", LastAction: "start"}
+	if err := s.Record(row); err != nil {
+		t.Fatal(err)
+	}
+	updated := row
+	updated.Key = newKey
+	updated.Destination = "observed-runtime"
+	updated.URL = "http://localhost:9999/mcp"
+	if err := s.RekeyRuntimeRecord(row, updated); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 1 || rows[0] != updated {
+		t.Fatalf("runtime rekey lost identity or metadata: %+v, %v", rows, err)
+	}
+}
+
+func TestRekeyRuntimeRecordCollapsesSameContainerTargetRow(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	oldKey := sampleKey("source")
+	oldKey.MCP = "old-child"
+	newKey := oldKey
+	newKey.MCP = "observed-child"
+	old := Installation{Key: oldKey, AgentID: "docker", Component: "runtime", Destination: "old-name", SourcePath: "container-123", Mode: "docker"}
+	target := Installation{Key: newKey, AgentID: "docker", Component: "runtime", Destination: "current-name", SourcePath: "container-123", Mode: "docker", URL: "http://localhost:8765/mcp"}
+	for _, row := range []Installation{old, target} {
+		if err := s.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated := target
+	updated.Destination = "observed-name"
+	updated.URL = "http://localhost:9999/mcp"
+	if err := s.RekeyRuntimeRecord(old, updated); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 1 || rows[0] != updated {
+		t.Fatalf("rekey left duplicate metadata for one exact container: %+v, %v", rows, err)
 	}
 }

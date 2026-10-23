@@ -20,7 +20,7 @@ func namedProfileFixture(t *testing.T) (string, string, string) {
 func TestCLIProfileInstallAndInference(t *testing.T) {
 	cfg, st, home := namedProfileFixture(t)
 	var out, errout bytes.Buffer
-	code := Run(context.Background(), []string{"install", "demo", "--config", cfg, "--state-dir", st, "--profile", "ota", "--agent", "all", "--agent-home", home, "--json"}, nil, &out, &errout)
+	code := Run(context.Background(), []string{"install", "demo", "--config", cfg, "--state-dir", st, "--instance", "ota", "--agent", "all", "--agent-home", home, "--json"}, nil, &out, &errout)
 	if code != 0 {
 		t.Fatalf("%d %s", code, errout.String())
 	}
@@ -35,14 +35,14 @@ func TestCLIProfileInstallAndInference(t *testing.T) {
 		t.Fatalf("inference %d %s", code, errout.String())
 	}
 }
-func TestCLIProfileChoicesAndLegacySelectors(t *testing.T) {
+func TestCLIInstanceChoicesAndLegacyEnvironmentSelectors(t *testing.T) {
 	cfg, st, home := namedProfileFixture(t)
 	os.WriteFile(filepath.Join(filepath.Dir(cfg), "environments", "demo", "prod.toml"), []byte("[inputs]\nlabel='prod'"), 0600)
 	for _, extra := range [][]string{nil, {"--environment", "home", "--target", "ota"}} {
 		var out, errout bytes.Buffer
 		args := append([]string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "all", "--agent-home", home}, extra...)
 		code := Run(context.Background(), args, nil, &out, &errout)
-		if code != 2 || !strings.Contains(errout.String(), "profile") {
+		if code != 2 || !strings.Contains(errout.String(), "instance") {
 			t.Fatalf("%d %s", code, errout.String())
 		}
 		if extra == nil && (!strings.Contains(errout.String(), "ota") || !strings.Contains(errout.String(), "prod")) {
@@ -56,7 +56,7 @@ func TestCLIProfileRegexBooleanAndSettings(t *testing.T) {
 	b, _ := os.ReadFile(p)
 	os.WriteFile(p, append(b, []byte("[[inputs]]\nname='enabled'\ntype='boolean'\nrequired=true\n[[inputs]]\nname='address'\ntype='string'\nregex='^ok$'\n")...), 0600)
 	var out, errout bytes.Buffer
-	args := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--profile", "ota", "--agent", "all", "--agent-home", home, "--set", "enabled=false", "--set", "address=bad"}
+	args := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--instance", "ota", "--agent", "all", "--agent-home", home, "--set", "enabled=false", "--set", "address=bad"}
 	code := Run(context.Background(), args, nil, &out, &errout)
 	if code != 2 || !strings.Contains(errout.String(), "address") || !strings.Contains(errout.String(), "bad") {
 		t.Fatalf("%d %s", code, errout.String())
@@ -79,8 +79,8 @@ func TestCLIProfileRegexBooleanAndSettings(t *testing.T) {
 	}
 }
 func TestParseProfileItems(t *testing.T) {
-	f, err := parse([]string{"install", "guide", "--profile", "ota", "--mcp", "server", "--item", "skill:one", "--item", "skill:two", "--profile-directory", "/profiles"})
-	if err != nil || f.profile != "ota" || f.mcp != "server" || len(f.items) != 2 || f.envroot != "/profiles" {
+	f, err := parse([]string{"install", "guide", "--instance", "ota", "--mcp", "server", "--item", "skill:one", "--item", "skill:two", "--instance-directory", "/instances"})
+	if err != nil || f.instance != "ota" || f.mcp != "server" || len(f.items) != 2 || f.envroot != "/instances" {
 		t.Fatalf("%+v %v", f, err)
 	}
 }

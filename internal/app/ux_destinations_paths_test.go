@@ -220,7 +220,7 @@ func TestUXProfileOverrideIsExplained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	key = mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	customPath := filepath.Join(customHome, ".config", "opencode", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: customHome, Component: "mcp", Destination: customPath}); err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestUXRecordedConfigOverrideExplainsSameHomeNativePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key = mcpProfileKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	key = mcpDefinitionKey(key, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	recordedPath := filepath.Join(nativeHome, "profile-config", "opencode.json")
 	if err := store.Record(state.Installation{Key: key, AgentID: "opencode", AgentKind: "opencode", AgentHome: nativeHome, Component: "mcp", Destination: recordedPath}); err != nil {
 		t.Fatal(err)
@@ -325,8 +325,8 @@ func TestUXMultipleRecordedHomesRemainProfileSpecific(t *testing.T) {
 		if row.ID != "opencode" {
 			continue
 		}
-		if !strings.Contains(strings.ToLower(row.Note), "multiple") || !strings.Contains(row.Note, "profile") {
-			t.Fatalf("multiple profile homes not explained: %+v", row)
+		if !strings.Contains(strings.ToLower(row.Note), "multiple") || !strings.Contains(row.Note, "instance records") {
+			t.Fatalf("multiple instance homes not explained: %+v", row)
 		}
 		for _, profile := range profiles {
 			wantPath := filepath.Join(profile.home, "opencode", profile.path)

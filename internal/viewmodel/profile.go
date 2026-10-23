@@ -7,14 +7,15 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
-// Profile keeps configured identity, local registrations, and live runtime
+// Instance keeps configured identity, local registrations, and live runtime
 // observation separate for the terminal UI.
-type Profile struct {
+type Instance struct {
 	Key                        state.Key
 	Name                       string
 	URL                        string
 	Transport                  string
 	RuntimeStatus              string
+	AuthenticationStatus       string
 	Ownership                  string
 	LastAction                 string
 	LastActionAt               time.Time
@@ -31,6 +32,9 @@ type Profile struct {
 	RegistrationDisabledReason string
 }
 
+// Profile is a source-compatibility alias for the former selected-instance model.
+type Profile = Instance
+
 type ConnectionObservation struct {
 	URL       string
 	CheckedAt time.Time
@@ -38,20 +42,26 @@ type ConnectionObservation struct {
 	Error     string
 }
 
-type ProfileSnapshot struct {
-	Profiles         []Profile
+type InstanceSnapshot struct {
+	Instances []Instance
+	// Profiles is populated for source compatibility with old callers.
+	Profiles         []Instance
 	DockerError      string
 	ObservedAt       time.Time
 	ObservationStale bool
 }
 
-type CapabilityProfileSnapshot struct {
-	Profiles   []CapabilityProfile
+type ProfileSnapshot = InstanceSnapshot
+
+type CapabilityInstanceSnapshot struct {
+	Instances []CapabilityInstance
+	// Profiles is populated for source compatibility with old callers.
+	Profiles   []CapabilityInstance
 	Errors     []string
 	ObservedAt time.Time
 }
-type CapabilityProfile struct {
-	Ref                               config.ProfileRef
+type CapabilityInstance struct {
+	Ref                               config.InstanceRef
 	Key                               state.Key
 	Origin, ConfigStatus, ConfigError string
 	Components                        []ComponentStatus
@@ -66,6 +76,8 @@ type CapabilityProfile struct {
 	SelectedDestinations    []string
 	EligibleDestinations    []string
 }
+type CapabilityProfileSnapshot = CapabilityInstanceSnapshot
+type CapabilityProfile = CapabilityInstance
 type SelectedComponent struct {
 	Kind, Name string
 }
@@ -75,6 +87,18 @@ type ComponentStatus struct {
 }
 type RuntimeStatus struct {
 	MCPID, Status, Ownership, URL, Error string
+	AuthenticationStatus                 string
 	ObservedAt                           time.Time
 	Stale                                bool
+	Key                                  state.Key
+	RuntimeRecords                       []RuntimeRecord
+}
+
+// RuntimeRecord is one independently addressable runtime observation linked
+// to a declared MCP child. ID remains stable even when the container is
+// missing, so the UI can explain and remove only that exact local ledger row.
+type RuntimeRecord struct {
+	ID, Name, Status, Ownership, URL string
+	LastAction                       string
+	LastActionAt                     time.Time
 }

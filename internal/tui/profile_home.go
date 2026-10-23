@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -12,52 +11,95 @@ import (
 	"strings"
 )
 
-type capabilityProfilesBackend interface {
-	UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityProfileSnapshot, error)
-	UICreateProfile(context.Context, config.ProfileRef) error
+type capabilityInstancesBackend interface {
+	UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateInstance(context.Context, config.InstanceRef) error
 }
+type capabilityProfilesBackend interface {
+	UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateProfile(context.Context, config.InstanceRef) error
+}
+
+func capabilityInstanceRows(snapshot viewmodel.CapabilityInstanceSnapshot) []viewmodel.CapabilityInstance {
+	if snapshot.Instances != nil {
+		return snapshot.Instances
+	}
+	return snapshot.Profiles
+}
+
 type packSettingsBackend interface {
 	PackSettings(context.Context) (map[string]string, error)
 }
-type profileCreatedMsg struct {
-	ref config.ProfileRef
+type instanceCreatedMsg struct {
+	ref config.InstanceRef
 	err error
 }
-
-func (m *Model) profileMode() bool {
-	_, ok := m.backend.(capabilityProfilesBackend)
-	return ok && (m.workspace == nil || m.workspace.Reference.CapabilityID != "")
+type instanceRemovalBackend interface {
+	UIRemoveInstance(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
 }
-func profileStatusSummary(p viewmodel.CapabilityProfile) string {
-	skills, skillTotal, registered, registrationTotal := 0, 0, 0, 0
+type instancePresetResetBackend interface {
+	UIResetInstanceToPreset(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
+}
+type instanceRemovedMsg struct {
+	ref         config.InstanceRef
+	resetPreset bool
+	message     string
+	err         error
+}
+
+func (m *Model) instanceMode() bool {
+	_, modern := m.backend.(capabilityInstancesBackend)
+	_, legacy := m.backend.(capabilityProfilesBackend)
+	return (modern || legacy) && (m.workspace == nil || m.workspace.InstanceRef.CapabilityID != "")
+}
+func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
+	registered, total, unknown := 0, 0, false
 	for _, c := range p.Components {
-		switch c.Kind {
-		case "skill":
-			skillTotal++
-			if c.Status == "installed" {
-				skills++
-			}
-		case "mcp":
-			registrationTotal++
-			if c.Status == "installed" {
-				registered++
-			}
+		if c.Kind != "skill" && c.Kind != "mcp" && c.Kind != "plugin" {
+			continue
+		}
+		total++
+		if c.Status == "installed" {
+			registered++
+		}
+		if c.Status == "unavailable" || c.Status == "unknown" || c.Status == "unobserved" || c.Status == "stale" {
+			unknown = true
 		}
 	}
-	parts := []string{p.ConfigStatus}
-	if skillTotal > 0 {
-		parts = append(parts, fmt.Sprintf("skills %d/%d", skills, skillTotal))
+	if p.ConfigStatus == "needs-input" || p.ConfigStatus == "invalid" {
+		return p.ConfigStatus
 	}
-	if registrationTotal > 0 {
-		parts = append(parts, fmt.Sprintf("registered %d/%d", registered, registrationTotal))
+	status := "Not installed"
+	if registered > 0 {
+		status = "Installed"
+	} else if unknown {
+		status = "Unknown"
+	} else if total == 0 {
+		status = "Unknown"
 	}
+	parts := []string{status}
 	for _, r := range p.MCPs {
-		parts = append(parts, r.MCPID+" "+r.Status)
+		status := r.MCPID + " " + r.Status
+		if label := authenticationDisplayStatus(r.AuthenticationStatus); label != "" {
+			status += " " + label
+		}
+		parts = append(parts, status)
 	}
 	return strings.Join(parts, " · ")
 }
 
-func profileComponentStatusText(c viewmodel.ComponentStatus) string {
+func authenticationDisplayStatus(status string) string {
+	switch status {
+	case viewmodel.AuthenticationFailed:
+		return "AuthenticationFailed"
+	case viewmodel.AuthenticationComplete:
+		return "AuthenticationComplete"
+	default:
+		return ""
+	}
+}
+
+func instanceComponentStatusText(c viewmodel.ComponentStatus) string {
 	status := c.Status
 	if c.Kind == "mcp" && status == "installed" {
 		status = "registered"
@@ -70,7 +112,7 @@ func profileComponentStatusText(c viewmodel.ComponentStatus) string {
 	return agents.DisplayName(c.AgentID) + " · " + c.Kind + " · " + c.Name + " · " + status
 }
 
-func profileConfigurationDetails(row ProfileRow) []string {
+func instanceConfigurationDetails(row InstanceRow) []string {
 	profile := row.Configuration
 	if profile == nil {
 		return nil
@@ -80,38 +122,39 @@ func profileConfigurationDetails(row ProfileRow) []string {
 		rows = append(rows, profile.ConfigError)
 	}
 	for _, component := range profile.Components {
-		rows = append(rows, profileComponentStatusText(component))
+		rows = append(rows, instanceComponentStatusText(component))
 	}
 	return rows
 }
 
-func (m *Model) openProfileCreation(c CapabilityRow) {
-	ref := config.ProfileRef{PackID: c.Source, CapabilityID: c.Package}
-	m.creatingProfile = &ref
+func (m *Model) openInstanceCreation(c CapabilityRow) {
+	ref := config.InstanceRef{PackID: c.Source, CapabilityID: c.Package}
+	m.creatingInstance = &ref
 	m.workspace = nil
 	m.pendingSetup = nil
 	m.home.Modal = nil
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Profile name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
-	m.form.SetTitle("Create another profile · " + c.Name)
+	m.management.FormOverlay = true
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
+	m.form.SetTitle("New instance · " + c.Name)
 }
-func (m *Model) packProfileRequest(key state.Key) viewmodel.SetupRequest {
-	return viewmodel.SetupRequest{Ref: config.ProfileRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
+	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
 }
 
-func configurationRuntimeProfile(p viewmodel.CapabilityProfile, r viewmodel.RuntimeStatus, preview *viewmodel.SetupPreview) *viewmodel.Profile {
+func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.RuntimeStatus, preview *viewmodel.SetupPreview) *viewmodel.Instance {
 	key := p.Key
 	if preview != nil && len(preview.MCPDefinitions) > 1 {
 		for _, d := range preview.MCPDefinitions {
 			if d.Name == r.MCPID {
 				if d.EnabledInput != "" || d.TokenInput != "" || d.TokenFileInput != "" || d.TokenEnvInput != "" || d.TokenHeader != "" || d.TokenContainerEnv != "" || len(d.Args) > 0 || len(d.EnvInputs) > 0 || len(d.SecretEnvInputs) > 0 {
-					key.Profile = d.Name
+					key.MCPDefinition = d.Name
 				} else {
 					key.MCP = d.Name
 				}
 			}
 		}
 	}
-	row := &viewmodel.Profile{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
+	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, AuthenticationStatus: r.AuthenticationStatus, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
 	row.CanStart = !r.Stale && r.Ownership == "local" && (r.Status == "stopped" || r.Status == "missing" || r.Status == "exited" || r.Status == "never-started")
 	row.CanStop = !r.Stale && r.Ownership == "local" && r.Status == "running"
 	for _, c := range p.Components {
@@ -122,8 +165,11 @@ func configurationRuntimeProfile(p viewmodel.CapabilityProfile, r viewmodel.Runt
 	return row
 }
 
+type configurationInstanceRunBackend interface {
+	UIConfigurationInstanceRun(context.Context, string, config.InstanceRef, string) (string, error)
+}
 type configurationProfileRunBackend interface {
-	UIConfigurationProfileRun(context.Context, string, config.ProfileRef, string) (string, error)
+	UIConfigurationProfileRun(context.Context, string, config.InstanceRef, string) (string, error)
 }
 
 type packAgentManagementBackend interface {

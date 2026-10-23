@@ -87,7 +87,7 @@ command = ["fixture-auth", "${ base64encode(inputs.token) }"]
 
 	key := state.Key{Source: s.Source.ID, Package: "demo", Target: "default"}
 	definition := pkg.MCPDefinitions()[0]
-	child := mcpProfileKey(key, pkg, definition)
+	child := mcpDefinitionKey(key, pkg, definition)
 	if err := store.SaveAnswersWithActiveInputGroups(key, map[string]any{"source_file": "./old-credentials.json"}, map[string]string{"credential_method": "source_file"}); err != nil {
 		t.Fatal(err)
 	}

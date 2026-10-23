@@ -11,6 +11,7 @@ builds:
     ldflags:
       - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/cli.Version={{ .Version }}
       - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.Version={{ .Version }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
 
   - id: inspector-helper
     main: ./cmd/inspector-helper
@@ -95,6 +96,9 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+
+snapshot:
+  version_template: '{{ incpatch .Env.AACT_RELEASE_IMAGE_VERSION }}-SNAPSHOT-{{ .Env.AACT_SNAPSHOT_BRANCH }}'
 
 release:
   extra_files:

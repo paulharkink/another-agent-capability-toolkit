@@ -31,12 +31,20 @@ type helperProcess struct {
 	BuildOutput   string
 	BuildIID      string
 	BuildArgs     []string
+	BuildxError   error
 }
 
 func (f *helperProcess) Run(_ context.Context, argv []string, _ string, stdin []byte, _ map[string]string, onStderr func([]byte)) ([]byte, error) {
 	f.Calls = append(f.Calls, append([]string{}, argv...))
-	if len(argv) > 1 && argv[1] == "build" {
-		f.BuildArgs = append([]string(nil), argv[2:]...)
+	if len(argv) > 2 && argv[1] == "buildx" && argv[2] == "version" {
+		return nil, f.BuildxError
+	}
+	if len(argv) > 1 && argv[1] == "build" || len(argv) > 2 && argv[1] == "buildx" && argv[2] == "build" {
+		buildArgs := 2
+		if argv[1] == "buildx" {
+			buildArgs = 3
+		}
+		f.BuildArgs = append([]string(nil), argv[buildArgs:]...)
 		iid := f.BuildIID
 		if iid == "" {
 			iid = "sha256:" + strings.Repeat("b", 64)
@@ -527,6 +535,20 @@ func TestRuntimeUsesExactBuiltImageID(t *testing.T) {
 	buildArgs := strings.Join(fixture.BuildArgs, " ")
 	if !strings.Contains(buildArgs, "--progress=plain") || !strings.Contains(buildArgs, "--iidfile") || strings.Contains(buildArgs, "--quiet") {
 		t.Fatalf("build progress or immutable image identity flag missing: %s", buildArgs)
+	}
+}
+
+func TestLocalImageBuildUsesBuildxLoadWhenAvailable(t *testing.T) {
+	q := helperRequest(t, "cluster-inspector", map[string]any{"cluster": map[string]any{"api_server": "https://cluster.example.test"}})
+	fixture := &helperProcess{AuthJSON: `{"auth_required":false}`, BuildIID: "sha256:" + strings.Repeat("c", 64)}
+	if _, err := (&Helper{Executor: fixture}).Run(context.Background(), "cluster-inspector", q); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Calls) < 3 || strings.Join(fixture.Calls[0], " ") != "docker buildx version" || strings.Join(fixture.Calls[1][:3], " ") != "docker buildx build" {
+		t.Fatalf("local image preparation did not probe/use buildx: %#v", fixture.Calls)
+	}
+	if !strings.Contains(strings.Join(fixture.Calls[1], " "), " --load ") {
+		t.Fatalf("buildx image was not loaded into the local Docker engine: %#v", fixture.Calls[1])
 	}
 }
 

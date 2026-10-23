@@ -876,7 +876,7 @@ def main() -> None:
         action = sys.argv[2] if len(sys.argv) > 2 else "unknown"
         _run_action(action)
         return
-    mcp.run(transport="http", host="0.0.0.0", port=8765, path="/mcp")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8765, path="/mcp")
 
 
 _register_operation_tools()

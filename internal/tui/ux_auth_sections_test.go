@@ -88,7 +88,7 @@ func TestUXAzureAndGitProviderTaskSections(t *testing.T) {
 				{Definition: catalog.Input{Name: "token", Label: "Access token", Type: "secret"}, Editable: true},
 			},
 			sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"url"}}, {ID: "azure", Title: "Azure", Fields: []string{"tenant_id", "subscription_id"}}, {ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
-			sectionFields: map[string][]string{"Connection": {"Azure URL"}, "Azure": {"Tenant ID", "Subscription ID"}, "Authentication": {"Access token"}},
+			sectionFields: map[string][]string{"Inputs": {"Azure URL", "Tenant ID", "Subscription ID", "Access token"}},
 		},
 		{
 			name:      "Git Provider",
@@ -98,7 +98,7 @@ func TestUXAzureAndGitProviderTaskSections(t *testing.T) {
 				{Definition: catalog.Input{Name: "token", Label: "Access token", Type: "secret"}, Editable: true},
 			},
 			sections:      []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"url"}}, {ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
-			sectionFields: map[string][]string{"Connection": {"Git provider URL"}, "Authentication": {"Access token"}},
+			sectionFields: map[string][]string{"Inputs": {"Git provider URL", "Access token"}},
 		},
 	}
 	for _, tc := range cases {
@@ -107,10 +107,14 @@ func TestUXAzureAndGitProviderTaskSections(t *testing.T) {
 			m.Update(tea.WindowSizeMsg{Width: 140, Height: 32})
 			m.openSetupForm(viewmodel.SetupPreview{Key: state.Key{Package: tc.packageID}, HasManifestUI: true, Sections: tc.sections, Inputs: tc.inputs})
 			for title, labels := range tc.sectionFields {
-				m.form.SelectSection(title)
+				if title == "Inputs" {
+					m.form.SelectSectionID(sectionInputsID)
+				} else {
+					m.form.SelectSection(title)
+				}
 				view := ansi.Strip(m.View().Content)
 				if !strings.Contains(view, "> "+title) {
-					t.Errorf("%s task section %q missing from navigation:\n%s", tc.name, title, view)
+					t.Errorf("%s staged section %q missing from navigation:\n%s", tc.name, title, view)
 				}
 				for _, label := range labels {
 					if !strings.Contains(view, label) {

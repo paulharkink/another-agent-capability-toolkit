@@ -7,8 +7,48 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
+
+type uxWorkspaceLogsBackend struct {
+	*registrationWorkspaceBackend
+	key     state.Key
+	content string
+}
+
+func (b *uxWorkspaceLogsBackend) UIProfileLogs(_ context.Context, key state.Key) (string, error) {
+	b.key = key
+	return b.content, nil
+}
+
+func TestUXRuntimeVisibleLogsActionOpensSelectedInstanceLogs(t *testing.T) {
+	m, backend := openRegistrationActionForUX(t)
+	if m.workspace.Instance == nil {
+		t.Fatal("fixture has no selected instance observation")
+	}
+	m.workspace.Instance.RuntimeStatus = "running"
+	m.workspace.Instance.Ownership = "local"
+	logs := &uxWorkspaceLogsBackend{registrationWorkspaceBackend: backend, content: "selected instance log line"}
+	m.backend = logs
+	m.configureWorkspaceForm(*m.workspace.Preview)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	if !strings.Contains(ansi.Strip(m.View().Content), "View plain logs") {
+		t.Fatalf("running Runtime section did not show the Logs action:\n%s", ansi.Strip(m.View().Content))
+	}
+	updated, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "logs:plain"})
+	m = updated.(*Model)
+	if cmd == nil || m.home.Modal == nil || m.home.Modal.Kind != "logs" {
+		t.Fatalf("visible Runtime Logs action did not open the logs viewer: cmd=%v modal=%+v", cmd, m.home.Modal)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if logs.key.Target != "foreign" || m.home.Modal == nil || !strings.Contains(strings.Join(m.home.Modal.Rows, "\n"), "selected instance log line") {
+		t.Fatalf("Logs action did not show the exact selected instance: key=%+v modal=%+v", logs.key, m.home.Modal)
+	}
+}
 
 func TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs(t *testing.T) {
 	m, backend := typedProfileFixture()
@@ -20,7 +60,7 @@ func TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs(t *testing.T)
 		t.Fatalf("logs were requested without a running instance: cmd=%v actions=%v", cmd, logs.actions)
 	}
 	if m.home.Modal == nil || m.home.Modal.Kind != "logs" || !strings.Contains(strings.Join(m.home.Modal.Rows, "\n"), "No MCP container has been created for this target") {
-		t.Fatalf("missing actionable empty state: %+v profile=%+v output=%q", m.home.Modal, p.Profile, m.output)
+		t.Fatalf("missing actionable empty state: %+v profile=%+v output=%q", m.home.Modal, p.Instance, m.output)
 	}
 }
 
@@ -129,8 +169,8 @@ func TestUXClosingLogsCancelsPendingFetch(t *testing.T) {
 	b := &blockingLogsBackend{profileBackend: base, started: make(chan struct{}), canceled: make(chan struct{})}
 	m.backend = b
 	p := m.profiles()[0]
-	p.Profile.Ownership = "local"
-	p.Profile.RuntimeStatus = "running"
+	p.Instance.Ownership = "local"
+	p.Instance.RuntimeStatus = "running"
 	p.Instance.Ownership = "local"
 	p.Status = "running"
 	cmd := m.openProfileLogs(p)

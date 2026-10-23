@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+func TestPlainBuildReportsDevelopmentVersion(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"--version"}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("version command returned %d: %s", code, errOut.String())
+	}
+	if got := out.String(); got != "dev\n" {
+		t.Fatalf("plain build version = %q, want %q", got, "dev\n")
+	}
+}
+
 func cliFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -97,9 +107,9 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 	}
 	stateDir := filepath.Join(root, "state")
 	var out, errOut bytes.Buffer
-	profileArgs := []string{"profile", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
-	if code := Run(context.Background(), profileArgs, nil, &out, &errOut); code != 0 {
-		t.Fatalf("profile creation failed (%d): %s", code, errOut.String())
+	instanceArgs := []string{"instance", "create", "demo", "default", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), instanceArgs, nil, &out, &errOut); code != 0 {
+		t.Fatalf("instance creation failed (%d): %s", code, errOut.String())
 	}
 	out.Reset()
 	errOut.Reset()
@@ -110,7 +120,7 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 		output, err string
 	}
 	done := make(chan result, 1)
-	args := []string{"mcp", "authenticate", "demo", "--profile", "default", "--config", cfg, "--state-dir", stateDir}
+	args := []string{"mcp", "authenticate", "demo", "--instance", "default", "--config", cfg, "--state-dir", stateDir}
 	go func() {
 		var commandOut, commandErr bytes.Buffer
 		code := Run(ctx, args, nil, &commandOut, &commandErr)
@@ -135,6 +145,9 @@ func TestCLIAuthenticatePrintsLoginURLWithoutWaitingForHealth(t *testing.T) {
 }
 
 func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
+	if !strings.Contains(usage, "set-image-source release|local") {
+		t.Fatal("top-level usage omits supported image-source configuration")
+	}
 	if !strings.Contains(usage, "authenticate") {
 		t.Fatal("MCP usage omits authenticate")
 	}
@@ -142,6 +155,21 @@ func TestCLIUsageAdvertisesOnlySharedAuthenticateAction(t *testing.T) {
 		if strings.Contains(usage, action) {
 			t.Fatalf("obsolete MCP action %q remains in usage", action)
 		}
+	}
+}
+
+func TestCLIRejectsReservedProfileCommandAndFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "demo", "--profile", "default"},
+		{"install", "demo", "--profile-directory", "/tmp/instances"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Fatalf("legacy profile spelling was accepted: %v", args)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"profile", "create", "demo", "default"}, nil, &out, &errOut); code == 0 {
+		t.Fatal("reserved profile command was accepted")
 	}
 }
 
@@ -154,9 +182,9 @@ func TestParseEnvironmentDirectoryFlagAndLegacyAlias(t *testing.T) {
 	}
 }
 
-func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
+func TestCLIConfigUsesInstanceDirectoryAndRetainsEnvironmentAliases(t *testing.T) {
 	cfg, _, _ := cliFixture(t)
-	for _, command := range []string{"set-environment-directory", "set-environment-root"} {
+	for _, command := range []string{"set-instance-directory", "set-environment-directory", "set-environment-root"} {
 		t.Run(command, func(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "state")
 			environments := t.TempDir()
@@ -165,7 +193,7 @@ func TestCLIConfigUsesEnvironmentDirectoryNameAndRetainsOldAlias(t *testing.T) {
 			if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
 				t.Fatalf("config command failed (%d): %s", code, errout.String())
 			}
-			if !strings.Contains(out.String(), "Profile configuration directory: "+environments) {
+			if !strings.Contains(out.String(), "Instance configuration directory: "+environments) {
 				t.Fatalf("output did not use pack terminology: %s", out.String())
 			}
 			data, err := os.ReadFile(filepath.Join(stateDir, "config-root"))
@@ -310,5 +338,30 @@ func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
 	cliOptions.OnStderr([]byte("BuildKit output\n"))
 	if got := cliDiagnostics.String(); got != "BuildKit output\n" {
 		t.Fatalf("CLI stderr = %q, want preserved diagnostic", got)
+	}
+}
+
+func TestParseInstanceFlag(t *testing.T) {
+	for _, args := range [][]string{{"mcp", "status", "demo", "--instance", "work"}} {
+		f, err := parse(args)
+		if err != nil || f.instance != "work" {
+			t.Fatalf("--instance not mapped: flags=%+v err=%v", f, err)
+		}
+	}
+}
+
+func TestCLIInstanceCreateUsesInstanceLedger(t *testing.T) {
+	cfg, stateDir, _ := cliFixture(t)
+	var out, errout bytes.Buffer
+	args := []string{"instance", "create", "demo", "work", "--config", cfg, "--state-dir", stateDir}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("instance create failed (%d): %s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "Created instance work") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "manager", "instances.json"))
+	if err != nil || !strings.Contains(string(data), "work") {
+		t.Fatalf("instance was not persisted: %s %v", data, err)
 	}
 }

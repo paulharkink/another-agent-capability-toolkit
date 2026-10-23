@@ -21,8 +21,8 @@ type observedRuntime struct {
 func (r observedRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.err }
 
 // UI snapshots share one Docker observation; selecting profiles never starts a process.
-func (s *Service) UICapabilityProfiles(ctx context.Context) (map[string]viewmodel.CapabilityProfileSnapshot, error) {
-	result := map[string]viewmodel.CapabilityProfileSnapshot{}
+func (s *Service) UICapabilityInstances(ctx context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error) {
+	result := map[string]viewmodel.CapabilityInstanceSnapshot{}
 	instances := []mcp.Instance{}
 	var runtimeErr error
 	needsRuntime := false
@@ -40,7 +40,7 @@ func (s *Service) UICapabilityProfiles(ctx context.Context) (map[string]viewmode
 	scoped.lastObservedAt = s.lastObservedAt
 	s.observationMu.Unlock()
 	for _, p := range s.Source.Catalog {
-		snapshot, err := scoped.ProfileSnapshot(ctx, p.ID)
+		snapshot, err := scoped.InstanceSnapshot(ctx, p.ID)
 		if err != nil {
 			snapshot.Errors = append(snapshot.Errors, err.Error())
 		}
@@ -52,11 +52,23 @@ func (s *Service) UICapabilityProfiles(ctx context.Context) (map[string]viewmode
 	s.observationMu.Unlock()
 	return result, nil
 }
-func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) error {
-	return s.CreateProfile(ctx, ref)
+func (s *Service) UICapabilityProfiles(ctx context.Context) (map[string]viewmodel.CapabilityProfileSnapshot, error) {
+	return s.UICapabilityInstances(ctx)
 }
-func (s *Service) UIConfigurationProfileRun(ctx context.Context, action string, ref config.ProfileRef, mcpID string) (string, error) {
-	result, err := s.RunProfileMCP(ctx, action, ProfileRequest{Ref: ref}, mcpID)
+func (s *Service) UICreateInstance(ctx context.Context, ref config.InstanceRef) error {
+	return s.CreateInstance(ctx, ref)
+}
+func (s *Service) UIRemoveInstance(ctx context.Context, ref config.InstanceRef) (viewmodel.OperationResult, error) {
+	return s.RemoveInstance(ctx, InstanceRequest{Ref: ref})
+}
+func (s *Service) UIResetInstanceToPreset(ctx context.Context, ref config.InstanceRef) (viewmodel.OperationResult, error) {
+	return s.ResetInstanceToPreset(ctx, InstanceRequest{Ref: ref})
+}
+func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) error {
+	return s.UICreateInstance(ctx, ref)
+}
+func (s *Service) UIConfigurationInstanceRun(ctx context.Context, action string, ref config.InstanceRef, mcpID string) (string, error) {
+	result, err := s.RunInstanceMCP(ctx, action, InstanceRequest{Ref: ref}, mcpID)
 	if result.Logs != "" {
 		return result.Logs, err
 	}
@@ -64,6 +76,9 @@ func (s *Service) UIConfigurationProfileRun(ctx context.Context, action string, 
 		return result.Instances[0].URL, err
 	}
 	return result.Message, err
+}
+func (s *Service) UIConfigurationProfileRun(ctx context.Context, action string, ref config.ProfileRef, mcpID string) (string, error) {
+	return s.UIConfigurationInstanceRun(ctx, action, ref, mcpID)
 }
 
 // Compile-time guard for the injected runtime facade's lifecycle methods.

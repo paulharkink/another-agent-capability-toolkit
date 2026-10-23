@@ -35,7 +35,9 @@ def test_tls_vendor_fixture_and_loopback_mcp_startup(tmp_path):
             elif self.path=="/api/user/preferences":
                 if preferences_status[0] != 200:
                     self.send_error(preferences_status[0]);return
-                body=b'{"theme":"dark","timezone":"browser"}'
+                # Grafana can validly return an empty preferences object for an
+                # authenticated service account. Optional fields are not auth proof.
+                body=b'{}'
             else:
                 self.send_error(404);return
             self.send_response(200);self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)

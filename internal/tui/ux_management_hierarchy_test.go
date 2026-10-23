@@ -26,7 +26,7 @@ func (b *uxAgentPathBackend) UIAgentConfig(_ context.Context, _ string, path str
 	return "contents from " + path, nil
 }
 
-func TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution(t *testing.T) {
+func TestUXAgentsOverviewEnterShowsConciseAgentDetails(t *testing.T) {
 	m := fixtureModel(t)
 	m.agentManagement = []viewmodel.AgentManagementRow{{
 		ID: "codex", Name: "Codex", Detection: "detected", Evidence: "binary: /opt/codex",
@@ -36,17 +36,20 @@ func TestUXAgentsOverviewEnterFocusesDetailsAndDetailsShowsResolution(t *testing
 	m.navigate("Agents")
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Detected", "binary: /opt/codex", "Active home", "/home/test/.codex", "Effective config", "Intended write config", "Config candidates"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Agents detail omitted %q:\n%s", want, view)
+	for _, redundant := range []string{"binary: /opt/codex", "Active home", "/home/test/.codex", "Effective config", "Intended write config", "Config candidates"} {
+		if strings.Contains(view, redundant) {
+			t.Errorf("Agents detail repeats destination detail %q:\n%s", redundant, view)
 		}
+	}
+	if !strings.Contains(view, "Registrations: None") {
+		t.Errorf("Agents detail omits registration state:\n%s", view)
 	}
 	if m.management.Focus != ProfilesPane {
 		t.Errorf("Enter did not focus the details pane: %v", m.management.Focus)
 	}
 }
 
-func TestUXAgentConfigActionStaysVisibleWhenDetailsScroll(t *testing.T) {
+func TestUXAgentConfigActionStaysVisible(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{80, 16}, {100, 23}} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			m := fixtureModel(t)
@@ -59,11 +62,8 @@ func TestUXAgentConfigActionStaysVisibleWhenDetailsScroll(t *testing.T) {
 			m.navigate("Agents")
 			press(m, tea.KeyEnter, "")
 			view := ansi.Strip(m.View().Content)
-			if !strings.Contains(view, "View exact configuration candidate 1") {
+			if !strings.Contains(view, "View configuration") {
 				t.Fatalf("focused exact-config action is outside visible detail viewport:\n%s", view)
-			}
-			if !strings.Contains(view, "More above") {
-				t.Fatalf("scrolled details omit the above cue:\n%s", view)
 			}
 		})
 	}
@@ -90,7 +90,7 @@ func TestUXUnmaskedExactConfigViewerReturnsSameAgent(t *testing.T) {
 	}
 }
 
-func TestUXAgentSecondConfigControlOpensSecondCandidate(t *testing.T) {
+func TestUXAgentConfigActionOpensOneAvailableConfiguration(t *testing.T) {
 	b := &uxAgentPathBackend{rows: []viewmodel.AgentManagementRow{{
 		ID: "codex", Name: "Codex", Detection: "detected",
 		ConfigFiles: []viewmodel.AgentConfigFile{
@@ -103,14 +103,13 @@ func TestUXAgentSecondConfigControlOpensSecondCandidate(t *testing.T) {
 	m.agentManagement = b.rows
 	m.navigate("Agents")
 	press(m, tea.KeyEnter, "")
-	press(m, tea.KeyDown, "")
 	if cmd := m.managementKey("enter"); cmd == nil {
-		t.Fatal("second exact configuration control did not request its viewer")
+		t.Fatal("configuration action did not request its viewer")
 	} else {
 		_, _ = m.Update(cmd())
 	}
-	if b.requestedPath != "/home/test/project.json" || m.management.ViewerPath != b.requestedPath {
-		t.Fatalf("second candidate opened the wrong config: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
+	if b.requestedPath != "/home/test/effective.json" || m.management.ViewerPath != b.requestedPath {
+		t.Fatalf("configuration action opened the wrong file: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
 	}
 }
 
@@ -131,20 +130,20 @@ func TestUXAgentMouseOpensClickedConfigCandidate(t *testing.T) {
 	m.View()
 	var candidate hitRegion
 	for _, hit := range m.management.Hits {
-		if hit.Control == "agent-config" && hit.Index == firstControl+1 {
+		if hit.Control == "agent-config" && hit.Index == firstControl {
 			candidate = hit
 			break
 		}
 	}
 	if candidate.Control == "" {
-		t.Fatal("second candidate has no visible mouse control")
+		t.Fatal("configuration action has no visible mouse control")
 	}
 	_, cmd := m.Update(tea.MouseClickMsg{X: candidate.X + 1, Y: candidate.Y, Button: tea.MouseLeft})
 	if cmd != nil {
 		_, _ = m.Update(cmd())
 	}
-	if b.requestedPath != "/home/test/project.json" || m.management.ViewerPath != b.requestedPath {
-		t.Fatalf("mouse opened the wrong config candidate: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
+	if b.requestedPath != "/home/test/effective.json" || m.management.ViewerPath != b.requestedPath {
+		t.Fatalf("mouse opened the wrong config: requested=%q viewer=%q", b.requestedPath, m.management.ViewerPath)
 	}
 }
 
@@ -195,7 +194,7 @@ func TestUXSettingsActionRequiresHighlightedControl(t *testing.T) {
 	}
 	press(m, tea.KeyEnd, "")
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Change profile directory") || !strings.Contains(view, "More above") {
+	if !strings.Contains(view, "Change instance directory") || !strings.Contains(view, "More above") {
 		t.Fatalf("focused Settings action is not visible with its scroll cue:\n%s", view)
 	}
 	if cmd := m.managementKey("enter"); cmd != nil {
@@ -211,8 +210,8 @@ func TestUXMissingConfigDoesNotClaimAgentMissing(t *testing.T) {
 	m.agentManagement = []viewmodel.AgentManagementRow{{ID: "claude", Detection: "not-detected", ConfigFiles: []viewmodel.AgentConfigFile{{Path: "/tmp/claude.json", Exists: false}}}}
 	m.navigate("Agents")
 	view := strings.ReplaceAll(ansi.Strip(m.View().Content), "\n", " ")
-	if !strings.Contains(view, "Status: Not detected") || !strings.Contains(view, "/tmp/claude.json") {
-		t.Fatalf("config absence replaced detection status or candidate path:\n%s", view)
+	if !strings.Contains(view, "claude · Not detected") || !strings.Contains(view, "Registrations: None") || strings.Contains(view, "/tmp/claude.json") {
+		t.Fatalf("Agents view lost concise detection/registration state or exposed candidate-path detail:\n%s", view)
 	}
 }
 
@@ -255,7 +254,7 @@ func TestUXHelpMatchesCurrentKeyGrammarAndReturnsOrigin(t *testing.T) {
 	m.management.Focus = ProfilesPane
 	press(m, tea.KeyF1, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Enter", "F2", "Open / focus", "F9", "m", "Esc", "scroll"} {
+	for _, want := range []string{"Enter", "F1", "F5", "F9", "F10", "Esc", "scroll"} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("Help omitted key grammar %q:\n%s", want, view)
 		}

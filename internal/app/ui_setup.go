@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -83,9 +84,55 @@ func (s *Service) withOperationProgress(ctx context.Context, observer func(viewm
 // changing installed state. Values retain the source of their winning layer.
 func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return viewmodel.SetupPreview{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return viewmodel.SetupPreview{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.PreviewProfile(ctx, ProfileRequest{Ref: q.Ref})
+	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
+}
+
+// UISaveInputs persists a capability instance's input answers without
+// installing agent links, changing MCP registrations, or starting runtimes.
+func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	return s.Store.WithLock(ctx, func() error {
+		p, instance, key, err := s.loadInstance(q.Ref)
+		if err != nil {
+			return err
+		}
+		p, instance, values, _, err := s.instanceValuesForPreview(p, instance, key, InstanceRequest{
+			Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
+		})
+		if err != nil {
+			return err
+		}
+		fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: instance.Path, InputPolicy: instance.InputPolicy}, instance.Raw)
+		if err != nil {
+			return invalid(err)
+		}
+		previous, err := s.Store.ActiveInputGroups(key)
+		if err != nil {
+			return err
+		}
+		groups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previous)
+		if err := validateActiveInputGroups(p.Inputs, groups); err != nil {
+			return invalid(err)
+		}
+		reset := make(map[string]bool, len(q.ResetInputs))
+		for _, name := range q.ResetInputs {
+			reset[name] = true
+		}
+		safe := make(map[string]any, len(values))
+		for _, input := range p.Inputs {
+			if input.Type == "secret" || reset[input.Name] {
+				continue
+			}
+			if value, ok := values[input.Name]; ok {
+				safe[input.Name] = value
+			}
+		}
+		return s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups)
+	})
 }
 
 func currentUserHome() string {
@@ -112,7 +159,68 @@ func (s *Service) discoveryProbe() agents.DiscoveryProbe {
 // checkbox values. For example, dbms.*.tenants.* yields dbms/tenant IDs.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
-		return viewmodel.OperationResult{}, invalid(errors.New("profile reference (Capability Pack, capability, and profile) is required"))
+		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.ApplyProfile(ctx, ProfileRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, ExternalURLs: q.ExternalURLs})
+	return s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs})
+}
+
+// UIUninstallSkillOnly is retained for source compatibility. It translates
+// the old request into the ordinary Pack-owned default Instance lifecycle.
+func (s *Service) UIUninstallSkillOnly(ctx context.Context, q viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error) {
+	ref, err := defaultSkillInstanceRef(s, q.SourceID, q.PackageID)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	key, err := s.Store.ResolveInstanceKey(ref.PackID, ref.CapabilityID, ref.Name)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	installed := map[string]bool{}
+	for _, row := range rows {
+		if row.Key.Source == key.Source && row.Key.Package == key.Package && row.Key.Target == key.Target && row.Component == "skill" {
+			installed[row.AgentID] = true
+		}
+	}
+	remove := map[string]bool{}
+	for _, id := range q.DestinationIDs {
+		remove[id] = true
+	}
+	remaining := make([]string, 0, len(installed))
+	for id := range installed {
+		if !remove[id] {
+			remaining = append(remaining, id)
+		}
+	}
+	return s.UIInstall(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: remaining, Uninstall: true})
+}
+
+// UIInstallSkillOnly is retained for source compatibility, but uses the same
+// default Capability Instance and ordinary install path as every other skill.
+func (s *Service) UIInstallSkillOnly(ctx context.Context, q viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
+	ref, err := defaultSkillInstanceRef(s, q.SourceID, q.PackageID)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	return s.UIInstall(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: q.DestinationIDs})
+}
+
+func defaultSkillInstanceRef(s *Service, packID, capabilityID string) (config.InstanceRef, error) {
+	if packID == "" || capabilityID == "" {
+		return config.InstanceRef{}, invalid(errors.New("Capability Pack and capability are required"))
+	}
+	if err := s.requireActivePack(packID); err != nil {
+		return config.InstanceRef{}, invalid(err)
+	}
+	p, err := s.packageByID(capabilityID)
+	if err != nil {
+		return config.InstanceRef{}, err
+	}
+	if !p.HasSkill() || p.HasMCP() || len(p.Inputs) != 0 || len(p.Plugins) != 0 {
+		return config.InstanceRef{}, invalid(errors.New("default instance compatibility applies only to a zero-input skill capability"))
+	}
+	return config.InstanceRef{PackID: packID, CapabilityID: capabilityID, Name: "default"}, nil
 }

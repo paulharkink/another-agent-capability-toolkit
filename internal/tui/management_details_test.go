@@ -7,7 +7,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
-func TestAgentManagementDetailsShowsEvidenceAndEveryPathWithoutMasking(t *testing.T) {
+func TestAgentManagementDetailsShowsOnlyRegistrations(t *testing.T) {
 	row := viewmodel.AgentManagementRow{
 		ID: "codex", Name: "Codex", Detection: "installed",
 		Evidence: "CLI executable: /usr/bin/codex", Home: "/home/alice/.codex-home",
@@ -21,14 +21,12 @@ func TestAgentManagementDetailsShowsEvidenceAndEveryPathWithoutMasking(t *testin
 		Registrations: []string{"team / inspect / dev / production"},
 	}
 	got := strings.Join(agentManagementDetails(row), "\n")
-	for _, want := range []string{
-		"Status: Detected", "CLI executable: /usr/bin/codex",
-		"Active home: /home/alice/.codex-home", "Effective config: /home/alice/.codex/config.toml",
-		"Intended write config: /home/alice/.codex-home/config.toml", "process home override",
-		"/home/alice/.codex/config.toml", "/home/alice/.codex-home/config.toml", "work", "team / inspect / dev / production",
-	} {
-		if !strings.Contains(strings.ToLower(got), strings.ToLower(want)) {
-			t.Errorf("details missing %q:\n%s", want, got)
+	if !strings.Contains(got, "team / inspect / dev / production") {
+		t.Fatalf("registration missing from Agents details: %s", got)
+	}
+	for _, redundant := range []string{"/usr/bin/codex", "/home/alice", "Effective config", "Config candidates", "process home override", "work"} {
+		if strings.Contains(strings.ToLower(got), strings.ToLower(redundant)) {
+			t.Errorf("destination detail %q should not be repeated:\n%s", redundant, got)
 		}
 	}
 }
