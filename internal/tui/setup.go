@@ -28,15 +28,9 @@ type setupInputsSavedMsg struct {
 	key              state.Key
 	preview          viewmodel.SetupPreview
 	destinationField string
+	uninstall        bool
 	err              error
 	inputsChanged    bool
-}
-
-type skillOnlyInstallBackend interface {
-	UIInstallSkillOnly(context.Context, viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error)
-}
-type skillOnlyUninstallBackend interface {
-	UIUninstallSkillOnly(context.Context, viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error)
 }
 
 type setupPreviewMsg struct {
@@ -92,6 +86,14 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	if !ok {
 		m.output = "Unified setup service unavailable"
 		return nil
+	}
+	if selectedSection == "Overview" {
+		for _, capability := range m.capabilities() {
+			if capability.Source == request.Ref.PackID && capability.Package == request.Ref.CapabilityID && m.skillOnlyWithoutInputs(capability) {
+				selectedSection = "Agents"
+				break
+			}
+		}
 	}
 	key := state.Key{Source: request.Ref.PackID, Package: request.Ref.CapabilityID, Target: request.Ref.Name}
 	priorDraft := map[string]any(nil)
@@ -150,12 +152,80 @@ func (m *Model) targetHasSavedRecord(key state.Key) bool {
 }
 
 func (m *Model) targetHasInstallRecord(key state.Key) bool {
-	for _, installation := range m.inventory {
-		if installation.Key == key && (installation.Component == "runtime" || installation.Component == "skill" || installation.Component == "mcp") {
-			return true
+	for _, instance := range capabilityInstances(m.capabilityInstances[key.Package]) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.Status == "installed" && component.AgentID != "" && (component.Kind == "skill" || component.Kind == "mcp") {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func capabilityInstanceKey(instance viewmodel.CapabilityInstance) state.Key {
+	key := instance.Key
+	if key.Source == "" {
+		key.Source = instance.Ref.PackID
+	}
+	if key.Package == "" {
+		key.Package = instance.Ref.CapabilityID
+	}
+	if key.Target == "" {
+		key.Target = instance.Ref.Name
+	}
+	return key
+}
+
+func (m *Model) targetHasMCPRegistration(key state.Key, mcp string) bool {
+	for _, instance := range capabilityInstances(m.capabilityInstances[key.Package]) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.Kind != "mcp" || component.Status != "installed" || component.AgentID == "" {
+				continue
+			}
+			if mcp == "" || component.Name == "" || component.Name == mcp {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *Model) workspaceMCPRegistered(mcp string) bool {
+	if m.workspace == nil {
+		return false
+	}
+	if m.workspace.RegisteredMCPs[mcp] {
+		return true
+	}
+	return m.targetHasMCPRegistration(m.workspace.Key, mcp)
+}
+
+const dirtyInputsAgentActionReason = "Save changed inputs before installing or uninstalling agents."
+
+func (m *Model) hasUnsavedSetupInputs() bool {
+	if m.form == nil || m.workspace == nil || m.workspace.Preview == nil {
+		return false
+	}
+	for _, input := range m.workspace.Preview.Inputs {
+		if input.Editable && m.form.HasUnsavedField(input.Definition.Name) {
+			return true
+		}
+	}
+	return len(m.form.ResetFields()) > 0
+}
+
+func (m *Model) guardAgentAccessForDirtyInputs() bool {
+	if !m.hasUnsavedSetupInputs() {
+		return false
+	}
+	m.output = dirtyInputsAgentActionReason
+	return true
 }
 
 func (m *Model) instanceForWorkspace(key state.Key) *viewmodel.Instance {
@@ -286,6 +356,7 @@ type setupRetryDraft struct {
 	resetInputs      []string
 	returnValues     map[string]any
 	destinationField string
+	uninstall        bool
 	origin           string
 	section          string
 	step             string
@@ -604,6 +675,9 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) uninstallSelectedAgents() tea.Cmd {
+	if m.guardAgentAccessForDirtyInputs() {
+		return nil
+	}
 	if m.workspace == nil || m.workspace.Preview == nil || m.form == nil || m.pendingSetupField == "" {
 		m.output = "Agent selection is unavailable for uninstall."
 		return nil
@@ -625,6 +699,7 @@ func (m *Model) uninstallSelectedAgents() tea.Cmd {
 	}
 	values := cloneSetupValues(m.form.Values())
 	values[m.pendingSetupField] = remaining
+	m.uninstallingAgents = true
 	return m.applySetupWithReset(values, m.form.ResetFields())
 }
 
@@ -695,6 +770,12 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string) tea.Cmd {
+	if m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionAgentsID && m.guardAgentAccessForDirtyInputs() {
+		m.uninstallingAgents = false
+		return nil
+	}
+	uninstallingAgents := m.uninstallingAgents
+	m.uninstallingAgents = false
 	backend, ok := m.backend.(setupBackend)
 	if !ok || m.pendingSetup == nil {
 		m.output = "Unified setup service unavailable"
@@ -770,7 +851,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	m.pendingSetup = nil
 	destinations, _ := values[destinationField].([]string)
 	m.pendingSetupField = ""
-	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, itemField: m.pendingSetupItemsField, origin: origin, section: section}
+	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, itemField: m.pendingSetupItemsField, origin: origin, section: section, uninstall: uninstallingAgents}
 	m.setupOperationPending = true
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
@@ -783,7 +864,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: m.packInstanceRequest(preview.Key),
-		Inputs:       inputs, ActiveInputGroups: activeGroups, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations,
+		Inputs:       inputs, ActiveInputGroups: activeGroups, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations, Uninstall: uninstallingAgents,
 	}
 	if m.pendingSetupItemsField != "" {
 		items, _ := values[m.pendingSetupItemsField].([]string)

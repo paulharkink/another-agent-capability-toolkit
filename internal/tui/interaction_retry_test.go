@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -19,6 +20,10 @@ func TestFailedSetupResultCanEditSubmittedAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
+	// This retry journey needs a configurable capability with an Inputs stage;
+	// the shared fixture catalog's plain skill now correctly goes straight to
+	// Agent Access as its single default Capability Instance.
+	m.catalog[0].Inputs = []catalog.Input{{Name: "repo", Label: "Repository", Type: "string"}}
 	startHomeSetup(m)
 	if m.form == nil {
 		t.Fatal("setup form did not open")
@@ -62,6 +67,7 @@ func TestPartialSetupFailureOffersEditAnswers(t *testing.T) {
 	m := NewContext(context.Background(), backend)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	m.Update(m.Init()())
+	m.catalog[0].Inputs = []catalog.Input{{Name: "repo", Label: "Repository", Type: "string"}}
 	startHomeSetup(m)
 	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if save == nil {

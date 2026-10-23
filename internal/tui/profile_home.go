@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -54,28 +53,31 @@ func (m *Model) instanceMode() bool {
 	return (modern || legacy) && (m.workspace == nil || m.workspace.InstanceRef.CapabilityID != "")
 }
 func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
-	skills, skillTotal, registered, registrationTotal := 0, 0, 0, 0
+	registered, total, unknown := 0, 0, false
 	for _, c := range p.Components {
-		switch c.Kind {
-		case "skill":
-			skillTotal++
-			if c.Status == "installed" {
-				skills++
-			}
-		case "mcp":
-			registrationTotal++
-			if c.Status == "installed" {
-				registered++
-			}
+		if c.Kind != "skill" && c.Kind != "mcp" && c.Kind != "plugin" {
+			continue
+		}
+		total++
+		if c.Status == "installed" {
+			registered++
+		}
+		if c.Status == "unavailable" || c.Status == "unknown" || c.Status == "unobserved" || c.Status == "stale" {
+			unknown = true
 		}
 	}
-	parts := []string{p.ConfigStatus}
-	if skillTotal > 0 {
-		parts = append(parts, fmt.Sprintf("skills %d/%d", skills, skillTotal))
+	if p.ConfigStatus == "needs-input" || p.ConfigStatus == "invalid" {
+		return p.ConfigStatus
 	}
-	if registrationTotal > 0 {
-		parts = append(parts, fmt.Sprintf("registered %d/%d", registered, registrationTotal))
+	status := "Not installed"
+	if registered > 0 {
+		status = "Installed"
+	} else if unknown {
+		status = "Unknown"
+	} else if total == 0 {
+		status = "Unknown"
 	}
+	parts := []string{status}
 	for _, r := range p.MCPs {
 		status := r.MCPID + " " + r.Status
 		if label := authenticationDisplayStatus(r.AuthenticationStatus); label != "" {

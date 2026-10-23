@@ -142,6 +142,13 @@ func setupSection(m *Model, down int) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 }
 
+func useConfigurablePlainFixture(m *Model) {
+	if len(m.catalog) == 0 {
+		return
+	}
+	m.catalog[0].Inputs = []catalog.Input{{Name: "repo", Label: "Repository", Type: "string"}}
+}
+
 func (b *setupBackendFixture) UISetupPreview(_ context.Context, q viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = q
 	key := setupProfileKey(q)
@@ -165,6 +172,7 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
+	useConfigurablePlainFixture(m)
 	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
@@ -202,6 +210,7 @@ func TestSetupResultDistinguishesSavedInputsFromFailedApply(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.Update(m.Init()())
+	useConfigurablePlainFixture(m)
 	startHomeSetup(m)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if cmd == nil {
@@ -254,6 +263,7 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
+	useConfigurablePlainFixture(m)
 	startHomeSetup(m)
 	if m.busy || m.form == nil || m.pendingSetup == nil {
 		t.Fatalf("skill-only setup did not immediately request preview: busy=%v form=%v", m.busy, m.form)
@@ -322,7 +332,7 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 	}}}}
 	m.Update(loaded)
 	statusView := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Installation · AACT records: Partial", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: absent"} {
+	for _, want := range []string{"Installation · AACT records: Installed", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: absent"} {
 		if !strings.Contains(statusView, want) {
 			t.Fatalf("capability status does not render %q from the selected manifest components:\n%s", want, statusView)
 		}
@@ -330,7 +340,7 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 	loaded.capabilityInstances["inspect"].Profiles[0].Components[1].Status = "installed"
 	m.Update(loaded)
 	completeView := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Installation · AACT records: Installed", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: registered"} {
+	for _, want := range []string{"Installation · AACT records: Installed", "OpenCode · skill · field-guide: installed", "OpenCode · mcp · map-server: installed"} {
 		if !strings.Contains(completeView, want) {
 			t.Fatalf("complete selected component status does not render %q:\n%s", want, completeView)
 		}
@@ -351,8 +361,8 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", selected)
 	}
 	status, _ := m.installationDetails(m.capabilities()[0])
-	if status != "Partial" {
-		t.Fatalf("declared skill/MCP selection with one absent component = %q, want Partial", status)
+	if status != "Installed" {
+		t.Fatalf("one actually registered component did not mark the capability Installed: %q", status)
 	}
 }
 
@@ -384,6 +394,7 @@ func TestFixedTargetInputIsHiddenAndNotSubmitted(t *testing.T) {
 	m := NewContext(context.Background(), b)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.Update(m.Init()())
+	useConfigurablePlainFixture(m)
 	startHomeSetup(m)
 	if strings.Contains(m.View().Content, "API server") {
 		t.Fatal("fixed target input appeared in form")

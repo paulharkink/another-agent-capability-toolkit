@@ -30,6 +30,29 @@ func TestCapabilityProfileSnapshotDiscoveryReadiness(t *testing.T) {
 		t.Fatalf("%+v %v", snapshot, err)
 	}
 }
+
+func TestPlainSkillSnapshotAlwaysContainsPackOwnedDefaultInstance(t *testing.T) {
+	s, _, _ := fixture(t)
+	s.Source.InstanceRoot = filepath.Join(t.TempDir(), "instances")
+	if err := os.MkdirAll(filepath.Join(s.Source.InstanceRoot, "demo"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Source.InstanceRoot, "demo", "legacy.toml"), []byte("[inputs]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyKey := state.Key{Source: s.Source.ID, Package: "demo", Target: "legacy"}
+	if err := s.Store.RecordInstance(state.InstanceRecord{Key: legacyKey, Name: "legacy", Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.InstanceSnapshot(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Instances) != 1 || snapshot.Instances[0].Ref.PackID != s.Source.ID ||
+		snapshot.Instances[0].Ref.CapabilityID != "demo" || snapshot.Instances[0].Ref.Name != "default" {
+		t.Fatalf("plain skill must resolve through its Pack-owned default Instance: %+v", snapshot.Instances)
+	}
+}
 func TestObservedProfileDetectsDeletedSkillAndRegistration(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]

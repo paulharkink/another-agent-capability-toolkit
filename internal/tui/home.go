@@ -14,7 +14,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 )
 
@@ -59,10 +58,6 @@ type modalState struct {
 	Follow   bool
 }
 type homeMenuItem struct{ Label, Action, Reason string }
-type skillOnlyActionState struct {
-	Capability CapabilityRow
-	Action     string
-}
 type hitRegion struct {
 	X, Y, Width, Height int
 	Pane                Pane
@@ -97,27 +92,6 @@ func (m *Model) contextRows() []contextRow {
 		return nil
 	}
 	if m.instanceMode() && c.CatalogIndex >= 0 {
-		if !c.MCP {
-			if m.skillOnlyWithoutInputs(c) {
-				installed := make([]string, 0)
-				for _, item := range m.inventory {
-					if item.Key.Source == c.Source && item.Key.Package == c.Package && item.Component == "skill" {
-						installed = append(installed, agents.DisplayName(item.AgentID))
-					}
-				}
-				status := "Not installed"
-				if len(installed) > 0 {
-					sort.Strings(installed)
-					status = "Installed · " + strings.Join(installed, ", ")
-				}
-				return []contextRow{
-					{ID: "skill-status", Label: "Skill · " + status, Kind: "status"},
-					{ID: "skill-access", Label: "Manage skill access…", Kind: "skill-access"},
-					{ID: "details", Label: "View capability details", Kind: "details"},
-				}
-			}
-			return []contextRow{{ID: "configure", Label: m.capabilitySetupLabel(c), Kind: "configure"}, {ID: "details", Label: "View capability details", Kind: "details"}}
-		}
 		rows := []contextRow{}
 		for i, p := range m.profiles() {
 			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
@@ -144,7 +118,10 @@ func (m *Model) contextRows() []contextRow {
 				}
 			}
 		}
-		rows = append(rows, contextRow{ID: "create-profile", Label: "Create another instance…", Kind: "create-profile"}, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
+		if !m.skillOnlyWithoutInputs(c) {
+			rows = append(rows, contextRow{ID: "create-profile", Label: "Create another instance…", Kind: "create-profile"})
+		}
+		rows = append(rows, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
 		return rows
 	}
 	if c.CatalogIndex < 0 {
@@ -169,31 +146,6 @@ func (m *Model) contextRows() []contextRow {
 		label := p.Name + " · " + p.Status
 		rows = append(rows, contextRow{ID: p.ID, Label: label, Kind: "profile", ProfileIndex: i, Key: p.Key})
 	}
-	seen := map[state.Key]bool{}
-	for _, row := range rows {
-		if row.Kind == "profile" {
-			seen[row.Key] = true
-		}
-	}
-	for _, installed := range m.inventory {
-		key := installed.Key
-		if key.Source != c.Source || key.Package != c.Package || installed.Component == "runtime" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		if c.Skill && !c.MCP && key.Environment == "" && (key.Target == "" || key.Target == "default") {
-			rows = append(rows, contextRow{ID: key.ID() + "\x00configured", Label: "Saved configuration", Kind: "target", Key: key})
-			continue
-		}
-		environment, target := key.Environment, key.Target
-		if environment == "" {
-			environment = "No preset"
-		}
-		if target == "" {
-			target = "default"
-		}
-		rows = append(rows, contextRow{ID: key.ID() + "\x00configured", Label: environment + " / " + target + " · saved target", Kind: "target", Key: key})
-	}
 	return rows
 }
 
@@ -201,90 +153,46 @@ func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
 	if m.inventoryError != nil {
 		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
 	}
-	if snapshot, ok := m.capabilityInstances[c.Package]; ok {
-		if status, details, handled := selectedWorkInstallationDetails(snapshot); handled {
-			return status, details
-		}
-	}
-	type component struct{ name, kind, mcp string }
-	components := []component{}
-	if c.Skill {
-		components = append(components, component{name: "Skill", kind: "skill"})
-	}
-	if c.MCP {
-		if len(c.MCPNames) == 0 {
-			components = append(components, component{name: "MCP registration", kind: "mcp"})
-		} else {
-			for _, name := range c.MCPNames {
-				components = append(components, component{name: name + " MCP registration", kind: "mcp", mcp: name})
-			}
-		}
-	}
-	if len(components) == 0 {
+	if !c.Skill && !c.MCP {
 		return "Unknown", []string{"No installable components in the catalog"}
 	}
-	componentsByDestination := map[string]map[string]bool{}
-	found := 0
-	details := make([]string, 0, len(components))
-	for _, component := range components {
-		agents := map[string]bool{}
-		for _, inst := range m.inventory {
-			if inst.Key.Source != c.Source || inst.Key.Package != c.Package || inst.Component != component.kind {
+	if snapshot, ok := m.capabilityInstances[c.Package]; ok {
+		instances := capabilityInstances(snapshot)
+		observed := false
+		unknown := false
+		registered := false
+		details := []string{}
+		for _, instance := range instances {
+			if instance.Key.Source != c.Source || instance.Key.Package != c.Package {
 				continue
 			}
-			if component.kind == "mcp" && component.mcp != "" && inst.Key.MCP != component.mcp {
-				continue
+			for _, component := range instance.Components {
+				if component.Kind != "skill" && component.Kind != "mcp" && component.Kind != "plugin" {
+					continue
+				}
+				observed = true
+				label := instance.Ref.Name + " · " + agents.DisplayName(component.AgentID) + " · " + component.Kind + " · " + component.Name + ": " + component.Status
+				details = append(details, label)
+				if component.Status == "installed" {
+					registered = true
+				}
+				if component.Status == "unavailable" || component.Status == "unknown" || component.Status == "unobserved" || component.Status == "stale" {
+					unknown = true
+				}
 			}
-			parentKey := inst.Key
-			parentKey.MCP = ""
-			destination := inst.AgentID + "\x00" + inst.AgentHome
-			if destination == "\x00" {
-				destination = "unspecified destination"
-			}
-			group := parentKey.ID() + "\x00" + destination
-			if componentsByDestination[group] == nil {
-				componentsByDestination[group] = map[string]bool{}
-			}
-			componentsByDestination[group][component.kind+"\x00"+component.mcp] = true
-			agent := inst.AgentID
-			if agent == "" {
-				agent = "unspecified destination"
-			}
-			agents[agent] = true
 		}
-		if len(agents) == 0 {
-			details = append(details, component.name+": no AACT record")
-			continue
+		if registered {
+			return "Installed", details
 		}
-		found++
-		ids := make([]string, 0, len(agents))
-		for agent := range agents {
-			ids = append(ids, agent)
+		if observed {
+			if unknown {
+				return "Unknown", details
+			}
+			return "Not installed", details
 		}
-		sort.Strings(ids)
-		details = append(details, component.name+": "+strings.Join(ids, ", "))
+		return "Unknown", []string{"No Agent registration observation is available for this Pack Instance"}
 	}
-	if found == 0 {
-		return "Not installed", details
-	}
-	complete := false
-	for _, installed := range componentsByDestination {
-		all := true
-		for _, component := range components {
-			if !installed[component.kind+"\x00"+component.mcp] {
-				all = false
-				break
-			}
-		}
-		if all {
-			complete = true
-			break
-		}
-	}
-	if !complete {
-		return "Partial", details
-	}
-	return "Installed", details
+	return "Unknown", []string{"Capability Instance registration state has not been observed"}
 }
 
 func selectedWorkInstallationDetails(snapshot viewmodel.CapabilityInstanceSnapshot) (string, []string, bool) {
@@ -420,21 +328,6 @@ func (m *Model) capabilities() []CapabilityRow {
 		}
 		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.HasSkill(), MCP: p.HasMCP(), MCPNames: mcpNames, CatalogIndex: i})
 	}
-	if m.instanceSnapshot != nil {
-		seen := map[string]bool{}
-		for _, row := range rows {
-			seen[row.ID] = true
-		}
-		for _, p := range runtimeInstances(m.instanceSnapshot) {
-			id := p.Key.Source + "\x00" + p.Key.Package
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			rows = append(rows, CapabilityRow{ID: id, Source: p.Key.Source, Package: p.Key.Package, Name: p.Key.Package + " · " + m.label(p.Key.Source), MCP: true, CatalogIndex: -1})
-		}
-	}
-
 	return rows
 }
 func (m *Model) selectedCapability() (CapabilityRow, bool) {
@@ -455,6 +348,9 @@ func (m *Model) profiles() []InstanceRow {
 		snapshot := m.capabilityInstances[c.Package]
 		instances := capabilityInstances(snapshot)
 		for _, profile := range instances {
+			if profile.Key.Source != c.Source || profile.Key.Package != c.Package {
+				continue
+			}
 			copy := profile
 			rows = append(rows, InstanceRow{ID: profile.Key.ID(), Key: profile.Key, Name: profile.Ref.Name, Status: instanceStatusSummary(profile), Configuration: &copy})
 		}
@@ -712,7 +608,11 @@ func (m *Model) openContextRow() tea.Cmd {
 				return nil
 			}
 		}
-		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Overview")
+		section := "Overview"
+		if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
+			section = "Agents"
+		}
+		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), section)
 	case "mcp-child", "runtime-record":
 		request := m.packInstanceRequest(row.ParentKey)
 		cmd := m.openTargetWorkspace(request, "Runtime")
@@ -832,26 +732,23 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.instanceMode() {
-		if c, ok := m.selectedCapability(); ok && !c.MCP {
-			if m.skillOnlyWithoutInputs(c) {
-				return []homeMenuItem{
-					{"Install skill for agents...", "install-skill-only", ""},
-					{"Uninstall skill from agents...", "uninstall-skill-only", ""},
-					{"View capability details", "details", ""},
-					{"Back", "back", ""},
-				}
-			}
-			return []homeMenuItem{{m.capabilitySetupLabel(c), "configure", ""}, {"View capability details", "details", ""}, {"Back", "back", ""}}
-		}
+		c, _ := m.selectedCapability()
 		items := []homeMenuItem{}
 		if row, selected := m.selectedContextProfile(); selected {
-			label := "Delete instance " + row.Name + string(rune(8230))
-			if row.Configuration != nil && row.Configuration.Origin == "pack" {
-				label = "Reset " + row.Name + " to pack preset" + string(rune(8230))
+			if m.skillOnlyWithoutInputs(c) {
+				items = append(items, homeMenuItem{"Agent access…", "agents", ""})
+			} else {
+				label := "Delete instance " + row.Name + string(rune(8230))
+				if row.Configuration != nil && row.Configuration.Origin == "pack" {
+					label = "Reset " + row.Name + " to pack preset" + string(rune(8230))
+				}
+				items = append(items, homeMenuItem{label, "delete-instance", ""})
 			}
-			items = append(items, homeMenuItem{label, "delete-instance", ""})
 		}
-		items = append(items, homeMenuItem{"Create another instance" + string(rune(8230)), "create-profile", ""}, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
+		if !m.skillOnlyWithoutInputs(c) {
+			items = append(items, homeMenuItem{"Create another instance" + string(rune(8230)), "create-profile", ""})
+		}
+		items = append(items, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
 		return items
 	}
 	if m.home.Focus == ProfilesPane {
@@ -1049,32 +946,30 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 	return nil
 }
 func (m *Model) homeOperation(action string) tea.Cmd {
-	if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
-		if action == "install-skill-only" || action == "uninstall-skill-only" {
-			return m.openSkillOnlyTargets(c, action)
-		}
-		if action == "configure" || action == "parameters" || action == "create-profile" {
-			return m.openSkillOnlyTargets(c, "install-skill-only")
-		}
-	}
 	if m.instanceMode() {
+		if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
+			if action == "agents" || action == "parameters" || action == "configure" || action == "i" {
+				if row, selected := m.selectedContextProfile(); selected {
+					return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Agents")
+				}
+				return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: c.Source, CapabilityID: c.Package, Name: "default"}}, "Agents")
+			}
+			if action == "details" {
+				m.home.Modal = &modalState{Kind: "details"}
+			}
+			return nil
+		}
 		if c, ok := m.selectedCapability(); ok && !c.MCP {
 			if action == "details" {
 				m.home.Modal = &modalState{Kind: "details"}
 				return nil
 			}
 			if action == "configure" || action == "parameters" {
-				if m.skillOnlyWithoutInputs(c) {
-					return m.openSkillOnlyTargets(c, "install-skill-only")
-				}
 				return m.openTargetWorkspace(m.packInstanceRequest(state.Key{Source: c.Source, Package: c.Package, Target: "default"}), "Overview")
 			}
 		}
 		if action == "create-profile" {
 			if c, ok := m.selectedCapability(); ok {
-				if m.skillOnlyWithoutInputs(c) {
-					return m.openSkillOnlyTargets(c, "install-skill-only")
-				}
 				m.openInstanceCreation(c)
 			}
 			return nil
@@ -1090,9 +985,6 @@ func (m *Model) homeOperation(action string) tea.Cmd {
 		if row, ok := m.selectedContextRow(); ok {
 			if row.Kind == "create-profile" {
 				if c, ok := m.selectedCapability(); ok {
-					if m.skillOnlyWithoutInputs(c) {
-						return m.openSkillOnlyTargets(c, "install-skill-only")
-					}
 					m.openInstanceCreation(c)
 				}
 				return nil
@@ -1191,84 +1083,6 @@ func (m *Model) skillOnlyWithoutInputs(c CapabilityRow) bool {
 	return p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0
 }
 
-func (m *Model) openSkillOnlyTargets(c CapabilityRow, action string) tea.Cmd {
-	choices := make([]catalog.Choice, 0, len(m.agents))
-	installed := map[string]bool{}
-	for _, row := range m.inventory {
-		if row.Key.Source == c.Source && row.Key.Package == c.Package && row.Component == "skill" {
-			installed[row.AgentID] = true
-		}
-	}
-	selected := []string{}
-	for _, id := range m.agents {
-		if id == "" || id == "all" {
-			continue
-		}
-		label := id
-		if installed[id] {
-			label += " (installed)"
-			if action == "uninstall-skill-only" {
-				selected = append(selected, id)
-			}
-		} else if action == "install-skill-only" {
-			selected = append(selected, id)
-		}
-		choices = append(choices, catalog.Choice{Value: id, Label: label})
-	}
-	if len(choices) == 0 {
-		m.output = "No selectable agent destinations are available"
-		return nil
-	}
-	m.pendingSkillOnly = &skillOnlyActionState{Capability: c, Action: action}
-	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "agents", Label: "Target agents", Type: "multichoice", Required: true, Options: choices}}, map[string]any{"agents": selected})
-	title := "Install skill - " + c.Name
-	if action == "uninstall-skill-only" {
-		title = "Uninstall skill - " + c.Name
-	}
-	m.form.SetTitle(title)
-	m.form.SetBackNavigation(true)
-	m.management.FormOverlay = true
-	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
-	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	m.home.Modal = nil
-	return nil
-}
-
-func (m *Model) runSkillOnlyAction(pending skillOnlyActionState, destinations []string) tea.Cmd {
-	if len(destinations) == 0 {
-		m.output = "Select at least one agent destination"
-		return nil
-	}
-	m.busy = true
-	m.action = "manage skill access"
-	ctx := m.ctx
-	return func() tea.Msg {
-		var result viewmodel.OperationResult
-		var err error
-		if pending.Action == "uninstall-skill-only" {
-			backend, ok := m.backend.(skillOnlyUninstallBackend)
-			if !ok {
-				return operationMsg{origin: "Catalog", err: fmt.Errorf("direct skill removal service unavailable")}
-			}
-			result, err = backend.UIUninstallSkillOnly(ctx, viewmodel.SkillOnlyUninstallRequest{SourceID: pending.Capability.Source, PackageID: pending.Capability.Package, DestinationIDs: destinations})
-		} else {
-			backend, ok := m.backend.(skillOnlyInstallBackend)
-			if !ok {
-				return operationMsg{origin: "Catalog", err: fmt.Errorf("direct skill installation service unavailable")}
-			}
-			result, err = backend.UIInstallSkillOnly(ctx, viewmodel.SkillOnlyInstallRequest{SourceID: pending.Capability.Source, PackageID: pending.Capability.Package, DestinationIDs: destinations})
-		}
-		lines := []string{}
-		if result.Message != "" {
-			lines = append(lines, result.Message)
-		}
-		for _, change := range result.Changes {
-			lines = append(lines, fmt.Sprintf("%s: %s", change.AgentID, change.Component))
-		}
-		lines = append(lines, result.Errors...)
-		return operationMsg{origin: "Catalog", output: strings.Join(lines, "\n"), err: err, failed: len(result.Errors) > 0, step: result.Step, target: result.Target, result: &result}
-	}
-}
 func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
 	mouse := msg.Mouse()
 	m.homeView() // Rebuild geometry after resize/refresh, not stale rendered coordinates.

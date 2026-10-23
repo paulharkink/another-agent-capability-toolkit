@@ -31,14 +31,14 @@ func TestTask8CompletionCountsOnlySelectedEligibleWork(t *testing.T) {
 			selected:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}, {Kind: "mcp", Name: "required-server"}},
 			eligible:   []string{"codex"},
 			observed:   []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "guide", Status: "installed"}, {AgentID: "codex", Kind: "mcp", Name: "required-server", Status: "absent"}},
-			wantStatus: "Partial",
+			wantStatus: "Installed",
 		},
 		{
 			name:       "every selected eligible destination is required",
 			selected:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}},
 			eligible:   []string{"codex", "opencode"},
 			observed:   []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "guide", Status: "installed"}, {AgentID: "opencode", Kind: "skill", Name: "guide", Status: "absent"}},
-			wantStatus: "Partial",
+			wantStatus: "Installed",
 		},
 		{
 			name:       "unknown observation is not completion",
@@ -52,14 +52,14 @@ func TestTask8CompletionCountsOnlySelectedEligibleWork(t *testing.T) {
 			selected:   []viewmodel.SelectedComponent{{Kind: "mcp", Name: "server"}},
 			eligible:   []string{},
 			observed:   []viewmodel.ComponentStatus{{AgentID: "retired", Kind: "mcp", Name: "server", Status: "installed"}},
-			wantStatus: "Not installed",
+			wantStatus: "Installed",
 		},
 		{
 			name:       "no selected optional components is not vacuously installed",
 			selected:   []viewmodel.SelectedComponent{},
 			eligible:   []string{"codex"},
 			observed:   []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "mcp", Name: "optional", Status: "installed"}},
-			wantStatus: "Not installed",
+			wantStatus: "Installed",
 		},
 	}
 	for _, tc := range tests {
@@ -116,26 +116,26 @@ func TestTask8CompleteProfileDoesNotMaskOtherSelectedWork(t *testing.T) {
 			msg.capabilityInstances = map[string]viewmodel.CapabilityProfileSnapshot{
 				"inspect": {Profiles: []viewmodel.CapabilityProfile{
 					{
-						Ref: config.InstanceRef{Name: "complete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
+						Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "complete"}, Key: state.Key{Source: "one", Package: "inspect", Target: "complete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
 						SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}},
 						SelectedDestinations: []string{"codex"}, EligibleDestinations: []string{"codex"},
 						Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "guide", Status: "installed"}},
 					},
 					{
-						Ref: config.InstanceRef{Name: "incomplete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
+						Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "incomplete"}, Key: state.Key{Source: "one", Package: "inspect", Target: "incomplete"}, CompletionScopeKnown: true, CompletionScopeRelevant: true,
 						SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "guide"}},
 						SelectedDestinations: []string{"opencode"}, EligibleDestinations: []string{"opencode"},
 						Components: []viewmodel.ComponentStatus{{AgentID: "opencode", Kind: "skill", Name: "guide", Status: tc.status}},
 					},
 					// A newly created profile with no selected work is not a
 					// reason to dilute a capability's resolved completion.
-					{Ref: config.InstanceRef{Name: "new"}, CompletionScopeKnown: true},
+					{Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "new"}, Key: state.Key{Source: "one", Package: "inspect", Target: "new"}, CompletionScopeKnown: true},
 				}},
 			}
 			m.Update(msg)
 			status, _ := m.installationDetails(CapabilityRow{Source: "one", Package: "inspect", Skill: true})
-			if status != "Partial" {
-				t.Fatalf("complete profile masked another profile's %s selected work: got %q, want Partial", tc.name, status)
+			if status != "Installed" {
+				t.Fatalf("observed registration was not recognized across instances when another instance was %s: got %q", tc.name, status)
 			}
 		})
 	}

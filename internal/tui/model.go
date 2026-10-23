@@ -65,8 +65,8 @@ type Model struct {
 	pendingRegistrationRemoval bool
 	registration               *registrationState
 	pendingSetup               *viewmodel.SetupPreview
-	pendingSkillOnly           *skillOnlyActionState
 	pendingSetupField          string
+	uninstallingAgents         bool
 	workspace                  *workspaceState
 	setupRetry                 *setupRetryDraft
 	setupInformation           bool
@@ -251,6 +251,7 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 		m.workspace.InputsSaved = true
 		if msg.inputsChanged {
 			m.workspace.Installed = false
+			m.workspace.RegisteredMCPs = nil
 		}
 	}
 	m.pendingSetup = &msg.preview
@@ -446,6 +447,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionAgentsID {
+		if action.ID == "install-selected" || action.ID == "uninstall-selected" {
+			if m.guardAgentAccessForDirtyInputs() {
+				return m, nil
+			}
+		}
 		switch action.ID {
 		case "install-selected":
 			if m.form != nil {
@@ -511,10 +517,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
-				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || (m.form != nil && m.form.HasUnsavedChanges())) {
-					m.output = "Save inputs and install this capability for an agent before starting the runtime."
-					return m, nil
-				}
 				profile := m.instanceForMCPName(parts[1])
 				if profile == nil && m.workspace.Instance != nil {
 					parent := *m.workspace.Instance
@@ -530,6 +532,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if reason := m.instanceActionReason(row, guardAction); reason != "" {
 					m.output = reason
+					return m, nil
+				}
+				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(parts[1]) || m.hasUnsavedSetupInputs()) {
+					m.output = "Save inputs and install this capability for an agent before starting the runtime."
 					return m, nil
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
@@ -712,6 +718,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
 			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
 		}
+		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
@@ -745,7 +752,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingRegistrationRemoval = false
 			m.pendingSetup = nil
 			m.pendingSetupField = ""
-			m.pendingSkillOnly = nil
 			m.pendingDefaultAgents = false
 			m.pendingMCPImageSource = false
 			m.creatingInstance = nil
@@ -772,12 +778,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return instanceCreatedMsg{ref: ref, err: m.backend.(capabilityProfilesBackend).UICreateProfile(m.ctx, ref)}
 			}
-		}
-		if m.pendingSkillOnly != nil {
-			pending := *m.pendingSkillOnly
-			m.pendingSkillOnly = nil
-			selected, _ := values["agents"].([]string)
-			return m, m.runSkillOnlyAction(pending, selected)
 		}
 		if m.pendingRegistration != nil {
 			request := *m.pendingRegistration
@@ -1144,6 +1144,25 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	if succeeded {
 		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
 			m.workspace.Installed = true
+			m.workspace.RegisteredMCPs = map[string]bool{}
+			registeredMCP := false
+			if msg.result != nil {
+				for _, change := range msg.result.Changes {
+					if change.Component != "mcp" || change.AgentID == "" {
+						continue
+					}
+					registeredMCP = true
+					name := firstNonempty(change.Key.MCP, change.RegistrationName)
+					if name != "" {
+						m.workspace.RegisteredMCPs[name] = true
+					}
+				}
+			}
+			if registeredMCP && len(m.workspace.RegisteredMCPs) == 0 && m.setupRetry.preview.MCP {
+				for _, definition := range m.setupRetry.preview.MCPDefinitions {
+					m.workspace.RegisteredMCPs[definition.Name] = true
+				}
+			}
 			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
 			m.configureWorkspaceForm(m.setupRetry.preview)
 		}

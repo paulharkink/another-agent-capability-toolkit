@@ -149,7 +149,7 @@ func TestUIRemoveRuntimeRecordDeletesOnlyExactLocallyOwnedRecord(t *testing.T) {
 	}
 }
 
-func TestUIRemoveRuntimeRecordResolvesRegisteredSource(t *testing.T) {
+func TestUIRemoveRuntimeRecordRejectsInactivePackEvenWhenRegistered(t *testing.T) {
 	svc, _, store := fixture(t)
 	root := filepath.Join(t.TempDir(), "remembered")
 	packageDir := filepath.Join(root, "demo")
@@ -171,15 +171,35 @@ func TestUIRemoveRuntimeRecordResolvesRegisteredSource(t *testing.T) {
 	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{Key: child, ID: "remembered-container", Status: "running", Ownership: "local"}}}, store: store}
 	svc.Options.Runtime = runtime
 
-	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "remembered-container"); err != nil {
-		t.Fatalf("runtime selected from a registered secondary source could not be removed: %v", err)
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "remembered-container"); err == nil {
+		t.Fatal("UI action accepted a runtime reference from an inactive Pack")
 	}
-	if !reflect.DeepEqual(runtime.removedIDs, []string{"remembered-container"}) {
-		t.Fatalf("secondary source removal targeted unexpected runtime IDs: %v", runtime.removedIDs)
+	if len(runtime.removedIDs) != 0 {
+		t.Fatalf("foreign Pack runtime was stopped: %v", runtime.removedIDs)
 	}
 	remaining, err := store.Installations()
-	if err != nil || len(remaining) != 0 {
-		t.Fatalf("secondary source runtime ledger row remains: %+v, %v", remaining, err)
+	if err != nil || len(remaining) != 1 || remaining[0].Key != child {
+		t.Fatalf("inactive Pack runtime ledger row was mutated: %+v, %v", remaining, err)
+	}
+}
+
+func TestUIInstanceRunRejectsInactivePackReference(t *testing.T) {
+	svc, _, store := fixture(t)
+	root := filepath.Join(t.TempDir(), "remembered")
+	packageDir := filepath.Join(root, "demo")
+	if err := os.MkdirAll(packageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = 'other-demo'\nname = 'Remembered demo'\n[mcp]\nname = 'remembered-server'\ntransport = 'streamable-http'\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "sources.json"), []sourceRef{{ID: "remembered", Root: root, PackageDirs: []string{packageDir}}}); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "remembered", Package: "other-demo", Target: "default", MCP: "remembered-server"}
+	if _, err := svc.UIInstanceRun(context.Background(), "start", key); err == nil {
+		t.Fatal("UI lifecycle action accepted a forged reference to an inactive Pack")
 	}
 }
 

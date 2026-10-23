@@ -41,7 +41,7 @@ var uxJourneyCases = []struct {
 	{"08", "named agent destination and exact path", TestUXForeignEndpointCanRegisterWithoutRuntimeControl},
 	{"09", "headless embedded picker cancel preserves workspace field and draft", TestUXActivePickerOwnsParentShortcutKeys},
 	{"10", "directory collection editing", directoryCollectionJourney},
-	{"11", "foreign runtime connection diagnosis and source lookup", TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding},
+	{"11", "foreign runtime is outside the selected Pack", TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable},
 	{"12", "runtime empty state and log lifecycle", TestUXNoContainerLogsExplainsNextStepWithoutCallingDockerLogs},
 	{"13", "legacy environment target is not an operational instance", TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference},
 	{"14", "concise agent registration details", TestUXAgentsOverviewEnterShowsConciseAgentDetails},
@@ -263,39 +263,17 @@ func TestUXOperationCompletionAtSmallSizeRetainsForegroundResultAcrossResize(t *
 	}
 }
 
-func TestUXLocateSourceOpensCenteredTaskSpecificRecoveryForm(t *testing.T) {
+func TestUXObservedRuntimeFromAnotherPackDoesNotCreateBrowseRoute(t *testing.T) {
 	m, _ := homeFixture()
 	m.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: state.Key{Source: "gone", Package: "legacy", Target: "default"}, Name: "Old capability"}}}
-	rows := m.capabilities()
-	m.home.Capabilities.ID = rows[len(rows)-1].ID
-	m.reconcileHome()
-	m.focusPane(ProfilesPane)
-	m.selectContext(0) // Locate Capability Pack…
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.form == nil || m.pending.action != "locate-source" || m.pending.source != "gone" {
-		t.Fatalf("L2 Locate Capability Pack did not preserve the unavailable pack identity: form=%v pending=%+v", m.form != nil, m.pending)
-	}
-	if !m.management.FormOverlay {
-		t.Fatal("Locate Capability Pack is not marked as a centered management overlay")
-	}
-	x, y, width, height, ok := m.setupOverlayBounds()
-	if !ok || y < 1 || width >= m.width || height >= m.height {
-		t.Fatalf("Locate Capability Pack did not use narrow overlay geometry: bounds=(%d,%d %dx%d) ok=%t", x, y, width, height, ok)
-	}
-	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Locate Capability Pack · gone", "Capabilities"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Locate Capability Pack overlay lost %q or its L1/L2 context:\n%s", want, view)
+	for _, capability := range m.capabilities() {
+		if capability.Source == "gone" {
+			t.Fatalf("runtime from another Pack created a browse route: %+v", capability)
 		}
-	}
-	m.Update(tea.WindowSizeMsg{Width: 79, Height: 15})
-	belowMinimum := ansi.Strip(m.View().Content)
-	if !strings.Contains(belowMinimum, "Resize to continue") || strings.Contains(belowMinimum, "Capability Pack directory") {
-		t.Fatalf("below-minimum Locate Capability Pack form exposed hidden controls instead of recovery:\n%s", belowMinimum)
 	}
 }
 
-func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresSourceForBinding(t *testing.T) {
+func TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -319,82 +297,8 @@ func TestUXObservedForeignProfileWithoutCatalogPackageKeepsDiagnosisAndRequiresS
 	if got := m.instanceSnapshot; got == nil || len(got.Profiles) != 1 || got.Profiles[0].Key != key || got.Profiles[0].URL != endpoint || got.Profiles[0].Ownership != "other-aact" {
 		t.Fatalf("real service did not expose the exact foreign runtime facts: %+v", got)
 	}
-	capabilities := m.capabilities()
-	if len(capabilities) != 1 || capabilities[0].CatalogIndex >= 0 {
-		t.Fatalf("fixture accidentally supplied a local catalog package: %+v", capabilities)
-	}
-	m.home.Capabilities.ID = capabilities[0].ID
-	m.reconcileHome()
-	profileIndex := -1
-	for i, row := range m.contextRows() {
-		if row.Kind == "profile" && row.ProfileIndex >= 0 {
-			profileIndex = i
-			break
-		}
-	}
-	if profileIndex < 0 {
-		t.Fatal("observed foreign profile was not reachable in the selected capability's L2")
-	}
-	m.focusPane(ProfilesPane)
-	m.selectContext(profileIndex)
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.result != nil || m.form == nil || m.workspace == nil || m.workspace.Key != key || m.workspace.Instance == nil || m.workspace.Instance.URL != endpoint {
-		t.Fatalf("foreign endpoint route did not preserve observed target into its workspace: result=%+v workspace=%+v output=%q", m.result, m.workspace, m.output)
-	}
-	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Overview", "Endpoint", "Agents", "Information"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("read-only observed workspace is missing section %q:\n%s", want, view)
-		}
-	}
-	for _, forbidden := range []string{"Configure named registrations", "Remove named registrations", "Start MCP", "Stop MCP"} {
-		if strings.Contains(view, forbidden) {
-			t.Errorf("observed-only workspace offers unsupported action %q:\n%s", forbidden, view)
-		}
-	}
-	m.workspace.SectionID = sectionEndpointID
-	m.form.SelectSectionID(sectionEndpointID)
-	m.form.FocusSection()
-	_, check := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if check != nil {
-		m.Update(check()) // L3 selection focuses the Endpoint details pane.
-	}
-	_, check = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if check == nil || !strings.Contains(ansi.Strip(m.View().Content), "> [ Check connection ]") {
-		t.Fatalf("Endpoint L4 does not expose its diagnostic action (cmd=%v area=%d):\n%s", check != nil, m.form.FocusArea(), ansi.Strip(m.View().Content))
-	}
-	_, runCheck := m.Update(check())
-	if runCheck == nil {
-		t.Fatal("Endpoint action did not call the connection service")
-	}
-	_, refresh := m.Update(runCheck())
-	if refresh != nil {
-		m.Update(refresh())
-	}
-	if m.result == nil || !strings.Contains(strings.Join(m.result.Rows, "\n"), endpoint) {
-		t.Fatalf("endpoint check did not retain its exact observed URL/result: %+v", m.result)
-	}
-	if runtime.starts != 0 || runtime.stops != 0 {
-		t.Fatalf("endpoint diagnosis changed foreign runtime lifecycle: starts=%d stops=%d", runtime.starts, runtime.stops)
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.result != nil {
-		t.Fatalf("Esc did not dismiss endpoint diagnostic before returning to Agents: %+v", m.result)
-	}
-	m.workspace.SectionID = sectionAgentsID
-	m.form.SelectSectionID(sectionAgentsID)
-	m.form.FocusSection()
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	view = ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "Locate Capability Pack") || !strings.Contains(view, "Complete agent bindings require") {
-		t.Fatalf("Agents does not explain source requirement and recovery action:\n%s", view)
-	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.pending.action != "locate-source" || m.pending.source != key.Source || m.registration != nil {
-		t.Fatalf("observed-only Agents bypassed source recovery: pending=%+v registration=%+v", m.pending, m.registration)
-	}
-	if runtime.starts != 0 || runtime.stops != 0 {
-		t.Fatalf("agent source lookup changed foreign runtime lifecycle: starts=%d stops=%d", runtime.starts, runtime.stops)
+	if capabilities := m.capabilities(); len(capabilities) != 0 {
+		t.Fatalf("runtime without a selected Capability Pack appeared in L1: %+v", capabilities)
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 func TestUXRegistrationOptionsAndBoundaryRejectGenericAll(t *testing.T) {
 	isolateUXUserHome(t, t.TempDir())
 	svc, _, store := fixture(t)
-	key := state.Key{Source: "foreign-windows", Package: "demo", Target: "cluster"}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "cluster"}
 	for _, id := range []string{"all", "generic", "generic:work", "generic-mcp:work"} {
 		t.Run(id, func(t *testing.T) {
 			_, err := configureUIRegistrationsTest(context.Background(), svc, viewmodel.RegistrationRequest{

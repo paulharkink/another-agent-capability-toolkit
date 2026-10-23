@@ -19,6 +19,9 @@ func (s *Service) UIConfigureRegistrations(ctx context.Context, q viewmodel.Regi
 	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.OperationResult{}, errors.New("instance reference (Capability Pack, capability, and instance) is required")
 	}
+	if err := s.requireActivePack(q.Ref.PackID); err != nil {
+		return viewmodel.OperationResult{}, err
+	}
 	for _, id := range q.AgentIDs {
 		kind, _, _ := strings.Cut(id, ":")
 		if strings.EqualFold(id, "all") || strings.EqualFold(kind, "generic") || strings.EqualFold(kind, "generic-mcp") {

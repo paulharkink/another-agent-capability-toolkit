@@ -70,6 +70,7 @@ type SetupInstallRequest struct {
 	ActiveInputGroups map[string]string
 	ResetInputs       []string
 	DestinationIDs    []string
+	Uninstall         bool
 	ExternalURL       string
 	ExternalURLs      map[string]string
 }

@@ -105,74 +105,100 @@ func TestPackWorkspaceMergesOnlyExactSavedRegistrationFacts(t *testing.T) {
 		t.Fatalf("another profile's registration was attributed to this one: %+v", got)
 	}
 }
-func TestProfileHomeSkillOnlyAndNoSyntheticProfile(t *testing.T) {
-	m, _ := profileHomeFixture(t)
+func TestProfileHomePlainSkillHasOneDefaultInstance(t *testing.T) {
+	m, backend := profileHomeFixture(t)
+	backend.profiles["plain"] = viewmodel.CapabilityProfileSnapshot{Profiles: []viewmodel.CapabilityProfile{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"},
+		Key: state.Key{Source: "one", Package: "plain", Target: "default"}, ConfigStatus: "configured",
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "plain", Status: "absent"}},
+	}}}
+	m.capabilityInstances = backend.profiles
 	m.home.Capabilities.Index = 1
-	m.home.Capabilities.ID = ""
+	m.home.Capabilities.ID = m.capabilities()[1].ID
 	m.reconcileHome()
 	rows := m.contextRows()
-	if len(rows) != 3 || !strings.Contains(rows[0].Label, "Skill · Not installed") || rows[1].Kind != "skill-access" {
-		t.Fatalf("zero-input skill must report state and offer explicit access management: %+v", rows)
+	if len(rows) != 2 || rows[0].Kind != "profile" || rows[0].Key.Target != "default" || !strings.Contains(rows[0].Label, "Not installed") {
+		t.Fatalf("plain skill should show its ordinary default Capability Instance: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Kind == "create-profile" {
+			t.Fatal("zero-input skill exposed a second instance action")
+		}
 	}
 	m.home.Focus = ProfilesPane
-	m.home.Context.Index = 1
+	m.home.Context.Index = 0
 	cmd := m.openContextRow()
-	if cmd != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatal("skill access row did not open targeted install/uninstall actions")
+	if cmd == nil {
+		t.Fatal("opening default skill did not load its Agent Access workspace")
 	}
-	labels := []string{}
-	for _, item := range m.homeMenuItems() {
-		labels = append(labels, item.Label)
+	m.Update(cmd())
+	if backend.previewRequest.Ref.Name != "default" || m.workspace == nil || m.workspace.SectionID != sectionAgentsID {
+		t.Fatalf("default skill Instance did not open Agent Access: ref=%+v workspace=%+v", backend.previewRequest.Ref, m.workspace)
 	}
-	menu := strings.Join(labels, "\n")
-	if !strings.Contains(menu, "Install skill for agents") || !strings.Contains(menu, "Uninstall skill from agents") {
-		t.Fatalf("skill access menu omitted targeted install/uninstall actions: %s", menu)
+}
+
+func TestPlainSkillUsesDefaultInstanceAndOpensAgentAccessStage(t *testing.T) {
+	m, backend := profileHomeFixture(t)
+	backend.profiles["plain"] = viewmodel.CapabilityInstanceSnapshot{Instances: []viewmodel.CapabilityInstance{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"},
+		Key: state.Key{Source: "one", Package: "plain", Target: "default"}, ConfigStatus: "configured",
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "plain", Status: "absent"}},
+	}}}
+	m.capabilityInstances = backend.profiles
+	m.home.Capabilities.Index = 1
+	m.home.Capabilities.ID = m.capabilities()[1].ID
+	m.reconcileHome()
+	rows := m.contextRows()
+	if len(rows) < 2 || rows[0].Kind != "profile" || rows[0].Key.Target != "default" || !strings.Contains(rows[0].Label, "Not installed") {
+		t.Fatalf("plain skill should be represented by its default Capability Instance: %+v", rows)
 	}
-	if m.form != nil || m.workspace != nil {
-		t.Fatalf("skill-only access opened a synthetic instance workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
+	cmd := m.openContextRow()
+	if cmd == nil {
+		t.Fatal("opening default skill Instance did not start setup loading")
 	}
-	v := m.View().Content
-	for _, bad := range []string{"Environment directory", "Related MCP instances", "Without an environment", "Set up another target"} {
-		if strings.Contains(v, bad) {
-			t.Fatal("obsolete UI: " + bad)
+	m.Update(cmd())
+	if backend.previewRequest.Ref.Name != "default" || backend.previewRequest.Ref.PackID != "one" {
+		t.Fatalf("Agent Access did not use the Pack-owned default Instance: %+v", backend.previewRequest.Ref)
+	}
+	if m.workspace == nil || m.workspace.SectionID != sectionAgentsID {
+		t.Fatalf("zero-input skill opened a configuration stage instead of Agent Access: %+v", m.workspace)
+	}
+	for _, row := range rows {
+		if row.Kind == "create-profile" {
+			t.Fatal("zero-input skill offered a duplicate Instance")
 		}
 	}
 }
 
-func TestSkillOnlyContextReportsInstalledStateAndKeepsTargetedActions(t *testing.T) {
-	m, _ := profileHomeFixture(t)
+func TestPlainSkillInstalledStateRequiresAgentObservation(t *testing.T) {
+	m, backend := profileHomeFixture(t)
 	m.home.Capabilities.Index = 1
 	m.home.Capabilities.ID = "plain"
-	m.inventory = []state.Installation{{AgentID: "codex", Component: "skill", Key: state.Key{Source: "one", Package: "plain"}}}
+	m.inventory = []state.Installation{{AgentID: "codex", Component: "skill", Key: state.Key{Source: "one", Package: "plain", Target: "default"}}}
+	backend.profiles["plain"] = viewmodel.CapabilityProfileSnapshot{Profiles: []viewmodel.CapabilityProfile{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"},
+		Key: state.Key{Source: "one", Package: "plain", Target: "default"}, ConfigStatus: "configured",
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "plain", Status: "installed"}},
+	}}}
+	m.capabilityInstances = backend.profiles
 	m.reconcileHome()
-
 	rows := m.contextRows()
-	if len(rows) < 2 || !strings.Contains(rows[0].Label, "Installed") {
-		t.Fatalf("L2 must report the actual installed skill state, got %#v", rows)
+	if len(rows) == 0 || !strings.Contains(rows[0].Label, "Installed") {
+		t.Fatalf("observed Agent registration did not mark capability installed: %+v", rows)
 	}
-	var manageIndex int = -1
-	for i, row := range rows {
-		if row.Kind == "skill-access" {
-			manageIndex = i
-			break
-		}
-	}
-	if manageIndex < 0 {
-		t.Fatalf("L2 has no skill access action: %#v", rows)
-	}
-	m.selectContext(manageIndex)
-	if m.openContextRow() != nil || m.home.Modal == nil || m.home.Modal.Kind != "actions" {
-		t.Fatalf("Manage skill access did not open the targeted install/uninstall actions: %#v", m.home.Modal)
-	}
-	labels := []string{}
-	for _, item := range m.homeMenuItems() {
-		labels = append(labels, item.Label)
-	}
-	joined := strings.Join(labels, "\n")
-	if !strings.Contains(joined, "Install skill for agents") || !strings.Contains(joined, "Uninstall skill from agents") {
-		t.Fatalf("targeted actions missing after opening L2 skill access: %s", joined)
+	backend.profiles["plain"] = viewmodel.CapabilityProfileSnapshot{Profiles: []viewmodel.CapabilityProfile{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"}, Key: state.Key{Source: "one", Package: "plain", Target: "default"},
+	}}}
+	m.capabilityInstances = backend.profiles
+	m.reconcileHome()
+	rows = m.contextRows()
+	if len(rows) == 0 || !strings.Contains(rows[0].Label, "Unknown") {
+		t.Fatalf("stale ledger entry was presented as observed registration: %+v", rows)
 	}
 }
+
 func TestProfileCreationCancelAndAccept(t *testing.T) {
 	m, b := profileHomeFixture(t)
 	for i, row := range m.contextRows() {
@@ -299,7 +325,7 @@ func (b *savedOnlyTransitionBackend) UIProfileSnapshot(context.Context) (viewmod
 	return b.snapshot, nil
 }
 
-func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.T) {
+func TestDiscardingWorkspaceDoesNotLeakAnotherPackSavedRows(t *testing.T) {
 	m, backend := profileHomeFixture(t)
 	key := state.Key{Source: "home", Package: "cluster-inspector", Target: "pms15"}
 	backendAfterDiscard := &savedOnlyTransitionBackend{
@@ -331,13 +357,9 @@ func TestDiscardingWorkspaceIntoSavedOnlyCapabilityRendersLegacyRows(t *testing.
 	}
 	m.Update(reload())
 
-	selected, ok := m.selectedCapability()
-	if !ok || selected.CatalogIndex >= 0 || selected.Package != key.Package {
-		t.Fatalf("post-discard selection = %+v, want saved-only capability %q", selected, key.Package)
-	}
 	view := m.View().Content
-	if !strings.Contains(view, "Capability Pack unavailable") || !strings.Contains(view, "pms15") {
-		t.Fatalf("saved-only capability was not rendered through legacy rows:\n%s", view)
+	if strings.Contains(view, key.Package) || strings.Contains(view, "pms15") {
+		t.Fatalf("another Pack's saved-only capability leaked after workspace discard:\n%s", view)
 	}
 	if strings.Contains(view, "Configuration profiles") {
 		t.Fatalf("saved-only capability entered configuration-profile rendering:\n%s", view)

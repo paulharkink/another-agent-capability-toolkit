@@ -34,6 +34,7 @@ type InstanceRequest struct {
 	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
 	Interactive, SkillsOnly              bool
+	Uninstall                            bool
 	ExternalURLs                         map[string]string
 }
 
@@ -106,6 +107,9 @@ func (s *Service) loadInstance(ref config.InstanceRef) (catalog.Package, config.
 		return p, config.Instance{}, state.Key{}, invalid(fmt.Errorf("Capability Pack %q is not selected", ref.PackID))
 	}
 	ref.PackID = s.Source.ID
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 && ref.Name != "" && ref.Name != "default" {
+		return p, config.Instance{}, state.Key{}, invalid(errors.New("zero-input skill capabilities use the single default instance"))
+	}
 	if ref.Name == "" {
 		instances, err := s.instancesForCapability(p.ID)
 		if err != nil {
@@ -153,6 +157,12 @@ func (s *Service) instancesForCapability(id string) ([]config.Instance, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p, packageErr := s.packageByID(id); packageErr == nil && p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		// A plain skill has one ordinary default Capability Instance, even if
+		// stale TOMLs or state records from older versions name other targets.
+		instances = []config.Instance{{Ref: config.InstanceRef{PackID: s.Source.ID, CapabilityID: id, Name: "default"}, Raw: map[string]any{}}}
+		return instances, nil
+	}
 	records, err := s.Store.Instances()
 	if err != nil {
 		return nil, err
@@ -181,8 +191,12 @@ func (s *Service) CreateInstance(ctx context.Context, ref config.InstanceRef) er
 	if ref.PackID != "" && ref.PackID != s.Source.ID {
 		return invalid(errors.New("select this Capability Pack before creating an instance"))
 	}
-	if _, err := s.packageByID(ref.CapabilityID); err != nil {
+	p, err := s.packageByID(ref.CapabilityID)
+	if err != nil {
 		return err
+	}
+	if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+		return invalid(errors.New("zero-input skill capabilities use one default instance and cannot create another instance"))
 	}
 	if !config.ValidInstanceName(ref.Name) {
 		return invalid(fmt.Errorf("invalid instance name %q", ref.Name))
@@ -998,8 +1012,11 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 		}
 	}
-	if len(items) > 0 && len(destIDs) == 0 {
+	if len(items) > 0 && len(destIDs) == 0 && q.DestinationIDs == nil {
 		return out, invalid(errors.New("select an agent destination"))
+	}
+	if len(items) > 0 && len(destIDs) == 0 && q.DestinationIDs != nil && !q.Uninstall {
+		return out, invalid(errors.New("Install requires at least one agent; use Uninstall to remove registrations"))
 	}
 	adapters := map[string]agents.Adapter{}
 	for _, id := range destIDs {

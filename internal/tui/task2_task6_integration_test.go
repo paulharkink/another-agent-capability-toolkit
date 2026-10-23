@@ -292,6 +292,14 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 	if values["grafana_session"] != formCookie || values["session_expiry"] != profileExpiry {
 		t.Fatalf("form overrides were not retained: %#v", values)
 	}
+	save := model.saveSetupInputs(values)
+	if save == nil {
+		t.Fatal("Save Inputs did not persist the edited authentication values")
+	}
+	model.Update(save())
+	if model.form.HasUnsavedChanges() {
+		t.Fatal("explicit Inputs Save did not clear the saved form draft")
+	}
 	cmd := model.applySetup(values)
 	batch, ok := cmd().(tea.BatchMsg)
 	if !ok || len(batch) == 0 {

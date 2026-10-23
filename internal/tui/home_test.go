@@ -189,6 +189,24 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatal(m.View().Content)
 	}
 }
+
+func TestHomeCatalogNeverInventsCapabilitiesFromRuntimeRecords(t *testing.T) {
+	m, msg := homeFixture()
+	msg.instanceSnapshot.Profiles = append(msg.instanceSnapshot.Profiles, viewmodel.Instance{
+		Key: state.Key{Source: "bundled", Package: "argocd", Target: "pms15"}, Name: "orphan runtime",
+		RuntimeStatus: "running", Ownership: "local",
+	})
+	m.Update(msg)
+	rows := m.capabilities()
+	if len(rows) != len(msg.catalog) {
+		t.Fatalf("L1 invented capabilities from runtime state: rows=%+v", rows)
+	}
+	for _, row := range rows {
+		if row.Source == "bundled" || row.Package == "argocd" {
+			t.Fatalf("runtime-only capability appeared in Pack catalog: %+v", row)
+		}
+	}
+}
 func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	m, msg := homeFixture()
 	for i := 0; i < 30; i++ {

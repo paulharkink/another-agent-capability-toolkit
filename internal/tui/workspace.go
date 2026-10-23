@@ -56,24 +56,27 @@ const (
 // the invoking layer and profile observation beside the target draft so later
 // route handling can restore Back without losing the parent selection.
 type workspaceState struct {
-	InstanceRef       config.InstanceRef
-	Key               state.Key
-	SelectedMCP       string
-	SelectedRuntimeID string
+	InstanceRef          config.InstanceRef
+	Key                  state.Key
+	SelectedMCP          string
+	SelectedRuntimeID    string
 	RuntimeRecordTargets []runtimeRecordTarget
-	Section           string
-	SectionID         string
-	InvokingView      string
-	InvokingSelection int
-	Active            bool
-	Existing          bool
-	Installed         bool
-	InputsSaved       bool
-	ObservedOnly      bool
-	Preview           *viewmodel.SetupPreview
-	Instance          *viewmodel.Instance
-	InstanceSnapshot  *viewmodel.InstanceSnapshot
-	Draft             map[string]any
+	Section              string
+	SectionID            string
+	InvokingView         string
+	InvokingSelection    int
+	Active               bool
+	Existing             bool
+	Installed            bool
+	RegisteredMCPs       map[string]bool
+	InputsSaved          bool
+	AgentActionsKnown    bool
+	AgentActionsDisabled bool
+	ObservedOnly         bool
+	Preview              *viewmodel.SetupPreview
+	Instance             *viewmodel.Instance
+	InstanceSnapshot     *viewmodel.InstanceSnapshot
+	Draft                map[string]any
 }
 
 type runtimeRecordTarget struct {
@@ -596,10 +599,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	m.form.SetSectionContentID(sectionAgentsID, agentAccess)
-	m.form.SetSectionActionsID(sectionAgentsID,
-		forms.FormAction{ID: "install-selected", Label: "Install selected"},
-		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected"},
-	)
+	m.refreshAgentAccessActions()
 
 	if preview.MCP {
 		runtime := []string{}
@@ -680,7 +680,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
 			startDisabled := m.instanceActionReason(startRow, "s")
-			if !m.workspace.InputsSaved || !m.workspace.Installed || (m.form != nil && m.form.HasUnsavedChanges()) {
+			if !m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(definition.Name) || m.hasUnsavedSetupInputs() {
 				if startDisabled != "" {
 					startDisabled += " · "
 				}
@@ -758,6 +758,26 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.form.SetSubmitLabel("Save")
 	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
 	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+}
+
+func (m *Model) refreshAgentAccessActions() {
+	if m.form == nil || m.workspace == nil || !m.workspace.Active {
+		return
+	}
+	disabled := m.hasUnsavedSetupInputs()
+	if m.workspace.AgentActionsKnown && m.workspace.AgentActionsDisabled == disabled {
+		return
+	}
+	m.workspace.AgentActionsKnown = true
+	m.workspace.AgentActionsDisabled = disabled
+	reason := ""
+	if disabled {
+		reason = dirtyInputsAgentActionReason
+	}
+	m.form.SetSectionActionsID(sectionAgentsID,
+		forms.FormAction{ID: "install-selected", Label: "Install selected", Disabled: reason},
+		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected", Disabled: reason},
+	)
 }
 
 func formSectionFields(sections []forms.FormSection, title string) []string {

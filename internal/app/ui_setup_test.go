@@ -135,17 +135,84 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	}
 }
 
-func TestUIInstallSkillOnlyDoesNotCreateInstanceRecord(t *testing.T) {
+func TestUIInstallPlainSkillUsesPackOwnedDefaultInstance(t *testing.T) {
 	svc, _, store := fixture(t)
-	result, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"all"}})
+	svc.Source.InstanceRoot = t.TempDir()
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{"codex"},
+	})
+	if err != nil {
+		t.Fatalf("install default skill instance through ordinary setup: %v", err)
+	}
+	if !result.Saved || len(result.Changes) != 1 || result.Changes[0].Component != "skill" || result.Changes[0].AgentID != "codex" {
+		t.Fatalf("ordinary default-instance install did not report its registered skill: %+v", result)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key.Source != svc.Source.ID || instances[0].Key.Package != "demo" || instances[0].Key.Target != "default" {
+		t.Fatalf("skill installation did not retain its Pack-owned default Instance: %+v, %v", instances, err)
+	}
+}
+
+func TestPlainSkillCannotCreateAdditionalCapabilityInstances(t *testing.T) {
+	svc, _, store := fixture(t)
+	if err := svc.CreateInstance(context.Background(), config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "another"}); err == nil {
+		t.Fatal("plain skill created an extra instance instead of enforcing its single default")
+	}
+	rows, err := store.Instances()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rejected extra instance changed Pack state: %+v %v", rows, err)
+	}
+}
+
+func TestUIInstallWithNoRemainingAgentsUninstallsBindingsButKeepsInstance(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	ref := config.InstanceRef{PackID: svc.Source.ID, CapabilityID: "demo", Name: "default"}
+	first, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{"codex"},
+	})
+	if err != nil || len(first.Changes) != 1 {
+		t.Fatalf("prepare first agent registration: %+v %v", first, err)
+	}
+	result, err := svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{},
+	})
+	if err == nil {
+		t.Fatal("empty Install request unexpectedly removed the agent registration")
+	}
+	rows, err := store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].AgentID != "codex" {
+		t.Fatalf("rejected empty Install changed the existing agent binding: %+v %v", rows, err)
+	}
+	result, err = svc.UIInstall(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: []string{}, Uninstall: true,
+	})
+	if err != nil {
+		t.Fatalf("uninstall final agent registration: %+v %v", result, err)
+	}
+	rows, err = store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("agent binding remained after uninstall: %+v %v", rows, err)
+	}
+	instances, err := store.Instances()
+	if err != nil || len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("agent uninstall removed the Capability Instance: %+v %v", instances, err)
+	}
+}
+
+func TestUIInstallSkillOnlyCompatibilityUsesDefaultInstance(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
+	result, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex"}})
 	if err != nil {
 		t.Fatalf("install skill-only capability: %v", err)
 	}
 	if len(result.Changes) == 0 {
 		t.Fatalf("skill install did not report applied effects: %+v", result)
 	}
-	if result.Saved {
-		t.Fatal("direct skill install reported instance inputs saved")
+	if !result.Saved {
+		t.Fatal("default Capability Instance install did not report a saved instance")
 	}
 	if _, err := os.Stat(filepath.Join(result.Changes[0].Destination, "SKILL.md")); err != nil {
 		t.Fatalf("installed skill content is missing: %v", err)
@@ -154,20 +221,21 @@ func TestUIInstallSkillOnlyDoesNotCreateInstanceRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(instances) != 0 {
-		t.Fatalf("skill-only install created a synthetic instance record: %+v", instances)
+	if len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("skill install did not create its ordinary default instance record: %+v", instances)
 	}
 }
 
 func TestUIUninstallSkillOnlyRemovesOnlySelectedAgent(t *testing.T) {
 	svc, _, store := fixture(t)
+	svc.Source.InstanceRoot = t.TempDir()
 	_, err := svc.UIInstallSkillOnly(context.Background(), viewmodel.SkillOnlyInstallRequest{
 		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex", "opencode"},
 	})
 	if err != nil {
 		t.Fatalf("install for selected agents: %v", err)
 	}
-	result, err := svc.UIUninstallSkillOnly(context.Background(), viewmodel.SkillOnlyUninstallRequest{
+	_, err = svc.UIUninstallSkillOnly(context.Background(), viewmodel.SkillOnlyUninstallRequest{
 		SourceID: "fixture", PackageID: "demo", DestinationIDs: []string{"codex"},
 	})
 	if err != nil {
@@ -181,11 +249,8 @@ func TestUIUninstallSkillOnlyRemovesOnlySelectedAgent(t *testing.T) {
 		t.Fatalf("uninstall changed unrelated destinations: %+v", rows)
 	}
 	instances, err := store.Instances()
-	if err != nil || len(instances) != 0 {
-		t.Fatalf("skill-only uninstall created or retained instance state: %+v %v", instances, err)
-	}
-	if len(result.Changes) != 1 || result.Changes[0].AgentID != "codex" {
-		t.Fatalf("uninstall result did not identify exact removed target: %+v", result)
+	if err != nil || len(instances) != 1 || instances[0].Key.Target != "default" {
+		t.Fatalf("agent uninstall did not preserve the default Capability Instance: %+v %v", instances, err)
 	}
 }
 

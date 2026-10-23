@@ -475,6 +475,15 @@ func (m *FormModel) HasUnsavedChanges() bool {
 	return m.editor.HasUnsavedChanges() || len(m.ResetFields()) > 0 || (m.editing && m.buffer != m.editOriginal)
 }
 
+// HasUnsavedField reports whether one named input differs from its saved
+// baseline, including an active edit buffer or an explicit inherited-value reset.
+func (m *FormModel) HasUnsavedField(name string) bool {
+	if !answerValueEqual(m.editor.original[name], m.editor.values[name]) || m.resetApplied[name] {
+		return true
+	}
+	return m.editing && m.selected < len(m.defs) && m.defs[m.selected].Name == name && m.buffer != m.editOriginal
+}
+
 // ChangedFieldSummary returns changed field labels in declaration order and
 // the number omitted by limit. It deliberately never returns field values.
 func (m *FormModel) ChangedFieldSummary(limit int) ([]string, int) {

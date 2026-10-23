@@ -464,48 +464,15 @@ func TestForeignSourceCapabilityRemainsSelectableAndRegistrable(t *testing.T) {
 	foreign.CanConfigureRegistrations = true
 	m.Update(m.load()())
 	rows := m.capabilities()
-	if len(rows) != 2 {
-		t.Fatalf("foreign capability missing: %#v", rows)
-	}
-	m.selectPane(CapabilitiesPane, 1)
-	if rows[1].Source != "another-source" || rows[1].CatalogIndex >= 0 {
-		t.Fatalf("wrong synthetic identity: %#v", rows[1])
-	}
-	if !strings.Contains(m.View().Content, "another-source") {
-		t.Fatal("foreign source label is missing")
-	}
-	id := m.home.Capabilities.ID
-	for _, action := range []string{"parameters", "i", "a", "s"} {
-		cmd := m.homeOperation(action)
-		if cmd != nil || m.form != nil || m.busy || !strings.Contains(m.output, "active catalog") {
-			t.Fatalf("foreign capability %s attempted local package operation", action)
+	for _, row := range rows {
+		if row.Source != "team-source" {
+			t.Fatalf("inactive Pack capability leaked into the selected Pack catalog: %#v", row)
 		}
 	}
-	m.focusPane(ProfilesPane)
-	m.selectPane(ProfilesPane, 0)
-	foreignKey := b.snapshot.Profiles[2].Key
-	profileAdapter := &registrationWorkspaceBackend{Backend: b, profileBackend: b, setupBackendFixture: &setupBackendFixture{}}
-	m.backend = profileAdapter
-	selected := false
-	for index, row := range m.contextRows() {
-		if row.Kind == "profile" && row.Key == foreignKey {
-			m.selectContext(index)
-			selected = true
-			break
+	for _, row := range m.contextRows() {
+		if row.Key.Source == "another-source" {
+			t.Fatalf("inactive Pack runtime leaked into selected Pack navigation: %#v", row)
 		}
-	}
-	if !selected {
-		t.Fatal("foreign profile did not remain selectable")
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.form == nil || !m.workspace.ObservedOnly || !strings.Contains(strings.ToLower(m.View().Content), "locate capability pack") {
-		t.Fatalf("unknown catalog source incorrectly exposed local capability binding controls: workspace=%+v\n%s", m.workspace, m.View().Content)
-	}
-	press(m, tea.KeyEscape, "")
-	b.snapshot.Profiles[2].Name = "Remote renamed"
-	m.Update(m.load()())
-	if m.home.Capabilities.ID != id {
-		t.Fatal("synthetic capability identity changed on refresh")
 	}
 }
 

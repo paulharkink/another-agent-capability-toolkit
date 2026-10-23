@@ -109,27 +109,28 @@ func TestHomeEscapeAndPaneKeysMoveOneLayerAtATime(t *testing.T) {
 	}
 }
 
-func TestSkillOnlyCapabilityHasUsableLayerTwoSetupAndDetails(t *testing.T) {
+func TestPlainSkillAgentAccessUsesPackOwnedDefaultInstanceWorkspace(t *testing.T) {
 	m, _ := homeFixture()
-	backend := &zeroInputSkillSetupBackend{}
-	m.backend = skillOnlyInstanceBackend{backend}
+	m.backend = skillOnlyInstanceBackend{&zeroInputSkillSetupBackend{}}
 	selectPlainSkill(t, m)
-	m.focusPane(ProfilesPane)
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = 0
 	view := m.View().Content
-	for _, want := range []string{"Manage skill access", "View capability details", "Skill · Not installed"} {
+	for _, want := range []string{"Instances", "View capability details", "default · Not installed"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("skill-only layer 2 missing %q:\n%s", want, view)
 		}
 	}
-	if cmd := m.homeOperation("install-skill-only"); cmd != nil {
-		t.Fatal("opening the skill-only install target selector unexpectedly started an operation")
+	cmd := m.openContextRow()
+	if cmd == nil {
+		t.Fatal("opening the default instance did not load the ordinary setup workspace")
 	}
-	if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "install-skill-only" {
-		t.Fatalf("skill-only L2 Install skill did not open its targeted Agent access action: form=%v pending=%+v", m.form != nil, m.pendingSkillOnly)
+	m.Update(cmd())
+	if m.form == nil || m.workspace == nil || m.workspace.Key.Target != "default" || m.workspace.Key.Package != "plain" {
+		t.Fatalf("Agent access did not use the default Pack Instance: workspace=%+v form=%v", m.workspace, m.form != nil)
 	}
-	assertAgentTargetSelector(t, m)
-	if strings.Contains(m.View().Content, "already installed") && backend.skillOnlyRequest == nil {
-		t.Fatal("L2 claims the skill is installed without an installed destination")
+	if m.form.SectionID() != sectionAgentsID {
+		t.Fatalf("plain skill did not open on Agent Access stage: %q", m.form.SectionID())
 	}
 }
 

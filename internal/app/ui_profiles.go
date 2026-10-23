@@ -17,6 +17,9 @@ import (
 // asking the runtime for logs. A stale UI row can therefore never turn a
 // not-yet-created target into a Docker logs request.
 func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, error) {
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
+	}
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
@@ -41,6 +44,9 @@ func (s *Service) UIProfileLogs(ctx context.Context, key state.Key) (string, err
 // UIInstanceRun performs a lifecycle action for one observed MCP child definition.
 // The child key is preserved so a named MCP action never affects a sibling.
 func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Key) (string, error) {
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
+	}
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
@@ -61,6 +67,9 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runtimeID string) (string, error) {
 	if runtimeID == "" {
 		return "", errors.New("runtime ID is required")
+	}
+	if err := s.requireActivePack(key.Source); err != nil {
+		return "", err
 	}
 	source, err := s.forSource(key.Source)
 	if err != nil {

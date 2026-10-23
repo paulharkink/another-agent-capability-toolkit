@@ -55,16 +55,7 @@ func TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference(t *
 			break
 		}
 	}
-	if targetIndex < 0 {
-		t.Fatalf("legacy saved row was not projected for profile navigation: focus=%v caps=%+v rows=%+v", m.home.Focus, m.capabilities(), rows)
-	}
-	m.selectContext(targetIndex)
-	cmd := m.openContextRow()
-	if cmd == nil {
-		t.Fatal("legacy saved row did not project to a InstanceRef workspace request")
-	}
-	m.Update(cmd())
-	if m.workspace == nil || m.workspace.InstanceRef.PackID != "one" || m.workspace.InstanceRef.CapabilityID != "inspect" || m.workspace.InstanceRef.Name != "canary" || m.workspace.Key.Environment != "" {
-		t.Fatalf("legacy row was not projected into pack/capability/profile identity: workspace=%+v", m.workspace)
+	if targetIndex >= 0 {
+		t.Fatalf("unlinked ledger row appeared as an editable Capability Instance: %+v", rows[targetIndex])
 	}
 }

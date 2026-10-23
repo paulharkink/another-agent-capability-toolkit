@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -22,12 +23,12 @@ func TestHomeShowsRecordedInstallationStatusWithoutBatchControls(t *testing.T) {
 	}
 	m.Update(msg)
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Inspector", "Partial", "Plain", "Installed", "Empty", "Not installed", "AACT records"} {
+	for _, want := range []string{"Inspector", "Plain", "Empty", "AACT records: Unknown"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("home missing %q:\n%s", want, view)
 		}
 	}
-	for _, unwanted := range []string{"[ ]", "[x]", "Apply marked", "Marked capabilities", "Space Mark"} {
+	for _, unwanted := range []string{"[ ]", "[x]", "Apply marked", "Marked capabilities", "Space Mark", "Partial", "Installed", "Not installed"} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("home still shows %q:\n%s", unwanted, view)
 		}
@@ -58,8 +59,8 @@ func TestMultiMCPInstallationDetailsRequireEveryDeclaredChild(t *testing.T) {
 	msg.inventory = []state.Installation{{Key: state.Key{Source: "one", Package: "inspect", Target: "production", MCP: "alpha"}, AgentID: "codex", Component: "mcp"}}
 	m.Update(msg)
 	status, details := m.installationDetails(CapabilityRow{Source: "one", Package: "inspect", MCP: true, MCPNames: []string{"alpha", "beta"}})
-	if status != "Partial" || len(details) != 2 || !strings.Contains(details[0], "alpha") || !strings.Contains(details[1], "beta MCP registration: no AACT record") {
-		t.Fatalf("multi-MCP details implied complete binding from one child: status=%q details=%v", status, details)
+	if status != "Unknown" || len(details) != 1 || !strings.Contains(details[0], "not been observed") {
+		t.Fatalf("ledger-only multi-MCP registrations implied installed state: status=%q details=%v", status, details)
 	}
 }
 
@@ -68,18 +69,18 @@ func TestInstallationStatusRequiresOneCompleteTargetAndDestinationBinding(t *tes
 	c := CapabilityRow{Source: "one", Package: "inspect", Skill: true, MCP: true, MCPNames: []string{"alpha", "beta"}}
 	partialProfile := state.Key{Source: "one", Package: "inspect", Target: "prod"}
 	completeProfile := state.Key{Source: "one", Package: "inspect", Target: "local"}
-	msg.instanceSnapshot = &viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{
-		{Key: partialProfile, Name: "prod", RuntimeStatus: "never-started", Ownership: "local"},
-		{Key: completeProfile, Name: "local", RuntimeStatus: "never-started", Ownership: "local"},
-	}}
+	msg.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{"inspect": {Instances: []viewmodel.CapabilityInstance{
+		{Key: partialProfile, Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "prod"}, Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "inspect", Status: "installed"}, {AgentID: "claude", Kind: "mcp", Name: "alpha", Status: "installed"}}},
+		{Key: completeProfile, Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "local"}, Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "inspect", Status: "installed"}, {AgentID: "codex", Kind: "mcp", Name: "alpha", Status: "installed"}, {AgentID: "codex", Kind: "mcp", Name: "beta", Status: "installed"}}},
+	}}}
 	msg.inventory = []state.Installation{
 		{Key: partialProfile, AgentID: "codex", Component: "skill"},
 		{Key: state.Key{Source: partialProfile.Source, Package: partialProfile.Package, Target: partialProfile.Target, MCP: "alpha"}, AgentID: "claude", Component: "mcp"},
 		{Key: state.Key{Source: partialProfile.Source, Package: partialProfile.Package, Target: partialProfile.Target, MCP: "beta"}, AgentID: "claude", Component: "mcp"},
 	}
 	m.Update(msg)
-	if status, _ := m.installationDetails(c); status != "Partial" {
-		t.Fatalf("components split across destinations were reported as complete: %q", status)
+	if status, _ := m.installationDetails(c); status != "Installed" {
+		t.Fatalf("an observed Agent registration did not mark the capability installed: %q", status)
 	}
 
 	msg.inventory = append(msg.inventory,
@@ -90,5 +91,42 @@ func TestInstallationStatusRequiresOneCompleteTargetAndDestinationBinding(t *tes
 	m.Update(msg)
 	if status, _ := m.installationDetails(c); status != "Installed" {
 		t.Fatalf("complete multi-MCP destination binding was not recognized: %q", status)
+	}
+}
+
+func TestRunningMCPWithoutAgentRegistrationIsNotReportedInstalled(t *testing.T) {
+	m, msg := homeFixture()
+	key := state.Key{Source: "one", Package: "inspect", Target: "production"}
+	msg.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{"inspect": {Instances: []viewmodel.CapabilityInstance{{
+		Key: key, Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "production"}, MCPs: []viewmodel.RuntimeStatus{{MCPID: "inspect", Status: "running"}}, Components: []viewmodel.ComponentStatus{},
+	}}}}
+	msg.inventory = []state.Installation{{Key: state.Key{Source: key.Source, Package: key.Package, Target: key.Target, MCP: "inspect"}, AgentID: "codex", Component: "mcp"}}
+	m.Update(msg)
+	status, details := m.installationDetails(CapabilityRow{Source: "one", Package: "inspect", MCP: true, MCPNames: []string{"inspect"}})
+	if status != "Unknown" || len(details) != 1 || !strings.Contains(details[0], "Agent registration observation") {
+		t.Fatalf("runtime/ledger state without an Agent observation was reported as installed: %q %v", status, details)
+	}
+}
+
+func TestCapabilityInstalledStatusUsesAnyAchievedInstanceRegistration(t *testing.T) {
+	m, msg := homeFixture()
+	key := state.Key{Source: "one", Package: "inspect", Target: "saved-instance"}
+	msg.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{
+		"inspect": {Instances: []viewmodel.CapabilityInstance{{
+			Ref: config.InstanceRef{PackID: "one", CapabilityID: "inspect", Name: "saved-instance"}, Key: key,
+			CompletionScopeKnown: true, CompletionScopeRelevant: true,
+			SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "skill", Name: "inspect"}},
+			EligibleDestinations: []string{"claude"},
+			Components: []viewmodel.ComponentStatus{
+				{AgentID: "claude", Kind: "skill", Name: "inspect", Status: "absent"},
+				{AgentID: "codex", Kind: "skill", Name: "inspect", Status: "installed", Managed: true},
+			},
+		}}},
+	}
+	msg.inventory = []state.Installation{{Key: key, AgentID: "codex", Component: "skill"}}
+	m.Update(msg)
+	status, _ := m.installationDetails(CapabilityRow{Source: "one", Package: "inspect", Skill: true})
+	if status != "Installed" {
+		t.Fatalf("registered Pack Instance must make the Capability Installed regardless of pending selection: %q", status)
 	}
 }

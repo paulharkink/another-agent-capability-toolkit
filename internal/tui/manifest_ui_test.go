@@ -31,8 +31,9 @@ func TestManifestSectionsPreserveDeclaredOrderAndDoNotInferFieldGroups(t *testin
 
 type zeroInputSkillSetupBackend struct {
 	fixtureBackend
-	skillOnlyRequest *viewmodel.SkillOnlyInstallRequest
-	skillOnlyRemoval *viewmodel.SkillOnlyUninstallRequest
+	installRequest *viewmodel.SetupInstallRequest
+	installed      bool
+	mcp            bool
 }
 
 type skillOnlyInstanceBackend struct{ *zeroInputSkillSetupBackend }
@@ -43,20 +44,13 @@ func (skillOnlyInstanceBackend) UICapabilityInstances(context.Context) (map[stri
 func (skillOnlyInstanceBackend) UICreateInstance(context.Context, config.InstanceRef) error {
 	return nil
 }
-func (b *zeroInputSkillSetupBackend) UIUninstallSkillOnly(_ context.Context, request viewmodel.SkillOnlyUninstallRequest) (viewmodel.OperationResult, error) {
-	b.skillOnlyRemoval = &request
-	return viewmodel.OperationResult{Message: "Removed"}, nil
+func (b *zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
+	return viewmodel.SetupPreview{Key: setupProfileKey(request), MCP: b.mcp, PackageName: request.Ref.CapabilityID, Destinations: []viewmodel.SetupDestination{{ID: "codex", Name: "Codex", Selected: b.installed, Detected: true}}}, nil
 }
-
-func (zeroInputSkillSetupBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
-	return viewmodel.SetupPreview{Key: setupProfileKey(request)}, nil
-}
-func (zeroInputSkillSetupBackend) UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
-	return viewmodel.OperationResult{}, nil
-}
-func (b *zeroInputSkillSetupBackend) UIInstallSkillOnly(_ context.Context, request viewmodel.SkillOnlyInstallRequest) (viewmodel.OperationResult, error) {
-	b.skillOnlyRequest = &request
-	return viewmodel.OperationResult{Message: "Installed"}, nil
+func (b *zeroInputSkillSetupBackend) UIInstall(_ context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.installRequest = &request
+	b.installed = len(request.DestinationIDs) > 0
+	return viewmodel.OperationResult{Saved: true}, nil
 }
 
 func TestManifestlessSectionsUseInputOrderAndOnlyMCPAddsRuntimeSections(t *testing.T) {
@@ -103,74 +97,120 @@ func TestDestinationPresentationUsesSkillPathsAndRetainsMCPConfigPaths(t *testin
 	}
 }
 
-func TestSkillOnlyZeroInputOffersTargetedInstallAndUninstall(t *testing.T) {
-	t.Run("install", func(t *testing.T) {
-		m, _ := homeFixture()
-		backend := &zeroInputSkillSetupBackend{}
-		m.backend = skillOnlyInstanceBackend{backend}
-		selectPlainSkill(t, m)
-		if cmd := m.homeOperation("install-skill-only"); cmd != nil {
-			t.Fatal("opening agent selector unexpectedly started an operation")
-		}
-		if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "install-skill-only" {
-			t.Fatalf("targeted install selector did not open: form=%t pending=%+v", m.form != nil, m.pendingSkillOnly)
-		}
-		assertAgentTargetSelector(t, m)
-		selected := firstSelectableAgent(t, m)
-		if err := m.form.ApplyValues(map[string]any{"agents": []string{selected}}); err != nil {
-			t.Fatal(err)
-		}
-		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-		if cmd == nil {
-			t.Fatal("saving target selection did not dispatch install")
-		}
-		m.Update(cmd())
-		if backend.skillOnlyRequest == nil || len(backend.skillOnlyRequest.DestinationIDs) != 1 || backend.skillOnlyRequest.DestinationIDs[0] != selected {
-			t.Fatalf("install did not receive the exact selected agent: %+v", backend.skillOnlyRequest)
-		}
-		if m.creatingInstance != nil {
-			t.Fatal("skill-only install created a fake instance")
-		}
-	})
-	t.Run("uninstall", func(t *testing.T) {
-		m, _ := homeFixture()
-		backend := &zeroInputSkillSetupBackend{}
-		m.backend = skillOnlyInstanceBackend{backend}
-		selectPlainSkill(t, m)
-		selected := firstSelectableAgent(t, m)
-		m.inventory = []state.Installation{{Key: state.Key{Source: "one", Package: "plain"}, AgentID: selected, Component: "skill"}}
-		if cmd := m.homeOperation("uninstall-skill-only"); cmd != nil {
-			t.Fatal("opening agent selector unexpectedly started an operation")
-		}
-		if m.form == nil || m.pendingSkillOnly == nil || m.pendingSkillOnly.Action != "uninstall-skill-only" {
-			t.Fatalf("targeted uninstall selector did not open: form=%t pending=%+v", m.form != nil, m.pendingSkillOnly)
-		}
-		assertAgentTargetSelector(t, m)
-		if got, _ := m.form.Values()["agents"].([]string); len(got) != 1 || got[0] != selected {
-			t.Fatalf("installed destination was not selected by default: %v want %q", got, selected)
-		}
-		_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-		if cmd == nil {
-			t.Fatal("saving target selection did not dispatch uninstall")
-		}
-		m.Update(cmd())
-		if backend.skillOnlyRemoval == nil || len(backend.skillOnlyRemoval.DestinationIDs) != 1 || backend.skillOnlyRemoval.DestinationIDs[0] != selected {
-			t.Fatalf("uninstall did not receive the exact selected agent: %+v", backend.skillOnlyRemoval)
-		}
-		if m.creatingInstance != nil {
-			t.Fatal("skill-only uninstall created a fake instance")
-		}
-	})
+func TestPlainSkillAgentActionsUseDefaultInstanceWorkspace(t *testing.T) {
+	for _, scenario := range []struct {
+		label     string
+		installed bool
+		mcp       bool
+	}{
+		{label: "plain skill keyboard install"},
+		{label: "plain skill mouse uninstall", installed: true},
+		{label: "MCP-backed keyboard install", mcp: true},
+		{label: "MCP-backed mouse uninstall", installed: true, mcp: true},
+	} {
+		t.Run(scenario.label, func(t *testing.T) {
+			m, _ := homeFixture()
+			m.Update(tea.WindowSizeMsg{Width: 120, Height: 42})
+			backend := &zeroInputSkillSetupBackend{installed: scenario.installed, mcp: scenario.mcp}
+			m.backend = skillOnlyInstanceBackend{backend}
+			var request viewmodel.SetupRequest
+			if scenario.mcp {
+				request = viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "cluster", Name: "default"}}
+				m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{}
+				cmd := m.openTargetWorkspace(request, "Agents")
+				if cmd == nil {
+					t.Fatal("opening the MCP-backed instance did not open setup workspace")
+				}
+				m.Update(cmd())
+			} else {
+				selectPlainSkill(t, m)
+				m.home.Focus = ProfilesPane
+				m.home.Context.Index = 0
+				cmd := m.openContextRow()
+				if cmd == nil {
+					t.Fatal("opening the default instance did not open setup workspace")
+				}
+				m.Update(cmd())
+				request = viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"}}
+			}
+			if m.workspace == nil || m.workspace.Key.Target != "default" || m.pendingSetup == nil || m.form.SectionID() != sectionAgentsID {
+				t.Fatalf("Agent Access did not bind the default Capability Instance: workspace=%+v pending=%+v section=%q", m.workspace, m.pendingSetup, m.form.SectionID())
+			}
+			if m.pendingSetup.MCP != scenario.mcp {
+				t.Fatalf("fixture did not exercise expected capability kind: MCP=%t want %t", m.pendingSetup.MCP, scenario.mcp)
+			}
+			var actionCmd tea.Cmd
+			if scenario.installed {
+				// Click the visible button using screen coordinates through the
+				// same overlay translation used by the running TUI.
+				plain := ansi.Strip(m.form.View().Content)
+				button := "[ Uninstall selected ]"
+				x, y, _, _, ok := m.setupOverlayBounds()
+				if !ok {
+					t.Fatal("Agent Access overlay has no click bounds")
+				}
+				for lineNo, line := range strings.Split(plain, "\n") {
+					if at := strings.Index(line, button); at >= 0 {
+						_, actionCmd = m.Update(tea.MouseClickMsg{X: x + at, Y: y + lineNo, Button: tea.MouseLeft})
+						break
+					}
+				}
+				if actionCmd == nil {
+					t.Fatalf("mouse could not activate %q:\n%s", button, plain)
+				}
+			} else {
+				for _, key := range []tea.KeyPressMsg{{Code: tea.KeyRight}, {Code: tea.KeySpace}} {
+					_, _ = m.Update(key)
+				}
+				if got, _ := m.form.Values()[m.pendingSetupField].([]string); len(got) != 1 || got[0] != "codex" {
+					t.Fatalf("keyboard could not select destination through focused Agent Access form: field=%q area=%d values=%+v view:\n%s", m.pendingSetupField, m.form.FocusArea(), m.form.Values(), ansi.Strip(m.View().Content))
+				}
+				for _, key := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyEnter}} {
+					_, actionCmd = m.Update(key)
+					if key.Code != tea.KeyEnter && actionCmd != nil {
+						m.Update(actionCmd)
+					}
+				}
+				if actionCmd == nil {
+					t.Fatalf("keyboard could not reach Install selected:\n%s", ansi.Strip(m.form.View().Content))
+				}
+			}
+			_, operationCmd := m.Update(actionCmd())
+			if operationCmd == nil {
+				t.Fatalf("Agent Access action was not dispatched to install: %q", m.output)
+			}
+			m.Update(runTeaCmd(t, m, operationCmd))
+			wantCapability := "plain"
+			if scenario.mcp {
+				wantCapability = "cluster"
+			}
+			if backend.installRequest == nil || backend.installRequest.Ref.PackID != "one" || backend.installRequest.Ref.CapabilityID != wantCapability || backend.installRequest.Ref.Name != "default" {
+				t.Fatalf("agent action bypassed the ordinary Pack-owned default instance: request=%+v output=%q pending=%+v form=%v", backend.installRequest, m.output, m.pendingSetup, m.form != nil)
+			}
+			if scenario.installed && len(backend.installRequest.DestinationIDs) != 0 {
+				t.Fatalf("uninstall left selected agents installed: %+v", backend.installRequest)
+			}
+			if !scenario.installed && (len(backend.installRequest.DestinationIDs) != 1 || backend.installRequest.DestinationIDs[0] != "codex") {
+				t.Fatalf("install did not submit selected agent: %+v", backend.installRequest)
+			}
+		})
+	}
 }
 
 func selectPlainSkill(t *testing.T, m *Model) {
 	t.Helper()
 	m.agents = []string{"codex", "opencode"}
+	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
+		Ref: config.InstanceRef{PackID: "one", CapabilityID: "plain", Name: "default"},
+		Key: state.Key{Source: "one", Package: "plain", Target: "default"}, ConfigStatus: "configured",
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "skill", Name: "plain", Status: "absent"}},
+	}}}}
 	for index, capability := range m.capabilities() {
 		if capability.Package == "plain" {
 			m.home.Capabilities.ID = capability.ID
 			m.home.Capabilities.Index = index
 			m.home.Focus = CapabilitiesPane
+			m.reconcileHome()
 			return
 		}
 	}
@@ -307,6 +347,7 @@ func TestRuntimeControlsAddressTheSelectedManifestMCPChild(t *testing.T) {
 	m.Update(open())
 	m.workspace.Preview.Configured = true
 	m.workspace.Installed = true
+	m.workspace.RegisteredMCPs = map[string]bool{"alpha": true, "beta": true}
 	m.configureWorkspaceForm(*m.workspace.Preview)
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
@@ -445,7 +486,7 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 	}
 }
 
-func TestSkillOnlyActionsOfferExplicitAgentInstallAndUninstall(t *testing.T) {
+func TestPlainSkillActionsOfferOrdinaryAgentAccessOnly(t *testing.T) {
 	m, _ := homeFixture()
 	m.backend = skillOnlyInstanceBackend{&zeroInputSkillSetupBackend{}}
 	selectPlainSkill(t, m)
@@ -455,15 +496,12 @@ func TestSkillOnlyActionsOfferExplicitAgentInstallAndUninstall(t *testing.T) {
 	for _, item := range m.homeMenuItems() {
 		actions[item.Action] = item.Label
 	}
-	for action, label := range map[string]string{
-		"install-skill-only":   "Install skill for agents...",
-		"uninstall-skill-only": "Uninstall skill from agents...",
-	} {
-		if actions[action] != label {
-			t.Errorf("skill-only action %q = %q; want explicit targeted action %q (all actions: %#v)", action, actions[action], label, actions)
-		}
+	if label, exists := actions["agents"]; !exists || label != "Agent access…" {
+		t.Errorf("plain-skill instance lacks ordinary Agent Access: %#v", actions)
 	}
-	if _, exists := actions["configure"]; exists {
-		t.Errorf("skill-only capability still offers a misleading configure/default-install action: %#v", actions)
+	for _, forbidden := range []string{"install-skill-only", "uninstall-skill-only", "create-profile"} {
+		if _, exists := actions[forbidden]; exists {
+			t.Errorf("plain-skill actions retain bypass %q: %#v", forbidden, actions)
+		}
 	}
 }

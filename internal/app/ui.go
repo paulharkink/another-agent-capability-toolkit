@@ -105,6 +105,17 @@ func (s *Service) forSource(id string) (*Service, error) {
 	return nil, fmt.Errorf("Capability Pack %s is not registered; launch AACT with its directory", id)
 }
 
+// requireActivePack keeps UI actions bound to the one Pack the user is
+// currently browsing. Remembered Pack catalogs remain available to explicit
+// source-selection flows, but a stale or forged row must not switch the
+// source behind an action implicitly.
+func (s *Service) requireActivePack(id string) error {
+	if id == "" || id != s.Source.ID {
+		return fmt.Errorf("Capability Pack %q is not selected", id)
+	}
+	return nil
+}
+
 // UILocateSource explicitly updates the saved location for an existing source
 // only when the candidate directory resolves to the same Capability Pack identity.
 func (s *Service) UILocateSource(ctx context.Context, id, root string) error {
