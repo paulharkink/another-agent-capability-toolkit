@@ -35,6 +35,7 @@ func TestActualDockerRetriesReplacementAfterHealthFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	build = fixtureWithPrefetchedPythonBase(t, build)
 	if _, err = r.run(ctx, []string{"build", "--quiet", "--tag", image, build}); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +132,7 @@ func TestActualDockerKeepsNamedMCPChildrenIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	build = fixtureWithPrefetchedPythonBase(t, build)
 	if _, err = r.run(ctx, []string{"build", "--quiet", "--tag", image, build}); err != nil {
 		t.Fatal(err)
 	}
@@ -208,4 +210,34 @@ func TestActualDockerKeepsNamedMCPChildrenIndependent(t *testing.T) {
 			}
 		}
 	}
+}
+
+func fixtureWithPrefetchedPythonBase(t *testing.T, source string) string {
+	t.Helper()
+	const ecr = "public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
+	const hub = "docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
+	selected := os.Getenv("AACT_PYTHON_BASE_IMAGE_3_14_ALPINE")
+	if selected == "" {
+		selected = ecr
+	}
+	if selected != ecr && selected != hub {
+		t.Fatalf("refusing unverified Docker integration fixture base %q", selected)
+	}
+	context := t.TempDir()
+	if err := os.CopyFS(context, os.DirFS(source)); err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := filepath.Join(context, "Dockerfile")
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultLine := "ARG PYTHON_BASE_IMAGE=" + ecr
+	if !strings.Contains(string(data), defaultLine) {
+		t.Fatal("Docker integration fixture lost its pinned ECR default")
+	}
+	if err := os.WriteFile(dockerfile, []byte(strings.Replace(string(data), defaultLine, "ARG PYTHON_BASE_IMAGE="+selected, 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return context
 }

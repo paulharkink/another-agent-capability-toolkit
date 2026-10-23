@@ -21,7 +21,7 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 		t.Fatal(err)
 	}
 	releasePipeline := text + "\n" + string(manifestPublisher)
-	for _, required := range []string{"go run ./cmd/mcp-release-builds", "jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv'", "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish"} {
+	for _, required := range []string{"go run ./cmd/mcp-release-builds", "jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv'", "type=image,name=", "--provenance=true", "--sbom=true", "packages: write", "visibility", "--skip=publish", "steps.prefetch-python-base.outputs.python_3_13_slim", "PYTHON_BASE_IMAGE="} {
 		if !strings.Contains(text, required) {
 			t.Errorf("release workflow missing package-context/release contract %q", required)
 		}
@@ -311,7 +311,7 @@ func TestManifestPublisherPreservesExistingImagesAndRetriesRegistryInspection(t 
 	}
 }
 
-func TestBundledDockerfilesDoNotDependOnDockerHub(t *testing.T) {
+func TestBundledDockerfilesKeepDigestPinnedECRDefaultsAndExposeBaseOverride(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var dockerfiles []string
 	err := filepath.WalkDir(filepath.Join(root, "packages"), func(path string, entry os.DirEntry, err error) error {
@@ -332,11 +332,22 @@ func TestBundledDockerfilesDoNotDependOnDockerHub(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		hasBaseArg := false
+		hasBaseFrom := false
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "FROM ") && (strings.Contains(line, "docker.io/") || strings.HasPrefix(line, "FROM python:")) {
-				t.Errorf("%s has a Docker Hub base image: %s", path, line)
+			if strings.HasPrefix(line, "ARG PYTHON_BASE_IMAGE=") {
+				hasBaseArg = true
+				if !strings.Contains(line, "public.ecr.aws/docker/library/python:") || !strings.Contains(line, "@sha256:") {
+					t.Errorf("%s default Python base must remain digest-pinned to ECR Public: %s", path, line)
+				}
 			}
+			if strings.HasPrefix(line, "FROM ${PYTHON_BASE_IMAGE}") {
+				hasBaseFrom = true
+			}
+		}
+		if hasBaseArg != hasBaseFrom {
+			t.Errorf("%s must declare and use PYTHON_BASE_IMAGE together", path)
 		}
 	}
 	workflowDir := filepath.Join("..", "..", ".github", "workflows")

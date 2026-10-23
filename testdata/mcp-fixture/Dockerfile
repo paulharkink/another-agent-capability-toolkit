@@ -1,3 +1,4 @@
-FROM public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+ARG PYTHON_BASE_IMAGE=public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+FROM ${PYTHON_BASE_IMAGE}
 COPY server.py /app/server.py
 CMD ["python", "/app/server.py"]

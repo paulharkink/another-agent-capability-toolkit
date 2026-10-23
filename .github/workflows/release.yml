@@ -141,6 +141,7 @@ jobs:
           grep -Fq 'Driver: docker' /tmp/buildx-inspect.txt
 
       - name: Prefetch digest-pinned Python base
+        id: prefetch-python-base
         run: sh tools/prefetch-python-bases.sh linux/amd64 public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
 
       - name: Build and stage package-only MCP contexts
@@ -162,8 +163,13 @@ jobs:
             fi
             staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-amd64"
             metadata="$(mktemp)"
+            base_args=()
+            if grep -q '^ARG PYTHON_BASE_IMAGE=' "$context/Dockerfile"; then
+              base_args+=(--build-arg "PYTHON_BASE_IMAGE=${{ steps.prefetch-python-base.outputs.python_3_13_slim }}")
+            fi
             docker buildx build \
               --file "$context/Dockerfile" \
+              "${base_args[@]}" \
               --platform linux/amd64 \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=v${version}" \
@@ -227,6 +233,7 @@ jobs:
           grep -Fq 'Driver: docker' /tmp/buildx-inspect.txt
 
       - name: Prefetch digest-pinned Python base
+        id: prefetch-python-base
         run: sh tools/prefetch-python-bases.sh linux/arm64 public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
 
       - name: Build and stage package-only MCP contexts
@@ -248,8 +255,13 @@ jobs:
             fi
             staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-arm64"
             metadata="$(mktemp)"
+            base_args=()
+            if grep -q '^ARG PYTHON_BASE_IMAGE=' "$context/Dockerfile"; then
+              base_args+=(--build-arg "PYTHON_BASE_IMAGE=${{ steps.prefetch-python-base.outputs.python_3_13_slim }}")
+            fi
             docker buildx build \
               --file "$context/Dockerfile" \
+              "${base_args[@]}" \
               --platform linux/arm64 \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=v${version}" \
