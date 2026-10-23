@@ -68,9 +68,16 @@ path to AACT's generic OpenCode plugin manager. The capability is selected by
 default when installing it. For development, pass an explicit local Courier
 checkout as the optional `courier_source` input:
 
+Create the named instance before its first install:
+
+```sh
+aact --state-dir /private/aact-state --config /private/polyrepo-pack/aact.toml \
+  instance create polyrepo-coordinator local
+```
+
 ```sh
 aact --state-dir /private/aact-state install polyrepo-coordinator \
-  --config /private/polyrepo-pack/aact.toml --profile local \
+  --config /private/polyrepo-pack/aact.toml --instance local \
   --agent opencode --agent-home opencode=/private/opencode-home \
   --set courier_source=/work/opencode-courier
 ```
