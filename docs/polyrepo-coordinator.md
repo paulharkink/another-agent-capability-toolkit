@@ -62,7 +62,7 @@ unavailable; do not broaden a grant implicitly to a shared parent directory.
 
 Install Polyrepo Coordinator as a normal catalog capability. Its declared
 plugin build hook checks out pinned Courier revision
-`c96991915ef8c40097fa406b8a92fcd147aabf2d` into the capability's private
+`72abe9eaa7af31ee1b44c6f6c80681157ef48788` into the capability's private
 staging area, builds it there, and hands the local entrypoint and inventory
 path to AACT's generic OpenCode plugin manager. The capability is selected by
 default when installing it. For development, pass an explicit local Courier
