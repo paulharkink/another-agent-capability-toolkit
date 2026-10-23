@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -17,6 +18,38 @@ import (
 	"strings"
 	"testing"
 )
+
+type pluginBuildExecutor struct{ calls int }
+
+func (f *pluginBuildExecutor) Run(_ context.Context, _ []string, _ string, stdin []byte, _ map[string]string, _ func([]byte)) ([]byte, error) {
+	var request struct {
+		Context map[string]any `json:"context"`
+	}
+	if err := json.Unmarshal(stdin, &request); err != nil {
+		return nil, err
+	}
+	stage, _ := request.Context["staging_dir"].(string)
+	f.calls++
+	entry := filepath.Join(stage, "courier-build-fixture")
+	if err := os.MkdirAll(filepath.Join(entry, "dist"), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(entry, "package.json"), []byte(`{"type":"module","main":"./dist/index.js"}`), 0600); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(entry, "dist", "index.js"), []byte("export default {}"), 0600); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"reference": filepath.Join(entry, "dist"), "options": map[string]any{"repoMapFile": filepath.Join(takeString(request.Context["manager_state_dir"]), "manager", "repo-map-v1.json")}})
+}
+
+func takeString(value any) string {
+	result, _ := value.(string)
+	return result
+}
 
 type fixtureAdapters struct{ a *profileAdapter }
 
@@ -296,6 +329,178 @@ func TestApplyProfilePluginExplicitAndSavedSelection(t *testing.T) {
 	out, err = s.ApplyProfile(context.Background(), q)
 	if err != nil || len(out.Changes) != 2 || len(a.calls) != 1 {
 		t.Fatalf("saved selection: %+v %v", out, err)
+	}
+}
+
+func TestApplyProfileBuildsNativePluginThroughGenericManager(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	packageDir := s.Source.Catalog[0].Dir
+	if err := os.MkdirAll(filepath.Join(packageDir, "plugin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "opencode.json")
+	if err := os.WriteFile(configPath, []byte(`{"provider":{"fixture":{}},"mcp":{"fixture":{}},"plugins":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0].Plugins = []catalog.Plugin{{Name: "native", Format: "opencode", Source: "plugin", Build: &catalog.Command{Argv: []string{"builder"}}}}
+	s.Source.Catalog[0].Dir = packageDir
+	build := &pluginBuildExecutor{}
+	s.Options.Runner = build
+	s.Options.Adapters = agents.NewRegistry(agents.Dependencies{Store: s.Store, Probe: *s.Options.DiscoveryProbe})
+	s.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: t.TempDir(), ExplicitHome: true, ConfigPathOverride: configPath}}
+	q.ItemIDs = []string{"plugin:native"}
+	q.DestinationIDs = []string{"opencode"}
+	q.Inputs = map[string]any{"label": "valid", "enabled": false}
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldPlugin state.Installation
+	for _, row := range installed {
+		if row.Component == "plugin" {
+			oldPlugin = row
+		}
+	}
+	if oldPlugin.SourcePath == "" {
+		t.Fatal("first install did not record its staged plugin path")
+	}
+	if build.calls != 1 {
+		t.Fatalf("build calls after install = %d", build.calls)
+	}
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if build.calls != 2 {
+		t.Fatalf("build calls after update = %d", build.calls)
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(oldPlugin.SourcePath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("previous built plugin directory remains after update: path=%s err=%v", filepath.Dir(filepath.Dir(oldPlugin.SourcePath)), err)
+	}
+	var config map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	plugins := config["plugins"].([]any)
+	if len(plugins) != 1 {
+		t.Fatalf("plugins after update: %#v", plugins)
+	}
+	plugin := plugins[0].(map[string]any)
+	if !strings.HasSuffix(plugin["package"].(string), string(filepath.Separator)+"dist") {
+		t.Fatalf("OpenCode plugin reference should target built dist directory: %#v", plugin)
+	}
+	options := plugin["options"].(map[string]any)
+	if options["repoMapFile"] != filepath.Join(s.Store.Root(), "manager", "repo-map-v1.json") || config["provider"] == nil || config["mcp"] == nil {
+		t.Fatalf("registration did not preserve config and include inventory: %#v", config)
+	}
+	_, removeErr := s.RemoveProfile(context.Background(), q)
+	if removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if plugins = config["plugins"].([]any); len(plugins) != 0 || config["provider"] == nil || config["mcp"] == nil {
+		t.Fatalf("remove did not preserve unrelated configuration: %#v", config)
+	}
+}
+
+func TestApplyManifestLocalOpenCodePluginUsesAndCleansOnlyStagedCopy(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	packageDir := t.TempDir()
+	original := filepath.Join(packageDir, "plugin")
+	if err := os.MkdirAll(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(original, "plugin.mjs")
+	if err := os.WriteFile(marker, []byte("export default {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n\n[[plugins]]\nname = \"local\"\nformat = \"opencode\"\nsource = \"./plugin\"\n\n[[inputs]]\nname = \"label\"\ntype = \"string\"\n\n[[inputs]]\nname = \"enabled\"\ntype = \"boolean\"\nrequired = true\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "package.toml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := catalog.Load(packageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Source.Catalog[0] = p
+	configPath := filepath.Join(t.TempDir(), "opencode.jsonc")
+	if err := os.WriteFile(configPath, []byte(`{"plugins":["npm:unrelated"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Options.Adapters = agents.NewRegistry(agents.Dependencies{Store: s.Store, Probe: *s.Options.DiscoveryProbe})
+	s.Options.AgentScopes = map[string]agents.Scope{"opencode": {ID: "opencode", Home: t.TempDir(), ExplicitHome: true, ConfigPathOverride: configPath}}
+	q.ItemIDs = []string{"plugin:local"}
+	q.DestinationIDs = []string{"opencode"}
+	q.Inputs = nil
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first state.Installation
+	for _, row := range rows {
+		if row.Component == "plugin" {
+			first = row
+		}
+	}
+	if first.SourcePath == "" || first.SourcePath == original || !strings.HasPrefix(filepath.Base(first.SourcePath), ".aact-plugin-") {
+		t.Fatalf("local plugin did not register from AACT's staged copy: source=%s row=%+v", original, first)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("original package source was changed: %v", err)
+	}
+	var cfg map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil || json.Unmarshal(data, &cfg) != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	plugins := cfg["plugins"].([]any)
+	if len(plugins) != 2 || plugins[0] != "npm:unrelated" || plugins[1].(map[string]any)["package"] != first.SourcePath {
+		t.Fatalf("local plugin entry or unrelated plugin changed: %#v", plugins)
+	}
+
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.SourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("updated plugin retained previous stage root %s: %v", first.SourcePath, err)
+	}
+	rows, err = s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current state.Installation
+	for _, row := range rows {
+		if row.Component == "plugin" {
+			current = row
+		}
+	}
+	if current.SourcePath == "" || current.SourcePath == first.SourcePath {
+		t.Fatalf("update did not replace staged plugin: old=%s current=%+v", first.SourcePath, current)
+	}
+	if _, err := s.RemoveProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(current.SourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained staged plugin root %s: %v", current.SourcePath, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("uninstall changed original package source: %v", err)
 	}
 }
 

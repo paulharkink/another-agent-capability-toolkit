@@ -24,6 +24,19 @@ import (
 
 type instanceOperationLockKey struct{}
 
+func pathWithin(root, target string) bool {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	target, err = filepath.EvalSymlinks(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
 type AdapterProvider interface {
 	Adapter(string) (agents.Adapter, error)
 	Adapters() []agents.Adapter
@@ -1087,6 +1100,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	out.Saved = true
 	stages := map[string]string{}
 	pluginStages := map[string]string{}
+	pluginDefinitions := map[string]catalog.Plugin{}
 	out.Step = "generate"
 	reportOperationStep(ctx, out.Step)
 	renderer := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
@@ -1111,7 +1125,29 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			if e != nil {
 				return out, e
 			}
+			definition := plugin
+			if plugin.Build != nil {
+				result, buildErr := renderer.Generator.BuildPlugin(ctx, p, plugin, values, pr, stage, s.Store.Root())
+				if buildErr != nil {
+					os.RemoveAll(stage)
+					return out, fmt.Errorf("build plugin %s: %w", plugin.Name, buildErr)
+				}
+				reference, ok := result["reference"].(string)
+				if !ok || !filepath.IsAbs(reference) {
+					os.RemoveAll(stage)
+					return out, fmt.Errorf("build plugin %s must return an absolute reference", plugin.Name)
+				}
+				if !pathWithin(stage, reference) {
+					os.RemoveAll(stage)
+					return out, fmt.Errorf("build plugin %s reference must be inside its staging directory", plugin.Name)
+				}
+				definition.Reference = reference
+				if options, ok := result["options"].(map[string]any); ok {
+					definition.Options = options
+				}
+			}
 			pluginStages[plugin.Name] = stage
+			pluginDefinitions[plugin.Name] = definition
 		}
 	}
 	urls := map[string]string{}
@@ -1427,7 +1463,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 					marketplaceConfigured = true
 				}
 			}
-			pluginResult, e := a.(agents.PluginManager).InstallPlugin(ctx, scope, agents.PluginRequest{Key: key, Plugin: plugin, StagedDir: pluginStages[plugin.Name], MarketplaceConfigured: marketplaceConfigured, Existing: existingPlugin})
+			pluginResult, e := a.(agents.PluginManager).InstallPlugin(ctx, scope, agents.PluginRequest{Key: key, Plugin: pluginDefinitions[plugin.Name], StagedDir: pluginStages[plugin.Name], MarketplaceConfigured: marketplaceConfigured, Existing: existingPlugin})
 			for _, removed := range pluginResult.Removed {
 				out.Changes = append(out.Changes, removed)
 				if removeErr := s.removeRegistration(removed); removeErr != nil {
@@ -1444,6 +1480,13 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 			if e = record(pluginResult.Installation); e != nil {
 				return out, e
+			}
+			if cleaner, ok := a.(agents.PluginStageCleaner); ok {
+				for _, removed := range pluginResult.Removed {
+					if cleanupErr := cleaner.CleanupPluginStage(removed); cleanupErr != nil {
+						return out, fmt.Errorf("clean replaced plugin stage %q: %w", removed.ReleaseID, cleanupErr)
+					}
+				}
 			}
 		}
 	}
@@ -1476,8 +1519,7 @@ func (s *Service) removeProfileBinding(ctx context.Context, row state.Installati
 			return errors.New("adapter cannot remove MCP")
 		}
 		err = manager.Unregister(ctx, scope, row)
-	case "plugin":
-	case "plugin-marketplace":
+	case "plugin", "plugin-marketplace":
 		scope.ConfigPathOverride = ""
 		manager, ok := a.(agents.PluginManager)
 		if !ok {
