@@ -668,11 +668,9 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		}
 		for _, row := range rows {
 			if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath == previous.ID {
-				// recordAction has already replaced this exact ledger slot with
-				// the new container when a same-name runtime was retried.
-				if row.Destination == out.Name {
-					continue
-				}
+				// The old runtime remains a distinct ledger record until the
+				// replacement has passed health and been recorded. Remove only
+				// the exact previous container ID after successful replacement.
 				if e = r.Store.Remove(row); e != nil {
 					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
 				}
@@ -802,6 +800,48 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 		}
 	}
 	return e
+}
+
+// StopExact removes one container only after verifying its exact state key,
+// locally recorded container ID, and AACT ownership. It is intentionally
+// separate from Stop, whose key-based lookup refuses ambiguous instances.
+func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
+	if id == "" {
+		return errors.New("runtime ID is required")
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return err
+	}
+	record, ok := runtimeRecord(rows, k, id)
+	if !ok || record.AgentID != "docker" {
+		return errors.New("exact runtime ID is not recorded for this MCP")
+	}
+	info, err := r.inspect(ctx, id)
+	if err != nil {
+		if isDockerNotFound(err) {
+			return r.Store.Remove(record)
+		}
+		return err
+	}
+	observed := instance(info)
+	if observed.ID != id || observed.Key != k {
+		return errors.New("exact runtime ID does not match the requested MCP key")
+	}
+	installationID, err := r.Store.InstallationID()
+	if err != nil {
+		return err
+	}
+	if owner := ownership(info, k, installationID, rows); owner != "local" {
+		return fmt.Errorf("refusing to delete runtime %s: ownership is %s", id, owner)
+	}
+	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
+		return err
+	}
+	if err := r.Store.Remove(record); err != nil {
+		return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+	}
+	return nil
 }
 func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
 	installationID, e := r.Store.InstallationID()

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,9 @@ const (
 type workspaceState struct {
 	InstanceRef       config.InstanceRef
 	Key               state.Key
+	SelectedMCP       string
+	SelectedRuntimeID string
+	RuntimeRecordTargets []runtimeRecordTarget
 	Section           string
 	SectionID         string
 	InvokingView      string
@@ -70,6 +74,15 @@ type workspaceState struct {
 	Instance          *viewmodel.Instance
 	InstanceSnapshot  *viewmodel.InstanceSnapshot
 	Draft             map[string]any
+}
+
+type runtimeRecordTarget struct {
+	Key state.Key
+	ID  string
+}
+
+type runtimeRecordRemovalBackend interface {
+	UIRemoveRuntimeRecord(context.Context, state.Key, string) (string, error)
 }
 
 func (m *Model) refreshObservedWorkspaceFacts() {
@@ -328,6 +341,27 @@ func (m *Model) instanceForMCPName(name string) *viewmodel.Instance {
 	return nil
 }
 
+func (m *Model) runtimeStatusForMCP(name string) *viewmodel.RuntimeStatus {
+	if m.workspace == nil {
+		return nil
+	}
+	snapshot, ok := m.capabilityInstances[m.workspace.Key.Package]
+	if !ok {
+		return nil
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if instance.Key != m.workspace.Key {
+			continue
+		}
+		for i := range instance.MCPs {
+			if instance.MCPs[i].MCPID == name {
+				return &instance.MCPs[i]
+			}
+		}
+	}
+	return nil
+}
+
 func (m *Model) legacyWorkspaceMCP() *viewmodel.Instance {
 	if m.workspace == nil {
 		return nil
@@ -520,6 +554,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
+	if m.workspace.SelectedMCP != "" {
+		inputLines = append(inputLines, "Editing inputs for MCP "+m.workspace.SelectedMCP+" · answers are saved at this capability instance.")
+	}
 	for _, section := range preview.Sections {
 		if len(section.Fields) > 0 {
 			inputLines = append(inputLines, strings.ToUpper(section.Title))
@@ -568,6 +605,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		runtime := []string{}
 		logs := []string{}
 		runtimeActions := []forms.FormAction{}
+		m.workspace.RuntimeRecordTargets = nil
 		definitions := append([]catalog.MCP(nil), preview.MCPDefinitions...)
 		if len(definitions) == 0 {
 			if profile := m.legacyWorkspaceMCP(); profile != nil {
@@ -587,8 +625,51 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if profile != nil {
 				status, owner, endpoint = nonempty(profile.RuntimeStatus, "unknown"), nonempty(profile.Ownership, "unknown"), nonempty(profile.URL, "not configured")
 			}
+			child := m.runtimeStatusForMCP(definition.Name)
 			runtimeLine := label + " · status: " + status + " · ownership: " + owner + " · endpoint: " + endpoint
+			if m.workspace.SelectedMCP == definition.Name {
+				runtimeLine = "> " + runtimeLine
+			}
 			runtime = append(runtime, runtimeLine)
+			if child != nil {
+				if child.Error != "" {
+					runtime = append(runtime, "  MCP observation: "+child.Error)
+				}
+				for _, record := range child.RuntimeRecords {
+					line := fmt.Sprintf("  Runtime ID: %s · %s · ownership: %s", record.ID, record.Status, record.Ownership)
+					if record.Name != "" {
+						line += " · container: " + record.Name
+					}
+					if record.URL != "" {
+						line += " · endpoint: " + record.URL
+					}
+					if record.LastAction != "" {
+						line += " · last action: " + record.LastAction
+					}
+					if record.ID == m.workspace.SelectedRuntimeID {
+						line = "> " + line
+					}
+					runtime = append(runtime, line)
+					if strings.TrimSpace(record.ID) == "" {
+						continue
+					}
+					targetIndex := len(m.workspace.RuntimeRecordTargets)
+					m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: child.Key, ID: record.ID})
+					deleteLabel := "Delete runtime " + record.ID
+					deleteID := "delete-runtime:" + fmt.Sprint(targetIndex)
+					disabled := ""
+					switch {
+					case child.Stale:
+						disabled = "Runtime observation is stale; refresh before deleting"
+					case record.Status == "missing":
+						deleteLabel = "Forget missing runtime " + record.ID
+					case record.Ownership != "local":
+						disabled = "Runtime ownership is " + record.Ownership + "; AACT cannot delete it"
+					}
+					runtimeActions = append(runtimeActions, forms.FormAction{ID: deleteID, Label: deleteLabel, Disabled: disabled})
+				}
+			}
+			runtimeActions = append(runtimeActions, forms.FormAction{ID: "edit-inputs:" + definition.Name, Label: "Edit capability inputs for " + definition.Name})
 			startProfile := profile
 			if startProfile == nil && m.workspace.Instance != nil {
 				parent := *m.workspace.Instance
@@ -606,13 +687,15 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				startDisabled += "Save inputs and install this capability for an agent first"
 			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
-			if profile != nil && profile.CanStop {
+			if profile != nil && profile.CanStop && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
+			} else if profile != nil && profile.RuntimeStatus == "running" && child != nil && len(child.RuntimeRecords) > 1 {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name, Disabled: "Multiple runtime records are linked; select one exact record"})
 			}
-			if profile != nil && profile.RuntimeStatus == "running" {
+			if profile != nil && profile.RuntimeStatus == "running" && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "logs:" + definition.Name, Label: "View " + definition.Name + " logs"})
 			}
-			if profile != nil && profile.URL != "" {
+			if profile != nil && profile.URL != "" && (child == nil || len(child.RuntimeRecords) <= 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "check-connection:" + definition.Name, Label: "Check " + definition.Name + " connection"})
 			}
 			logs = append(logs, label+" · "+status)

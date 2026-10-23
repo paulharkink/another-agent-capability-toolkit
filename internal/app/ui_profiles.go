@@ -55,6 +55,87 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 	return result.Message, nil
 }
 
+// UIRemoveRuntimeRecord removes one exact runtime identity for a declared MCP
+// child. Missing containers lose only their local ledger row; a live container
+// is removed only through the runtime's exact-ID ownership-checked operation.
+func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runtimeID string) (string, error) {
+	if runtimeID == "" {
+		return "", errors.New("runtime ID is required")
+	}
+	source, err := s.forSource(key.Source)
+	if err != nil {
+		return "", err
+	}
+	if !source.declaredMCPChild(key) {
+		return "", errors.New("runtime record does not link to a declared MCP instance")
+	}
+	rows, err := source.Store.Installations()
+	if err != nil {
+		return "", err
+	}
+	var record *state.Installation
+	for i := range rows {
+		row := rows[i]
+		if row.Component == "runtime" && row.AgentID == "docker" && row.Key == key && row.SourcePath == runtimeID {
+			copy := row
+			record = &copy
+			break
+		}
+	}
+	if record == nil {
+		return "", errors.New("exact runtime ledger record was not found")
+	}
+	instances, err := source.Options.Runtime.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("refresh runtime observation before removing record: %w", err)
+	}
+	for _, instance := range instances {
+		if instance.ID != runtimeID {
+			continue
+		}
+		if instance.Key != key {
+			return "", fmt.Errorf("refusing to forget runtime %s: it is still observed under a different instance key", runtimeID)
+		}
+		if instance.Status == "missing" {
+			continue
+		}
+		if instance.Ownership != "local" {
+			return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+		}
+		exact, ok := source.Options.Runtime.(interface {
+			StopExact(context.Context, state.Key, string) error
+		})
+		if !ok {
+			return "", errors.New("runtime does not support exact-ID removal; record was left unchanged")
+		}
+		if err := exact.StopExact(ctx, key, runtimeID); err != nil {
+			return "", fmt.Errorf("remove exact runtime %s: %w", runtimeID, err)
+		}
+		return "Removed exact AACT-owned runtime " + runtimeID, nil
+	}
+	if err := source.Store.Remove(*record); err != nil {
+		return "", fmt.Errorf("forget missing runtime %s: %w", runtimeID, err)
+	}
+	return "Forgot exact missing runtime record " + runtimeID + "; no container was removed", nil
+}
+
+func (s *Service) declaredMCPChild(key state.Key) bool {
+	base := key
+	base.MCP = ""
+	base.MCPDefinition = ""
+	for _, p := range s.Source.Catalog {
+		if p.ID != key.Package {
+			continue
+		}
+		for _, definition := range p.MCPDefinitions() {
+			if mcpDefinitionKey(base, p, definition) == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
 	return s.UIInstanceRun(ctx, action, key)
 }

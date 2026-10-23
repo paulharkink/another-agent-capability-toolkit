@@ -86,6 +86,9 @@ type contextRow struct {
 	ID, Label, Kind string
 	ProfileIndex    int
 	Key             state.Key
+	ParentKey       state.Key
+	MCPID           string
+	RuntimeID       string
 }
 
 func (m *Model) contextRows() []contextRow {
@@ -118,6 +121,28 @@ func (m *Model) contextRows() []contextRow {
 		rows := []contextRow{}
 		for i, p := range m.profiles() {
 			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
+			if p.Configuration == nil {
+				continue
+			}
+			for _, child := range p.Configuration.MCPs {
+				childID := "mcp:" + child.Key.ID()
+				label := "  MCP · " + child.MCPID + " · " + child.Status
+				if auth := authenticationDisplayStatus(child.AuthenticationStatus); auth != "" {
+					label += " · " + auth
+				}
+				rows = append(rows, contextRow{ID: childID, Label: label, Kind: "mcp-child", Key: child.Key, ParentKey: p.Key, MCPID: child.MCPID})
+				for _, runtime := range child.RuntimeRecords {
+					runtimeName := firstNonempty(runtime.Name, runtime.ID)
+					runtimeLabel := fmt.Sprintf("    Runtime · ID %s · %s · %s · %s", runtime.ID, runtimeName, runtime.Status, runtime.Ownership)
+					if runtime.URL != "" {
+						runtimeLabel += " · " + runtime.URL
+					}
+					rows = append(rows, contextRow{
+						ID: "runtime:" + child.Key.ID() + ":" + runtime.ID, Label: runtimeLabel, Kind: "runtime-record",
+						Key: child.Key, ParentKey: p.Key, MCPID: child.MCPID, RuntimeID: runtime.ID,
+					})
+				}
+			}
 		}
 		rows = append(rows, contextRow{ID: "create-profile", Label: "Create another instance…", Kind: "create-profile"}, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
 		return rows
@@ -688,6 +713,14 @@ func (m *Model) openContextRow() tea.Cmd {
 			}
 		}
 		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Overview")
+	case "mcp-child", "runtime-record":
+		request := m.packInstanceRequest(row.ParentKey)
+		cmd := m.openTargetWorkspace(request, "Runtime")
+		if m.workspace != nil {
+			m.workspace.SelectedMCP = row.MCPID
+			m.workspace.SelectedRuntimeID = row.RuntimeID
+		}
+		return cmd
 	case "target":
 		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Overview")
 	}
@@ -1318,6 +1351,36 @@ func (m *Model) selectedDetail() string {
 		return "Capability Pack unavailable · capability " + c.Package + " · use Locate Capability Pack to recover configuration access"
 	}
 	if m.home.Focus == ProfilesPane {
+		if row, ok := m.selectedContextRow(); ok {
+			switch row.Kind {
+			case "mcp-child":
+				if child := m.contextMCP(row.ParentKey, row.MCPID); child != nil {
+					lines := []string{c.Name + " · MCP definition " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime summary: " + child.Status + " · ownership: " + child.Ownership}
+					if auth := authenticationDisplayStatus(child.AuthenticationStatus); auth != "" {
+						lines = append(lines, "Authentication: "+auth)
+					}
+					for _, record := range child.RuntimeRecords {
+						lines = append(lines, fmt.Sprintf("Runtime ID %s · %s · %s", record.ID, record.Status, record.Ownership))
+					}
+					return strings.Join(lines, " · ")
+				}
+			case "runtime-record":
+				if child := m.contextMCP(row.ParentKey, row.MCPID); child != nil {
+					for _, record := range child.RuntimeRecords {
+						if record.ID == row.RuntimeID {
+							lines := []string{c.Name + " · MCP " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime ID: " + record.ID, "Container: " + nonempty(record.Name, "unknown"), "Status: " + record.Status, "Ownership: " + record.Ownership}
+							if record.URL != "" {
+								lines = append(lines, "Endpoint: "+record.URL)
+							}
+							if record.LastAction != "" {
+								lines = append(lines, "Last action: "+record.LastAction)
+							}
+							return strings.Join(lines, " · ")
+						}
+					}
+				}
+			}
+		}
 		if p, ok := m.selectedContextProfile(); ok {
 			if p.Configuration != nil {
 				return c.Name + " · Instance " + p.Name + " · " + instanceStatusSummary(*p.Configuration)
@@ -1352,6 +1415,24 @@ func (m *Model) selectedDetail() string {
 	status, _ := m.installationDetails(c)
 	detail += " · AACT records: " + status
 	return detail
+}
+
+func (m *Model) contextMCP(parentKey state.Key, name string) *viewmodel.RuntimeStatus {
+	snapshot, ok := m.capabilityInstances[parentKey.Package]
+	if !ok {
+		return nil
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if instance.Key != parentKey {
+			continue
+		}
+		for i := range instance.MCPs {
+			if instance.MCPs[i].MCPID == name {
+				return &instance.MCPs[i]
+			}
+		}
+	}
+	return nil
 }
 func (m *Model) homeView() tea.View {
 	m.home.Hits = nil

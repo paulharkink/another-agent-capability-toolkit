@@ -849,8 +849,8 @@ func (m *FormModel) moveSplitControl(delta int) {
 	m.detailOffset = 0
 	m.detailScrolled = false
 	indices := m.splitFieldIndices(m.sectionIndex)
+	actions := m.sectionActions[m.currentSectionKey()]
 	if len(indices) == 0 {
-		actions := m.sectionActions[m.currentSectionKey()]
 		if len(actions) > 0 {
 			m.focusedAction = true
 			m.sectionActionIndex = min(max(0, m.sectionActionIndex+delta), len(actions)-1)
@@ -862,11 +862,38 @@ func (m *FormModel) moveSplitControl(delta int) {
 		}
 		return
 	}
+	if m.focusedAction {
+		next := m.sectionActionIndex + delta
+		if next >= 0 && next < len(actions) {
+			m.sectionActionIndex = next
+			return
+		}
+		if delta < 0 && len(actions) > 0 {
+			// Actions appear after section fields, so Up from the first action
+			// returns to the final field/control.
+			m.focusedAction = false
+			m.selected = indices[len(indices)-1]
+			if m.selected < len(m.defs) {
+				def := m.defs[m.selected]
+				if isChoiceList(def) || isScalarChoice(def) {
+					m.choiceIndex[def.Name] = max(0, len(def.Options)-1)
+				} else if isEditableCollection(def) {
+					m.rowIndex[def.Name] = len(collectionRows(m.editor.Values()[def.Name]))
+				}
+			}
+		}
+		return
+	}
 	if m.selected < len(m.defs) && (isChoiceList(m.defs[m.selected]) || isScalarChoice(m.defs[m.selected])) {
 		def := m.defs[m.selected]
 		next := m.choiceIndex[def.Name] + delta
 		if next >= 0 && next < len(def.Options) {
 			m.choiceIndex[def.Name] = next
+			return
+		}
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
 			return
 		}
 	}
@@ -876,6 +903,11 @@ func (m *FormModel) moveSplitControl(delta int) {
 		next := m.rowIndex[def.Name] + delta
 		if next >= 0 && next <= last {
 			m.rowIndex[def.Name] = next
+			return
+		}
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
 			return
 		}
 	}
@@ -892,6 +924,11 @@ func (m *FormModel) moveSplitControl(delta int) {
 		return
 	}
 	if next >= len(indices) {
+		if delta > 0 && len(actions) > 0 {
+			m.focusedAction = true
+			m.sectionActionIndex = 0
+			return
+		}
 		m.selected = indices[len(indices)-1]
 		return
 	}
@@ -1325,7 +1362,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.area = 1
 					return m, nil
 				}
-				if m.area == 1 && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
+				if m.area == 1 && (m.focusedAction || len(m.splitFieldIndices(m.sectionIndex)) == 0) {
 					return m, m.activateSectionAction()
 				}
 			}
@@ -2195,24 +2232,6 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLineChoices = append(rightLineChoices, -1)
 		}
 	}
-	sectionActions := m.sectionActions[m.currentSectionKey()]
-	for actionIndex, action := range sectionActions {
-		label := "› [ " + action.Label + " ]"
-		if action.Disabled != "" {
-			label += " · " + action.Disabled
-		}
-		if actionIndex == m.sectionActionIndex && m.focusedAction {
-			label = "> [ " + action.Label + " ]"
-			if action.Disabled != "" {
-				label += " · " + action.Disabled
-			}
-		}
-		for _, wrapped := range wrapCellText(label, rightContentWidth) {
-			rightLines = append(rightLines, wrapped)
-			rightFields = append(rightFields, -1)
-			rightLineChoices = append(rightLineChoices, actionIndex)
-		}
-	}
 	for _, index := range indices {
 		def := m.defs[index]
 		label := def.Label
@@ -2348,6 +2367,24 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLines = append(rightLines, control)
 			rightFields = append(rightFields, index)
 			rightLineChoices = append(rightLineChoices, -2)
+		}
+	}
+	sectionActions := m.sectionActions[m.currentSectionKey()]
+	for actionIndex, action := range sectionActions {
+		label := "› [ " + action.Label + " ]"
+		if action.Disabled != "" {
+			label += " · " + action.Disabled
+		}
+		if actionIndex == m.sectionActionIndex && m.focusedAction {
+			label = "> [ " + action.Label + " ]"
+			if action.Disabled != "" {
+				label += " · " + action.Disabled
+			}
+		}
+		for _, wrapped := range wrapCellText(label, rightContentWidth) {
+			rightLines = append(rightLines, wrapped)
+			rightFields = append(rightFields, -1)
+			rightLineChoices = append(rightLineChoices, actionIndex)
 		}
 	}
 	if len(indices) == 0 {

@@ -122,13 +122,6 @@ func instanceConfigurationDetails(row InstanceRow) []string {
 	for _, component := range profile.Components {
 		rows = append(rows, instanceComponentStatusText(component))
 	}
-	for _, runtime := range profile.MCPs {
-		status := runtime.MCPID + " " + runtime.Status
-		if label := authenticationDisplayStatus(runtime.AuthenticationStatus); label != "" {
-			status += " " + label
-		}
-		rows = append(rows, status)
-	}
 	return rows
 }
 

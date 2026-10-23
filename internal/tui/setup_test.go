@@ -278,16 +278,25 @@ func TestCapabilitySetupUsesOneDeclaredInputAndDestinationForm(t *testing.T) {
 	if !strings.Contains(m.View().Content, "Mode") {
 		t.Fatalf("second required input is not reachable in the Inputs stage:\n%s", m.View().Content)
 	}
-	m.form.SelectSectionID(sectionAgentsID)
-	m.form.FocusSection()
+	message := clickFormAction(t, m, "Save")
+	m.Update(message)
+	if m.busy || m.form == nil || !m.workspace.InputsSaved {
+		t.Fatal("Inputs Save did not persist inputs independently")
+	}
+	if b.savedInputRequest == nil || b.installRequest != nil || m.form == nil {
+		t.Fatalf("Inputs Save crossed into agent install: saved=%+v installed=%+v", b.savedInputRequest, b.installRequest)
+	}
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+	view = collectWorkspacePages(t, m)
 	for _, want := range []string{"Agent access", "Target", "Install selected", "Uninstall selected"} {
-		if !strings.Contains(m.View().Content, want) {
-			t.Fatalf("setup Agent access section missing %q:\n%s", want, m.View().Content)
+		if !strings.Contains(view, want) {
+			t.Fatalf("setup Agent access section missing %q:\n%s", want, view)
 		}
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || !m.busy || m.form != nil {
-		t.Fatal("Save did not apply the typed setup once")
+	message = clickFormAction(t, m, "Install selected")
+	_, cmd := m.Update(message)
+	if cmd == nil {
+		t.Fatal("Agent access Install selected did not apply the selected bindings")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	if b.installRequest == nil || !reflect.DeepEqual(b.installRequest.DestinationIDs, []string{"all"}) || b.installRequest.Inputs["repo"] != "/repos/team" || b.installRequest.Inputs["mode"] != "safe" {

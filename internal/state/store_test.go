@@ -236,6 +236,33 @@ func TestInstallationsRoundTripAndRemoveOnlySelected(t *testing.T) {
 		t.Fatalf("got=%v", got)
 	}
 }
+
+func TestRuntimeInstallationsKeepDistinctContainerIdentityForSameMCPKey(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := Installation{Key: sampleKey("runtime"), AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "container-a", Mode: "docker"}
+	second := first
+	second.SourcePath = "container-b"
+	if err := s.Record(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(second); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 2 || rows[0].SourcePath != "container-a" || rows[1].SourcePath != "container-b" {
+		t.Fatalf("same MCP key lost distinct runtime identities: rows=%+v err=%v", rows, err)
+	}
+	if err := s.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "container-b" {
+		t.Fatalf("exact runtime removal did not preserve sibling container record: rows=%+v err=%v", rows, err)
+	}
+}
 func TestKeyCannotEscapeRoot(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	k := sampleKey("../../foreign")

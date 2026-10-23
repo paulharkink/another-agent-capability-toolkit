@@ -127,16 +127,9 @@ func openCapabilityProfileWorkspace(t *testing.T, m *Model, profile *profileBack
 func TestCheckConnectionActionObservesSelectedEndpoint(t *testing.T) {
 	m, b := typedProfileFixture()
 	backend := openCapabilityProfileWorkspace(t, m, b, "foreign", "Runtime")
-	m.form.SelectSectionID(sectionRuntimeID)
-	m.form.FocusSection()
-	press(m, tea.KeyRight, "")
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatalf("Runtime child connection action was not keyboard reachable:\n%s", m.View().Content)
-	}
-	_, routed := m.Update(cmd())
+	selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
+	message := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
+	_, routed := m.Update(message)
 	if routed == nil {
 		t.Fatal("Runtime child connection action did not dispatch a check")
 	}
@@ -412,16 +405,9 @@ func TestRegistrationConnectionObservationIsVisible(t *testing.T) {
 			b.connection.Error = ""
 		}
 		openCapabilityProfileWorkspace(t, m, b, "foreign", "Runtime")
-		m.form.SelectSectionID(sectionRuntimeID)
-		m.form.FocusSection()
-		press(m, tea.KeyRight, "")
-		press(m, tea.KeyDown, "")
-		press(m, tea.KeyDown, "")
-		_, cmd := m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		if cmd == nil {
-			t.Fatal("no connection check action")
-		}
-		_, run := m.Update(cmd())
+		selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
+		message := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
+		_, run := m.Update(message)
 		if run == nil {
 			t.Fatal("connection check did not start an observation")
 		}

@@ -88,6 +88,71 @@ func TestDockerListReconstructsNamedMCPKeyAndOwnership(t *testing.T) {
 		t.Fatalf("named child runtime was not reconstructed: %+v, %v", instances, err)
 	}
 }
+
+func TestStopExactRemovesOnlyMatchingLocallyOwnedContainerAndLedger(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "grafana"
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	container := dockerInfo{ID: "container-a", Name: "/aact-grafana-a", Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, spec)}, State: dockerState{Running: true, Status: "running"}}
+	for _, id := range []string{"container-a", "container-b"} {
+		if err := r.Store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-" + id, SourcePath: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			if args[2] != "container-a" {
+				t.Fatalf("inspect targeted wrong runtime ID: %v", args)
+			}
+			return json.Marshal([]dockerInfo{container})
+		case "rm":
+			if !reflect.DeepEqual(args[2:], []string{"--force", "container-a"}) {
+				t.Fatalf("removal did not target exact ID: %v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected Docker action: %v", args)
+			return nil, nil
+		}
+	}
+	if err := r.StopExact(context.Background(), key, "container-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 2 || f.calls[0][1] != "inspect" || f.calls[1][1] != "rm" {
+		t.Fatalf("exact removal made unexpected Docker calls: %v", f.calls)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "container-b" {
+		t.Fatalf("exact removal changed sibling ledger: %+v, %v", rows, err)
+	}
+}
+
+func TestStopExactRefusesUnknownOwnerWithoutRemovingContainer(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "grafana"
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	labels := locallyOwnedLabels(t, r, key, spec)
+	labels["aact.owner"] = "other-installation"
+	container := dockerInfo{ID: "unknown-id", Name: "/aact-grafana", Config: dockerConfig{Labels: labels}, State: dockerState{Running: true, Status: "running"}}
+	row := state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-grafana", SourcePath: "unknown-id"}
+	if err := r.Store.Record(row); err != nil {
+		t.Fatal(err)
+	}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "inspect" {
+			return json.Marshal([]dockerInfo{container})
+		}
+		t.Fatalf("unknown owner was mutated: %v", args)
+		return nil, nil
+	}
+	if err := r.StopExact(context.Background(), key, "unknown-id"); err == nil || !strings.Contains(err.Error(), "other-aact") {
+		t.Fatalf("unknown owner should be refused, got %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0][1] != "inspect" {
+		t.Fatalf("unknown owner caused Docker mutation: %v", f.calls)
+	}
+}
 func testRuntime(t *testing.T) (*Runtime, *fakeExec, state.Key) {
 	t.Helper()
 	s, e := state.Open(t.TempDir())

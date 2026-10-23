@@ -521,7 +521,7 @@ func TestUXSettingsHighlightsOnlyTheFocusedAction(t *testing.T) {
 }
 
 func TestUXWorkspacePrimaryActionTracksNavigatedStage(t *testing.T) {
-	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 28})
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
 	sectionOrder := []string{sectionInputsID, sectionAgentsID, sectionRuntimeID}
 	for i, sectionID := range sectionOrder {
 		m.form.FocusSection()
@@ -542,14 +542,14 @@ func TestUXWorkspacePrimaryActionTracksNavigatedStage(t *testing.T) {
 			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
 				t.Fatalf("Inputs form actions leaked into Agent access:\n%s", view)
 			}
-			if !strings.Contains(view, "Install selected") {
+			if !strings.Contains(collectWorkspacePages(t, m), "Install selected") {
 				t.Fatalf("Agent access does not show Install selected:\n%s", view)
 			}
 		case sectionRuntimeID:
 			if strings.Contains(view, "[ Save ]") || strings.Contains(view, "[ Cancel ]") {
 				t.Fatalf("Inputs form actions leaked into Runtime:\n%s", view)
 			}
-			if !strings.Contains(view, "Start cluster-inspector") {
+			if !strings.Contains(collectWorkspacePages(t, m), "Start cluster-inspector") {
 				t.Fatalf("Runtime does not show its Start action:\n%s", view)
 			}
 		}

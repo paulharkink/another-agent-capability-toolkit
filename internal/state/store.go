@@ -392,7 +392,13 @@ func (s *Store) Installations() ([]Installation, error) {
 	return l.Installations, e
 }
 func sameInstallation(a, b Installation) bool {
-	return a.Key == b.Key && a.AgentID == b.AgentID && a.Component == b.Component && a.Destination == b.Destination
+	if a.Key != b.Key || a.AgentID != b.AgentID || a.Component != b.Component || a.Destination != b.Destination {
+		return false
+	}
+	// A runtime row represents one exact container. Multiple containers may
+	// share a declared MCP key and destination, so the runtime ID (SourcePath)
+	// participates in identity for those rows.
+	return a.Component != "runtime" || a.SourcePath == b.SourcePath
 }
 
 // Record/Remove serialize writes within this Store. Multi-operation callers use

@@ -140,20 +140,14 @@ func TestInteractionRuntimeConnectionCheckIsIndependentOfAgentSelection(t *testi
 	m.form.FocusSection()
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeySpace, " ") // This only changes the unsaved destination draft.
-	m.form.SelectSectionID(sectionRuntimeID)
-	m.form.FocusSection()
-	press(m, tea.KeyRight, "")
-	if m.form.FocusArea() != 1 || !strings.Contains(m.View().Content, "Check plain connection") {
+	selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
+	if !strings.Contains(m.View().Content, "Check plain connection") {
 		t.Fatalf("Runtime child diagnostic is not isolated in its section:\n%s", m.View().Content)
 	}
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeyDown, "")
-	_, action := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if action != nil {
-		_, check := m.Update(action())
-		if check != nil {
-			m.Update(runTeaCmd(t, m, check))
-		}
+	action := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
+	_, check := m.Update(action)
+	if check != nil {
+		m.Update(runTeaCmd(t, m, check))
 	}
 	if b.checkedURL != "http://127.0.0.1:8765/mcp" || b.request != nil {
 		t.Fatalf("connection check touched capability bindings: url=%q legacy request=%+v", b.checkedURL, b.request)
@@ -228,9 +222,9 @@ func TestInteractionUnknownOwnerOffersDiagnosisAndBindingButNotLifecycleControl(
 	if startReason == "" {
 		t.Fatal("unknown owner unexpectedly permits Start")
 	}
-	m.form.SelectSectionID(sectionAgentsID)
-	m.form.FocusSection()
-	view := m.form.View().Content
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+	view := collectWorkspacePages(t, m)
 	if !strings.Contains(view, "Install selected") || strings.Contains(view, "Start") || strings.Contains(view, "Stop") {
 		t.Fatalf("unknown-owner workspace must allow local agent install while withholding runtime lifecycle controls: %s", view)
 	}

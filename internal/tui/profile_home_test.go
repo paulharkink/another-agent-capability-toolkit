@@ -52,7 +52,7 @@ func profileHomeFixture(t *testing.T) (*Model, *packProfileBackend) {
 func TestProfileHomeImmediateProfilesAndLayerNavigation(t *testing.T) {
 	m, b := profileHomeFixture(t)
 	rows := m.contextRows()
-	if len(rows) != 4 || rows[0].Kind != "profile" || !strings.Contains(rows[0].Label, "ota") || !strings.Contains(rows[0].Label, "stopped") {
+	if len(rows) != 5 || rows[0].Kind != "profile" || !strings.Contains(rows[0].Label, "ota") || !strings.Contains(rows[0].Label, "stopped") || rows[1].Kind != "mcp-child" || rows[1].MCPID != "server" {
 		t.Fatalf("%+v", rows)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -175,8 +175,12 @@ func TestSkillOnlyContextReportsInstalledStateAndKeepsTargetedActions(t *testing
 }
 func TestProfileCreationCancelAndAccept(t *testing.T) {
 	m, b := profileHomeFixture(t)
-	m.home.Focus = ProfilesPane
-	m.home.Context.Index = 2
+	for i, row := range m.contextRows() {
+		if row.Kind == "create-profile" {
+			m.selectContext(i)
+			break
+		}
+	}
 	m.openContextRow()
 	if m.form == nil {
 		t.Fatal("create form missing")
@@ -197,6 +201,53 @@ func TestProfileCreationCancelAndAccept(t *testing.T) {
 	m.Update(cmd())
 	if len(b.created) != 1 || b.created[0].Name != "extra" {
 		t.Fatalf("%v", b.created)
+	}
+}
+
+func TestInstanceContextShowsEveryDeclaredMCPAndLinkedRuntimeRecord(t *testing.T) {
+	m, backend := profileHomeFixture(t)
+	snapshot := backend.profiles["inspect"]
+	instances := capabilityInstances(snapshot)
+	childKey := state.Key{Source: "one", Package: "inspect", Target: "ota", MCP: "server"}
+	instances[0].MCPs = []viewmodel.RuntimeStatus{{
+		MCPID: "server", Key: childKey, Status: "multiple", Ownership: "local",
+		RuntimeRecords: []viewmodel.RuntimeRecord{
+			{ID: "container-a", Name: "aact-server-a", Status: "missing", Ownership: "local", LastAction: "start"},
+			{ID: "container-b", Name: "aact-server-b", Status: "missing", Ownership: "local", LastAction: "restart"},
+		},
+	}}
+	snapshot.Instances, snapshot.Profiles = instances, instances
+	backend.profiles["inspect"] = snapshot
+	m.capabilityInstances["inspect"] = snapshot
+
+	rows := m.contextRows()
+	var child, first, second *contextRow
+	for i := range rows {
+		row := &rows[i]
+		switch row.Kind {
+		case "mcp-child":
+			if row.MCPID == "server" {
+				child = row
+			}
+		case "runtime-record":
+			if row.RuntimeID == "container-a" {
+				first = row
+			}
+			if row.RuntimeID == "container-b" {
+				second = row
+			}
+		}
+	}
+	if child == nil || first == nil || second == nil {
+		t.Fatalf("declared MCP and both exact linked runtime records must be visible: %+v", rows)
+	}
+	if first.ID == second.ID || first.Key != childKey || second.Key != childKey || first.ParentKey.Target != "ota" || second.ParentKey.Target != "ota" {
+		t.Fatalf("runtime rows lost exact child/parent identity: first=%+v second=%+v child=%+v", first, second, child)
+	}
+	for _, want := range []string{"MCP · server · multiple", "container-a", "container-b"} {
+		if !strings.Contains(m.homeView().Content, want) {
+			t.Fatalf("instance pane omitted %q:\n%s", want, m.homeView().Content)
+		}
 	}
 }
 

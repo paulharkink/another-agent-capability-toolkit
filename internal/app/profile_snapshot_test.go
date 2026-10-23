@@ -7,8 +7,11 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -84,7 +87,7 @@ type snapshotRuntime struct {
 }
 
 func (r *snapshotRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.err }
-func TestObservedProfileRuntimeOwnershipConflictAndStale(t *testing.T) {
+func TestObservedInstanceRuntimeDuplicateRowsRemainChildScopedAndStale(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	k, _ := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
 	child := mcpDefinitionKey(k, s.Source.Catalog[0], s.Source.Catalog[0].MCPs[0])
@@ -102,10 +105,184 @@ func TestObservedProfileRuntimeOwnershipConflictAndStale(t *testing.T) {
 	r.err = nil
 	r.instances = append(r.instances, r.instances[0])
 	snap, err = s.ProfileSnapshot(context.Background(), "demo")
-	if err != nil || snap.Profiles[0].MCPs[0].Status != "conflict" {
+	if err != nil || snap.Profiles[0].MCPs[0].Status != "running" || len(snap.Profiles[0].MCPs[0].RuntimeRecords) != 2 || snap.Profiles[0].MCPs[0].Ownership != "other-aact" {
 		t.Fatalf("%+v %v", snap, err)
 	}
 }
+
+func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCP = nil
+	p.MCPs = []catalog.MCP{{Name: "grafana-inspector", Image: "fixture", Transport: "streamable-http"}}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childKey := mcpDefinitionKey(key, *p, p.MCPs[0])
+	for _, runtimeID := range []string{"stale-container-a", "stale-container-b"} {
+		if err := s.Store.Record(state.Installation{Key: childKey, AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: runtimeID, Mode: "docker"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orphanKey := childKey
+	orphanKey.MCP = "removed-definition"
+	if err := s.Store.Record(state.Installation{Key: orphanKey, AgentID: "docker", Component: "runtime", Destination: "aact-orphan", SourcePath: "orphan-container", Mode: "docker"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{
+		{Key: childKey, ID: "stale-container-a", Name: "aact-grafana-a", Status: "missing", Ownership: "local"},
+		{Key: childKey, ID: "stale-container-b", Name: "aact-grafana-b", Status: "missing", Ownership: "local"},
+	}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceIndex := -1
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == key {
+			instanceIndex = i
+			break
+		}
+	}
+	if instanceIndex < 0 {
+		t.Fatalf("configured CapabilityInstance %s is absent: %+v", key.Target, snapshot.Instances)
+	}
+	instance := snapshot.Instances[instanceIndex]
+	if instance.ConfigStatus == "conflict" || len(instance.MCPs) != 1 {
+		t.Fatalf("stale child records were promoted to a parent conflict or hid the declared MCP: %+v", instance)
+	}
+	if got := instance.MCPs[0].Status; got != "missing" {
+		t.Fatalf("duplicate missing runtime rows should stay recoverable under the declared MCP, status=%q error=%q", got, instance.MCPs[0].Error)
+	}
+	childValue := reflect.ValueOf(instance.MCPs[0])
+	runtimeRecords := childValue.FieldByName("RuntimeRecords")
+	if !runtimeRecords.IsValid() || runtimeRecords.Len() != 2 {
+		t.Fatalf("declared MCP child must expose both runtime records, got field=%v", runtimeRecords)
+	}
+	if got := runtimeRecords.Index(0).FieldByName("ID").String(); got != "stale-container-a" {
+		t.Fatalf("first runtime identity = %q, want stale-container-a", got)
+	}
+	if got := runtimeRecords.Index(1).FieldByName("ID").String(); got != "stale-container-b" {
+		t.Fatalf("second runtime identity = %q, want stale-container-b", got)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("runtime metadata for undefined MCP was not reconciled without touching linked missing records: %+v", rows)
+	}
+}
+
+func TestCapabilityInstanceSnapshotDoesNotCrossLinkRuntimeBySharedURL(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCP = nil
+	p.MCPs = []catalog.MCP{
+		{Name: "first-server", Image: "fixture", Transport: "streamable-http"},
+		{Name: "second-server", Image: "fixture", Transport: "streamable-http"},
+	}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := mcpDefinitionKey(key, *p, p.MCPs[0])
+	secondKey := mcpDefinitionKey(key, *p, p.MCPs[1])
+	sharedURL := "http://localhost:9911/mcp"
+	for _, child := range []state.Key{firstKey, secondKey} {
+		if err := s.Store.Record(state.Installation{
+			Key: child, AgentID: "codex", Component: "mcp", Destination: "/tmp/config.toml",
+			RegistrationName: child.MCPDefinition, URL: sharedURL, ExternalRegistration: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
+		Key: firstKey, ID: "first-container", Status: "running", Ownership: "local", URL: sharedURL,
+	}}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, second *viewmodel.RuntimeStatus
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key != key {
+			continue
+		}
+		for j := range snapshot.Instances[i].MCPs {
+			child := &snapshot.Instances[i].MCPs[j]
+			switch child.MCPID {
+			case "first-server":
+				first = child
+			case "second-server":
+				second = child
+			}
+		}
+	}
+	if first == nil || len(first.RuntimeRecords) != 1 || first.RuntimeRecords[0].ID != "first-container" {
+		t.Fatalf("exact-key child lost its runtime: %+v", first)
+	}
+	if second == nil || len(second.RuntimeRecords) != 0 {
+		t.Fatalf("runtime was cross-linked to sibling with the same registration URL: %+v", second)
+	}
+}
+
+func TestCapabilityInstanceSnapshotReconcilesLedgerWhenLiveIDHasDifferentKey(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCP = nil
+	p.MCPs = []catalog.MCP{
+		{Name: "first-server", Image: "fixture", Transport: "streamable-http"},
+		{Name: "second-server", Image: "fixture", Transport: "streamable-http"},
+	}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := mcpDefinitionKey(key, *p, p.MCPs[0])
+	secondKey := mcpDefinitionKey(key, *p, p.MCPs[1])
+	ledger := state.Installation{Key: firstKey, AgentID: "docker", Component: "runtime", Destination: "aact-first", SourcePath: "same-live-id", Mode: "docker"}
+	if err := s.Store.Record(ledger); err != nil {
+		t.Fatal(err)
+	}
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
+		Key: secondKey, ID: ledger.SourcePath, Name: "aact-second", Status: "running", Ownership: "local",
+	}}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, second *viewmodel.RuntimeStatus
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key != key {
+			continue
+		}
+		for j := range snapshot.Instances[i].MCPs {
+			child := &snapshot.Instances[i].MCPs[j]
+			switch child.MCPID {
+			case "first-server":
+				first = child
+			case "second-server":
+				second = child
+			}
+		}
+	}
+	if first == nil || len(first.RuntimeRecords) != 0 {
+		t.Fatalf("mis-keyed runtime remained actionable under the old child: %+v", first)
+	}
+	if second == nil || len(second.RuntimeRecords) != 1 || second.RuntimeRecords[0].ID != ledger.SourcePath {
+		t.Fatalf("live runtime was not visible under its observed MCP key: %+v", second)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("mis-keyed ledger metadata was not reconciled exactly: %+v, %v", rows, err)
+	}
+}
+
 func TestCapabilityProfileSnapshotInvalidFileStaysVisible(t *testing.T) {
 	s, _, _ := profileApplyFixture(t)
 	os.WriteFile(filepath.Join(s.Source.ProfileRoot, "demo", "broken.toml"), []byte("???"), 0600)

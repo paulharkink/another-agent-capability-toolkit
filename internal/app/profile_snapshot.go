@@ -30,14 +30,6 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	if err != nil {
 		return snapshot, err
 	}
-	records, err := s.Store.Instances()
-	if err != nil {
-		return snapshot, err
-	}
-	rows, err := s.Store.Installations()
-	if err != nil {
-		return snapshot, err
-	}
 	var runtimes []mcp.Instance
 	var runtimeErr error
 	if p.HasMCP() {
@@ -55,6 +47,17 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 		s.observationMu.Unlock()
 	} else {
 		snapshot.ObservedAt = time.Now()
+	}
+	if err = s.reconcileRuntimeLedger(p, configuredInstances, runtimes, runtimeErr == nil); err != nil {
+		snapshot.Errors = append(snapshot.Errors, "runtime ledger reconciliation: "+err.Error())
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		return snapshot, err
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return snapshot, err
 	}
 	registry := s.adapterRegistry()
 	for _, instance := range configuredInstances {
@@ -188,7 +191,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 		}
 		for _, definition := range p.MCPDefinitions() {
 			child := mcpDefinitionKey(key, p, definition)
-			runtime := viewmodel.RuntimeStatus{MCPID: definition.Name, Status: "stopped", Ownership: "local", ObservedAt: snapshot.ObservedAt, Stale: runtimeErr != nil}
+			runtime := viewmodel.RuntimeStatus{MCPID: definition.Name, Key: child, Status: "stopped", Ownership: "local", ObservedAt: snapshot.ObservedAt, Stale: runtimeErr != nil, RuntimeRecords: []viewmodel.RuntimeRecord{}}
 			if definition.EnabledInput != "" && values[definition.EnabledInput] != true {
 				runtime.Status = "disabled"
 			}
@@ -203,14 +206,34 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 			}
 			matches := []mcp.Instance{}
 			for _, runtimeInstance := range runtimes {
-				if runtimeInstance.Key == child || (registeredURL != "" && runtimeInstance.URL == registeredURL) {
+				// Runtime identity is keyed to this MCP definition. Endpoint URLs
+				// are not unique: two MCP registrations may intentionally share a
+				// URL, so URL matching could expose one runtime under its sibling.
+				if runtimeInstance.Key == child {
 					matches = append(matches, runtimeInstance)
 				}
 			}
+			for _, match := range matches {
+				runtime.RuntimeRecords = append(runtime.RuntimeRecords, viewmodel.RuntimeRecord{
+					ID: match.ID, Name: match.Name, Status: match.Status, Ownership: match.Ownership,
+					URL: match.URL, LastAction: match.LastAction, LastActionAt: match.LastActionAt,
+				})
+			}
 			if len(matches) > 1 {
-				runtime.Status = "conflict"
-				runtime.Ownership = "unknown"
-				runtime.Error = fmt.Sprintf("%d runtimes claim this instance MCP", len(matches))
+				// Keep every runtime independently addressable under its declared
+				// MCP child. A duplicate is not a parent-instance conflict; the
+				// child summary remains useful while the UI exposes exact records.
+				runtime.Status = summarizeRuntimeRecords(matches)
+				runtime.Ownership = matches[0].Ownership
+				for _, match := range matches[1:] {
+					if match.Ownership != runtime.Ownership {
+						runtime.Ownership = "multiple"
+						break
+					}
+				}
+				if runtime.Status == "multiple" {
+					runtime.Error = fmt.Sprintf("%d runtime records are linked to this MCP; review each record individually", len(matches))
+				}
 			} else if len(matches) == 1 {
 				runtime.Status = matches[0].Status
 				runtime.Ownership = matches[0].Ownership
@@ -237,6 +260,26 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 		snapshot.Profiles = append(snapshot.Profiles, row)
 	}
 	return snapshot, nil
+}
+
+func summarizeRuntimeRecords(records []mcp.Instance) string {
+	if len(records) == 0 {
+		return "stopped"
+	}
+	status := records[0].Status
+	if status == "" {
+		status = "unknown"
+	}
+	for _, record := range records[1:] {
+		current := record.Status
+		if current == "" {
+			current = "unknown"
+		}
+		if current != status {
+			return "multiple"
+		}
+	}
+	return status
 }
 
 // ProfileSnapshot is retained for callers of the former selected-instance API.

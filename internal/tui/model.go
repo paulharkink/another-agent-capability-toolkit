@@ -15,6 +15,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -465,6 +466,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		parts := strings.SplitN(action.ID, ":", 2)
 		if len(parts) == 2 {
+			if parts[0] == "edit-inputs" {
+				m.workspace.SelectedMCP = parts[1]
+				m.workspace.Section = "Inputs"
+				m.workspace.SectionID = sectionInputsID
+				if m.form != nil && m.form.HasSectionID(sectionInputsID) {
+					m.configureWorkspaceForm(*m.workspace.Preview)
+				}
+				return m, nil
+			}
+			if parts[0] == "delete-runtime" {
+				index, err := strconv.Atoi(parts[1])
+				if err != nil || index < 0 || index >= len(m.workspace.RuntimeRecordTargets) {
+					m.output = "The selected runtime record is no longer available; refresh this instance and try again."
+					return m, nil
+				}
+				backend, ok := m.backend.(runtimeRecordRemovalBackend)
+				if !ok {
+					m.output = "Exact runtime record deletion is unavailable in this backend."
+					return m, nil
+				}
+				target := m.workspace.RuntimeRecordTargets[index]
+				return m, func() tea.Msg {
+					output, err := backend.UIRemoveRuntimeRecord(m.ctx, target.Key, target.ID)
+					return operationMsg{origin: m.view, output: output, err: err, step: "delete runtime record", target: target.ID}
+				}
+			}
 			if parts[0] == "check-connection" {
 				if profile := m.instanceForMCPName(parts[1]); profile != nil {
 					return m, m.checkProfileConnection(InstanceRow{Key: profile.Key, URL: profile.URL, Name: profile.Name, Status: profile.RuntimeStatus, Instance: profile})

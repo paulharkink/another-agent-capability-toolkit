@@ -90,4 +90,15 @@ type RuntimeStatus struct {
 	AuthenticationStatus                 string
 	ObservedAt                           time.Time
 	Stale                                bool
+	Key                                  state.Key
+	RuntimeRecords                       []RuntimeRecord
+}
+
+// RuntimeRecord is one independently addressable runtime observation linked
+// to a declared MCP child. ID remains stable even when the container is
+// missing, so the UI can explain and remove only that exact local ledger row.
+type RuntimeRecord struct {
+	ID, Name, Status, Ownership, URL string
+	LastAction                       string
+	LastActionAt                     time.Time
 }
