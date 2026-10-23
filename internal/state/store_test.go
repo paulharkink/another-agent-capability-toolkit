@@ -365,3 +365,51 @@ func TestSecretValuesAreAbsentFromLedger(t *testing.T) {
 		t.Fatalf("ledger has secret fields: %s", b)
 	}
 }
+
+func TestRekeyRuntimeRecordPreservesExactRuntimeMetadata(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	oldKey := sampleKey("source")
+	oldKey.MCP = "old-child"
+	newKey := oldKey
+	newKey.MCP = "observed-child"
+	row := Installation{Key: oldKey, AgentID: "docker", Component: "runtime", Destination: "aact-runtime", SourcePath: "container-123", Mode: "docker", URL: "http://localhost:8765/mcp", LastAction: "start"}
+	if err := s.Record(row); err != nil {
+		t.Fatal(err)
+	}
+	updated := row
+	updated.Key = newKey
+	updated.Destination = "observed-runtime"
+	updated.URL = "http://localhost:9999/mcp"
+	if err := s.RekeyRuntimeRecord(row, updated); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 1 || rows[0] != updated {
+		t.Fatalf("runtime rekey lost identity or metadata: %+v, %v", rows, err)
+	}
+}
+
+func TestRekeyRuntimeRecordCollapsesSameContainerTargetRow(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	oldKey := sampleKey("source")
+	oldKey.MCP = "old-child"
+	newKey := oldKey
+	newKey.MCP = "observed-child"
+	old := Installation{Key: oldKey, AgentID: "docker", Component: "runtime", Destination: "old-name", SourcePath: "container-123", Mode: "docker"}
+	target := Installation{Key: newKey, AgentID: "docker", Component: "runtime", Destination: "current-name", SourcePath: "container-123", Mode: "docker", URL: "http://localhost:8765/mcp"}
+	for _, row := range []Installation{old, target} {
+		if err := s.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated := target
+	updated.Destination = "observed-name"
+	updated.URL = "http://localhost:9999/mcp"
+	if err := s.RekeyRuntimeRecord(old, updated); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Installations()
+	if err != nil || len(rows) != 1 || rows[0] != updated {
+		t.Fatalf("rekey left duplicate metadata for one exact container: %+v, %v", rows, err)
+	}
+}

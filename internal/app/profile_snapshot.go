@@ -48,7 +48,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	} else {
 		snapshot.ObservedAt = time.Now()
 	}
-	if err = s.reconcileRuntimeLedger(p, configuredInstances, runtimes, runtimeErr == nil); err != nil {
+	if err = s.reconcileRuntimeLedger(ctx, p, configuredInstances, runtimes, runtimeErr == nil); err != nil {
 		snapshot.Errors = append(snapshot.Errors, "runtime ledger reconciliation: "+err.Error())
 	}
 	records, err := s.Store.Instances()

@@ -248,9 +248,10 @@ func TestCapabilityInstanceSnapshotReconcilesLedgerWhenLiveIDHasDifferentKey(t *
 	if err := s.Store.Record(ledger); err != nil {
 		t.Fatal(err)
 	}
-	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
-		Key: secondKey, ID: ledger.SourcePath, Name: "aact-second", Status: "running", Ownership: "local",
-	}}}
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{
+		Key: secondKey, ID: ledger.SourcePath, Name: "aact-second", Status: "running", Ownership: "local", URL: "http://localhost:9912/mcp",
+	}}}, store: s.Store}
+	s.Options.Runtime = runtime
 
 	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
 	if err != nil {
@@ -278,8 +279,18 @@ func TestCapabilityInstanceSnapshotReconcilesLedgerWhenLiveIDHasDifferentKey(t *
 		t.Fatalf("live runtime was not visible under its observed MCP key: %+v", second)
 	}
 	rows, err := s.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].Key != secondKey || rows[0].SourcePath != ledger.SourcePath || rows[0].Destination != "aact-second" || rows[0].URL != "http://localhost:9912/mcp" {
+		t.Fatalf("live runtime ledger metadata was not rekeyed to its observed MCP: %+v, %v", rows, err)
+	}
+	if _, err := s.UIRemoveRuntimeRecord(context.Background(), secondKey, ledger.SourcePath); err != nil {
+		t.Fatalf("visible runtime row could not remove its exact runtime after reconciliation: %v", err)
+	}
+	if !reflect.DeepEqual(runtime.removedIDs, []string{ledger.SourcePath}) {
+		t.Fatalf("visible row removed unexpected runtime IDs: %v", runtime.removedIDs)
+	}
+	rows, err = s.Store.Installations()
 	if err != nil || len(rows) != 0 {
-		t.Fatalf("mis-keyed ledger metadata was not reconciled exactly: %+v, %v", rows, err)
+		t.Fatalf("exact runtime deletion left ledger metadata: %+v, %v", rows, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -11,12 +12,18 @@ import (
 
 // reconcileRuntimeLedger removes only local manager metadata for runtime rows
 // that cannot be linked to a declared MCP under any visible instance of this
-// capability. It never queries or mutates Docker or agent registrations.
+// capability. It never mutates Docker or agent registrations.
 // Rows for declared MCPs are retained even if their runtime is missing. When
-// Docker observes the same ID under a different key, only the stale ledger
-// metadata is removed; the actual runtime remains visible under its observed
-// key and is never changed here.
-func (s *Service) reconcileRuntimeLedger(p catalog.Package, instances []config.Instance, observed []mcp.Instance, observationAvailable bool) error {
+// Docker observes the same ID under a different declared key, the ledger row
+// is rekeyed to keep the visible runtime manageable. Unlinked rows are removed
+// as metadata only; this function never mutates Docker or agent registrations.
+func (s *Service) reconcileRuntimeLedger(ctx context.Context, p catalog.Package, instances []config.Instance, observed []mcp.Instance, observationAvailable bool) error {
+	return s.Store.WithLock(ctx, func() error {
+		return s.reconcileRuntimeLedgerLocked(p, instances, observed, observationAvailable)
+	})
+}
+
+func (s *Service) reconcileRuntimeLedgerLocked(p catalog.Package, instances []config.Instance, observed []mcp.Instance, observationAvailable bool) error {
 	rows, err := s.Store.Installations()
 	if err != nil {
 		return err
@@ -32,31 +39,59 @@ func (s *Service) reconcileRuntimeLedger(p catalog.Package, instances []config.I
 			known[mcpDefinitionKey(base, p, definition)] = struct{}{}
 		}
 	}
-	observedKeysByID := make(map[string]map[state.Key]struct{})
+	observedByID := make(map[string][]mcp.Instance)
 	if observationAvailable {
 		for _, item := range observed {
 			if item.ID == "" {
 				continue
 			}
-			if observedKeysByID[item.ID] == nil {
-				observedKeysByID[item.ID] = make(map[state.Key]struct{})
-			}
-			observedKeysByID[item.ID][item.Key] = struct{}{}
+			observedByID[item.ID] = append(observedByID[item.ID], item)
 		}
 	}
 	for _, row := range rows {
 		if row.Component != "runtime" || row.Key.Source != s.Source.ID || row.Key.Package != p.ID {
 			continue
 		}
-		_, keyIsDeclared := known[row.Key]
-		if keyIsDeclared {
-			observedKeys := observedKeysByID[row.SourcePath]
-			if !observationAvailable || len(observedKeys) == 0 {
+		observedItems := observedByID[row.SourcePath]
+		if observationAvailable && len(observedItems) > 0 {
+			exactKeyObserved := false
+			for _, item := range observedItems {
+				if item.Key == row.Key {
+					exactKeyObserved = true
+					break
+				}
+			}
+			if exactKeyObserved {
 				continue
 			}
-			if _, exactKeyObserved := observedKeys[row.Key]; exactKeyObserved {
+			if len(observedItems) > 1 {
+				// The ID appeared under multiple keys; keep the ledger evidence
+				// rather than guessing which observation should own it.
 				continue
 			}
+			observedRuntime := observedItems[0]
+			if _, declared := known[observedRuntime.Key]; declared {
+				updated := row
+				updated.Key = observedRuntime.Key
+				if observedRuntime.Name != "" {
+					updated.Destination = observedRuntime.Name
+				}
+				updated.URL = observedRuntime.URL
+				updated.LastAction = observedRuntime.LastAction
+				updated.LastActionAt = observedRuntime.LastActionAt
+				if err := s.Store.RekeyRuntimeRecord(row, updated); err != nil {
+					return fmt.Errorf("rekey runtime metadata %q to observed MCP: %w", row.SourcePath, err)
+				}
+				continue
+			}
+			// A live ID observed under a key not declared for this capability
+			// cannot be safely controlled from this row; discard only stale
+			// manager metadata below.
+		}
+		if _, keyIsDeclared := known[row.Key]; keyIsDeclared && (!observationAvailable || len(observedItems) == 0) {
+			// Preserve declared rows when the runtime is missing or could not be
+			// observed. Absence is not proof that the ledger row is orphaned.
+			continue
 		}
 		if err := s.Store.Remove(row); err != nil {
 			return fmt.Errorf("remove orphan runtime metadata %q: %w", row.SourcePath, err)

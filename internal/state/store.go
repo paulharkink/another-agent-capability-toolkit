@@ -445,6 +445,60 @@ func (s *Store) Remove(i Installation) error {
 	l.Installations = out
 	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)
 }
+
+// RekeyRuntimeRecord updates one exact runtime ledger identity using fresh
+// runtime observation metadata. Duplicate rows for the same key and container
+// ID are collapsed into that authoritative observation.
+func (s *Store) RekeyRuntimeRecord(old, updated Installation) error {
+	if old.Component != "runtime" || old.SourcePath == "" || updated.Component != "runtime" || updated.AgentID != old.AgentID || updated.SourcePath != old.SourcePath || updated.Key.Source == "" || updated.Key.Package == "" || updated.Key.Target == "" {
+		return errors.New("rekey requires an exact runtime record and complete observed target")
+	}
+	if s.readonly {
+		return ErrReadOnly
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, err := s.loadLedger()
+	if err != nil {
+		return err
+	}
+	index := -1
+	for i, row := range l.Installations {
+		if sameInstallation(row, old) {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return errors.New("exact runtime ledger record was not found for rekey")
+	}
+	if l.Installations[index].AgentID != updated.AgentID {
+		return errors.New("observed target runtime has a different ledger owner")
+	}
+	out := make([]Installation, 0, len(l.Installations))
+	inserted := false
+	for i, row := range l.Installations {
+		if i == index {
+			continue
+		}
+		if row.Component == "runtime" && row.Key == updated.Key && row.SourcePath == updated.SourcePath {
+			if row.AgentID != updated.AgentID {
+				return errors.New("target MCP runtime ID is recorded under a different ledger owner")
+			}
+			if !inserted {
+				out = append(out, updated)
+				inserted = true
+			}
+			continue
+		}
+		out = append(out, row)
+	}
+	if !inserted {
+		out = append(out, updated)
+	}
+	l.Installations = out
+	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)
+}
 func (s *Store) AuthDir(k Key) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
