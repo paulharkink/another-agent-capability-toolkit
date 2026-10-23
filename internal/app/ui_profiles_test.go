@@ -123,7 +123,7 @@ func (r *exactProfileRuntime) StopExact(_ context.Context, key state.Key, id str
 func TestUIRemoveRuntimeRecordDeletesOnlyExactLocallyOwnedRecord(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
-	parent := state.Key{Source: "fixture", Package: "demo", Target: "pms15"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
 	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	rows := []state.Installation{
 		{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-demo-a", SourcePath: "container-a"},
@@ -163,7 +163,7 @@ func TestUIRemoveRuntimeRecordRejectsInactivePackEvenWhenRegistered(t *testing.T
 	if err := state.WriteJSON(filepath.Join(store.Root(), "manager", "sources.json"), []sourceRef{{ID: "remembered", Root: root, PackageDirs: []string{packageDir}}}); err != nil {
 		t.Fatal(err)
 	}
-	parent := state.Key{Source: "remembered", Package: "other-demo", Target: "pms15"}
+	parent := state.Key{Source: "remembered", Package: "other-demo", Target: "test-cluster"}
 	child := parent
 	if err := store.Record(state.Installation{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-remembered", SourcePath: "remembered-container"}); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestUIRemoveRuntimeRecordRefusesLiveIDObservedUnderDifferentKey(t *testing.
 func TestUIRemoveRuntimeRecordRefusesUnknownOwnerAndPreservesLedger(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
-	parent := state.Key{Source: "fixture", Package: "demo", Target: "pms15"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
 	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
 	row := state.Installation{Key: child, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "unknown-container", SourcePath: "unknown-id"}
 	if err := store.Record(row); err != nil {

@@ -327,10 +327,10 @@ func (b *savedOnlyTransitionBackend) UIProfileSnapshot(context.Context) (viewmod
 
 func TestDiscardingWorkspaceDoesNotLeakAnotherPackSavedRows(t *testing.T) {
 	m, backend := profileHomeFixture(t)
-	key := state.Key{Source: "home", Package: "cluster-inspector", Target: "pms15"}
+	key := state.Key{Source: "home", Package: "cluster-inspector", Target: "test-cluster"}
 	backendAfterDiscard := &savedOnlyTransitionBackend{
 		packProfileBackend: backend,
-		snapshot:           viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: key, Name: "pms15", RuntimeStatus: "stopped"}}},
+		snapshot:           viewmodel.InstanceSnapshot{Profiles: []viewmodel.Instance{{Key: key, Name: "test-cluster", RuntimeStatus: "stopped"}}},
 	}
 	m.backend = backendAfterDiscard
 	m.home.Capabilities.Index = 0
@@ -358,7 +358,7 @@ func TestDiscardingWorkspaceDoesNotLeakAnotherPackSavedRows(t *testing.T) {
 	m.Update(reload())
 
 	view := m.View().Content
-	if strings.Contains(view, key.Package) || strings.Contains(view, "pms15") {
+	if strings.Contains(view, key.Package) || strings.Contains(view, "test-cluster") {
 		t.Fatalf("another Pack's saved-only capability leaked after workspace discard:\n%s", view)
 	}
 	if strings.Contains(view, "Configuration profiles") {

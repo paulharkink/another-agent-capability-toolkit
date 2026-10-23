@@ -193,7 +193,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 func TestHomeCatalogNeverInventsCapabilitiesFromRuntimeRecords(t *testing.T) {
 	m, msg := homeFixture()
 	msg.instanceSnapshot.Profiles = append(msg.instanceSnapshot.Profiles, viewmodel.Instance{
-		Key: state.Key{Source: "bundled", Package: "argocd", Target: "pms15"}, Name: "orphan runtime",
+		Key: state.Key{Source: "bundled", Package: "argocd", Target: "test-cluster"}, Name: "orphan runtime",
 		RuntimeStatus: "running", Ownership: "local",
 	})
 	m.Update(msg)
