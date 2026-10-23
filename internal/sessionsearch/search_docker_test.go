@@ -28,6 +28,7 @@ func TestSearchSyntheticHistoryInActualContainer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	packageDir = packageWithPrefetchedPythonBase(t, packageDir)
 	var stdout, stderr bytes.Buffer
 	s := Search{PackageDir: packageDir, Stdout: &stdout, Stderr: &stderr}
 	if err = s.Run(context.Background(), []string{"-g", "postgres"}, home, false); err != nil {
@@ -40,4 +41,34 @@ func TestSearchSyntheticHistoryInActualContainer(t *testing.T) {
 	if err != nil || string(after) != content {
 		t.Fatal("history changed")
 	}
+}
+
+func packageWithPrefetchedPythonBase(t *testing.T, source string) string {
+	t.Helper()
+	const ecr = "public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+	const hub = "docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+	selected := os.Getenv("AACT_PYTHON_BASE_IMAGE_3_12_SLIM")
+	if selected == "" {
+		selected = ecr
+	}
+	if selected != ecr && selected != hub {
+		t.Fatalf("refusing unverified Find Session test base %q", selected)
+	}
+	packageDir := t.TempDir()
+	if err := os.CopyFS(packageDir, os.DirFS(source)); err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := filepath.Join(packageDir, "container", "Dockerfile")
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultLine := "ARG PYTHON_BASE_IMAGE=" + ecr
+	if !strings.Contains(string(data), defaultLine) {
+		t.Fatal("Find Session Dockerfile lost its pinned ECR default")
+	}
+	if err := os.WriteFile(dockerfile, []byte(strings.Replace(string(data), defaultLine, "ARG PYTHON_BASE_IMAGE="+selected, 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return packageDir
 }
