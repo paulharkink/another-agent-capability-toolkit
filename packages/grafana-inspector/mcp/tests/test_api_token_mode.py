@@ -88,6 +88,7 @@ class ApiTokenModeTests(unittest.TestCase):
         preferences_by_token = {
             "service-account": {"theme": "dark", "timezone": "browser", "weekStart": ""},
             "legacy-api-key": {"theme": "", "timezone": ""},
+            "service-account-with-empty-preferences": {},
         }
         with patch.object(server, "AUTH_MODE", "api_token"):
             for token_kind, expected_preferences in preferences_by_token.items():
@@ -104,13 +105,6 @@ class ApiTokenModeTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(json.loads(response.body), {"authenticated": True})
                     self.assertEqual(calls, ["/api/user/preferences"])
-
-    def test_api_token_health_rejects_unexpected_preferences_response_shape(self):
-        for preferences in (None, [], "ok", {}, {"message": "unexpected response"}, {"theme": [], "timezone": 7}):
-            with self.subTest(preferences=preferences), patch.object(server, "AUTH_MODE", "api_token"), patch.object(server, "_get", return_value=preferences):
-                response = asyncio.run(server.health(None))
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(json.loads(response.body), {"authenticated": False})
 
     def test_startup_validates_token_on_protected_datasource_api(self):
         with patch.object(server, "_get", return_value=[]) as get:

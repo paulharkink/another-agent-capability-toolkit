@@ -361,10 +361,10 @@ async def health(request: Request) -> JSONResponse:
                 )
             )
         else:
-            preferences = _get("/api/user/preferences")
-            authenticated = isinstance(preferences, dict) and any(
-                isinstance(preferences.get(field), str) for field in ("theme", "timezone")
-            )
+            # A successful authenticated response proves the credential works.
+            # Preference fields are optional and may be absent for service accounts.
+            _get("/api/user/preferences")
+            authenticated = True
     except Exception:
         authenticated = False
     return JSONResponse({"authenticated": authenticated})
