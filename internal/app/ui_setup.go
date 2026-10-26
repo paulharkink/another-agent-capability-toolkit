@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 
@@ -157,11 +158,72 @@ func (s *Service) discoveryProbe() agents.DiscoveryProbe {
 
 // targetInputChoices turns wildcard table keys in a target TOML into stable
 // checkbox values. For example, dbms.*.tenants.* yields dbms/tenant IDs.
+// UIInstall preserves the pre-workspace combined operation for API callers
+// that rely on its save/apply behavior. The staged TUI calls UIInstallAgents.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs})
+	if q.ExternalURL != "" && len(q.ExternalURLs) == 0 {
+		p, _, _, err := s.loadInstance(q.Ref)
+		if err != nil {
+			return viewmodel.OperationResult{}, err
+		}
+		definitions := p.MCPDefinitions()
+		if len(definitions) != 1 {
+			return viewmodel.OperationResult{}, invalid(errors.New("a single external endpoint requires exactly one MCP definition"))
+		}
+		q.ExternalURLs = map[string]string{definitions[0].Name: q.ExternalURL}
+	}
+	return s.ApplyInstance(ctx, InstanceRequest{
+		Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups,
+		ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs,
+	})
+}
+
+// UIInstallAgents installs agent bindings without saving inputs or starting
+// MCP runtimes. Inputs must be saved first; secret values currently entered
+// on the Inputs screen are supplied transiently for registration generation.
+func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	if q.Ref.PackID != s.Source.ID {
+		return viewmodel.OperationResult{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.Ref.PackID))
+	}
+	p, _, key, err := s.loadInstance(q.Ref)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	groups, err := s.Store.ActiveInputGroups(key)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	externalURLs := q.ExternalURLs
+	if q.ExternalURL != "" && len(externalURLs) == 0 {
+		definitions := p.MCPDefinitions()
+		if len(definitions) != 1 {
+			return viewmodel.OperationResult{}, invalid(errors.New("a single external endpoint requires exactly one MCP definition"))
+		}
+		externalURLs = map[string]string{definitions[0].Name: q.ExternalURL}
+	}
+	// Secret values are never stored in ordinary answer files. Keep a secret
+	// entered in the open Inputs form available to configure the agent's MCP
+	// registration, while all other values come from the last explicit Save.
+	secrets := map[string]any{}
+	for _, input := range p.Inputs {
+		if input.Type == "secret" {
+			if value, ok := q.Inputs[input.Name]; ok {
+				secrets[input.Name] = value
+			}
+		}
+	}
+	return s.ApplyInstance(ctx, InstanceRequest{
+		Ref: q.Ref, Inputs: secrets, ActiveInputGroups: groups,
+		ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		Uninstall: q.Uninstall, ExternalURLs: externalURLs, InstallOnly: true,
+	})
 }
 
 // UIUninstallSkillOnly is retained for source compatibility. It translates
@@ -195,7 +257,7 @@ func (s *Service) UIUninstallSkillOnly(ctx context.Context, q viewmodel.SkillOnl
 			remaining = append(remaining, id)
 		}
 	}
-	return s.UIInstall(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: remaining, Uninstall: true})
+	return s.UIInstallAgents(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: remaining, Uninstall: true})
 }
 
 // UIInstallSkillOnly is retained for source compatibility, but uses the same

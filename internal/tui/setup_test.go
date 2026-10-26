@@ -195,6 +195,10 @@ func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInst
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "all", Component: "skill"}}}, nil
 }
 
+func (b *setupBackendFixture) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.UIInstall(ctx, q)
+}
+
 func (b *setupBackendFixture) UISaveInputs(_ context.Context, q viewmodel.SetupInstallRequest) error {
 	b.savedInputRequest = &q
 	return b.saveInputsErr
@@ -356,9 +360,8 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("one selectable bundle with a skill and MCP rendered a redundant Components section")
 	}
-	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
-	if len(selected) != 1 || selected[0] != "set:starter" {
-		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", selected)
+	if len(m.pendingSetup.SelectedItemIDs) != 1 || m.pendingSetup.SelectedItemIDs[0] != "set:starter" {
+		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", m.pendingSetup.SelectedItemIDs)
 	}
 	status, _ := m.installationDetails(m.capabilities()[0])
 	if status != "Installed" {

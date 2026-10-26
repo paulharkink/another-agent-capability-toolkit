@@ -20,6 +20,10 @@ type setupBackend interface {
 	UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
 }
 
+type setupAgentInstallBackend interface {
+	UIInstallAgents(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
+}
+
 type setupInputSaveBackend interface {
 	UISaveInputs(context.Context, viewmodel.SetupInstallRequest) error
 }
@@ -163,6 +167,24 @@ func (m *Model) targetHasInstallRecord(key state.Key) bool {
 		}
 	}
 	return false
+}
+
+func (m *Model) targetRegisteredMCPs(key state.Key) map[string]bool {
+	registered := map[string]bool{}
+	for _, instance := range capabilityInstances(m.capabilityInstances[key.Package]) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.Kind != "mcp" || component.Status != "installed" || component.AgentID == "" {
+				continue
+			}
+			if component.Name != "" {
+				registered[component.Name] = true
+			}
+		}
+	}
+	return registered
 }
 
 func capabilityInstanceKey(instance viewmodel.CapabilityInstance) state.Key {
@@ -441,6 +463,9 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 }
 
 func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, overrides map[string]any) {
+	if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
+		preview.SelectedItemIDs = []string{preview.Items[0].ID}
+	}
 	defs := make([]catalog.Input, 0, len(preview.Inputs)+1)
 	values := make(map[string]any, len(preview.Inputs)+1)
 	visibilityContext := map[string]any{}
@@ -526,7 +551,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		destinationField = ""
 	}
 	m.pendingSetupItemsField = ""
-	if len(preview.Items) > 0 {
+	if len(preview.Items) > 1 {
 		field := "__aact_components"
 		for {
 			collision := false
@@ -544,9 +569,6 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		preview.ItemFieldName = field
 		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
-		if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
-			values[field] = []string{preview.Items[0].ID}
-		}
 	}
 	replayValues := make(map[string]any, len(overrides))
 	for name, value := range overrides {
@@ -781,10 +803,6 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 		m.output = "Unified setup service unavailable"
 		return nil
 	}
-	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Preview != nil && workspace.Preview.MCP && m.instanceError != nil {
-		m.output = "Runtime observation failed; refresh this target before applying an MCP configuration."
-		return nil
-	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Instance != nil && workspace.Instance.Ownership != "local" && strings.TrimSpace(workspace.Instance.URL) == "" {
 		m.output = nonempty(workspace.Instance.StartDisabledReason, "Cannot safely apply configuration: runtime ownership is unknown and no observed endpoint is available.")
 		return nil
@@ -931,9 +949,20 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	m.setupProgressDone = progressDone
 	emitter := setupProgressEmitter{ctx: ctx, events: progressEvents, done: progressDone}
 	ctx = viewmodel.WithOperationProgress(ctx, emitter.emit)
+	stagedWorkspace := m.workspace != nil && m.workspace.Active
 	operationCmd := func() tea.Msg {
 		defer close(progressDone)
-		result, err := backend.UIInstall(ctx, request)
+		var result viewmodel.OperationResult
+		var err error
+		if stagedWorkspace {
+			if staged, ok := backend.(setupAgentInstallBackend); ok {
+				result, err = staged.UIInstallAgents(ctx, request)
+			} else {
+				err = fmt.Errorf("agent-only install service unavailable; refusing to run the combined save/start operation")
+			}
+		} else {
+			result, err = backend.UIInstall(ctx, request)
+		}
 		structured := result
 		structured.SavedApplicable = true
 		lines := []string{}

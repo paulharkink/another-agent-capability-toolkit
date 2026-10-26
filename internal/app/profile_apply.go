@@ -14,11 +14,13 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -34,6 +36,7 @@ type InstanceRequest struct {
 	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
 	Interactive, SkillsOnly              bool
+	InstallOnly                          bool
 	Uninstall                            bool
 	ExternalURLs                         map[string]string
 }
@@ -41,6 +44,34 @@ type InstanceRequest struct {
 // ProfileRequest remains as a source-compatibility alias for callers compiled
 // against the previous selected-instance API.
 type ProfileRequest = InstanceRequest
+
+// configuredMCPRegistrationURL computes the stable host endpoint used by the
+// Docker runtime from the capability's declared inputs. Agent registration
+// must be installable before Start, so local MCP definitions need a fixed host
+// port rather than one allocated only after a container starts.
+func configuredMCPRegistrationURL(definition catalog.MCP, values map[string]any) (string, error) {
+	if definition.HostPortInput == "" {
+		return "", fmt.Errorf("MCP %q cannot be installed before Start because it has no configured host port", definition.Name)
+	}
+	port, err := resolvePortInputValue(definition.HostPortInput, values[definition.HostPortInput])
+	if err != nil {
+		return "", err
+	}
+	host := "localhost"
+	if definition.AdvertisedHostInput != "" {
+		if value, ok := values[definition.AdvertisedHostInput].(string); ok && strings.TrimSpace(value) != "" {
+			host = strings.TrimSpace(value)
+		}
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + definition.EndpointPath
+	if err := validateEndpointURL(endpoint); err != nil {
+		return "", err
+	}
+	return endpoint, nil
+}
 
 func isDynamicChoice(input catalog.Input) bool {
 	switch input.Type {
@@ -618,7 +649,7 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 			values[registrationInput] = currentRegistration
 		}
 	}
-	if e := forms.Validate(p.Inputs, values); e == nil {
+	if e := validateProfileValuesForActiveGroups(p.Inputs, values, preview.ActiveInputGroups); e == nil {
 		preview.Configured = true
 	} else {
 		preview.ValidationIssues = append(preview.ValidationIssues, e.Error())
@@ -995,10 +1026,12 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			out.AuthenticationStatus = viewmodel.AuthenticationComplete
 		}
 	}
-	if len(authenticationRequired) == 0 {
-		out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
-	} else {
-		out.AuthenticationStatus = viewmodel.AuthenticationNotCheckedThisRun
+	if !q.InstallOnly {
+		if len(authenticationRequired) == 0 {
+			out.AuthenticationStatus = viewmodel.AuthenticationNotRequired
+		} else {
+			out.AuthenticationStatus = viewmodel.AuthenticationNotCheckedThisRun
+		}
 	}
 
 	if destIDs == nil {
@@ -1066,25 +1099,36 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			return out, invalid(fmt.Errorf("external endpoint supplied for unselected MCP %q", name))
 		}
 	}
-	out.Step = "save"
-	reportOperationStep(ctx, out.Step)
-	previousAnswers, err := s.Store.Answers(key)
-	if err != nil {
-		return out, err
+	previousAnswers := map[string]any{}
+	if !q.InstallOnly {
+		out.Step = "save"
+		reportOperationStep(ctx, out.Step)
+		previousAnswers, err = s.Store.Answers(key)
+		if err != nil {
+			return out, err
+		}
 	}
 	if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
 		return out, invalid(err)
 	}
-	err = func() error {
-		if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
-			return e
-		}
-		return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
-	}()
+	old, err := s.Store.Installations()
 	if err != nil {
 		return out, err
 	}
-	out.Saved = true
+	if !q.InstallOnly {
+		err = func() error {
+			if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
+				return e
+			}
+			return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
+		}()
+		if err != nil {
+			return out, err
+		}
+		out.Saved = true
+	} else if err = s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); err != nil {
+		return out, err
+	}
 	stages := map[string]string{}
 	pluginStages := map[string]string{}
 	out.Step = "generate"
@@ -1115,168 +1159,215 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 	}
 	urls := map[string]string{}
-	for _, definition := range p.MCPDefinitions() {
-		if !mcps[definition.Name] {
-			continue
-		}
-		child := mcpDefinitionKey(key, p, definition)
-		externalURL := q.ExternalURLs[definition.Name]
-		if externalURL != "" {
-			if e := validateEndpointURL(externalURL); e != nil {
-				return out, invalid(e)
-			}
-			urls[definition.Name] = externalURL
-			if definition.HealthPath == "" {
+	if q.InstallOnly {
+		for _, definition := range p.MCPDefinitions() {
+			if !mcps[definition.Name] {
 				continue
 			}
-		}
-		if externalURL == "" {
-			cp := p
-			cp.MCP = &definition
-			cp.MCPs = nil
-			containerAuthentication := definition.Actions["authenticate"].Target == "container"
-			needsOwnedInstance := externalURL == ""
-			var instance mcp.Instance
-			if needsOwnedInstance && containerAuthentication {
-				out.Step = "start"
-				reportOperationStep(ctx, out.Step)
-				instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
-				if err != nil {
-					var authFailure authenticationRequiredFailure
-					if definition.HealthPath == "" && errors.As(err, &authFailure) {
-						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-					}
-					var failure operationFailure
-					if errors.As(err, &failure) {
-						out.Step = failure.step
-					}
-					return out, err
-				}
-				urls[definition.Name] = instance.URL
+			if endpoint := q.ExternalURLs[definition.Name]; endpoint != "" {
+				urls[definition.Name] = endpoint
+				continue
 			}
-			if _, yes := definition.Actions["authenticate"]; yes {
-				changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
-				if len(changes) > 0 {
-					if e := s.Store.UpdatePendingAuthInputGroups(key, child.ID(), changes); e != nil {
+			// Uninstalling the last agent registration does not need a URL. When
+			// another selected agent remains, Install still needs a stable URL for
+			// the registration it is creating.
+			if q.Uninstall && len(destIDs) == 0 {
+				continue
+			}
+			// Use the same declared host/port values as Start whenever the pack
+			// declares them. This keeps the registration current after an input
+			// change. A previously observed exact-child endpoint is a fallback only
+			// for older definitions that have no declared host port at all.
+			if definition.HostPortInput == "" {
+				child := mcpDefinitionKey(key, p, definition)
+				for _, row := range old {
+					if row.Key == child && row.Component == "runtime" && row.URL != "" {
+						urls[definition.Name] = row.URL
+						break
+					}
+				}
+				if urls[definition.Name] == "" {
+					for _, row := range old {
+						if row.Key == child && row.Component == "mcp" && row.URL != "" {
+							urls[definition.Name] = row.URL
+							break
+						}
+					}
+				}
+				if urls[definition.Name] != "" {
+					continue
+				}
+			}
+			endpoint, endpointErr := configuredMCPRegistrationURL(definition, values)
+			if endpointErr != nil {
+				return out, invalid(endpointErr)
+			}
+			urls[definition.Name] = endpoint
+		}
+	} else {
+		for _, definition := range p.MCPDefinitions() {
+			if !mcps[definition.Name] {
+				continue
+			}
+			child := mcpDefinitionKey(key, p, definition)
+			externalURL := q.ExternalURLs[definition.Name]
+			if externalURL != "" {
+				if e := validateEndpointURL(externalURL); e != nil {
+					return out, invalid(e)
+				}
+				urls[definition.Name] = externalURL
+				if definition.HealthPath == "" {
+					continue
+				}
+			}
+			if externalURL == "" {
+				cp := p
+				cp.MCP = &definition
+				cp.MCPs = nil
+				containerAuthentication := definition.Actions["authenticate"].Target == "container"
+				needsOwnedInstance := externalURL == ""
+				var instance mcp.Instance
+				if needsOwnedInstance && containerAuthentication {
+					out.Step = "start"
+					reportOperationStep(ctx, out.Step)
+					instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+					if err != nil {
+						var authFailure authenticationRequiredFailure
+						if definition.HealthPath == "" && errors.As(err, &authFailure) {
+							out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+						}
+						var failure operationFailure
+						if errors.As(err, &failure) {
+							out.Step = failure.step
+						}
+						return out, err
+					}
+					urls[definition.Name] = instance.URL
+				}
+				if _, yes := definition.Actions["authenticate"]; yes {
+					changes := changedActiveInputGroups(p.Inputs, previousGroups, activeGroups)
+					if len(changes) > 0 {
+						if e := s.Store.UpdatePendingAuthInputGroups(key, child.ID(), changes); e != nil {
+							return out, e
+						}
+					}
+					pendingGroups, e := s.Store.PendingAuthInputGroups(key, child.ID())
+					if e != nil {
 						return out, e
 					}
+					authenticated := false
+					if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
+						out.Step = "authenticate"
+						reportOperationStep(ctx, out.Step)
+						result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
+						if e != nil {
+							if containerAuthentication {
+								if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+									return out, saveErr
+								}
+								if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+									return out, clearErr
+								}
+							}
+							return out, e
+						}
+						if result.AuthRequired && definition.HealthPath == "" {
+							out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+							diagnostic := strings.TrimSpace(result.Diagnostic)
+							if diagnostic != "" && !containerAuthentication {
+								return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
+							}
+							if containerAuthentication {
+								out.Errors = append(out.Errors, "authentication required")
+							}
+							out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+							return out, nil
+						}
+						if result.LoginURL != "" {
+							reportOperationOutput(ctx, result.LoginURL)
+						}
+						authenticated = true
+						if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+							return out, e
+						}
+					}
+					if authenticated {
+						remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
+						if pendingErr != nil {
+							return out, pendingErr
+						}
+						if len(remaining) > 0 && definition.HealthPath == "" {
+							out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+							out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+							return out, nil
+						}
+						if definition.HealthPath == "" {
+							markAuthenticationComplete(definition.Name)
+						}
+					}
 				}
-				pendingGroups, e := s.Store.PendingAuthInputGroups(key, child.ID())
+				if needsOwnedInstance && !containerAuthentication {
+					out.Step = "start"
+					reportOperationStep(ctx, out.Step)
+					instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+					if startErr != nil {
+						var authFailure authenticationRequiredFailure
+						if definition.HealthPath == "" && errors.As(startErr, &authFailure) {
+							out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+						}
+						var failure operationFailure
+						if errors.As(startErr, &failure) {
+							out.Step = failure.step
+						}
+						return out, startErr
+					}
+					urls[definition.Name] = instance.URL
+				}
+			}
+			if definition.HealthPath != "" {
+				headers, headerErr := profileRegistrationHeaders(definition, values)
+				if headerErr != nil {
+					return out, headerErr
+				}
+				healthHeaders := make(http.Header, len(headers))
+				for name, value := range headers {
+					healthHeaders.Set(name, value)
+				}
+				authenticated, e := mcp.WaitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
 				if e != nil {
+					out.AuthenticationStatus = viewmodel.AuthenticationFailed
+					if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
+						return out, saveErr
+					}
+					if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
+						return out, clearErr
+					}
 					return out, e
 				}
-				authenticated := false
-				if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
-					out.Step = "authenticate"
-					reportOperationStep(ctx, out.Step)
-					result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
-					if e != nil {
-						if containerAuthentication {
-							if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
-								return out, saveErr
-							}
-							if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
-								return out, clearErr
-							}
-						}
-						return out, e
-					}
-					if result.AuthRequired && definition.HealthPath == "" {
-						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-						diagnostic := strings.TrimSpace(result.Diagnostic)
-						if diagnostic != "" && !containerAuthentication {
-							return out, errors.New(authenticationRequiredMessage(cp.ID, diagnostic))
-						}
-						if containerAuthentication {
-							out.Errors = append(out.Errors, "authentication required")
-						}
-						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
-						return out, nil
-					}
-					if result.LoginURL != "" {
-						reportOperationOutput(ctx, result.LoginURL)
-					}
-					authenticated = true
-					if e = s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-						return out, e
-					}
-				}
 				if authenticated {
+					if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
+						return out, e
+					}
 					remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
 					if pendingErr != nil {
 						return out, pendingErr
 					}
-					if len(remaining) > 0 && definition.HealthPath == "" {
+					if len(remaining) > 0 {
 						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-						out.Errors = append(out.Errors, authenticationRequiredMessage(cp.ID, ""))
+						out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
 						return out, nil
 					}
-					if definition.HealthPath == "" {
-						markAuthenticationComplete(definition.Name)
+					markAuthenticationComplete(definition.Name)
+				} else {
+					// A successful false health response means the MCP is running but
+					// unauthenticated. Keep the requested credentials and let install
+					// effects proceed; only the later UI health poll waits for login.
+					out.AuthenticationStatus = viewmodel.AuthenticationFailed
+				}
+				if authenticated {
+					if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
+						return out, fmt.Errorf("MCP health check failed: %w", e)
 					}
-				}
-			}
-			if needsOwnedInstance && !containerAuthentication {
-				out.Step = "start"
-				reportOperationStep(ctx, out.Step)
-				instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
-				if startErr != nil {
-					var authFailure authenticationRequiredFailure
-					if definition.HealthPath == "" && errors.As(startErr, &authFailure) {
-						out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-					}
-					var failure operationFailure
-					if errors.As(startErr, &failure) {
-						out.Step = failure.step
-					}
-					return out, startErr
-				}
-				urls[definition.Name] = instance.URL
-			}
-		}
-		if definition.HealthPath != "" {
-			headers, headerErr := profileRegistrationHeaders(definition, values)
-			if headerErr != nil {
-				return out, headerErr
-			}
-			healthHeaders := make(http.Header, len(headers))
-			for name, value := range headers {
-				healthHeaders.Set(name, value)
-			}
-			authenticated, e := mcp.WaitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
-			if e != nil {
-				out.AuthenticationStatus = viewmodel.AuthenticationFailed
-				if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
-					return out, saveErr
-				}
-				if clearErr := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); clearErr != nil {
-					return out, clearErr
-				}
-				return out, e
-			}
-			if authenticated {
-				if e := s.Store.ClearPendingAuthInputGroups(key, child.ID(), activeGroups); e != nil {
-					return out, e
-				}
-				remaining, pendingErr := s.Store.PendingAuthInputGroups(key, child.ID())
-				if pendingErr != nil {
-					return out, pendingErr
-				}
-				if len(remaining) > 0 {
-					out.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
-					out.Errors = append(out.Errors, authenticationRequiredMessage(p.ID, ""))
-					return out, nil
-				}
-				markAuthenticationComplete(definition.Name)
-			} else {
-				// A successful false health response means the MCP is running but
-				// unauthenticated. Keep the requested credentials and let install
-				// effects proceed; only the later UI health poll waits for login.
-				out.AuthenticationStatus = viewmodel.AuthenticationFailed
-			}
-			if authenticated {
-				if e := mcp.HealthWithHeaders(ctx, urls[definition.Name], definition.Transport, healthHeaders); e != nil {
-					return out, fmt.Errorf("MCP health check failed: %w", e)
 				}
 			}
 		}
@@ -1290,10 +1381,6 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		return nil
 	}
 	// Remove only bindings previously owned by this logical capability/profile.
-	old, err := s.Store.Installations()
-	if err != nil {
-		return out, err
-	}
 	// Marketplace ownership outlives an individual plugin. Remove installed
 	// plugin rows first, then remove an otherwise-empty owned marketplace.
 	slices.SortStableFunc(old, func(a, b state.Installation) int {

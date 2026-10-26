@@ -80,6 +80,9 @@ func (b *capabilityProfileBackend) UISetupPreview(_ context.Context, request vie
 func (b *capabilityProfileBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return b.setup.UIInstall(ctx, request)
 }
+func (b *capabilityProfileBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstallAgents(ctx, request)
+}
 
 func capabilityProfilePreview() viewmodel.SetupPreview {
 	return viewmodel.SetupPreview{

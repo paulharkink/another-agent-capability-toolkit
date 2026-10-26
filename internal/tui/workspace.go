@@ -512,12 +512,6 @@ func (m *Model) workspaceOverviewAction(stroke string) (bool, tea.Cmd) {
 	default:
 		return false, nil
 	}
-	if m.workspace.SectionID != "" {
-		m.form.SelectSectionID(m.workspace.SectionID)
-	} else {
-		m.form.SelectSection(m.workspace.Section)
-	}
-	m.form.FocusSection()
 	return true, nil
 }
 
@@ -557,6 +551,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
+	for _, issue := range preview.ValidationIssues {
+		inputLines = append(inputLines, "Needs attention: "+issue)
+	}
 	if m.workspace.SelectedMCP != "" {
 		inputLines = append(inputLines, "Editing inputs for MCP "+m.workspace.SelectedMCP+" · answers are saved at this capability instance.")
 	}
@@ -631,6 +628,27 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				runtimeLine = "> " + runtimeLine
 			}
 			runtime = append(runtime, runtimeLine)
+			startProfile := profile
+			if startProfile == nil && m.workspace.Instance != nil {
+				parent := *m.workspace.Instance
+				startProfile = &parent
+			}
+			startRow := InstanceRow{}
+			if startProfile != nil {
+				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
+			}
+			startDisabled := m.instanceActionReason(startRow, "s")
+			switch {
+			case m.hasUnsavedSetupInputs():
+				startDisabled = appendActionReason(startDisabled, "Save changed inputs first")
+			case !m.workspace.InputsSaved && len(preview.ValidationIssues) > 0:
+				startDisabled = appendActionReason(startDisabled, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
+			case !m.workspace.InputsSaved:
+				startDisabled = appendActionReason(startDisabled, "Save valid inputs first")
+			case !m.workspace.Installed || !m.workspaceMCPRegistered(definition.Name):
+				startDisabled = appendActionReason(startDisabled, "Install this capability for an agent first")
+			}
+			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if child != nil {
 				if child.Error != "" {
 					runtime = append(runtime, "  MCP observation: "+child.Error)
@@ -670,23 +688,6 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				}
 			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "edit-inputs:" + definition.Name, Label: "Edit capability inputs for " + definition.Name})
-			startProfile := profile
-			if startProfile == nil && m.workspace.Instance != nil {
-				parent := *m.workspace.Instance
-				startProfile = &parent
-			}
-			startRow := InstanceRow{}
-			if startProfile != nil {
-				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
-			}
-			startDisabled := m.instanceActionReason(startRow, "s")
-			if !m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(definition.Name) || m.hasUnsavedSetupInputs() {
-				if startDisabled != "" {
-					startDisabled += " · "
-				}
-				startDisabled += "Save inputs and install this capability for an agent first"
-			}
-			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if profile != nil && profile.CanStop && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
 			} else if profile != nil && profile.RuntimeStatus == "running" && child != nil && len(child.RuntimeRecords) > 1 {
@@ -726,6 +727,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			installStatus = "Complete"
 		}
 		header := []string{"Status: " + status}
+		if len(preview.ValidationIssues) > 0 {
+			header = append(header, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
+		}
 		if authentication != "" {
 			header = append(header, authentication)
 		}
@@ -749,15 +753,27 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		m.workspace.Section = "Inputs"
 		m.workspace.SectionID = sectionInputsID
 	}
-	if m.workspace.SectionID != "" {
-		m.form.SelectSectionID(m.workspace.SectionID)
-	} else {
+	selectionChanged := false
+	if m.workspace.SectionID != "" && m.form.SectionID() != m.workspace.SectionID {
+		selectionChanged = m.form.SelectSectionID(m.workspace.SectionID)
+	} else if m.workspace.SectionID == "" && m.form.SectionTitle() != m.workspace.Section {
 		m.form.SelectSection(m.workspace.Section)
+		selectionChanged = true
 	}
-	m.form.FocusSection()
+	if selectionChanged {
+		m.form.FocusSection()
+	}
 	m.form.SetSubmitLabel("Save")
 	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
 	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+	m.refreshAgentAccessActions()
+}
+
+func appendActionReason(current, reason string) string {
+	if current == "" {
+		return reason
+	}
+	return current + " · " + reason
 }
 
 func (m *Model) refreshAgentAccessActions() {
@@ -765,9 +781,6 @@ func (m *Model) refreshAgentAccessActions() {
 		return
 	}
 	disabled := m.hasUnsavedSetupInputs()
-	if m.workspace.AgentActionsKnown && m.workspace.AgentActionsDisabled == disabled {
-		return
-	}
 	m.workspace.AgentActionsKnown = true
 	m.workspace.AgentActionsDisabled = disabled
 	reason := ""

@@ -205,9 +205,16 @@ func (m *FormModel) setSectionActions(key string, actions ...FormAction) {
 		m.sectionActions = map[string][]FormAction{}
 	}
 	m.sectionActions[key] = append([]FormAction(nil), actions...)
-	if key == m.currentSectionKey() && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
-		m.focusedAction = len(actions) > 0
-		m.sectionActionIndex = 0
+	if key == m.currentSectionKey() {
+		if len(actions) == 0 {
+			m.focusedAction = false
+			m.sectionActionIndex = 0
+		} else {
+			m.sectionActionIndex = min(max(m.sectionActionIndex, 0), len(actions)-1)
+			if len(m.splitFieldIndices(m.sectionIndex)) == 0 {
+				m.focusedAction = true
+			}
+		}
 	}
 }
 
@@ -341,11 +348,48 @@ func (m *FormModel) SetCancelHidden(hidden bool) {
 			m.selected = len(m.defs)
 		}
 	}
+	m.normalizeActionArea()
 }
 
 // SetSubmitHidden hides the global submit control when a section owns its
 // explicit action button.
-func (m *FormModel) SetSubmitHidden(hidden bool) { m.hideSubmit = hidden }
+func (m *FormModel) SetSubmitHidden(hidden bool) {
+	m.hideSubmit = hidden
+	m.normalizeActionArea()
+}
+
+func (m *FormModel) hasVisibleGlobalActions() bool {
+	return !m.hideSubmit || !m.hideCancel
+}
+
+func (m *FormModel) globalActionCount() int {
+	count := 0
+	if !m.hideSubmit {
+		count++
+	}
+	if !m.hideCancel {
+		count++
+	}
+	return count
+}
+
+func (m *FormModel) moveGlobalAction(delta int) {
+	count := m.globalActionCount()
+	if count == 0 {
+		m.actionIndex = 0
+		return
+	}
+	m.actionIndex = (m.actionIndex + count + delta) % count
+}
+
+func (m *FormModel) normalizeActionArea() {
+	if count := m.globalActionCount(); m.actionIndex >= count {
+		m.actionIndex = max(0, count-1)
+	}
+	if len(m.sections) > 0 && m.area == 2 && !m.hasVisibleGlobalActions() {
+		m.area = 1
+	}
+}
 
 // ApplyValues loads a saved or restored draft through the declared field
 // normalizers while keeping the existing dirty baseline intact.
@@ -1234,7 +1278,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.cancel()
 		}
 		if stroke == "ctrl+s" {
-			if m.readOnly {
+			if m.readOnly || m.hideSubmit {
 				return m, nil
 			}
 			if m.editing {
@@ -1281,9 +1325,17 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.editing {
 					if len(m.sections) > 0 && (stroke == "tab" || stroke == "shift+tab") {
 						if stroke == "tab" {
-							m.area = (m.area + 1) % 3
+							areaCount := 2
+							if m.hasVisibleGlobalActions() {
+								areaCount = 3
+							}
+							m.area = (m.area + 1) % areaCount
 						} else {
-							m.area = (m.area + 2) % 3
+							areaCount := 2
+							if m.hasVisibleGlobalActions() {
+								areaCount = 3
+							}
+							m.area = (m.area + areaCount - 1) % areaCount
 						}
 					} else if len(m.sections) > 0 {
 						delta := 1
@@ -1309,25 +1361,29 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(m.sections) > 0 {
+			areaCount := 2
+			if m.hasVisibleGlobalActions() {
+				areaCount = 3
+			}
 			switch stroke {
 			case "tab":
-				m.area = (m.area + 1) % 3
+				m.area = (m.area + 1) % areaCount
 				return m, nil
 			case "shift+tab":
-				m.area = (m.area + 2) % 3
+				m.area = (m.area + areaCount - 1) % areaCount
 				return m, nil
 			case "left":
 				if m.area == 1 {
 					m.area = 0
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "right":
 				if m.area == 0 {
 					m.area = 1
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "up", "down":
@@ -1339,8 +1395,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.moveSection(delta)
 				} else if m.area == 1 {
 					m.moveSplitControl(delta)
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "pgup", "pgdown":
@@ -1362,10 +1418,21 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.area == 2 {
-					if m.actionIndex == 0 {
+					if !m.hasVisibleGlobalActions() {
+						m.normalizeActionArea()
+						return m, nil
+					}
+					if !m.hideSubmit && m.actionIndex == 0 {
 						return m.save()
 					}
-					return m.cancel()
+					cancelIndex := 0
+					if !m.hideSubmit {
+						cancelIndex = 1
+					}
+					if !m.hideCancel && m.actionIndex == cancelIndex {
+						return m.cancel()
+					}
+					return m, nil
 				}
 				if m.area == 0 {
 					m.area = 1
@@ -2097,11 +2164,15 @@ func (m *FormModel) layout() formLayout {
 		}
 		actionsControl += "[ Cancel ]"
 	}
-	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · " + escapeAction
+	shortcutLine := "Ctrl+S save · " + escapeAction
+	if m.hideSubmit {
+		shortcutLine = escapeAction
+	}
+	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\n" + shortcutLine
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
 		if isChoiceList(def) {
-			footer = actionsControl + "\n↑↓/Tab next control · Space/Enter toggle\nCtrl+S save · Esc cancel"
+			footer = actionsControl + "\n↑↓/Tab next control · Space/Enter toggle\n" + shortcutLine
 		}
 		if def.ExclusiveGroup != "" && m.disabledReason(def.Name) == "" {
 			others := []string{}
@@ -2155,10 +2226,10 @@ func (m *FormModel) layout() formLayout {
 	if m.readOnly {
 		actions = "[ Back ]"
 	}
-	if !m.readOnly && m.selected == len(m.defs) {
+	if !m.readOnly && (len(m.sections) == 0 || m.area == 2) && m.selected == len(m.defs) {
 		actions = focusedActionStyle.Render("> " + actionsControl)
 	}
-	if !m.readOnly && !m.hideCancel && m.selected == len(m.defs)+1 {
+	if !m.readOnly && (len(m.sections) == 0 || m.area == 2) && !m.hideCancel && m.selected == len(m.defs)+1 {
 		actions = focusedActionStyle.Render(saveControl + "  > [ Cancel ]")
 	}
 	footer = strings.Replace(footer, actionsControl, actions, 1)
@@ -2229,6 +2300,24 @@ func (m *FormModel) splitLayout() formLayout {
 	rightLines := []string{focusedPaneTitle(rightTitle, m.area == 1)}
 	rightFields := []int{-1}
 	rightLineChoices := []int{-1}
+	sectionActions := m.sectionActions[m.currentSectionKey()]
+	for actionIndex, action := range sectionActions {
+		label := "› [ " + action.Label + " ]"
+		if action.Disabled != "" {
+			label += " · " + action.Disabled
+		}
+		if actionIndex == m.sectionActionIndex && m.area == 1 && m.focusedAction {
+			label = "> [ " + action.Label + " ]"
+			if action.Disabled != "" {
+				label += " · " + action.Disabled
+			}
+		}
+		for _, wrapped := range wrapCellText(label, rightContentWidth) {
+			rightLines = append(rightLines, wrapped)
+			rightFields = append(rightFields, -1)
+			rightLineChoices = append(rightLineChoices, actionIndex)
+		}
+	}
 	sectionContent := m.sectionContent[m.currentSectionKey()]
 	for _, line := range sectionContent {
 		for part, wrapped := range wrapCellText(line, m.SectionContentWidth()) {
@@ -2376,24 +2465,6 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLines = append(rightLines, control)
 			rightFields = append(rightFields, index)
 			rightLineChoices = append(rightLineChoices, -2)
-		}
-	}
-	sectionActions := m.sectionActions[m.currentSectionKey()]
-	for actionIndex, action := range sectionActions {
-		label := "› [ " + action.Label + " ]"
-		if action.Disabled != "" {
-			label += " · " + action.Disabled
-		}
-		if actionIndex == m.sectionActionIndex && m.focusedAction {
-			label = "> [ " + action.Label + " ]"
-			if action.Disabled != "" {
-				label += " · " + action.Disabled
-			}
-		}
-		for _, wrapped := range wrapCellText(label, rightContentWidth) {
-			rightLines = append(rightLines, wrapped)
-			rightFields = append(rightFields, -1)
-			rightLineChoices = append(rightLineChoices, actionIndex)
 		}
 	}
 	if len(indices) == 0 {

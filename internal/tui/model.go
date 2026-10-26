@@ -1018,6 +1018,10 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 		m.busy = false
 	}
 	m.capabilityInstances = msg.capabilityInstances
+	if m.workspace != nil && m.workspace.Active {
+		m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
+		m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(m.workspace.Key)
+	}
 	m.catalog = msg.catalog
 	m.inventory = msg.inventory
 	m.inventoryError = msg.inventoryError
@@ -1143,26 +1147,6 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	}
 	if succeeded {
 		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
-			m.workspace.Installed = true
-			m.workspace.RegisteredMCPs = map[string]bool{}
-			registeredMCP := false
-			if msg.result != nil {
-				for _, change := range msg.result.Changes {
-					if change.Component != "mcp" || change.AgentID == "" {
-						continue
-					}
-					registeredMCP = true
-					name := firstNonempty(change.Key.MCP, change.RegistrationName)
-					if name != "" {
-						m.workspace.RegisteredMCPs[name] = true
-					}
-				}
-			}
-			if registeredMCP && len(m.workspace.RegisteredMCPs) == 0 && m.setupRetry.preview.MCP {
-				for _, definition := range m.setupRetry.preview.MCPDefinitions {
-					m.workspace.RegisteredMCPs[definition.Name] = true
-				}
-			}
 			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
 			m.configureWorkspaceForm(m.setupRetry.preview)
 		}
