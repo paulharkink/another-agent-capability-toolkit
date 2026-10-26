@@ -90,7 +90,7 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
 }
 
-// UISaveInputs persists a capability instance's input answers without
+// UISaveInputs persists ordinary answers and private secret inputs without
 // installing agent links, changing MCP registrations, or starting runtimes.
 func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
@@ -101,8 +101,59 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 		if err != nil {
 			return err
 		}
+		legacyAnswers, err := s.Store.Answers(key)
+		if err != nil {
+			return err
+		}
+		privateSecrets, err := s.Store.SecretInputs(key)
+		if err != nil {
+			return err
+		}
+		inputOverrides := make(map[string]any, len(q.Inputs))
+		for name, value := range q.Inputs {
+			inputOverrides[name] = value
+		}
+		resetRequested := make(map[string]bool, len(q.ResetInputs))
+		for _, name := range q.ResetInputs {
+			resetRequested[name] = true
+		}
+		resetSecrets := make([]string, 0)
+		secretValues := make(map[string]any)
+		for _, input := range p.Inputs {
+			if input.Type != "secret" {
+				continue
+			}
+			if value, exists := inputOverrides[input.Name]; exists {
+				if text, isText := value.(string); isText && text == "" {
+					// Secret fields are deliberately blank in reopened forms. A
+					// blank is not a request to erase the privately stored value.
+					delete(inputOverrides, input.Name)
+				} else if value != nil {
+					secretValues[input.Name] = value
+				}
+			}
+			if !resetRequested[input.Name] {
+				if _, alreadyPrivate := privateSecrets[input.Name]; !alreadyPrivate {
+					if legacy, exists := legacyAnswers[input.Name]; exists && hasSecretValue(legacy) {
+						if _, submitted := secretValues[input.Name]; !submitted {
+							secretValues[input.Name] = legacy
+						}
+					}
+				}
+			}
+		}
+		for _, name := range q.ResetInputs {
+			for _, input := range p.Inputs {
+				if input.Name == name && input.Type == "secret" {
+					resetSecrets = append(resetSecrets, name)
+					delete(inputOverrides, name)
+					delete(secretValues, name)
+					break
+				}
+			}
+		}
 		p, instance, values, _, err := s.instanceValuesForPreview(p, instance, key, InstanceRequest{
-			Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
+			Ref: q.Ref, Inputs: inputOverrides, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
 		})
 		if err != nil {
 			return err
@@ -131,6 +182,9 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 			if value, ok := values[input.Name]; ok {
 				safe[input.Name] = value
 			}
+		}
+		if err := s.Store.SaveSecretInputs(key, secretValues, resetSecrets); err != nil {
+			return err
 		}
 		return s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups)
 	})
@@ -183,8 +237,8 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 }
 
 // UIInstallAgents installs agent bindings without saving inputs or starting
-// MCP runtimes. Inputs must be saved first; secret values currently entered
-// on the Inputs screen are supplied transiently for registration generation.
+// MCP runtimes. Ordinary inputs must already be saved; secret inputs resolve
+// from private instance state, with a currently submitted value taking priority.
 func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
@@ -214,7 +268,10 @@ func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallR
 	secrets := map[string]any{}
 	for _, input := range p.Inputs {
 		if input.Type == "secret" {
-			if value, ok := q.Inputs[input.Name]; ok {
+			if value, ok := q.Inputs[input.Name]; ok && value != nil {
+				if text, isText := value.(string); isText && text == "" {
+					continue
+				}
 				secrets[input.Name] = value
 			}
 		}

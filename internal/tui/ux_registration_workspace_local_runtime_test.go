@@ -98,9 +98,10 @@ func (e *emptyDockerPS) Run(_ context.Context, args []string, _ string, _ []byte
 
 type localInstallCapture struct {
 	*app.Service
-	installRequest *viewmodel.SetupInstallRequest
-	installCalls   int
-	uiRunCalls     int
+	installRequest       *viewmodel.SetupInstallRequest
+	installAgentsRequest *viewmodel.SetupInstallRequest
+	installCalls         int
+	uiRunCalls           int
 }
 
 func (b *localInstallCapture) UIInstall(_ context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -110,6 +111,12 @@ func (b *localInstallCapture) UIInstall(_ context.Context, request viewmodel.Set
 	copy.DestinationIDs = append([]string(nil), request.DestinationIDs...)
 	b.installRequest = &copy
 	return viewmodel.OperationResult{Saved: true, Message: "captured local UIInstall"}, nil
+}
+
+func (b *localInstallCapture) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	copy := request
+	b.installAgentsRequest = &copy
+	return b.UIInstall(ctx, request)
 }
 
 func (b *localInstallCapture) UIRun(context.Context, string, string, string, string, string, string, string) (string, error) {
@@ -287,13 +294,13 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatalf("Agent access Install selected did not dispatch UIInstall: values=%#v view=%s", m.form.Values(), m.form.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, installCmd))
-	if backend.installRequest == nil {
-		t.Fatal("Agent access Install selected did not call UIInstall")
+	if backend.installAgentsRequest == nil {
+		t.Fatal("Agent access Install selected did not call UIInstallAgents")
 	}
 	if backend.uiRunCalls != 0 {
 		t.Fatalf("Agent access Install selected fell back to legacy UIRun %d times", backend.uiRunCalls)
 	}
-	got := backend.installRequest
+	got := backend.installAgentsRequest
 	if got.SetupRequest != request || got.ExternalURL != "" || !containsString(got.DestinationIDs, "opencode") {
 		t.Fatalf("Agent access install did not submit the selected local registration target: %+v; form=%#v", *got, m.form.Values())
 	}

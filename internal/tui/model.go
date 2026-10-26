@@ -445,6 +445,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionInputsID {
 		if action.ID == "save-inputs" && m.form != nil {
+			if err := m.form.CommitPendingInput(); err != nil {
+				m.output = "Could not save inputs: " + err.Error()
+				return m, nil
+			}
 			return m, m.saveSetupInputs(m.form.Values())
 		}
 	}
@@ -541,6 +545,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+			}
+			if parts[0] == "authenticate" {
+				if m.workspace.Preview == nil {
+					m.output = "Refresh this target before logging in."
+					return m, nil
+				}
+				var definition *catalog.MCP
+				for i := range m.workspace.Preview.MCPDefinitions {
+					if m.workspace.Preview.MCPDefinitions[i].Name == parts[1] {
+						definition = &m.workspace.Preview.MCPDefinitions[i]
+						break
+					}
+				}
+				if definition == nil {
+					m.output = "The selected MCP no longer declares a Login action; refresh this target."
+					return m, nil
+				}
+				if _, supported := definition.Actions["authenticate"]; !supported {
+					m.output = "This MCP does not declare a Login action."
+					return m, nil
+				}
+				profile := m.instanceForMCPName(parts[1])
+				row := InstanceRow{}
+				if profile != nil {
+					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+				}
+				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row); reason != "" {
+					m.output = reason
+					return m, nil
+				}
+				m.workspace.cacheDraft(m.form.Values())
+				return m, m.run(operation{action: "authenticate", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
 		}
 		return m, nil
@@ -725,6 +761,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()
+		m.refreshRuntimeActionAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
 			if m.unsavedExitApplying {

@@ -52,6 +52,9 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 		return "", err
 	}
 	result, err := source.RunInstanceMCP(ctx, action, instanceRequestForStateKey(key), mcpNameForStateKey(key))
+	if result.LoginURL != "" {
+		return "Login URL: " + result.LoginURL, err
+	}
 	if err != nil {
 		return "", err
 	}

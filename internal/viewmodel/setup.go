@@ -19,6 +19,7 @@ type SetupInput struct {
 	Definition        catalog.Input
 	Value             any
 	HasValue          bool
+	SecretSaved       bool
 	Provenance        string
 	ProvenancePath    string
 	InheritedValue    any

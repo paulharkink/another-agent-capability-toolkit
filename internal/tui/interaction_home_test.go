@@ -44,7 +44,7 @@ func TestHomeEnterFocusesLayerTwoBeforeOpeningAnAction(t *testing.T) {
 	if m.home.Focus != ProfilesPane || m.home.Modal != nil {
 		t.Fatalf("Enter should focus layer 2 before opening an action, got focus=%v modal=%#v", m.home.Focus, m.home.Modal)
 	}
-	for _, want := range []string{"Configure now", "View capability details", "Related MCP instances"} {
+	for _, want := range []string{"Configure now", "View capability details", "MCP runtimes"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Errorf("layer 2 missing %q:\n%s", want, m.View().Content)
 		}

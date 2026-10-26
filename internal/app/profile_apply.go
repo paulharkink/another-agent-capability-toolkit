@@ -275,6 +275,17 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 	if err != nil {
 		return p, pr, nil, nil, err
 	}
+	privateSecrets, err := s.Store.SecretInputs(key)
+	if err != nil {
+		return p, pr, nil, nil, err
+	}
+	for _, definition := range p.Inputs {
+		if definition.Type == "secret" {
+			if value, exists := privateSecrets[definition.Name]; exists {
+				saved[definition.Name] = value
+			}
+		}
+	}
 	for _, name := range q.ResetInputs {
 		if !known[name] {
 			return p, pr, nil, nil, invalid(fmt.Errorf("unknown reset input %q", name))
@@ -655,6 +666,10 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 		preview.ValidationIssues = append(preview.ValidationIssues, e.Error())
 	}
 	saved, _ := s.Store.Answers(key)
+	privateSecrets, err := s.Store.SecretInputs(key)
+	if err != nil {
+		return preview, err
+	}
 	for _, def := range p.Inputs {
 		if def.OptionsFrom != "" {
 			def.Options, err = targetInputChoices(pr.Raw, def.OptionsFrom)
@@ -694,7 +709,16 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 				def.Hint += " " + current
 			}
 		}
-		preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path})
+		input := viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path}
+		if def.Type == "secret" {
+			if secret, stored := privateSecrets[def.Name]; stored && hasSecretValue(secret) {
+				input.SecretSaved = true
+			}
+			if !input.SecretSaved && hasSecretValue(input.Value) {
+				input.SecretSaved = true
+			}
+		}
+		preview.Inputs = append(preview.Inputs, input)
 	}
 	records, _ := s.Store.Instances()
 	ids := q.ItemIDs
@@ -864,6 +888,16 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 		}
 	}
 	return preview, nil
+}
+
+func hasSecretValue(value any) bool {
+	if value == nil {
+		return false
+	}
+	if text, ok := value.(string); ok {
+		return text != ""
+	}
+	return true
 }
 
 // PreviewProfile is retained for source compatibility; selected capability
@@ -1435,6 +1469,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		if e := s.removeProfileBinding(ctx, row); e != nil {
 			return out, e
 		}
+		out.Changes = append(out.Changes, row)
 	}
 	for _, id := range destIDs {
 		a := adapters[id]

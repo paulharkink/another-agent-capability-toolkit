@@ -18,6 +18,7 @@ func openForeignRegistrationInteraction(t *testing.T) (*Model, *profileBackend) 
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
 	openCapabilityProfileWorkspace(t, m, backend, "foreign", "Agents")
+	m.workspace.InputsSaved = true
 	return m, backend
 }
 
@@ -113,7 +114,7 @@ func TestInteractionCapabilityMouseWheelKeepsDestinationChoicesWithoutDuplicateD
 	}
 }
 
-func TestInteractionCapabilityKeyboardSaveAppliesCompleteDesiredSet(t *testing.T) {
+func TestInteractionCapabilityKeyboardInstallAppliesCompleteDesiredSet(t *testing.T) {
 	m, _ := openForeignRegistrationInteraction(t)
 	backend := m.backend.(*capabilityProfileBackend)
 	m.form.SelectSectionID(sectionAgentsID)
@@ -123,27 +124,25 @@ func TestInteractionCapabilityKeyboardSaveAppliesCompleteDesiredSet(t *testing.T
 	if got := m.form.Values()[m.pendingSetupField]; !containsStringFromValue(got, "codex") {
 		t.Fatalf("keyboard did not add Codex to the desired set: %#v", got)
 	}
-	press(m, tea.KeyTab, "") // Keyboard focus reaches the visible Save action.
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+	action := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
-		t.Fatalf("Enter on the focused Save action did not submit the complete binding:\n%s", m.View().Content)
+		t.Fatalf("Enter on Install selected did not submit the complete binding:\n%s", m.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, cmd))
-	if backend.setup.installRequest == nil || !containsString(backend.setup.installRequest.DestinationIDs, "codex") || !containsString(backend.setup.installRequest.DestinationIDs, "claude") {
+	if backend.setup.installAgentsRequest == nil || !containsString(backend.setup.installAgentsRequest.DestinationIDs, "codex") || !containsString(backend.setup.installAgentsRequest.DestinationIDs, "claude") {
 		t.Fatalf("complete capability save lost selected destinations: %+v", backend.setup.installRequest)
 	}
 }
 
-func TestInteractionRuntimeConnectionCheckIsIndependentOfAgentSelection(t *testing.T) {
+func TestInteractionEndpointCheckIsIndependentOfAgentSelection(t *testing.T) {
 	m, b := openForeignRegistrationInteraction(t)
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
 	press(m, tea.KeyRight, "")
 	press(m, tea.KeySpace, " ") // This only changes the unsaved destination draft.
 	selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
-	if !strings.Contains(m.View().Content, "Check plain connection") {
-		t.Fatalf("Runtime child diagnostic is not isolated in its section:\n%s", m.View().Content)
-	}
 	action := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
 	_, check := m.Update(action)
 	if check != nil {

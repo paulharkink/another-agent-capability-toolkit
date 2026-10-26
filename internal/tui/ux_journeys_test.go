@@ -281,7 +281,7 @@ func TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable(t *testing.T
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	t.Setenv("PATH", t.TempDir())
 	key := state.Key{Source: "external-runtime", Package: "absent-package", Environment: "remote", Target: "observed"}
-	endpoint := "http://127.0.0.1:1/mcp"
+	endpoint := "http://127.0.0.1:18765/mcp"
 	store, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1062,7 +1062,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	if err := store.Record(state.Installation{Key: key, AgentID: "runtime", Component: "runtime", URL: endpoint, Transport: "streamable-http"}); err != nil {
 		t.Fatal(err)
 	}
-	pkg := catalog.Package{ID: "demo", Name: "Demo", Dir: root, Skill: &catalog.Skill{Name: "demo"}, MCPs: []catalog.MCP{{Name: "demo", Transport: "streamable-http"}}, UI: &catalog.Presentation{Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}}}, Inputs: []catalog.Input{{Name: "endpoint", Label: "Endpoint URI", Type: "string", Default: endpoint}}}
+	pkg := catalog.Package{ID: "demo", Name: "Demo", Dir: root, Skill: &catalog.Skill{Name: "demo"}, MCPs: []catalog.MCP{{Name: "demo", Transport: "streamable-http", HostPortInput: "port", ContainerPort: 9000}}, UI: &catalog.Presentation{Sections: []catalog.Section{{ID: "Connection", Title: "Connection", Fields: []string{"port"}}}}, Inputs: []catalog.Input{{Name: "port", Label: "Local port", Type: "integer", Default: 18765}}}
 	probe, err := agents.DefaultDiscoveryProbe()
 	if err != nil {
 		t.Fatal(err)
@@ -1101,9 +1101,16 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex", "claude"}}); err != nil {
 		t.Fatalf("could not select test destinations: %v", err)
 	}
-	_, apply := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if save := m.saveSetupInputs(m.form.Values()); save == nil {
+		t.Fatalf("Inputs Save was unavailable:\n%s", m.View().Content)
+	} else {
+		m.Update(save())
+	}
+	m.form.SelectSectionID(sectionAgentsID)
+	applyAction := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, apply := m.Update(applyAction)
 	if apply == nil {
-		t.Fatalf("keyboard Save did not call complete capability install:\n%s", m.View().Content)
+		t.Fatalf("keyboard Install selected did not call UIInstallAgents:\n%s", m.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, apply))
 	if m.result == nil || !m.result.Failed {

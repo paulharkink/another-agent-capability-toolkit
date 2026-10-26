@@ -49,6 +49,7 @@ func TestFormHasNoDefaultBackgroundGlyphs(t *testing.T) {
 		t.Fatalf("form has %d default-background glyphs", got)
 	}
 }
+
 func TestKeyboardFormEditsPrefillAndSaves(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{{Name: "team", Type: "string", Required: true}}, map[string]any{"team": "old"})
 	m.Update(key(tea.KeyEnter, ""))

@@ -265,12 +265,23 @@ func (m *Model) hasUnsavedSetupInputs() bool {
 		if !input.Editable {
 			continue
 		}
+		if input.Definition.Type == "secret" {
+			if value, ok := values[input.Definition.Name].(string); !ok || strings.TrimSpace(value) == "" {
+				// Empty secret fields mean preserve the private saved value; only
+				// non-empty re-entry or an explicit ResetFields intent is a change.
+				continue
+			}
+		}
 		// TOML/JSON decoding can represent one typed value with different Go
 		// types. Compare current and saved values after the form's schema
 		// normalization so a persisted integer (for example, a port) is not
 		// treated as a new edit merely because its decoder type changed.
 		current, currentErr := forms.ResolvePartial([]catalog.Input{input.Definition}, values)
-		saved, savedErr := forms.ResolvePartial([]catalog.Input{input.Definition}, map[string]any{input.Definition.Name: input.Value})
+		savedValues := map[string]any{}
+		if input.HasValue {
+			savedValues[input.Definition.Name] = input.Value
+		}
+		saved, savedErr := forms.ResolvePartial([]catalog.Input{input.Definition}, savedValues)
 		if currentErr == nil && savedErr == nil && reflect.DeepEqual(current[input.Definition.Name], saved[input.Definition.Name]) {
 			continue
 		}
@@ -655,6 +666,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		if !input.Editable {
 			continue
 		}
+		if input.Definition.Type == "secret" && input.SecretSaved {
+			m.form.SetHint(input.Definition.Name, "Credential saved · leave blank to keep")
+		}
 		if fixed := fixedGroups[input.Definition.ExclusiveGroup]; fixed != "" {
 			m.form.SetDisabled(input.Definition.Name, fixed+" is fixed by target")
 			continue
@@ -717,15 +731,21 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 			request.Inputs[input.Definition.Name] = value
 		}
 	}
-	inputsChanged := m.form.HasUnsavedChanges()
+	inputsChanged := m.hasUnsavedSetupInputs()
 	ctx, key, destination := m.ctx, preview.Key, m.pendingSetupField
 	m.busy, m.action = true, "save inputs"
 	return func() tea.Msg {
 		err := backend.UISaveInputs(ctx, request)
 		if err == nil {
 			for i := range preview.Inputs {
-				if value, exists := request.Inputs[preview.Inputs[i].Definition.Name]; exists {
-					preview.Inputs[i].Value, preview.Inputs[i].HasValue, preview.Inputs[i].Provenance = value, true, "saved"
+				input := &preview.Inputs[i]
+				name := input.Definition.Name
+				if value, exists := request.Inputs[name]; exists {
+					input.Value, input.HasValue, input.Provenance = value, true, "saved"
+					if input.Definition.Type == "secret" {
+						secret, ok := value.(string)
+						input.SecretSaved = ok && strings.TrimSpace(secret) != ""
+					}
 				}
 			}
 			preview.Configured = true

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,11 +114,16 @@ func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 
 func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	svc, _, store := fixture(t)
-	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "label", Type: "string", Required: false}}
+	const secret = "private-input-canary"
+	const definitionDefault = "definition-secret-canary"
+	svc.Source.Catalog[0].Inputs = []catalog.Input{
+		{Name: "label", Type: "string", Required: false},
+		{Name: "token", Type: "secret", Required: false, Default: definitionDefault},
+	}
 	ref := profileRefForFixture(svc, svc.Source.ID, "demo", "default")
 	if err := svc.UISaveInputs(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{Ref: ref},
-		Inputs:       map[string]any{"label": "saved-only"},
+		Inputs:       map[string]any{"label": "saved-only", "token": secret},
 	}); err != nil {
 		t.Fatalf("save-only input operation failed: %v", err)
 	}
@@ -128,6 +134,84 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	answers, err := store.Answers(key)
 	if err != nil || answers["label"] != "saved-only" {
 		t.Fatalf("answers were not saved: answers=%v err=%v", answers, err)
+	}
+	if _, exists := answers["token"]; exists {
+		t.Fatalf("secret was written to ordinary answers: %#v", answers)
+	}
+	answerFile, err := os.ReadFile(filepath.Join(store.Root(), "answers", key.ID()+".json"))
+	if err != nil || strings.Contains(string(answerFile), secret) {
+		t.Fatalf("ordinary answer file leaked a private secret: readErr=%v", err)
+	}
+	secretInputs, err := store.SecretInputs(key)
+	if err != nil || secretInputs["token"] != secret {
+		t.Fatalf("private secret input was not saved: valuePresent=%t err=%v", secretInputs["token"] != nil, err)
+	}
+	runtimeMarker := []byte(`{"runtime":"owned"}`)
+	if err := os.WriteFile(filepath.Join(store.AuthDir(key), "inputs.json"), runtimeMarker, 0600); err != nil {
+		t.Fatalf("write runtime-owned auth marker: %v", err)
+	}
+	secretPath := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
+	info, err := os.Stat(secretPath)
+	if err != nil {
+		t.Fatalf("private secret file missing: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("private secret file mode = %v; want 0600", info.Mode().Perm())
+	}
+	if got, err := os.ReadFile(filepath.Join(store.AuthDir(key), "inputs.json")); err != nil || string(got) != string(runtimeMarker) {
+		t.Fatalf("saving private inputs changed runtime-owned inputs.json: contentsPreserved=%t err=%v", string(got) == string(runtimeMarker), err)
+	}
+	dirInfo, err := os.Stat(store.AuthDir(key))
+	if err != nil || dirInfo.Mode().Perm() != 0700 {
+		t.Fatalf("private input directory permissions are not owner-only: err=%v", err)
+	}
+	preview, err := svc.PreviewInstance(context.Background(), InstanceRequest{Ref: ref})
+	if err != nil {
+		t.Fatalf("preview saved inputs: %v", err)
+	}
+	foundSecret := false
+	for _, input := range preview.Inputs {
+		if input.Definition.Name == "token" {
+			foundSecret = input.SecretSaved && input.HasValue && input.Value == secret
+		}
+	}
+	if !foundSecret {
+		t.Fatal("preview did not report the saved secret value")
+	}
+	serializedPreview, err := json.Marshal(preview)
+	if err != nil || !strings.Contains(string(serializedPreview), secret) || !strings.Contains(string(serializedPreview), definitionDefault) {
+		t.Fatalf("serialized preview did not preserve the visible secret value: marshalErr=%v", err)
+	}
+	if err := svc.UISaveInputs(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref},
+		Inputs:       map[string]any{"label": "saved-again", "token": ""},
+	}); err != nil {
+		t.Fatalf("save with blank secret field: %v", err)
+	}
+	secretInputs, err = store.SecretInputs(key)
+	if err != nil || secretInputs["token"] != secret {
+		t.Fatal("blank secret field erased the saved private input")
+	}
+	svc.Source.Catalog[0].MCP = &catalog.MCP{
+		Name: "demo", Transport: "streamable-http",
+		Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"fixture-auth"}}},
+	}
+	executor := &uxActionExecutor{}
+	svc.Options.Runner = executor
+	if _, err := svc.MCP(context.Background(), MCPRequest{Action: "authenticate", Ref: ref}); err != nil {
+		t.Fatalf("authenticate using privately saved input: %v", err)
+	}
+	if len(executor.calls) != 1 || executor.calls[0].Inputs["token"] != secret {
+		t.Fatal("authenticate did not receive the privately saved input")
+	}
+	if err := svc.UISaveInputs(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: ref}, ResetInputs: []string{"token"},
+	}); err != nil {
+		t.Fatalf("explicitly reset private secret input: %v", err)
+	}
+	secretInputs, err = store.SecretInputs(key)
+	if err != nil || len(secretInputs) != 0 {
+		t.Fatalf("private secret reset left stored values: present=%t err=%v", len(secretInputs) > 0, err)
 	}
 	installations, err := store.Installations()
 	if err != nil || len(installations) != 0 {
@@ -190,6 +274,9 @@ func TestUIInstallWithNoRemainingAgentsUninstallsBindingsButKeepsInstance(t *tes
 	})
 	if err != nil {
 		t.Fatalf("uninstall final agent registration: %+v %v", result, err)
+	}
+	if len(result.Changes) != 1 || result.Changes[0].AgentID != "codex" || result.Changes[0].Component != "skill" {
+		t.Fatalf("successful uninstall did not report the removed binding: %+v", result.Changes)
 	}
 	rows, err = store.Installations()
 	if err != nil || len(rows) != 0 {

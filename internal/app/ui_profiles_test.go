@@ -203,7 +203,7 @@ func TestUIInstanceRunRejectsInactivePackReference(t *testing.T) {
 	}
 }
 
-func TestUIRemoveRuntimeRecordRefusesLiveIDObservedUnderDifferentKey(t *testing.T) {
+func TestUIRemoveRuntimeRecordForgetsStaleKeyWithoutStoppingObservedRuntime(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
 	key := state.Key{Source: "fixture", Package: "demo", Target: "selected"}
@@ -219,19 +219,19 @@ func TestUIRemoveRuntimeRecordRefusesLiveIDObservedUnderDifferentKey(t *testing.
 	}}}, store: store}
 	svc.Options.Runtime = runtime
 
-	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, row.SourcePath); err == nil {
-		t.Fatal("live runtime observed under a different key was treated as missing")
+	if message, err := svc.UIRemoveRuntimeRecord(context.Background(), child, row.SourcePath); err != nil || !strings.Contains(message, "left running") {
+		t.Fatalf("stale-key record was not made recoverable without stopping the runtime: message=%q err=%v", message, err)
 	}
 	if len(runtime.removedIDs) != 0 {
 		t.Fatalf("mismatched live runtime was stopped: %v", runtime.removedIDs)
 	}
 	remaining, err := store.Installations()
-	if err != nil || !reflect.DeepEqual(remaining, []state.Installation{row}) {
-		t.Fatalf("mismatched live runtime ledger evidence was removed: %+v, %v", remaining, err)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("stale exact ledger row was not removed: %+v, %v", remaining, err)
 	}
 }
 
-func TestUIRemoveRuntimeRecordRefusesUnknownOwnerAndPreservesLedger(t *testing.T) {
+func TestUIRemoveRuntimeRecordForgetsUnknownOwnerWithoutDeletingContainer(t *testing.T) {
 	svc, _, store := fixture(t)
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
 	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
@@ -242,15 +242,15 @@ func TestUIRemoveRuntimeRecordRefusesUnknownOwnerAndPreservesLedger(t *testing.T
 	}
 	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{Key: child, ID: "unknown-id", Name: "unknown-container", Status: "running", Ownership: "unknown"}}}, store: store}
 	svc.Options.Runtime = runtime
-	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "unknown-id"); err == nil || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("unknown owner deletion should fail clearly, got %v", err)
+	if message, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "unknown-id"); err != nil || !strings.Contains(message, "unknown") {
+		t.Fatalf("unknown owner record should be forgettable without container deletion: message=%q err=%v", message, err)
 	}
 	if len(runtime.removedIDs) != 0 {
 		t.Fatalf("unknown runtime was destructively removed: %v", runtime.removedIDs)
 	}
 	remaining, err := store.Installations()
-	if err != nil || len(remaining) != 1 || remaining[0].SourcePath != "unknown-id" {
-		t.Fatalf("unknown-owner ledger evidence was lost: %+v, %v", remaining, err)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("unknown-owner exact ledger record was not removed: %+v, %v", remaining, err)
 	}
 }
 

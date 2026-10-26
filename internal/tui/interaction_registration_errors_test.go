@@ -27,6 +27,7 @@ func openAgentMetadataWorkspace(t *testing.T, setup *setupBackendFixture, previe
 	if m.form == nil || m.workspace == nil || !m.workspace.Active {
 		t.Fatalf("complete-binding workspace did not load:\n%s", m.View().Content)
 	}
+	m.workspace.InputsSaved = true
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
 	return m, backend
@@ -93,17 +94,23 @@ func TestInteractionPartialCompleteBindingReportsStructuredAchievementsAndErrors
 	preview.Destinations[0].Selected = true
 	preview.Destinations[1].Selected = true
 	m, backend := openAgentMetadataWorkspace(t, setup, preview)
-	cmd := m.applySetup(m.form.Values())
+	for i := range backend.profile.snapshot.Profiles {
+		if backend.profile.snapshot.Profiles[i].Key == m.workspace.Key {
+			backend.profile.snapshot.Profiles[i].RegisteredAgents = []string{"codex"}
+		}
+	}
+	action := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
 		t.Fatalf("complete capability binding was not submitted: output=%q\n%s", m.output, m.View().Content)
 	}
 	message := runTeaCmd(t, m, cmd)
 	_, _ = m.Update(message)
-	if backend.setup.installRequest == nil {
-		t.Fatal("complete-binding save did not call UIInstall")
+	if backend.setup.installAgentsRequest == nil {
+		t.Fatal("Agent access install did not call UIInstallAgents")
 	}
-	if got := backend.setup.installRequest.DestinationIDs; !containsString(got, "codex") || !containsString(got, "claude") {
-		t.Fatalf("save did not send the complete selected destination set: %v", got)
+	if got := backend.setup.installAgentsRequest.DestinationIDs; !containsString(got, "codex") || !containsString(got, "claude") {
+		t.Fatalf("install did not send the complete selected destination set: %v", got)
 	}
 	view := m.View().Content
 	if !strings.Contains(view, "codex") || !strings.Contains(view, "claude: refusing foreign MCP registration") {
@@ -123,7 +130,7 @@ func TestInteractionPartialCompleteBindingReportsStructuredAchievementsAndErrors
 	}
 }
 
-func TestUnsavedExitApplyFailureReconcilesDestinationSelection(t *testing.T) {
+func TestFailedAgentInstallReconcilesDestinationSelection(t *testing.T) {
 	setup := &setupBackendFixture{installResult: &viewmodel.OperationResult{
 		Changes: []state.Installation{
 			{Key: state.Key{Source: "team-source", Package: "plain", Target: "foreign"}, AgentID: "codex", Component: "skill"},
@@ -135,28 +142,21 @@ func TestUnsavedExitApplyFailureReconcilesDestinationSelection(t *testing.T) {
 	preview.Destinations[0].Selected = true
 	preview.Destinations[1].Selected = false
 	m, backend := openAgentMetadataWorkspace(t, setup, preview)
-	m.form.SetBackNavigation(true)
-	m.form.SetUnsavedExitGuard(true)
-	if !m.form.ReconcileDraftField(m.pendingSetupField, []string{"codex", "claude"}) {
-		t.Fatal("could not seed a dirty destination draft")
+	m.workspace.InputsSaved = true
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex", "claude"}}); err != nil {
+		t.Fatal(err)
 	}
-	_, requestExit := m.form.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if requestExit != nil {
-		m.Update(requestExit())
-	}
-	if m.unsavedExit == nil {
-		t.Fatal("Back from dirty configuration did not show the unsaved exit popup")
-	}
-	cmd := m.chooseUnsavedExit(0)
+	action := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
-		t.Fatal("Apply changes did not submit the configuration")
+		t.Fatal("Install selected did not submit the destination set")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	got, _ := m.form.Values()[m.pendingSetupField].([]string)
-	if !containsString(got, "codex") || containsString(got, "claude") {
-		t.Fatalf("failed Apply left the failed destination checked: %v", got)
+	if containsString(got, "claude") {
+		t.Fatalf("failed destination remained checked after partial reconciliation: %v", got)
 	}
-	if backend.setup.installRequest == nil || m.result == nil || !m.unsavedExitFailure {
-		t.Fatalf("failed Apply lost its request or error result: request=%+v result=%+v", backend.setup.installRequest, m.result)
+	if backend.setup.installAgentsRequest == nil || m.result == nil {
+		t.Fatalf("failed agent install lost its request or error result: request=%+v result=%+v", backend.setup.installAgentsRequest, m.result)
 	}
 }

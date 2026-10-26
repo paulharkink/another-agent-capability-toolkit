@@ -173,8 +173,8 @@ func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t
 		t.Fatalf("configured CapabilityInstance %s is absent: %+v", key.Target, snapshot.Instances)
 	}
 	instance := snapshot.Instances[instanceIndex]
-	if instance.ConfigStatus == "conflict" || len(instance.MCPs) != 1 {
-		t.Fatalf("stale child records were promoted to a parent conflict or hid the declared MCP: %+v", instance)
+	if instance.ConfigStatus == "conflict" || len(instance.MCPs) != 2 {
+		t.Fatalf("stale child records were promoted to a parent conflict or the recoverable orphan was hidden: %+v", instance)
 	}
 	if got := instance.MCPs[0].Status; got != "missing" {
 		t.Fatalf("duplicate missing runtime rows should stay recoverable under the declared MCP, status=%q error=%q", got, instance.MCPs[0].Error)
@@ -190,12 +190,16 @@ func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t
 	if got := runtimeRecords.Index(1).FieldByName("ID").String(); got != "stale-container-b" {
 		t.Fatalf("second runtime identity = %q, want stale-container-b", got)
 	}
+	orphan := instance.MCPs[1]
+	if orphan.MCPID != "removed-definition" || orphan.Key != orphanKey || len(orphan.RuntimeRecords) != 1 || orphan.RuntimeRecords[0].ID != "orphan-container" {
+		t.Fatalf("runtime for removed MCP definition must remain visible under its exact recoverable record: %+v", orphan)
+	}
 	rows, err := s.Store.Installations()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("runtime metadata for undefined MCP was not reconciled without touching linked missing records: %+v", rows)
+	if len(rows) != 3 {
+		t.Fatalf("declared missing runtimes and the undefined-MCP orphan must all remain recoverable: %+v", rows)
 	}
 }
 

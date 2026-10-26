@@ -19,14 +19,15 @@ import (
 
 type setupBackendFixture struct {
 	fixtureBackend
-	previewRequest    viewmodel.SetupRequest
-	installRequest    *viewmodel.SetupInstallRequest
-	savedInputRequest *viewmodel.SetupInstallRequest
-	skillOnlyRequest  *viewmodel.SkillOnlyInstallRequest
-	extraInputs       []viewmodel.SetupInput
-	installResult     *viewmodel.OperationResult
-	installErr        error
-	saveInputsErr     error
+	previewRequest       viewmodel.SetupRequest
+	installRequest       *viewmodel.SetupInstallRequest
+	installAgentsRequest *viewmodel.SetupInstallRequest
+	savedInputRequest    *viewmodel.SetupInstallRequest
+	skillOnlyRequest     *viewmodel.SkillOnlyInstallRequest
+	extraInputs          []viewmodel.SetupInput
+	installResult        *viewmodel.OperationResult
+	installErr           error
+	saveInputsErr        error
 }
 
 func setupProfileKey(request viewmodel.SetupRequest) state.Key {
@@ -196,6 +197,8 @@ func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInst
 }
 
 func (b *setupBackendFixture) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	copy := q
+	b.installAgentsRequest = &copy
 	return b.UIInstall(ctx, q)
 }
 
@@ -234,6 +237,7 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 			m.Update(m.load()())
 			backend := &registrationWorkspaceBackend{Backend: profiles, profileBackend: profiles, setupBackendFixture: &setupBackendFixture{}}
 			m.backend = backend
+			m.Update(m.load()())
 			m.focusPane(ProfilesPane)
 			foreignKey := profiles.snapshot.Profiles[1].Key
 			m.selectPane(ProfilesPane, 1)

@@ -52,6 +52,9 @@ func (b *zeroInputSkillSetupBackend) UIInstall(_ context.Context, request viewmo
 	b.installed = len(request.DestinationIDs) > 0
 	return viewmodel.OperationResult{Saved: true}, nil
 }
+func (b *zeroInputSkillSetupBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.UIInstall(ctx, request)
+}
 
 func TestManifestlessSectionsUseInputOrderAndOnlyMCPAddsRuntimeSections(t *testing.T) {
 	preview := viewmodel.SetupPreview{Key: state.Key{Package: "arbitrary-name"}}
@@ -315,10 +318,15 @@ func (b *multiMCPInstallBackend) UIInstall(_ context.Context, request viewmodel.
 	return viewmodel.OperationResult{Saved: true}, nil
 }
 
+func (b *multiMCPInstallBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.UIInstall(ctx, request)
+}
+
 func (b *multiMCPRuntimeBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	return viewmodel.SetupPreview{
 		Key: setupProfileKey(request),
 		MCP: true, MCPDefinitions: []catalog.MCP{{Name: "alpha"}, {Name: "beta"}},
+		Destinations: []viewmodel.SetupDestination{{ID: "codex", Selected: true}},
 	}, nil
 }
 
@@ -387,6 +395,8 @@ func TestMissingNamedChildInheritsParentOwnershipForLifecycleGuards(t *testing.T
 			m.Update(open())
 			m.workspace.Preview.Configured = true
 			m.workspace.Installed = true
+			m.workspace.InputsSaved = true
+			m.workspace.RegisteredMCPs = map[string]bool{"alpha": true, "beta": true}
 			m.configureWorkspaceForm(*m.workspace.Preview)
 			m.form.SelectSectionID(sectionRuntimeID)
 			m.form.FocusSection()
@@ -465,7 +475,9 @@ func TestMultiMCPExternalAttachRequiresEveryForeignChildEndpoint(t *testing.T) {
 				t.Fatal("workspace preview did not start")
 			}
 			m.Update(open())
-			cmd := m.applySetup(m.form.Values())
+			m.workspace.InputsSaved = true
+			m.form.SelectSectionID(sectionAgentsID)
+			_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
 			if test.wantBlocked {
 				if cmd != nil || backend.installRequest != nil || !strings.Contains(m.output, "MCP \"beta\"") || !strings.Contains(m.output, "no observed endpoint URI") {
 					t.Fatalf("incomplete foreign attachment was not rejected for the exact child: cmd=%t request=%+v output=%q", cmd != nil, backend.installRequest, m.output)

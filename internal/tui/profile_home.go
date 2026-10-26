@@ -1,6 +1,7 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"context"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -136,6 +137,9 @@ func (m *Model) openInstanceCreation(c CapabilityRow) {
 	m.management.FormOverlay = true
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
 	m.form.SetTitle("New instance · " + c.Name)
+	if _, _, width, height, ok := managementFormOverlayBounds(m.width, m.height); ok {
+		m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	}
 }
 func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
 	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}

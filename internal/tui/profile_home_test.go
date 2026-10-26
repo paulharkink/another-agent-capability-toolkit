@@ -270,7 +270,8 @@ func TestInstanceContextShowsEveryDeclaredMCPAndLinkedRuntimeRecord(t *testing.T
 	if first.ID == second.ID || first.Key != childKey || second.Key != childKey || first.ParentKey.Target != "ota" || second.ParentKey.Target != "ota" {
 		t.Fatalf("runtime rows lost exact child/parent identity: first=%+v second=%+v child=%+v", first, second, child)
 	}
-	for _, want := range []string{"MCP · server · multiple", "container-a", "container-b"} {
+	m.Update(tea.WindowSizeMsg{Width: 180, Height: 32})
+	for _, want := range []string{"MCP runtime · server · multiple", "container-a", "container-b"} {
 		if !strings.Contains(m.homeView().Content, want) {
 			t.Fatalf("instance pane omitted %q:\n%s", want, m.homeView().Content)
 		}
@@ -375,8 +376,9 @@ func TestInstanceHomeShowsCountRuntimeAndAuthenticationSeparately(t *testing.T) 
 	snapshot.Profiles = instances
 	b.profiles["inspect"] = snapshot
 	m.capabilityInstances["inspect"] = snapshot
+	m.Update(tea.WindowSizeMsg{Width: 180, Height: 32})
 	view := m.homeView().Content
-	for _, want := range []string{"2 instances", "server running", "AuthenticationFailed"} {
+	for _, want := range []string{"2 instances", "MCP runtime · server · running", "AuthenticationFailed"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("instance view missing %q:\n%s", want, view)
 		}

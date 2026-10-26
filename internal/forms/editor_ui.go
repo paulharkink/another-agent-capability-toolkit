@@ -200,6 +200,13 @@ func (m *FormModel) SetSectionActionsID(id string, actions ...FormAction) {
 	m.setSectionActions(id, actions...)
 }
 
+// SectionActionsID returns a copy of the actions currently configured for a
+// section. Callers can update dynamic disabled reasons without rebuilding the
+// rest of a split form.
+func (m *FormModel) SectionActionsID(id string) []FormAction {
+	return append([]FormAction(nil), m.sectionActions[id]...)
+}
+
 func (m *FormModel) setSectionActions(key string, actions ...FormAction) {
 	if m.sectionActions == nil {
 		m.sectionActions = map[string][]FormAction{}
@@ -602,6 +609,27 @@ func (m *FormModel) SelectSection(title string) {
 
 // Values returns a copy of the current editable draft.
 func (m *FormModel) Values() map[string]any { return m.editor.Values() }
+
+// CommitPendingInput commits the active text buffer or staged scalar-choice
+// selection into the editable draft. Section actions can call this before
+// reading Values so their visible field state matches the submitted data.
+func (m *FormModel) CommitPendingInput() error {
+	if m.editing {
+		m.commitBuffer()
+		if m.editing {
+			return errors.New(m.message)
+		}
+	}
+	if m.selected >= 0 && m.selected < len(m.defs) && isScalarChoice(m.defs[m.selected]) {
+		m.message = ""
+		def := m.defs[m.selected]
+		m.choose(def, m.editor.Values()[def.Name])
+		if m.message != "" {
+			return errors.New(m.message)
+		}
+	}
+	return nil
+}
 
 // ReconcileDraftField replaces an editable draft value with observed state
 // after a partially applied operation. It intentionally skips validation:
@@ -1604,11 +1632,8 @@ func (m *FormModel) discard() (tea.Model, tea.Cmd) {
 // Submit commits an active field buffer and follows the same validation and
 // save path as Ctrl-S. Validation failures leave the form open for correction.
 func (m *FormModel) Submit() (tea.Model, tea.Cmd) {
-	if m.editing {
-		m.commitBuffer()
-		if m.editing {
-			return m, nil
-		}
+	if err := m.CommitPendingInput(); err != nil {
+		return m, nil
 	}
 	return m.save()
 }

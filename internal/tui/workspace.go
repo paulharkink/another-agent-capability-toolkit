@@ -648,18 +648,12 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if startProfile != nil {
 				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
-			startDisabled := m.instanceActionReason(startRow, "s")
-			switch {
-			case m.hasUnsavedSetupInputs():
-				startDisabled = appendActionReason(startDisabled, "Save changed inputs first")
-			case !m.workspace.InputsSaved && len(preview.ValidationIssues) > 0:
-				startDisabled = appendActionReason(startDisabled, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
-			case !m.workspace.InputsSaved:
-				startDisabled = appendActionReason(startDisabled, "Save valid inputs first")
-			case !m.workspace.Installed || !m.workspaceMCPRegistered(definition.Name):
-				startDisabled = appendActionReason(startDisabled, "Install this capability for an agent first")
-			}
+			startDisabled := m.runtimeStartDisabledReason(definition.Name, startRow)
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
+			if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
+				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "authenticate:" + definition.Name, Label: "Login to " + definition.Name, Disabled: authenticateDisabled})
+			}
 			if child != nil {
 				if child.Error != "" {
 					runtime = append(runtime, "  MCP observation: "+child.Error)
@@ -848,7 +842,7 @@ func appendActionReason(current, reason string) string {
 }
 
 func (m *Model) refreshAgentAccessActions() {
-	if m.form == nil || m.workspace == nil || !m.workspace.Active {
+	if m.form == nil || m.workspace == nil || !m.workspace.Active || m.workspace.Preview == nil {
 		return
 	}
 	reason := m.agentAccessInputGuardReason()
@@ -868,6 +862,89 @@ func formSectionFields(sections []forms.FormSection, title string) []string {
 		}
 	}
 	return nil
+}
+
+func (m *Model) runtimeStartDisabledReason(mcpName string, row InstanceRow) string {
+	if m.workspace == nil || m.workspace.Preview == nil {
+		return m.instanceActionReason(row, "s")
+	}
+	preview := m.workspace.Preview
+	reason := m.instanceActionReason(row, "s")
+	switch {
+	case m.hasUnsavedSetupInputs():
+		reason = appendActionReason(reason, "Save changed inputs first")
+	case !m.workspace.InputsSaved && len(preview.ValidationIssues) > 0:
+		reason = appendActionReason(reason, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
+	case !m.workspace.InputsSaved:
+		reason = appendActionReason(reason, "Save valid inputs first")
+	case !m.workspace.Installed || !m.workspaceMCPRegistered(mcpName):
+		reason = appendActionReason(reason, "Install this capability for an agent first")
+	}
+	return reason
+}
+
+func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRow) string {
+	if m.workspace == nil || m.workspace.Preview == nil {
+		return "Refresh this target before logging in"
+	}
+	if m.hasUnsavedSetupInputs() {
+		return "Save changed inputs first"
+	}
+	if !m.workspace.InputsSaved || !m.workspace.Preview.Configured {
+		if len(m.workspace.Preview.ValidationIssues) > 0 {
+			return "Inputs need attention: " + strings.Join(m.workspace.Preview.ValidationIssues, "; ")
+		}
+		return "Save valid inputs first"
+	}
+	exactMCP := row.Key.MCP == mcpName || row.Key.MCPDefinition == mcpName || (row.Instance != nil && row.Instance.Name == mcpName)
+	if row.Instance == nil || !exactMCP || strings.ToLower(strings.TrimSpace(row.Status)) != "running" {
+		return "Start this MCP before logging in"
+	}
+	return ""
+}
+
+func (m *Model) refreshRuntimeActionAvailability() {
+	if m.form == nil || m.workspace == nil || !m.workspace.Active || m.workspace.Preview == nil {
+		return
+	}
+	actions := m.form.SectionActionsID(sectionRuntimeID)
+	changed := false
+	for i := range actions {
+		prefix := ""
+		switch {
+		case strings.HasPrefix(actions[i].ID, "start:"):
+			prefix = "start:"
+		case strings.HasPrefix(actions[i].ID, "authenticate:"):
+			prefix = "authenticate:"
+		default:
+			continue
+		}
+		mcpName := strings.TrimPrefix(actions[i].ID, prefix)
+		profile := m.instanceForMCPName(mcpName)
+		if len(m.workspace.Preview.MCPDefinitions) == 0 {
+			profile = m.legacyWorkspaceMCP()
+		}
+		row := InstanceRow{}
+		if profile != nil {
+			row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+		} else if m.workspace.Instance != nil {
+			parent := *m.workspace.Instance
+			row = InstanceRow{Key: parent.Key, Instance: &parent, URL: parent.URL, Status: parent.RuntimeStatus}
+		}
+		disabled := ""
+		if prefix == "start:" {
+			disabled = m.runtimeStartDisabledReason(mcpName, row)
+		} else {
+			disabled = m.runtimeAuthenticateDisabledReason(mcpName, row)
+		}
+		if actions[i].Disabled != disabled {
+			actions[i].Disabled = disabled
+			changed = true
+		}
+	}
+	if changed {
+		m.form.SetSectionActionsID(sectionRuntimeID, actions...)
+	}
 }
 
 func workspaceFormSections(preview viewmodel.SetupPreview, defs []catalog.Input, destinationField string) []forms.FormSection {

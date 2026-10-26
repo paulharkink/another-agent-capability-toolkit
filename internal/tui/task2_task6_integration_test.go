@@ -14,6 +14,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/app"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -72,6 +73,17 @@ func (integratedAuthAdapter) Detect(context.Context, agents.Scope) (agents.Detec
 }
 func (integratedAuthAdapter) Observe(context.Context, agents.Scope, agents.ObservationRequest) (agents.Observation, error) {
 	return agents.Observation{}, nil
+}
+func (integratedAuthAdapter) Register(_ context.Context, scope agents.Scope, request agents.MCPRequest) (agents.MCPRegistrationResult, error) {
+	installation := state.Installation{
+		Key: request.Key, AgentID: scope.ID, Component: "mcp",
+		RegistrationName: request.Registration.Name, URL: request.Registration.URL,
+		Transport: request.Registration.Transport,
+	}
+	return agents.MCPRegistrationResult{Installation: installation, Effects: []state.Installation{installation}}, nil
+}
+func (integratedAuthAdapter) Unregister(context.Context, agents.Scope, state.Installation) error {
+	return nil
 }
 
 type integratedAuthAdapters struct{ adapter agents.Adapter }
@@ -201,7 +213,7 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 	}
 }
 
-func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironment(t *testing.T) {
+func TestTUISaveAndAgentInstallDoNotRunAuthenticationAction(t *testing.T) {
 	const (
 		profileCookie = "fixture-saved-cookie"
 		formCookie    = "fixture-form-cookie"
@@ -242,8 +254,9 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 		Inputs: []catalog.Input{
 			{Name: "grafana_session", Label: "Grafana session cookie", Type: "secret", Required: true},
 			{Name: "session_expiry", Label: "Session expiry", Type: "string", Required: true},
+			{Name: "port", Label: "Local port", Type: "integer", Default: 18761},
 		},
-		MCP: &catalog.MCP{Name: "grafana", Transport: "streamable-http", ContainerPort: 9000, Actions: map[string]catalog.Command{
+		MCP: &catalog.MCP{Name: "grafana", Transport: "streamable-http", HostPortInput: "port", ContainerPort: 9000, Actions: map[string]catalog.Command{
 			"authenticate": {Argv: []string{"fixture-grafana-auth"}},
 		}},
 	}
@@ -300,31 +313,22 @@ func TestTUISaveApplyAuthForwardsSelectedProfileAndResolvedInputsWithoutEnvironm
 	if model.form.HasUnsavedChanges() {
 		t.Fatal("explicit Inputs Save did not clear the saved form draft")
 	}
-	cmd := model.applySetup(values)
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok || len(batch) == 0 {
-		t.Fatalf("Save & Apply did not start UIInstall: %T", batch)
+	model.form.SelectSectionID(sectionAgentsID)
+	_, cmd := model.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if cmd == nil {
+		t.Fatalf("Agent Access Install selected did not start: %s", model.View().Content)
 	}
-	message, ok := batch[0]().(operationMsg)
-	if !ok {
-		t.Fatalf("Save & Apply returned %T, want operationMsg", batch[0]())
+	model.Update(runTeaCmd(t, model, cmd))
+	if model.result == nil {
+		t.Fatalf("Agent Access Install selected did not produce an operation result: %q", model.output)
 	}
-	if executor.request.Action != "authenticate" {
-		t.Fatalf("action helper did not receive auth request: %+v; operation err=%v output=%q", executor.request, message.err, message.output)
+	if executor.request.Action != "" {
+		t.Fatalf("Inputs Save or Agent Install unexpectedly ran authentication action: %+v", executor.request)
 	}
-	if executor.request.Instance.Ref != ref || executor.request.Target.Environment != ref.PackID || executor.request.Target.Name != ref.Name || executor.request.Target.Path != profilePath {
-		t.Fatalf("authentication request lost selected profile identity: profile=%+v target=%+v", executor.request.Instance, executor.request.Target)
+	if model.result.Failed {
+		t.Fatalf("Agent Install should complete without authenticating or starting runtime: %+v", model.result)
 	}
-	if executor.request.Inputs["grafana_session"] != formCookie || executor.request.Inputs["session_expiry"] != profileExpiry {
-		t.Fatalf("authentication request lost resolved form overrides: %#v", executor.request.Inputs)
-	}
-	if message.err == nil && !message.failed {
-		t.Fatalf("expected fixture auth-required response to be reported as failure: %+v", message)
-	}
-	diagnostic := message.output
-	if message.err != nil {
-		diagnostic += "\n" + message.err.Error()
-	}
+	diagnostic := strings.Join(model.result.Rows, "\n")
 	for _, value := range []string{profileCookie, formCookie, profileExpiry} {
 		if strings.Contains(diagnostic, value) {
 			t.Fatalf("credential value leaked to TUI diagnostic: %q", value)

@@ -72,6 +72,9 @@ func (s *Service) UIConfigurationInstanceRun(ctx context.Context, action string,
 	if result.Logs != "" {
 		return result.Logs, err
 	}
+	if result.LoginURL != "" {
+		return "Login URL: " + result.LoginURL, err
+	}
 	if len(result.Instances) > 0 {
 		return result.Instances[0].URL, err
 	}

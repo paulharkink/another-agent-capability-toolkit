@@ -108,6 +108,11 @@ func (b *workspaceApplyBackend) UIInstall(ctx context.Context, request viewmodel
 	return b.setupBackendFixture.UIInstall(ctx, request)
 }
 
+func (b *workspaceApplyBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.installCalls++
+	return b.setupBackendFixture.UIInstall(ctx, request)
+}
+
 type profileWorkspaceBackend struct {
 	*profileBackend
 	*workspaceRouteBackend
@@ -244,7 +249,7 @@ func TestUXInputsSaveIsSeparateFromAgentInstallAndRuntimeStart(t *testing.T) {
 	}
 	m.Update(runTeaCmd(t, m, install))
 	if setup.installCalls != 1 || setup.installRequest == nil {
-		t.Fatal("Agent access Install selected did not call UIInstall")
+		t.Fatal("Agent access Install selected did not call the agent-only install operation")
 	}
 	if setup.installRequest.SetupRequest.Ref.Name != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
 		t.Fatalf("install did not submit the exact target and saved inputs: %+v", setup.installRequest)
