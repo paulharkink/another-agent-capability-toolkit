@@ -70,6 +70,7 @@ type workspaceState struct {
 	Installed            bool
 	RegisteredMCPs       map[string]bool
 	InputsSaved          bool
+	SaveNotice           string
 	AgentActionsKnown    bool
 	AgentActionsDisabled bool
 	ObservedOnly         bool
@@ -521,7 +522,11 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	}
 	stored := preview
 	m.workspace.Preview = &stored
+	orphanRuntimes := m.workspaceOrphanRuntimes(preview)
 	sections := workspaceFormSections(preview, m.form.Definitions(), m.pendingSetupField)
+	if len(orphanRuntimes) > 0 && !preview.MCP {
+		sections = append(sections, forms.FormSection{ID: sectionRuntimeID, Title: "Runtime"})
+	}
 	m.form.SetSections(sections...)
 	m.configureComponentActions()
 	m.form.SetSectionHeading("Workspace sections")
@@ -551,6 +556,12 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
+	if m.workspace.SaveNotice != "" {
+		inputLines = append(inputLines, m.workspace.SaveNotice)
+	}
+	if m.hasUnsavedSetupInputs() {
+		inputLines = append(inputLines, "Unsaved changes · Save before installing or starting.")
+	}
 	for _, issue := range preview.ValidationIssues {
 		inputLines = append(inputLines, "Needs attention: "+issue)
 	}
@@ -598,11 +609,11 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.form.SetSectionContentID(sectionAgentsID, agentAccess)
 	m.refreshAgentAccessActions()
 
-	if preview.MCP {
+	m.workspace.RuntimeRecordTargets = nil
+	if preview.MCP || len(orphanRuntimes) > 0 {
 		runtime := []string{}
 		logs := []string{}
 		runtimeActions := []forms.FormAction{}
-		m.workspace.RuntimeRecordTargets = nil
 		definitions := append([]catalog.MCP(nil), preview.MCPDefinitions...)
 		if len(definitions) == 0 {
 			if profile := m.legacyWorkspaceMCP(); profile != nil {
@@ -701,6 +712,38 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 			logs = append(logs, label+" · "+status)
 		}
+		for _, orphan := range orphanRuntimes {
+			label := nonempty(orphan.MCPID, "unknown MCP")
+			runtime = append(runtime, "Unlinked MCP runtime · "+label+" · status: "+nonempty(orphan.Status, "unknown")+" · ownership: "+nonempty(orphan.Ownership, "unknown"))
+			if orphan.Error != "" {
+				runtime = append(runtime, "  "+orphan.Error)
+			}
+			for _, record := range orphan.RuntimeRecords {
+				if strings.TrimSpace(record.ID) == "" {
+					continue
+				}
+				line := "  Runtime ID: " + record.ID + " · " + nonempty(record.Status, "unknown") + " · ownership: " + nonempty(record.Ownership, "unknown")
+				if record.Name != "" {
+					line += " · container: " + record.Name
+				}
+				if record.URL != "" {
+					line += " · endpoint: " + record.URL
+				}
+				runtime = append(runtime, line)
+				targetIndex := len(m.workspace.RuntimeRecordTargets)
+				m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: orphan.Key, ID: record.ID})
+				label := "Forget runtime record " + record.ID
+				disabled := ""
+				if orphan.Stale {
+					disabled = "Runtime observation is stale; refresh before removing this record"
+				} else if record.Status != "missing" && record.Ownership == "local" {
+					label = "Delete runtime " + record.ID
+				} else if record.Status == "missing" {
+					label = "Forget missing runtime " + record.ID
+				}
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "delete-runtime:" + fmt.Sprint(targetIndex), Label: label, Disabled: disabled})
+			}
+		}
 		if len(runtime) == 0 {
 			runtime = []string{"Runtime definitions are unavailable in this setup preview."}
 		}
@@ -769,6 +812,34 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.refreshAgentAccessActions()
 }
 
+func (m *Model) workspaceOrphanRuntimes(preview viewmodel.SetupPreview) []viewmodel.RuntimeStatus {
+	if m.workspace == nil {
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, definition := range preview.MCPDefinitions {
+		declared[definition.Name] = true
+	}
+	snapshot, ok := m.capabilityInstances[preview.Key.Package]
+	if !ok {
+		return nil
+	}
+	var orphaned []viewmodel.RuntimeStatus
+	for _, instance := range capabilityInstances(snapshot) {
+		if instance.Key != preview.Key {
+			continue
+		}
+		for _, runtime := range instance.MCPs {
+			if declared[runtime.MCPID] {
+				continue
+			}
+			orphaned = append(orphaned, runtime)
+		}
+		break
+	}
+	return orphaned
+}
+
 func appendActionReason(current, reason string) string {
 	if current == "" {
 		return reason
@@ -780,16 +851,13 @@ func (m *Model) refreshAgentAccessActions() {
 	if m.form == nil || m.workspace == nil || !m.workspace.Active {
 		return
 	}
-	disabled := m.hasUnsavedSetupInputs()
+	reason := m.agentAccessInputGuardReason()
+	installDisabled := reason != ""
 	m.workspace.AgentActionsKnown = true
-	m.workspace.AgentActionsDisabled = disabled
-	reason := ""
-	if disabled {
-		reason = dirtyInputsAgentActionReason
-	}
+	m.workspace.AgentActionsDisabled = installDisabled
 	m.form.SetSectionActionsID(sectionAgentsID,
 		forms.FormAction{ID: "install-selected", Label: "Install selected", Disabled: reason},
-		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected", Disabled: reason},
+		forms.FormAction{ID: "uninstall-selected", Label: "Uninstall selected"},
 	)
 }
 

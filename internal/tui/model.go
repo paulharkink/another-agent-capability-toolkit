@@ -249,6 +249,8 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 	}
 	if m.workspace != nil && m.workspace.Key == msg.key {
 		m.workspace.InputsSaved = true
+		m.workspace.SaveNotice = "Inputs saved successfully."
+		m.workspace.Draft = nil
 		if msg.inputsChanged {
 			m.workspace.Installed = false
 			m.workspace.RegisteredMCPs = nil
@@ -447,7 +449,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionAgentsID {
-		if action.ID == "install-selected" || action.ID == "uninstall-selected" {
+		if action.ID == "install-selected" {
 			if m.guardAgentAccessForDirtyInputs() {
 				return m, nil
 			}
@@ -713,6 +715,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
 		if m.workspace != nil && m.workspace.Active {
+			if m.hasUnsavedSetupInputs() {
+				m.workspace.SaveNotice = ""
+			}
 			m.workspace.SectionID = m.form.SectionID()
 			m.workspace.Section = m.form.SectionTitle()
 			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
@@ -1147,7 +1152,11 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	}
 	if succeeded {
 		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
-			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
+			if m.setupRetry.uninstall {
+				m.form.SetSectionContentID(sectionAgentsID, []string{"Uninstall complete for selected agents.", "Agent access removed registrations only; it did not stop Docker."})
+			} else {
+				m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
+			}
 			m.configureWorkspaceForm(m.setupRetry.preview)
 		}
 		// Keep the retained workspace actionable after its result is dismissed.

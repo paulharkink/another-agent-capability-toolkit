@@ -61,9 +61,10 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 	return result.Message, nil
 }
 
-// UIRemoveRuntimeRecord removes one exact runtime identity for a declared MCP
-// child. Missing containers lose only their local ledger row; a live container
-// is removed only through the runtime's exact-ID ownership-checked operation.
+// UIRemoveRuntimeRecord removes one exact runtime identity. A live container
+// is stopped only when it is still locally owned under this exact key; stale,
+// unlinked, missing, external, or otherwise unowned entries lose only their
+// exact local ledger row.
 func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runtimeID string) (string, error) {
 	if runtimeID == "" {
 		return "", errors.New("runtime ID is required")
@@ -74,9 +75,6 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 	source, err := s.forSource(key.Source)
 	if err != nil {
 		return "", err
-	}
-	if !source.declaredMCPChild(key) {
-		return "", errors.New("runtime record does not link to a declared MCP instance")
 	}
 	rows, err := source.Store.Installations()
 	if err != nil {
@@ -103,13 +101,19 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			continue
 		}
 		if instance.Key != key {
-			return "", fmt.Errorf("refusing to forget runtime %s: it is still observed under a different instance key", runtimeID)
+			if err := source.Store.Remove(*record); err != nil {
+				return "", fmt.Errorf("forget stale runtime record %s: %w", runtimeID, err)
+			}
+			return "Forgot stale runtime record " + runtimeID + "; the observed runtime was left running under its current instance key", nil
 		}
 		if instance.Status == "missing" {
 			continue
 		}
 		if instance.Ownership != "local" {
-			return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+			if err := source.Store.Remove(*record); err != nil {
+				return "", fmt.Errorf("forget runtime record %s: %w", runtimeID, err)
+			}
+			return "Forgot runtime record " + runtimeID + "; runtime ownership is " + instance.Ownership + " and no container was removed", nil
 		}
 		exact, ok := source.Options.Runtime.(interface {
 			StopExact(context.Context, state.Key, string) error
@@ -126,23 +130,6 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 		return "", fmt.Errorf("forget missing runtime %s: %w", runtimeID, err)
 	}
 	return "Forgot exact missing runtime record " + runtimeID + "; no container was removed", nil
-}
-
-func (s *Service) declaredMCPChild(key state.Key) bool {
-	base := key
-	base.MCP = ""
-	base.MCPDefinition = ""
-	for _, p := range s.Source.Catalog {
-		if p.ID != key.Package {
-			continue
-		}
-		for _, definition := range p.MCPDefinitions() {
-			if mcpDefinitionKey(base, p, definition) == key {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {

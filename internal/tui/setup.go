@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -228,25 +229,62 @@ func (m *Model) workspaceMCPRegistered(mcp string) bool {
 	return m.targetHasMCPRegistration(m.workspace.Key, mcp)
 }
 
-const dirtyInputsAgentActionReason = "Save changed inputs before installing or uninstalling agents."
+const dirtyInputsAgentActionReason = "Save changed inputs before installing."
+
+const unsavedInputsAgentActionReason = "Save valid inputs before installing."
+
+func (m *Model) agentAccessInputGuardReason() string {
+	if m.workspace == nil || m.workspace.Preview == nil {
+		return ""
+	}
+	hasEditableInputs := false
+	for _, input := range m.workspace.Preview.Inputs {
+		if input.Editable {
+			hasEditableInputs = true
+			break
+		}
+	}
+	if len(m.workspace.Preview.ValidationIssues) > 0 {
+		return "Inputs need attention: " + strings.Join(m.workspace.Preview.ValidationIssues, "; ")
+	}
+	if hasEditableInputs && !m.workspace.InputsSaved {
+		return unsavedInputsAgentActionReason
+	}
+	if m.hasUnsavedSetupInputs() {
+		return dirtyInputsAgentActionReason
+	}
+	return ""
+}
 
 func (m *Model) hasUnsavedSetupInputs() bool {
 	if m.form == nil || m.workspace == nil || m.workspace.Preview == nil {
 		return false
 	}
+	values := m.form.Values()
 	for _, input := range m.workspace.Preview.Inputs {
-		if input.Editable && m.form.HasUnsavedField(input.Definition.Name) {
-			return true
+		if !input.Editable {
+			continue
 		}
+		// TOML/JSON decoding can represent one typed value with different Go
+		// types. Compare current and saved values after the form's schema
+		// normalization so a persisted integer (for example, a port) is not
+		// treated as a new edit merely because its decoder type changed.
+		current, currentErr := forms.ResolvePartial([]catalog.Input{input.Definition}, values)
+		saved, savedErr := forms.ResolvePartial([]catalog.Input{input.Definition}, map[string]any{input.Definition.Name: input.Value})
+		if currentErr == nil && savedErr == nil && reflect.DeepEqual(current[input.Definition.Name], saved[input.Definition.Name]) {
+			continue
+		}
+		return true
 	}
 	return len(m.form.ResetFields()) > 0
 }
 
 func (m *Model) guardAgentAccessForDirtyInputs() bool {
-	if !m.hasUnsavedSetupInputs() {
+	if reason := m.agentAccessInputGuardReason(); reason == "" {
 		return false
+	} else {
+		m.output = reason
 	}
-	m.output = dirtyInputsAgentActionReason
 	return true
 }
 
@@ -697,9 +735,6 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) uninstallSelectedAgents() tea.Cmd {
-	if m.guardAgentAccessForDirtyInputs() {
-		return nil
-	}
 	if m.workspace == nil || m.workspace.Preview == nil || m.form == nil || m.pendingSetupField == "" {
 		m.output = "Agent selection is unavailable for uninstall."
 		return nil
@@ -709,7 +744,10 @@ func (m *Model) uninstallSelectedAgents() tea.Cmd {
 	for _, id := range selected {
 		remove[id] = true
 	}
-	var remaining []string
+	// An empty, non-nil destination set means uninstall every checked target.
+	// Preserve that distinction from an omitted destination selection, which
+	// the service interprets as the user's configured defaults.
+	remaining := make([]string, 0, len(m.workspace.Preview.Destinations))
 	for _, destination := range m.workspace.Preview.Destinations {
 		if destination.Selected && !remove[destination.ID] {
 			remaining = append(remaining, destination.ID)
@@ -792,12 +830,12 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string) tea.Cmd {
-	if m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionAgentsID && m.guardAgentAccessForDirtyInputs() {
+	uninstallingAgents := m.uninstallingAgents
+	m.uninstallingAgents = false
+	if !uninstallingAgents && m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionAgentsID && m.guardAgentAccessForDirtyInputs() {
 		m.uninstallingAgents = false
 		return nil
 	}
-	uninstallingAgents := m.uninstallingAgents
-	m.uninstallingAgents = false
 	backend, ok := m.backend.(setupBackend)
 	if !ok || m.pendingSetup == nil {
 		m.output = "Unified setup service unavailable"
@@ -924,6 +962,9 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	m.busy = true
 	m.action = "install"
+	if uninstallingAgents {
+		m.action = "uninstall"
+	}
 	m.progressStep = ""
 	m.progressOutput = ""
 	m.progressFrame = 0
@@ -935,7 +976,9 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	setupID := m.setupOperationID
 	ctx := m.ctx
 	request.Inputs = cloneSetupValues(request.Inputs)
-	request.DestinationIDs = append([]string(nil), request.DestinationIDs...)
+	if request.DestinationIDs != nil {
+		request.DestinationIDs = append([]string{}, request.DestinationIDs...)
+	}
 	if len(request.ExternalURLs) > 0 {
 		urls := make(map[string]string, len(request.ExternalURLs))
 		for name, endpoint := range request.ExternalURLs {
@@ -1012,7 +1055,11 @@ func cloneSetupValues(values map[string]any) map[string]any {
 	copyValues := make(map[string]any, len(values))
 	for name, value := range values {
 		if list, ok := value.([]string); ok {
-			copyValues[name] = append([]string(nil), list...)
+			if list == nil {
+				copyValues[name] = []string(nil)
+			} else {
+				copyValues[name] = append([]string{}, list...)
+			}
 		} else {
 			copyValues[name] = value
 		}

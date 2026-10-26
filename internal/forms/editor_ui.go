@@ -204,12 +204,25 @@ func (m *FormModel) setSectionActions(key string, actions ...FormAction) {
 	if m.sectionActions == nil {
 		m.sectionActions = map[string][]FormAction{}
 	}
+	previous := m.sectionActions[key]
+	selectedID := ""
+	if m.sectionActionIndex >= 0 && m.sectionActionIndex < len(previous) {
+		selectedID = previous[m.sectionActionIndex].ID
+	}
 	m.sectionActions[key] = append([]FormAction(nil), actions...)
 	if key == m.currentSectionKey() {
 		if len(actions) == 0 {
 			m.focusedAction = false
 			m.sectionActionIndex = 0
 		} else {
+			if selectedID != "" {
+				for i := range actions {
+					if actions[i].ID == selectedID {
+						m.sectionActionIndex = i
+						break
+					}
+				}
+			}
 			m.sectionActionIndex = min(max(m.sectionActionIndex, 0), len(actions)-1)
 			if len(m.splitFieldIndices(m.sectionIndex)) == 0 {
 				m.focusedAction = true
@@ -2301,22 +2314,13 @@ func (m *FormModel) splitLayout() formLayout {
 	rightFields := []int{-1}
 	rightLineChoices := []int{-1}
 	sectionActions := m.sectionActions[m.currentSectionKey()]
+	actionRows, actionRowFields, actionRowChoices := []string{}, []int{}, []int{}
 	for actionIndex, action := range sectionActions {
-		label := "› [ " + action.Label + " ]"
-		if action.Disabled != "" {
-			label += " · " + action.Disabled
-		}
-		if actionIndex == m.sectionActionIndex && m.area == 1 && m.focusedAction {
-			label = "> [ " + action.Label + " ]"
-			if action.Disabled != "" {
-				label += " · " + action.Disabled
-			}
-		}
-		for _, wrapped := range wrapCellText(label, rightContentWidth) {
-			rightLines = append(rightLines, wrapped)
-			rightFields = append(rightFields, -1)
-			rightLineChoices = append(rightLineChoices, actionIndex)
-		}
+		focused := actionIndex == m.sectionActionIndex && m.area == 1 && m.focusedAction
+		label := sectionActionRow(action, focused, rightContentWidth)
+		actionRows = append(actionRows, label)
+		actionRowFields = append(actionRowFields, -1)
+		actionRowChoices = append(actionRowChoices, actionIndex)
 	}
 	sectionContent := m.sectionContent[m.currentSectionKey()]
 	for _, line := range sectionContent {
@@ -2566,14 +2570,6 @@ func (m *FormModel) splitLayout() formLayout {
 	if len(indices) == 0 && len(sectionContent) > 0 {
 		rightTarget = min(max(0, m.sectionOffset+1), len(rightRows)-1)
 	}
-	if m.focusedAction {
-		for row, actionIndex := range rightRowChoices {
-			if actionIndex == m.sectionActionIndex && rightRowFields[row] < 0 {
-				rightTarget = row
-				break
-			}
-		}
-	}
 	for row, field := range rightRowFields {
 		if m.detailScrolled {
 			break
@@ -2602,14 +2598,28 @@ func (m *FormModel) splitLayout() formLayout {
 	}
 	var splitFields, splitChoices []int
 	rightTotal := len(rightRows)
-	rightScrollable := rightTotal > bodyHeight
+	actionHeight := min(len(actionRows), max(1, bodyHeight/3))
+	contentHeight := max(1, bodyHeight-actionHeight)
+	rightScrollable := rightTotal > contentHeight
 	if m.detailScrolled && len(rightRows) > 1 {
-		detailRows, detailFields, detailChoices := scrollSplitPaneAt(rightRows[1:], rightRowFields[1:], rightRowChoices[1:], m.detailOffset, bodyHeight-1)
+		detailRows, detailFields, detailChoices := scrollSplitPaneAt(rightRows[1:], rightRowFields[1:], rightRowChoices[1:], m.detailOffset, contentHeight-1)
 		rightRows = append([]string{rightRows[0]}, detailRows...)
 		splitFields = append([]int{-1}, detailFields...)
 		splitChoices = append([]int{-1}, detailChoices...)
 	} else {
-		rightRows, splitFields, splitChoices = scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, bodyHeight)
+		rightRows, splitFields, splitChoices = scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, contentHeight)
+	}
+	if actionHeight > 0 {
+		startAction := 0
+		if m.focusedAction && m.sectionActionIndex >= actionHeight {
+			startAction = m.sectionActionIndex - actionHeight + 1
+		}
+		lastStart := max(0, len(actionRows)-actionHeight)
+		startAction = min(startAction, lastStart)
+		endAction := min(len(actionRows), startAction+actionHeight)
+		rightRows = append(rightRows, actionRows[startAction:endAction]...)
+		splitFields = append(splitFields, actionRowFields[startAction:endAction]...)
+		splitChoices = append(splitChoices, actionRowChoices[startAction:endAction]...)
 	}
 	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
@@ -2694,6 +2704,42 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	return formLayout{content: content, visibleFields: indices, footerY: footerY, bodyStart: bodyStart, split: true, splitLeftWidth: leftWidth, splitFields: splitFields, splitChoices: splitChoices, splitSections: splitSections, splitRemoveX: removeX}
+}
+
+func sectionActionRow(action FormAction, focused bool, width int) string {
+	marker := "›"
+	if focused {
+		marker = ">"
+	}
+	if action.Disabled == "" {
+		return ansi.Truncate(marker+" [ "+action.Label+" ]", width, "…")
+	}
+	// Keep a short, actionable reason visible even when the action label is
+	// long. Enter on the disabled row still exposes the complete explanation.
+	reason := conciseActionReason(action.Disabled)
+	reason = ansi.Truncate(reason, max(10, width/2), "…")
+	labelWidth := max(1, width-lipgloss.Width(marker+" [ ")+lipgloss.Width(" ] · ")-lipgloss.Width(reason))
+	label := ansi.Truncate(action.Label, labelWidth, "…")
+	return ansi.Truncate(marker+" [ "+label+" ] · "+reason, width, "…")
+}
+
+func conciseActionReason(reason string) string {
+	switch {
+	case strings.Contains(reason, "Save changed inputs"), strings.Contains(reason, "Save valid inputs"):
+		return "Save inputs first"
+	case strings.Contains(reason, "Inputs need attention"):
+		return "Fix input errors first"
+	case strings.Contains(reason, "Install this capability for an agent"):
+		return "Install for an agent first"
+	case strings.Contains(reason, "Multiple runtime records are linked"):
+		return "Select one runtime record"
+	case strings.Contains(reason, "Runtime observation is stale"):
+		return "Refresh runtime status first"
+	case strings.Contains(reason, "ownership is"):
+		return "Not managed by AACT"
+	default:
+		return reason
+	}
 }
 
 func scrollSplitPane(rows []string, primary, secondary []int, target, height int) ([]string, []int, []int) {

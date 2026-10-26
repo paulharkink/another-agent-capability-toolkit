@@ -1696,8 +1696,9 @@ func (s *Service) removeInstanceConfiguration(ref config.InstanceRef, path strin
 	return nil
 }
 
-// ResetInstanceToPreset removes exact AACT-managed registration rows and saved
-// state for a pack-provided instance without stopping or probing its runtime.
+// ResetInstanceToPreset removes exact AACT-managed registrations and saved
+// state for a pack-provided instance. It removes a runtime only after a fresh
+// observation confirms that exact ID is still locally owned.
 func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) (out viewmodel.OperationResult, err error) {
 	if ctx.Value(instanceOperationLockKey{}) != s.Store {
 		err = s.Store.WithLock(ctx, func() error {
@@ -1719,6 +1720,8 @@ func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) 
 	if err != nil {
 		return out, err
 	}
+	var runtimes []mcp.Instance
+	observedRuntimes := false
 	keys := map[state.Key]bool{key: true}
 	for _, row := range rows {
 		if !sameCapabilityKey(row.Key, key) {
@@ -1726,10 +1729,40 @@ func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) 
 		}
 		keys[row.Key] = true
 		if row.Component == "runtime" {
-			// Forget only AACT's exact observation. Never stop a runtime whose
-			// current ownership cannot be established by this reset action.
-			if err := s.Store.Remove(row); err != nil {
-				return out, err
+			if !observedRuntimes {
+				runtimes, err = s.Options.Runtime.List(ctx)
+				if err != nil {
+					return out, fmt.Errorf("refresh runtime observation before resetting instance: %w", err)
+				}
+				observedRuntimes = true
+			}
+			var observed *mcp.Instance
+			for i := range runtimes {
+				if runtimes[i].ID == row.SourcePath {
+					copy := runtimes[i]
+					observed = &copy
+					break
+				}
+			}
+			if observed != nil && observed.Key != row.Key {
+				return out, fmt.Errorf("refusing to reset runtime %s: observed under a different instance key", row.SourcePath)
+			}
+			if observed != nil && observed.Status != "missing" && observed.Ownership == "local" {
+				exact, ok := s.Options.Runtime.(interface {
+					StopExact(context.Context, state.Key, string) error
+				})
+				if !ok {
+					return out, fmt.Errorf("cannot safely reset runtime %s: runtime does not support exact-ID removal", row.SourcePath)
+				}
+				if err := exact.StopExact(ctx, row.Key, row.SourcePath); err != nil {
+					return out, fmt.Errorf("stop exact locally owned runtime %s before reset: %w", row.SourcePath, err)
+				}
+			} else {
+				// A missing, external, or unknown runtime is never stopped by reset.
+				// Only its exact local ledger metadata is discarded.
+				if err := s.Store.Remove(row); err != nil {
+					return out, err
+				}
 			}
 			out.Changes = append(out.Changes, row)
 			continue

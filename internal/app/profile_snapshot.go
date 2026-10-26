@@ -11,6 +11,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -255,6 +256,62 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 				}
 			}
 			row.MCPs = append(row.MCPs, runtime)
+		}
+		declaredChildren := map[state.Key]bool{}
+		for _, definition := range p.MCPDefinitions() {
+			declaredChildren[mcpDefinitionKey(key, p, definition)] = true
+		}
+		orphanRuntimes := map[state.Key]*viewmodel.RuntimeStatus{}
+		for _, record := range rows {
+			if record.Component != "runtime" || !sameCapabilityKey(record.Key, key) || declaredChildren[record.Key] {
+				continue
+			}
+			runtime := orphanRuntimes[record.Key]
+			if runtime == nil {
+				name := record.Key.MCP
+				if name == "" {
+					name = record.Key.MCPDefinition
+				}
+				runtime = &viewmodel.RuntimeStatus{
+					MCPID: name, Key: record.Key, Status: "missing", Ownership: "unknown",
+					ObservedAt: snapshot.ObservedAt, Stale: runtimeErr != nil,
+					Error:          "This runtime refers to an MCP definition no longer present in the Capability Pack; remove the exact runtime record to recover.",
+					RuntimeRecords: []viewmodel.RuntimeRecord{},
+				}
+				if runtimeErr != nil {
+					runtime.Status = "unavailable"
+					runtime.Error = "Runtime ownership could not be refreshed; retry after Docker is available."
+				}
+				orphanRuntimes[record.Key] = runtime
+			}
+			observed := false
+			for _, instance := range runtimes {
+				if instance.ID != record.SourcePath {
+					continue
+				}
+				observed = true
+				runtime.Status = instance.Status
+				runtime.Ownership = instance.Ownership
+				runtime.RuntimeRecords = append(runtime.RuntimeRecords, viewmodel.RuntimeRecord{
+					ID: instance.ID, Name: instance.Name, Status: instance.Status, Ownership: instance.Ownership,
+					URL: instance.URL, LastAction: instance.LastAction, LastActionAt: instance.LastActionAt,
+				})
+				break
+			}
+			if !observed && runtimeErr == nil {
+				runtime.RuntimeRecords = append(runtime.RuntimeRecords, viewmodel.RuntimeRecord{ID: record.SourcePath, Status: "missing", Ownership: "unknown"})
+			}
+		}
+		orphanKeys := make([]state.Key, 0, len(orphanRuntimes))
+		for child := range orphanRuntimes {
+			orphanKeys = append(orphanKeys, child)
+		}
+		sort.Slice(orphanKeys, func(i, j int) bool {
+			left, right := orphanKeys[i], orphanKeys[j]
+			return strings.Join([]string{left.Source, left.Package, left.Environment, left.Target, left.MCP, left.MCPDefinition}, "\x00") < strings.Join([]string{right.Source, right.Package, right.Environment, right.Target, right.MCP, right.MCPDefinition}, "\x00")
+		})
+		for _, child := range orphanKeys {
+			row.MCPs = append(row.MCPs, *orphanRuntimes[child])
 		}
 		snapshot.Instances = append(snapshot.Instances, row)
 		snapshot.Profiles = append(snapshot.Profiles, row)

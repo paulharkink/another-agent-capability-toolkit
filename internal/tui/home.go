@@ -100,7 +100,7 @@ func (m *Model) contextRows() []contextRow {
 			}
 			for _, child := range p.Configuration.MCPs {
 				childID := "mcp:" + child.Key.ID()
-				label := "  MCP · " + child.MCPID + " · " + child.Status
+				label := "  MCP runtime · " + child.MCPID + " · " + child.Status
 				if auth := authenticationDisplayStatus(child.AuthenticationStatus); auth != "" {
 					label += " · " + auth
 				}
@@ -1182,7 +1182,7 @@ func (m *Model) selectedDetail() string {
 				if child := m.contextMCP(row.ParentKey, row.MCPID); child != nil {
 					for _, record := range child.RuntimeRecords {
 						if record.ID == row.RuntimeID {
-							lines := []string{c.Name + " · MCP " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime ID: " + record.ID, "Container: " + nonempty(record.Name, "unknown"), "Status: " + record.Status, "Ownership: " + record.Ownership}
+							lines := []string{c.Name + " · Runtime for MCP " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime ID: " + record.ID, "Container: " + nonempty(record.Name, "unknown"), "Status: " + record.Status, "Ownership: " + record.Ownership}
 							if record.URL != "" {
 								lines = append(lines, "Endpoint: "+record.URL)
 							}
@@ -1223,7 +1223,7 @@ func (m *Model) selectedDetail() string {
 		if m.instanceMode() {
 			detail += fmt.Sprintf(" · %d instances", len(m.profiles()))
 		} else {
-			detail += fmt.Sprintf(" · %d related MCP instances", len(m.profiles()))
+			detail += fmt.Sprintf(" · %d MCP runtimes", len(m.profiles()))
 		}
 	}
 	status, _ := m.installationDetails(c)
@@ -1314,7 +1314,7 @@ func (m *Model) homeView() tea.View {
 			}
 		}
 		if c.MCP && c.CatalogIndex >= 0 {
-			contextDisplay = append(contextDisplay, displayRow{text: "Related MCP instances", contextIndex: -1, kind: "heading"})
+			contextDisplay = append(contextDisplay, displayRow{text: "MCP runtimes", contextIndex: -1, kind: "heading"})
 			if len(ps) == 0 {
 				contextDisplay = append(contextDisplay, displayRow{text: "No instances yet — configure/install to create one", contextIndex: -1, kind: "empty"})
 			} else {
@@ -1326,7 +1326,7 @@ func (m *Model) homeView() tea.View {
 					if target == "" {
 						target = "default"
 					}
-					contextDisplay = append(contextDisplay, displayRow{text: environment + " / " + target + " · MCP · " + p.Name + " · " + p.Status, contextIndex: i + 2, kind: "action"})
+					contextDisplay = append(contextDisplay, displayRow{text: environment + " / " + target + " · Runtime · " + p.Name + " · " + p.Status, contextIndex: i + 2, kind: "action"})
 				}
 			}
 		}
