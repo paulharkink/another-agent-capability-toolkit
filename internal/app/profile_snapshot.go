@@ -60,6 +60,24 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	if err != nil {
 		return snapshot, err
 	}
+	// Runtime.List includes ledger-backed missing rows. Reconciliation may have
+	// just forgotten a successfully stopped row after fresh Docker observation;
+	// omit that now-unlinked synthetic row from this same snapshot as well.
+	remainingRuntimeRows := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if row.Component == "runtime" {
+			remainingRuntimeRows[row.Key.ID()+"\x00"+row.SourcePath] = struct{}{}
+		}
+	}
+	filteredRuntimes := runtimes[:0]
+	for _, runtime := range runtimes {
+		_, hasLedgerRow := remainingRuntimeRows[runtime.Key.ID()+"\x00"+runtime.ID]
+		if runtime.Status == "missing" && runtime.LastAction == "stop" && !hasLedgerRow {
+			continue
+		}
+		filteredRuntimes = append(filteredRuntimes, runtime)
+	}
+	runtimes = filteredRuntimes
 	registry := s.adapterRegistry()
 	for _, instance := range configuredInstances {
 		row := viewmodel.CapabilityInstance{Ref: instance.Ref, Origin: "local", ConfigStatus: "configured", Components: []viewmodel.ComponentStatus{}, MCPs: []viewmodel.RuntimeStatus{}}

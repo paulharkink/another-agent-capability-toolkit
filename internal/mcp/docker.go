@@ -794,12 +794,22 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 		return err
 	}
 	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
-	if e == nil {
-		if _, err := r.recordAction(k, observed, "stop"); err != nil {
-			return err
+	if e != nil {
+		return e
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return fmt.Errorf("runtime %s was removed but its ledger could not be read: %w", observed.ID, err)
+	}
+	for _, row := range rows {
+		if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.SourcePath != observed.ID {
+			continue
+		}
+		if err := r.Store.Remove(row); err != nil {
+			return fmt.Errorf("runtime %s was removed but its ledger record could not be cleared: %w", observed.ID, err)
 		}
 	}
-	return e
+	return nil
 }
 
 // StopExact removes one container only after verifying its exact state key,

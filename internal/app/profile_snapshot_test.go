@@ -203,6 +203,46 @@ func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t
 	}
 }
 
+func TestCapabilityInstanceSnapshotForgetsStoppedMissingRuntimeBesideLiveReplacement(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCP = nil
+	p.MCPs = []catalog.MCP{{Name: "grafana-inspector", Image: "fixture", Transport: "streamable-http"}}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childKey := mcpDefinitionKey(key, *p, p.MCPs[0])
+	for _, row := range []state.Installation{
+		{Key: childKey, AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "stopped-old-id", Mode: "docker", LastAction: "stop"},
+		{Key: childKey, AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "current-live-id", Mode: "docker", LastAction: "start"},
+	} {
+		if err := s.Store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{
+		{Key: childKey, ID: "stopped-old-id", Name: "aact-grafana", Status: "missing", Ownership: "local", LastAction: "stop"},
+		{Key: childKey, ID: "current-live-id", Name: "aact-grafana", Status: "running", Ownership: "local", URL: "http://localhost:9913/mcp", LastAction: "start"},
+	}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Instances) != 1 || len(snapshot.Instances[0].MCPs) != 1 {
+		t.Fatalf("unexpected CapabilityInstance/MCP snapshot: %+v", snapshot.Instances)
+	}
+	runtime := snapshot.Instances[0].MCPs[0]
+	if runtime.Status != "running" || runtime.Error != "" || len(runtime.RuntimeRecords) != 1 || runtime.RuntimeRecords[0].ID != "current-live-id" {
+		t.Fatalf("stopped missing history poisoned the live MCP runtime: %+v", runtime)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "current-live-id" {
+		t.Fatalf("stopped missing row was not forgotten without changing the live runtime row: %+v, %v", rows, err)
+	}
+}
+
 func TestCapabilityInstanceSnapshotDoesNotCrossLinkRuntimeBySharedURL(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
