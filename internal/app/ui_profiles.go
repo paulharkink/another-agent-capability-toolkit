@@ -93,9 +93,6 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			break
 		}
 	}
-	if record == nil {
-		return "", errors.New("exact runtime ledger record was not found")
-	}
 	instances, err := source.Options.Runtime.List(ctx)
 	if err != nil {
 		return "", fmt.Errorf("refresh runtime observation before removing record: %w", err)
@@ -105,6 +102,9 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			continue
 		}
 		if instance.Key != key {
+			if record == nil {
+				return "", errors.New("runtime ID is observed under a different MCP key; refusing to remove it")
+			}
 			if err := source.Store.Remove(*record); err != nil {
 				return "", fmt.Errorf("forget stale runtime record %s: %w", runtimeID, err)
 			}
@@ -114,6 +114,9 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			continue
 		}
 		if instance.Ownership != "local" {
+			if record == nil {
+				return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+			}
 			if err := source.Store.Remove(*record); err != nil {
 				return "", fmt.Errorf("forget runtime record %s: %w", runtimeID, err)
 			}
@@ -129,6 +132,9 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			return "", fmt.Errorf("remove exact runtime %s: %w", runtimeID, err)
 		}
 		return "Removed exact AACT-owned runtime " + runtimeID, nil
+	}
+	if record == nil {
+		return "", errors.New("exact runtime ID is no longer observed; refresh before removing it")
 	}
 	if err := source.Store.Remove(*record); err != nil {
 		return "", fmt.Errorf("forget missing runtime %s: %w", runtimeID, err)

@@ -803,7 +803,9 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 }
 
 // StopExact removes one container only after verifying its exact state key,
-// locally recorded container ID, and AACT ownership. It is intentionally
+// exact container ID, and AACT ownership. A matching local ledger row is
+// removed when present, but is not required when Docker labels prove ownership.
+// It is intentionally
 // separate from Stop, whose key-based lookup refuses ambiguous instances.
 func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if id == "" {
@@ -813,14 +815,17 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if err != nil {
 		return err
 	}
-	record, ok := runtimeRecord(rows, k, id)
-	if !ok || record.AgentID != "docker" {
-		return errors.New("exact runtime ID is not recorded for this MCP")
+	record, recorded := runtimeRecord(rows, k, id)
+	if recorded && record.AgentID != "docker" {
+		return errors.New("exact runtime ID has a non-Docker ledger record")
 	}
 	info, err := r.inspect(ctx, id)
 	if err != nil {
 		if isDockerNotFound(err) {
-			return r.Store.Remove(record)
+			if recorded {
+				return r.Store.Remove(record)
+			}
+			return nil
 		}
 		return err
 	}
@@ -838,8 +843,10 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
 		return err
 	}
-	if err := r.Store.Remove(record); err != nil {
-		return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+	if recorded {
+		if err := r.Store.Remove(record); err != nil {
+			return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+		}
 	}
 	return nil
 }

@@ -149,6 +149,50 @@ func TestUIRemoveRuntimeRecordDeletesOnlyExactLocallyOwnedRecord(t *testing.T) {
 	}
 }
 
+func TestUIRemoveDiscoveredLocallyOwnedRuntimeWithoutLedger(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
+	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "discovered-container", Name: "aact-demo-test-cluster", Status: "exited", Ownership: "local",
+	}}}, store: store}
+	svc.Options.Runtime = runtime
+
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "discovered-container"); err != nil {
+		t.Fatalf("locally owned runtime discovered without a ledger row was not removable: %v", err)
+	}
+	if !reflect.DeepEqual(runtime.removedIDs, []string{"discovered-container"}) {
+		t.Fatalf("removal did not target the exact discovered runtime ID: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("removing an unrecorded runtime changed unrelated ledger rows: %+v, %v", remaining, err)
+	}
+}
+
+func TestUIRemoveDiscoveredRuntimeWithoutLedgerRefusesForeignOwner(t *testing.T) {
+	svc, _, store := fixture(t)
+	svc.Source.Catalog[0].MCP = &catalog.MCP{Name: "demo"}
+	parent := state.Key{Source: "fixture", Package: "demo", Target: "test-cluster"}
+	child := mcpDefinitionKey(parent, svc.Source.Catalog[0], *svc.Source.Catalog[0].MCP)
+	runtime := &exactProfileRuntime{profileRuntime: profileRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "foreign-container", Name: "aact-demo-test-cluster", Status: "running", Ownership: "other-aact",
+	}}}, store: store}
+	svc.Options.Runtime = runtime
+
+	if _, err := svc.UIRemoveRuntimeRecord(context.Background(), child, "foreign-container"); err == nil {
+		t.Fatal("runtime without a ledger row was removed despite foreign ownership")
+	}
+	if len(runtime.removedIDs) != 0 {
+		t.Fatalf("foreign runtime was passed to exact removal: %v", runtime.removedIDs)
+	}
+	remaining, err := store.Installations()
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("refusing a foreign runtime created or changed ledger rows: %+v, %v", remaining, err)
+	}
+}
+
 func TestUIRemoveRuntimeRecordRejectsInactivePackEvenWhenRegistered(t *testing.T) {
 	svc, _, store := fixture(t)
 	root := filepath.Join(t.TempDir(), "remembered")

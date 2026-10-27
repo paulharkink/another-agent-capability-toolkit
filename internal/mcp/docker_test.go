@@ -153,6 +153,40 @@ func TestStopExactRefusesUnknownOwnerWithoutRemovingContainer(t *testing.T) {
 		t.Fatalf("unknown owner caused Docker mutation: %v", f.calls)
 	}
 }
+
+func TestStopExactRemovesLocallyOwnedContainerWithoutLedger(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "grafana"
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	container := dockerInfo{ID: "discovered-id", Name: "/aact-grafana", Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, spec)}, State: dockerState{Running: false, Status: "exited"}}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			if args[2] != "discovered-id" {
+				t.Fatalf("inspect targeted wrong runtime ID: %v", args)
+			}
+			return json.Marshal([]dockerInfo{container})
+		case "rm":
+			if !reflect.DeepEqual(args[2:], []string{"--force", "discovered-id"}) {
+				t.Fatalf("removal did not target exact ID: %v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected Docker action: %v", args)
+			return nil, nil
+		}
+	}
+	if err := r.StopExact(context.Background(), key, "discovered-id"); err != nil {
+		t.Fatalf("locally owned runtime without a ledger row was not removable: %v", err)
+	}
+	if len(f.calls) != 2 || f.calls[0][1] != "inspect" || f.calls[1][1] != "rm" {
+		t.Fatalf("exact removal made unexpected Docker calls: %v", f.calls)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("removing an unrecorded runtime changed ledger rows: %+v, %v", rows, err)
+	}
+}
 func testRuntime(t *testing.T) (*Runtime, *fakeExec, state.Key) {
 	t.Helper()
 	s, e := state.Open(t.TempDir())
