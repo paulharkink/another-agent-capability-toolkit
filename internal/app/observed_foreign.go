@@ -16,6 +16,9 @@ import (
 // from a fresh Docker observation. It deliberately does not consult local
 // instance files, answer files, or private authentication state.
 func (s *Service) observedForeignInstall(ctx context.Context, p catalog.Package, target, environment string) (state.Key, map[string]mcp.Instance, bool, error) {
+	if !p.HasMCP() {
+		return state.Key{}, nil, false, nil
+	}
 	parent, children, found, err := s.observedForeignParent(ctx, s.Source.ID, p.ID, target, environment)
 	if err != nil || !found {
 		return parent, nil, found, err

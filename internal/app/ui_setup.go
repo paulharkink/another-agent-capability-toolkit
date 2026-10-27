@@ -94,6 +94,9 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	if err != nil {
 		return viewmodel.SetupPreview{}, err
 	}
+	if !p.HasMCP() {
+		return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
+	}
 	target := q.Target
 	if target == "" {
 		target = q.Ref.Name

@@ -215,6 +215,13 @@ const foreignRuntimeManagementReason = "This Capability Instance is managed by a
 // Agent-only installation deliberately does not use this guard: it changes
 // only this installation's agent bindings and never the observed runtime.
 func (s *Service) rejectForeignRuntimeMutation(ctx context.Context, key state.Key) error {
+	p, err := s.packageByID(key.Package)
+	if err != nil {
+		return err
+	}
+	if !p.HasMCP() {
+		return nil
+	}
 	instances, err := s.Options.Runtime.List(ctx)
 	if err != nil {
 		// A failed refresh must not erase a previously observed foreign owner.
