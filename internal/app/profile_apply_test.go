@@ -38,6 +38,7 @@ type profileAdapter struct {
 	mcpRequests    []agents.MCPRequest
 	skillRequests  []agents.SkillRequest
 	observe        func(agents.ObservationRequest) agents.Observation
+	observeErr     error
 }
 
 func (a *profileAdapter) ID() string   { return "test-agent" }
@@ -50,9 +51,9 @@ func (a *profileAdapter) Detect(context.Context, agents.Scope) (agents.Detection
 }
 func (a *profileAdapter) Observe(_ context.Context, _ agents.Scope, request agents.ObservationRequest) (agents.Observation, error) {
 	if a.observe != nil {
-		return a.observe(request), nil
+		return a.observe(request), a.observeErr
 	}
-	return agents.Observation{}, nil
+	return agents.Observation{}, a.observeErr
 }
 func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installation, error) {
 	if a.inspect != nil {

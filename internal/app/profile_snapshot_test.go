@@ -119,10 +119,11 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 	definition := p.MCPDefinitions()[0]
 	child := mcpDefinitionKey(parent, p, definition)
 	endpoint := "http://localhost:18770/mcp"
-	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
+	runtime := &snapshotRuntime{instances: []mcp.Instance{{
 		Key: child, ID: "foreign-live", Name: "aact-foreign", Status: "running", Ownership: "other-aact",
 		RegistrationName: "alpha-remote", URL: endpoint,
 	}}}
+	s.Options.Runtime = runtime
 	managedSkill := state.Installation{Key: parent, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: filepath.Join(adapter.home, "skills", "one"), Mode: "symlink"}
 	managedMCP := state.Installation{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "mcp", Destination: filepath.Join(adapter.home, "config.toml"), RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Mode: "registration"}
 	for _, row := range []state.Installation{managedSkill, managedMCP} {
@@ -130,16 +131,22 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 			t.Fatal(err)
 		}
 	}
-	observedRequest := false
+	observedRequests := 0
 	adapter.observe = func(request agents.ObservationRequest) agents.Observation {
 		if request.Key != parent {
 			return agents.Observation{}
 		}
+		if !request.IncludeInventory {
+			t.Errorf("foreign observation must inspect current native agent inventory: %+v", request)
+		}
+		observedRequests++
+		if len(request.Managed) == 0 {
+			return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}}
+		}
 		if len(request.Managed) != 2 {
 			t.Errorf("foreign observation used the wrong local binding scope: managed=%+v", request.Managed)
 		}
-		observedRequest = true
-		return agents.Observation{Components: []agents.ComponentObservation{
+		return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}, Components: []agents.ComponentObservation{
 			{Kind: "skill", Name: "one", Path: managedSkill.Destination, Status: "installed", Managed: true},
 			{Kind: "mcp", Name: "alpha-remote", RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Status: "installed", Managed: true},
 		}}
@@ -168,7 +175,7 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 	if len(observed.Components) != 2 {
 		t.Fatalf("Windows-owned agent observations were omitted from the observed parent: %+v", observed.Components)
 	}
-	if !observedRequest {
+	if observedRequests != 1 {
 		t.Fatal("foreign parent did not observe this installation's exact-key agent bindings")
 	}
 	wantComponents := map[string]bool{"skill:one:installed": false, "mcp:alpha:installed": false}
@@ -189,6 +196,76 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 	}
 	if preview.InstanceOrigin != "observed" || len(preview.Inputs) != 0 || preview.Key != parent {
 		t.Fatalf("foreign setup view exposed local values or lost observed identity: %+v", preview)
+	}
+
+	for _, row := range []state.Installation{managedSkill, managedMCP} {
+		if err := s.Store.Remove(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil {
+		t.Fatalf("Docker-observed parent disappeared after local bindings were removed: %+v", snapshot.Instances)
+	}
+	if observedRequests != 2 {
+		t.Fatalf("fresh agent inventory was not observed after local bindings disappeared: requests=%d", observedRequests)
+	}
+	if len(observed.Components) == 0 {
+		t.Fatalf("known empty native binding inventory must project absent components, not Unknown: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.Status != "absent" {
+			t.Fatalf("empty successful inventory should project absent component status: %+v", observed.Components)
+		}
+	}
+	adapter.observeErr = fmt.Errorf("native agent inventory unavailable")
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 {
+		t.Fatalf("failed inventory observation should preserve an explicit unknown component: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.Status != "unavailable" {
+			t.Fatalf("failed inventory observation must not be flattened to absence: %+v", observed.Components)
+		}
+	}
+	adapter.observeErr = nil
+	adapter.observe = func(agents.ObservationRequest) agents.Observation {
+		return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}}
+	}
+	runtime.instances[0].RegistrationName = ""
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 || observed.Components[0].Status != "unavailable" {
+		t.Fatalf("runtime without exact registration metadata must remain unknown, not absent: %+v", observed)
 	}
 }
 

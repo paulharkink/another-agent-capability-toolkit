@@ -355,7 +355,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	})
 	for _, key := range foreignKeys {
 		row := observedForeignCapabilityInstance(p.ID, key, foreignParents[key], p, snapshot.ObservedAt)
-		row.Components, err = s.observedForeignAgentComponents(ctx, p, key, rows, registry)
+		row.Components, err = s.observedForeignAgentComponents(ctx, p, key, foreignParents[key], rows, registry)
 		if err != nil {
 			snapshot.Errors = append(snapshot.Errors, err.Error())
 		}
@@ -369,7 +369,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 // observations onto a Docker-discovered foreign parent. It reads only local
 // installation rows and the active Pack definitions; it never loads the
 // foreign instance's inputs, answers, or generated files.
-func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.Package, parent state.Key, rows []state.Installation, registry AdapterProvider) ([]viewmodel.ComponentStatus, error) {
+func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.Package, parent state.Key, runtimes []mcp.Instance, rows []state.Installation, registry AdapterProvider) ([]viewmodel.ComponentStatus, error) {
 	managedByAgent := map[string][]state.Installation{}
 	for _, row := range rows {
 		if !sameCapabilityKey(row.Key, parent) || row.Component == "runtime" || row.AgentID == "" {
@@ -387,6 +387,9 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 	sort.Strings(agentIDs)
 	components := []viewmodel.ComponentStatus{}
 	errorsFound := []string{}
+	observations := map[string]agents.Observation{}
+	observeErrors := map[string]error{}
+	componentSeen := map[string]bool{}
 	for _, id := range agentIDs {
 		managed := managedByAgent[id]
 		kind := id
@@ -406,13 +409,16 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 		adapter, adapterErr := registry.Adapter(kind)
 		var observation agents.Observation
 		if adapterErr == nil {
-			observation, adapterErr = adapter.Observe(ctx, scope, agents.ObservationRequest{Key: parent, Managed: managed})
+			observation, adapterErr = adapter.Observe(ctx, scope, agents.ObservationRequest{Key: parent, Managed: managed, IncludeInventory: true})
+			observations[id] = observation
+			observeErrors[id] = adapterErr
 		}
 		if adapterErr != nil {
 			errorsFound = append(errorsFound, id+": "+adapterErr.Error())
 		}
 		for _, row := range managed {
 			name := foreignAgentComponentName(p, parent, row)
+			componentSeen[foreignObservedComponentID(id, row.Component, name)] = true
 			status := viewmodel.ComponentStatus{AgentID: id, Kind: row.Component, Name: name, Status: "absent"}
 			if adapterErr != nil {
 				status.Status = "unavailable"
@@ -433,10 +439,92 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 			errorsFound = append(errorsFound, id+": "+message)
 		}
 	}
+	// A removed local installation row cannot prove that a native agent binding
+	// is absent. Inspect each adapter's current inventory against the exact
+	// running Docker child identity so the projected parent can report known
+	// absence after Uninstall, while preserving unavailable observations as
+	// Unknown in the L2 summary.
+	for _, adapter := range registry.Adapters() {
+		if !adapter.Features().MCPs {
+			continue
+		}
+		id := adapter.ID()
+		if _, ok := observations[id]; !ok {
+			observation, observeErr := adapter.Observe(ctx, s.agentScope(id), agents.ObservationRequest{
+				Key: parent, IncludeInventory: true,
+			})
+			observations[id] = observation
+			observeErrors[id] = observeErr
+			if observeErr != nil {
+				errorsFound = append(errorsFound, id+": "+observeErr.Error())
+			}
+			for _, message := range observation.Errors {
+				errorsFound = append(errorsFound, id+": "+message)
+			}
+		}
+		observation := observations[id]
+		observeErr := observeErrors[id]
+		for _, definition := range p.MCPDefinitions() {
+			childKey := mcpDefinitionKey(parent, p, definition)
+			var runtime *mcp.Instance
+			for i := range runtimes {
+				if runtimes[i].Key == childKey {
+					runtime = &runtimes[i]
+					break
+				}
+			}
+			if runtime == nil {
+				continue
+			}
+			componentID := foreignObservedComponentID(id, "mcp", definition.Name)
+			if componentSeen[componentID] {
+				continue
+			}
+			status := viewmodel.ComponentStatus{AgentID: id, Kind: "mcp", Name: definition.Name, Status: "absent"}
+			if runtime.RegistrationName == "" || runtime.URL == "" {
+				status.Status = "unavailable"
+				status.Error = "Observed runtime is missing its agent registration name or endpoint"
+				components = append(components, status)
+				componentSeen[componentID] = true
+				continue
+			}
+			matchedName := false
+			for _, candidate := range observation.Components {
+				if candidate.Kind != "mcp" || candidate.RegistrationName != runtime.RegistrationName && candidate.Name != runtime.RegistrationName {
+					continue
+				}
+				matchedName = true
+				status.Status = candidate.Status
+				status.Error = candidate.Error
+				status.Managed = candidate.Managed
+				if candidate.URL != runtime.URL {
+					status.Status = "modified"
+					status.Error = "Agent registration endpoint differs from the observed runtime"
+				}
+				break
+			}
+			if !matchedName && (observeErr != nil || len(observation.Errors) > 0 || observation.Detection.State == "unverified" || observation.Detection.State == "") {
+				status.Status = "unavailable"
+				if observeErr != nil {
+					status.Error = observeErr.Error()
+				} else if len(observation.Errors) > 0 {
+					status.Error = strings.Join(observation.Errors, "; ")
+				} else {
+					status.Error = observation.Detection.Reason
+				}
+			}
+			components = append(components, status)
+			componentSeen[componentID] = true
+		}
+	}
 	if len(errorsFound) > 0 {
 		return components, fmt.Errorf("observed agent components: %s", strings.Join(errorsFound, "; "))
 	}
 	return components, nil
+}
+
+func foreignObservedComponentID(agentID, kind, name string) string {
+	return agentID + "\x00" + kind + "\x00" + name
 }
 
 func observedForeignAgentComponentMatches(row state.Installation, observed agents.ComponentObservation) bool {
