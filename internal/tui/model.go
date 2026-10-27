@@ -467,7 +467,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.form != nil && m.pendingSetup != nil {
 				return m, m.uninstallSelectedAgents()
 			}
-			m.output = "Uninstall is unavailable until the agent selection is loaded."
+			m.output = "Agent destinations have not been loaded; reopen Agent Access to load them before uninstalling."
 			return m, nil
 		}
 	}
@@ -524,7 +524,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
 				profile := m.instanceForMCPName(parts[1])
-				if profile == nil && m.workspace.Instance != nil {
+				if profile == nil && len(m.workspace.Preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 					parent := *m.workspace.Instance
 					profile = &parent
 				}
@@ -532,16 +532,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if profile != nil {
 					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
-				guardAction := "s"
-				if parts[0] == "stop" {
-					guardAction = "x"
+				guardAction := "x"
+				if parts[0] == "start" {
+					guardAction = "s"
 				}
-				if reason := m.instanceActionReason(row, guardAction); reason != "" {
+				reason := m.instanceActionReason(row, guardAction)
+				if parts[0] == "start" {
+					reason = m.runtimeStartDisabledReason(parts[1], row)
+				}
+				if reason != "" {
 					m.output = reason
-					return m, nil
-				}
-				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(parts[1]) || m.hasUnsavedSetupInputs()) {
-					m.output = "Save inputs and install this capability for an agent before starting the runtime."
 					return m, nil
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
@@ -936,6 +936,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.retryOperation = nil
 		if m.workspace != nil && m.workspace.InstanceRef.CapabilityID != "" {
 			m.workspace.Key = msg.preview.Key
+			// The initial request key can omit the environment. The resolved
+			// preview is authoritative; refresh record-derived gates after adopting
+			// its complete key so Agent access and Runtime show the same state.
+			m.workspace.Installed = m.targetHasInstallRecord(msg.preview.Key)
+			m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(msg.preview.Key)
 		}
 		if m.workspace != nil && m.workspace.SectionID == sectionInputsID && msg.preview.Configured {
 			m.workspace.Section = "Agent access"

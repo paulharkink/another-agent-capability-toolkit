@@ -753,7 +753,7 @@ func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) 
 		t.Fatalf("keyboard did not select Runtime: %q", m.form.SectionID())
 	}
 	view := m.form.View().Content
-	for _, want := range []string{"Start plain", "Inputs: Not saved", "Agent install: Not installed", "Save inputs first"} {
+	for _, want := range []string{"Start plain", "Inputs: Not saved", "Agent install: Not installed", "Complete inputs first"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Runtime stage lacks gated Start fact %q:\n%s", want, view)
 		}
@@ -762,8 +762,8 @@ func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) 
 	if cmd != nil {
 		t.Fatal("runtime start was issued before inputs and agent installation")
 	}
-	if !strings.Contains(m.output, "Save inputs and install this capability for an agent before starting the runtime.") {
-		t.Fatalf("missing actionable gate message: %q", m.output)
+	if !strings.Contains(m.output, "Save valid inputs first") {
+		t.Fatalf("missing specific unsaved-input blocker: %q", m.output)
 	}
 	save := m.saveSetupInputs(m.form.Values())
 	if save == nil {
@@ -775,8 +775,8 @@ func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) 
 		t.Fatal("Inputs Save incorrectly marked the agent installed")
 	}
 	_, cmd = m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
-	if cmd != nil || !strings.Contains(m.output, "Save inputs and install this capability for an agent before starting the runtime.") {
-		t.Fatalf("Start was not still gated after Inputs Save but before agent install: cmd=%t output=%q", cmd != nil, m.output)
+	if cmd != nil || !strings.Contains(m.output, "Install this capability for an agent first") {
+		t.Fatalf("Start did not identify the missing agent registration after Inputs Save: cmd=%t output=%q", cmd != nil, m.output)
 	}
 	backend.capabilitySnapshot = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
 		Key:        m.workspace.Key,
@@ -840,7 +840,7 @@ func TestDirtyInputsBlockAgentInstallAndUninstallUntilSaved(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.form.SelectSectionID(sectionAgentsID)
 	view := ansi.Strip(m.form.View().Content)
-	if !strings.Contains(view, "Save inputs first") {
+	if !strings.Contains(view, "Save changes first") {
 		t.Fatalf("Agent Access did not explain its disabled state while Inputs are dirty:\n%s", view)
 	}
 	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
@@ -910,14 +910,14 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
-	if !strings.Contains(m.form.View().Content, "Save inputs") {
+	if !strings.Contains(m.form.View().Content, "Save changes first") {
 		t.Fatalf("Runtime did not show the changed-input gate:\n%s", m.form.View().Content)
 	}
 	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
 	if cmd != nil || backend.runtimeAction != "" {
 		t.Fatalf("Start ran with an unsaved input draft: cmd=%t action=%q output=%q", cmd != nil, backend.runtimeAction, m.output)
 	}
-	if !strings.Contains(m.output, "Save inputs") {
+	if !strings.Contains(m.output, "Save changed inputs first") {
 		t.Fatalf("Start did not explain how to clear its gate: %q", m.output)
 	}
 	if !m.form.HasUnsavedChanges() {

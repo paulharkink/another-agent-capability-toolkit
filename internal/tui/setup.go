@@ -89,7 +89,7 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	}
 	backend, ok := m.backend.(setupBackend)
 	if !ok {
-		m.output = "Unified setup service unavailable"
+		m.output = "The active AACT backend does not support setup operations"
 		return nil
 	}
 	if selectedSection == "Overview" {
@@ -858,7 +858,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	backend, ok := m.backend.(setupBackend)
 	if !ok || m.pendingSetup == nil {
-		m.output = "Unified setup service unavailable"
+		m.output = "The active AACT backend does not support setup operations"
 		return nil
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Instance != nil && workspace.Instance.Ownership != "local" && strings.TrimSpace(workspace.Instance.URL) == "" {

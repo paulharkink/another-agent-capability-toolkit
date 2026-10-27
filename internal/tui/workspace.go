@@ -118,7 +118,7 @@ func (m *Model) refreshObservedWorkspaceFacts() {
 	if profile.URL == "" {
 		checkDisabled = "No MCP endpoint is configured"
 	} else if _, ok := m.backend.(connectionBackend); !ok {
-		checkDisabled = "Connection diagnostics are unavailable"
+		checkDisabled = "The active AACT backend does not provide connection checks"
 	}
 	m.form.SetSectionActionsID(sectionEndpointID, forms.FormAction{ID: "check-connection", Label: "Check connection", Disabled: checkDisabled})
 	m.form.SetSectionContentID(sectionInformationID, []string{
@@ -640,7 +640,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 			runtime = append(runtime, runtimeLine)
 			startProfile := profile
-			if startProfile == nil && m.workspace.Instance != nil {
+			if startProfile == nil && len(preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 				parent := *m.workspace.Instance
 				startProfile = &parent
 			}
@@ -683,7 +683,11 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 					disabled := ""
 					switch {
 					case child.Stale:
-						disabled = "Runtime observation is stale; refresh before deleting"
+						if strings.TrimSpace(child.Error) != "" {
+							disabled = "Runtime observation failed: " + strings.TrimSpace(child.Error)
+						} else {
+							disabled = "Runtime observation is stale; refresh before deleting"
+						}
 					case record.Status == "missing":
 						deleteLabel = "Forget missing runtime " + record.ID
 					case record.Ownership != "local":
@@ -729,7 +733,11 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				label := "Forget runtime record " + record.ID
 				disabled := ""
 				if orphan.Stale {
-					disabled = "Runtime observation is stale; refresh before removing this record"
+					if strings.TrimSpace(orphan.Error) != "" {
+						disabled = "Runtime observation failed: " + strings.TrimSpace(orphan.Error)
+					} else {
+						disabled = "Runtime observation is stale; refresh before removing this record"
+					}
 				} else if record.Status != "missing" && record.Ownership == "local" {
 					label = "Delete runtime " + record.ID
 				} else if record.Status == "missing" {
@@ -868,6 +876,15 @@ func (m *Model) runtimeStartDisabledReason(mcpName string, row InstanceRow) stri
 	if m.workspace == nil || m.workspace.Preview == nil {
 		return m.instanceActionReason(row, "s")
 	}
+	parent := m.workspace.Instance
+	if parent == nil {
+		parent = exactInstanceSnapshot(m.instanceSnapshot, m.workspace.Key)
+	}
+	if row.Instance == nil && parent != nil && parent.Ownership != "local" {
+		// Parent ownership does not make an unobserved named child startable,
+		// but it does explain why AACT cannot safely manage that child.
+		return runtimeStartBlocker(parent, "")
+	}
 	preview := m.workspace.Preview
 	reason := m.instanceActionReason(row, "s")
 	switch {
@@ -927,7 +944,7 @@ func (m *Model) refreshRuntimeActionAvailability() {
 		row := InstanceRow{}
 		if profile != nil {
 			row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
-		} else if m.workspace.Instance != nil {
+		} else if len(m.workspace.Preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 			parent := *m.workspace.Instance
 			row = InstanceRow{Key: parent.Key, Instance: &parent, URL: parent.URL, Status: parent.RuntimeStatus}
 		}

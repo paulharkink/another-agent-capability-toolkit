@@ -2750,8 +2750,10 @@ func sectionActionRow(action FormAction, focused bool, width int) string {
 
 func conciseActionReason(reason string) string {
 	switch {
-	case strings.Contains(reason, "Save changed inputs"), strings.Contains(reason, "Save valid inputs"):
-		return "Save inputs first"
+	case strings.Contains(reason, "Save changed inputs"):
+		return "Save changes first"
+	case strings.Contains(reason, "Save valid inputs"):
+		return "Complete inputs first"
 	case strings.Contains(reason, "Inputs need attention"):
 		return "Fix input errors first"
 	case strings.Contains(reason, "Install this capability for an agent"):

@@ -763,7 +763,7 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 			}
 			bindingReason := ""
 			if _, available := m.backend.(setupBackend); !available {
-				bindingReason = "setup service unavailable"
+				bindingReason = "The active AACT backend does not support setup operations"
 			} else if capability, exists := m.selectedCapability(); !exists || capability.CatalogIndex < 0 {
 				bindingReason = "package is absent from the local catalog"
 			}
