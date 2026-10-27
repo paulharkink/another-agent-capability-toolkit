@@ -219,7 +219,7 @@ func TestUXMinimumWorkspaceWarningBlocksHiddenInputAndRetainsDraft(t *testing.T)
 		t.Fatal("typing q behind the warning changed/closed the hidden draft")
 	}
 	_, quit := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
-	if quit != nil || !strings.Contains(ansi.Strip(m.View().Content), "Apply changes") {
+	if quit != nil || !strings.Contains(ansi.Strip(m.View().Content), "Save inputs") {
 		t.Fatal("F10 on the dirty recovery screen did not show the unsaved changes popup")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape}) // Keep editing.

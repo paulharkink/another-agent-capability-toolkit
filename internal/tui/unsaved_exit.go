@@ -10,14 +10,28 @@ import (
 )
 
 type unsavedExitState struct {
-	reason   string
-	selected int
-	apply    func() tea.Cmd
-	discard  func() tea.Cmd
-	onResult func(operationMsg) tea.Cmd
+	reason         string
+	selected       int
+	saveInputsOnly bool
+	apply          func() tea.Cmd
+	discard        func() tea.Cmd
+	onResult       func(operationMsg) tea.Cmd
 }
 
 var unsavedExitChoices = []string{"Apply changes", "Discard changes", "Keep editing"}
+
+func (m *Model) newUnsavedExit(reason string) *unsavedExitState {
+	state := &unsavedExitState{reason: reason, selected: 2}
+	state.saveInputsOnly = m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionInputsID && m.pendingSetup != nil
+	return state
+}
+
+func (s *unsavedExitState) choices() []string {
+	if s != nil && s.saveInputsOnly {
+		return []string{"Save inputs", "Discard changes", "Keep editing"}
+	}
+	return unsavedExitChoices
+}
 
 // exitPopupView keeps the active form visible beneath a compact centered choice.
 func (m *Model) exitPopupView() tea.View {
@@ -35,7 +49,11 @@ func (m *Model) exitPopupView() tea.View {
 	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#0B2F70")).Background(lipgloss.Color("#FFD36E")).Bold(true)
 	box[0] = gold.Render("╭" + strings.Repeat("─", width-2) + "╮")
 	box[1] = gold.Render("│") + panel.Render(center("Unsaved changes", width-2)) + gold.Render("│")
-	box[2] = gold.Render("│") + panel.Render(center("Apply before leaving this configuration?", width-2)) + gold.Render("│")
+	prompt := "Apply before leaving this configuration?"
+	if state.saveInputsOnly {
+		prompt = "Save inputs before leaving this configuration?"
+	}
+	box[2] = gold.Render("│") + panel.Render(center(prompt, width-2)) + gold.Render("│")
 	summary := "Changed: no fields"
 	if m.registration != nil {
 		if m.registration.Transport != m.registration.OriginalTransport {
@@ -52,7 +70,7 @@ func (m *Model) exitPopupView() tea.View {
 		}
 	}
 	box[3] = gold.Render("│") + panel.Render(fit(summary, width-2)) + gold.Render("│")
-	for i, choice := range unsavedExitChoices {
+	for i, choice := range state.choices() {
 		mark := "  "
 		if i == m.unsavedExit.selected {
 			mark = "› "
@@ -87,9 +105,9 @@ func (m *Model) unsavedExitKey(stroke string) tea.Cmd {
 	case "esc":
 		m.unsavedExit = nil
 	case "up", "left", "shift+tab":
-		m.unsavedExit.selected = (m.unsavedExit.selected + len(unsavedExitChoices) - 1) % len(unsavedExitChoices)
+		m.unsavedExit.selected = (m.unsavedExit.selected + len(m.unsavedExit.choices()) - 1) % len(m.unsavedExit.choices())
 	case "down", "right", "tab":
-		m.unsavedExit.selected = (m.unsavedExit.selected + 1) % len(unsavedExitChoices)
+		m.unsavedExit.selected = (m.unsavedExit.selected + 1) % len(m.unsavedExit.choices())
 	case "enter", " ":
 		return m.chooseUnsavedExit(m.unsavedExit.selected)
 	}
@@ -117,6 +135,21 @@ func (m *Model) chooseUnsavedExit(choice int) tea.Cmd {
 	switch choice {
 	case 0:
 		m.unsavedExit = nil
+		if state.saveInputsOnly {
+			if m.form == nil || m.pendingSetup == nil {
+				return nil
+			}
+			if err := m.form.CommitPendingInput(); err != nil {
+				m.output = "Could not save inputs: " + err.Error()
+				return nil
+			}
+			m.unsavedExitIntent = state
+			cmd := m.saveSetupInputs(m.form.Values())
+			if cmd == nil {
+				m.unsavedExitIntent = nil
+			}
+			return cmd
+		}
 		if state.apply != nil {
 			m.unsavedExitIntent = state
 			return state.apply()

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -98,7 +99,7 @@ func setupKey(m *Model, code rune, text string) tea.Cmd {
 
 func discardDirtySetupExit(t *testing.T, m *Model) {
 	t.Helper()
-	for _, want := range []string{"Apply changes", "Discard changes", "Keep editing"} {
+	for _, want := range []string{"Save inputs", "Discard changes", "Keep editing"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("dirty setup exit omitted %q:\n%s", want, m.View().Content)
 		}
@@ -183,13 +184,15 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 func TestInteractionSetupTabActionCancelAndEscBack(t *testing.T) {
 	m, backend := openSetupInteraction(t)
 	setupKey(m, tea.KeyTab, "") // Details.
-	setupKey(m, tea.KeyTab, "") // Actions.
+	for range m.pendingSetup.Inputs {
+		setupKey(m, tea.KeyTab, "") // Move through each Inputs field, then Actions.
+	}
 	if !strings.Contains(m.View().Content, "[Actions]") {
 		t.Fatalf("Tab did not focus the fixed action bar:\n%s", m.View().Content)
 	}
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if !strings.Contains(m.View().Content, "[Details]") {
-		t.Fatalf("Shift+Tab did not return from actions to details:\n%s", m.View().Content)
+	if m.form.FocusArea() != 1 {
+		t.Fatalf("Shift+Tab did not return from actions to the last Inputs field: area=%d section=%q/%q\n%s", m.form.FocusArea(), m.workspace.SectionID, m.form.SectionID(), m.View().Content)
 	}
 	if err := m.form.ApplyValues(map[string]any{"token": "edited-token"}); err != nil {
 		t.Fatal(err)
@@ -304,5 +307,73 @@ func TestInteractionSetupCtrlSSavesFromKeyboard(t *testing.T) {
 	}
 	if backend.savedInputRequest == nil || m.form == nil || !strings.Contains(m.output, "Inputs saved") {
 		t.Fatalf("Ctrl-S did not save Inputs and keep the staged workspace open: output=%q view=%s", m.output, m.View().Content)
+	}
+}
+
+func TestInteractionSetupTabsThroughInputsToVisibleSave(t *testing.T) {
+	m, backend := openSetupInteraction(t)
+	if m.form == nil || m.form.SectionID() != sectionInputsID {
+		t.Fatalf("test did not begin in Inputs: section=%q", m.form.SectionID())
+	}
+	setupKey(m, tea.KeyTab, "") // Sections → Details.
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Tab Controls") || strings.Contains(view, "Tab Areas") {
+		t.Fatalf("Inputs footer does not explain Tab field/action navigation:\n%s", view)
+	}
+	if m.form.FocusArea() != 1 || strings.Contains(ansi.Strip(m.form.View().Content), "> [ Save ]") {
+		t.Fatalf("first Tab should enter Inputs details, not skip to actions: area=%d\n%s", m.form.FocusArea(), ansi.Strip(m.form.View().Content))
+	}
+	setupKey(m, tea.KeyDown, "")
+	setupKey(m, tea.KeyDown, "")
+	if !strings.Contains(ansi.Strip(m.form.View().Content), "> Endpoint") {
+		t.Fatalf("test could not focus the Endpoint input:\n%s", ansi.Strip(m.form.View().Content))
+	}
+	m.workspace.SaveNotice = "Inputs saved successfully."
+	setupKey(m, tea.KeyEnter, "")
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	_, _ = m.Update(tea.KeyPressMsg{Text: "edited-url"})
+	if m.workspace.SaveNotice != "" {
+		t.Fatalf("typing a changed value left a stale save-success notice visible: %q", m.workspace.SaveNotice)
+	}
+	setupKey(m, tea.KeyTab, "") // Commit Endpoint and move to Databases.
+	if m.form.Values()["endpoint"] != "edited-url" {
+		t.Fatalf("Tab did not commit the active Endpoint edit before moving: %#v", m.form.Values()["endpoint"])
+	}
+	if m.form.FocusArea() != 1 {
+		t.Fatalf("Tab skipped from Endpoint to Actions instead of the next field: area=%d\n%s", m.form.FocusArea(), ansi.Strip(m.form.View().Content))
+	}
+	setupKey(m, tea.KeyTab, "") // Last field → Save.
+	if m.form.FocusArea() != 2 || m.form.SectionID() != sectionInputsID {
+		t.Fatalf("Tab did not reach Inputs Save after its fields: area=%d section=%q view=%s", m.form.FocusArea(), m.form.SectionID(), ansi.Strip(m.View().Content))
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "> [ Save ]") {
+		t.Fatalf("Inputs Save is not visibly focused at the end of the Tab sequence:\n%s", ansi.Strip(m.View().Content))
+	}
+	setupKey(m, tea.KeyTab, "") // Save → Cancel.
+	if !strings.Contains(ansi.Strip(m.View().Content), "> [ Cancel ]") {
+		t.Fatalf("Tab did not move from Save to Cancel:\n%s", ansi.Strip(m.View().Content))
+	}
+	setupKey(m, tea.KeyTab, "") // Cancel → first field.
+	if m.form.FocusArea() != 1 {
+		t.Fatalf("Tab did not wrap from Cancel to the first input: area=%d", m.form.FocusArea())
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}) // First field → Cancel.
+	if m.form.FocusArea() != 2 || !strings.Contains(ansi.Strip(m.View().Content), "> [ Cancel ]") {
+		t.Fatalf("Shift+Tab did not reverse from first input to Cancel:\n%s", ansi.Strip(m.View().Content))
+	}
+	setupKey(m, tea.KeyTab, "") // Cancel → first field.
+	for range m.pendingSetup.Inputs {
+		setupKey(m, tea.KeyTab, "") // First field → Save.
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "> [ Save ]") {
+		t.Fatalf("returning through Inputs did not focus Save again:\n%s", ansi.Strip(m.View().Content))
+	}
+	if cmd := setupKey(m, tea.KeyEnter, ""); cmd != nil {
+		m.Update(cmd())
+	}
+	if backend.savedInputRequest == nil || backend.savedInputRequest.Inputs["endpoint"] != "edited-url" || backend.installRequest != nil {
+		t.Fatalf("visible Save did not persist only the current Inputs: saved=%+v install=%+v", backend.savedInputRequest, backend.installRequest)
+	}
+	if m.form.HasUnsavedChanges() || m.workspace.SaveNotice != "Inputs saved successfully." {
+		t.Fatalf("successful visible Save did not clear the draft and report success: dirty=%t notice=%q", m.form.HasUnsavedChanges(), m.workspace.SaveNotice)
 	}
 }

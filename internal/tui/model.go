@@ -244,6 +244,9 @@ func (m *Model) load() tea.Cmd {
 func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 	m.busy = false
 	if msg.err != nil {
+		if m.unsavedExitIntent != nil && m.unsavedExitIntent.saveInputsOnly {
+			m.unsavedExitIntent = nil
+		}
 		m.output = "Could not save inputs: " + msg.err.Error()
 		return nil
 	}
@@ -259,6 +262,10 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 		m.form.ReopenAfterSave()
 		m.form.MarkClean()
 		m.configureWorkspaceForm(msg.preview)
+	}
+	if intent := m.unsavedExitIntent; intent != nil && intent.saveInputsOnly {
+		m.unsavedExitIntent = nil
+		return m.finishUnsavedExit(intent)
 	}
 	return nil
 }
@@ -324,13 +331,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.form != nil && m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
 			}
 			if m.form != nil && m.form.HasUnsavedChanges() {
-				m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+				m.unsavedExit = m.newUnsavedExit("quit")
 				return m, nil
 			}
 			return m, tea.Quit
@@ -348,7 +355,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "f10", "q":
 				if m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
@@ -359,7 +366,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if request, ok := msg.(forms.ExitRequestMsg); ok && m.form != nil {
-		m.unsavedExit = &unsavedExitState{reason: request.Reason, selected: 2}
+		m.unsavedExit = m.newUnsavedExit(request.Reason)
 		return m, nil
 	}
 	if m.unsavedExit != nil {
@@ -640,7 +647,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "f10":
 				if m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
@@ -747,13 +754,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
 		if m.workspace != nil && m.workspace.Active {
-			if m.hasUnsavedSetupInputs() {
+			if m.hasUnsavedSetupInputs() || m.form.HasUnsavedChanges() {
 				m.workspace.SaveNotice = ""
 			}
 			m.workspace.SectionID = m.form.SectionID()
 			m.workspace.Section = m.form.SectionTitle()
 			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
 			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
+			m.form.SetTabThroughControls(m.workspace.SectionID == sectionInputsID)
 		}
 		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()

@@ -813,6 +813,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.form.SetSubmitLabel("Save")
 	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
 	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
+	m.form.SetTabThroughControls(m.workspace.Active && m.form.SectionID() == sectionInputsID)
 	m.refreshAgentAccessActions()
 }
 

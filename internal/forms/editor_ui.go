@@ -52,6 +52,7 @@ type FormModel struct {
 	backNavigation              bool
 	unsavedExitGuard            bool
 	readOnly                    bool
+	tabThroughControls          bool
 	hideCancel                  bool
 	hideSubmit                  bool
 	result                      map[string]any
@@ -359,6 +360,10 @@ func (m *FormModel) SetBackNavigation(enabled bool)   { m.backNavigation = enabl
 func (m *FormModel) SetReadOnly(enabled bool)         { m.readOnly = enabled }
 func (m *FormModel) SetUnsavedExitGuard(enabled bool) { m.unsavedExitGuard = enabled }
 
+// SetTabThroughControls makes Tab visit the fields and global actions in the
+// current section. It is opt-in so legacy wizards keep their area-cycling keys.
+func (m *FormModel) SetTabThroughControls(enabled bool) { m.tabThroughControls = enabled }
+
 // SetCancelHidden hides the bottom Cancel action; Escape remains available.
 func (m *FormModel) SetCancelHidden(hidden bool) {
 	m.hideCancel = hidden
@@ -400,6 +405,83 @@ func (m *FormModel) moveGlobalAction(delta int) {
 		return
 	}
 	m.actionIndex = (m.actionIndex + count + delta) % count
+}
+
+func (m *FormModel) moveInputTab(forward bool) {
+	indices := m.splitFieldIndices(m.sectionIndex)
+	count := m.globalActionCount()
+	if m.area == 0 {
+		if forward {
+			m.area = 1
+			if len(indices) > 0 {
+				m.selectSectionField()
+			}
+		} else if count > 0 {
+			m.area = 2
+			m.actionIndex = count - 1
+		}
+		return
+	}
+	if m.area == 1 {
+		if len(indices) == 0 {
+			if forward && count > 0 {
+				m.area, m.actionIndex = 2, 0
+			} else if !forward {
+				m.area = 0
+			}
+			return
+		}
+		position := 0
+		for i, field := range indices {
+			if field == m.selected {
+				position = i
+				break
+			}
+		}
+		if forward {
+			if position+1 < len(indices) {
+				m.selected = indices[position+1]
+				return
+			}
+			if count > 0 {
+				m.area, m.actionIndex = 2, 0
+			} else {
+				m.area = 0
+			}
+			return
+		}
+		if position > 0 {
+			m.selected = indices[position-1]
+		} else if count > 0 {
+			m.area, m.actionIndex = 2, count-1
+		} else {
+			m.area = 0
+		}
+		return
+	}
+	if m.area == 2 && count > 0 {
+		if forward {
+			if m.actionIndex+1 < count {
+				m.actionIndex++
+				return
+			}
+			if len(indices) > 0 {
+				m.area, m.selected = 1, indices[0]
+			} else {
+				m.area = 0
+			}
+			return
+		}
+		if m.actionIndex > 0 {
+			m.actionIndex--
+			return
+		}
+		if len(indices) > 0 {
+			m.area, m.selected = 1, indices[len(indices)-1]
+		} else {
+			m.area = 1
+		}
+	}
 }
 
 func (m *FormModel) normalizeActionArea() {
@@ -1256,6 +1338,14 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
+		if m.tabThroughControls && !m.readOnly && (stroke == "tab" || stroke == "shift+tab") {
+			if err := m.CommitPendingInput(); err != nil {
+				return m, nil
+			}
+			m.moveInputTab(stroke == "tab")
+			m.message = ""
+			return m, nil
+		}
 		if stroke == "ctrl+r" && !m.editing && m.selected >= 0 && m.selected < len(m.defs) && (len(m.sections) == 0 || m.area == 1) {
 			name := m.defs[m.selected].Name
 			if fallback, ok := m.resetValues[name]; ok {
@@ -2556,7 +2646,11 @@ func (m *FormModel) splitLayout() formLayout {
 	if m.backNavigation {
 		escapeAction = "Esc Back"
 	}
-	controls := "↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · " + escapeAction
+	tabHint := "Tab Areas"
+	if m.tabThroughControls {
+		tabHint = "Tab Controls"
+	}
+	controls := "↑↓ Controls · ←→ Panes · " + tabHint + " · Ctrl-S Save · " + escapeAction
 	if m.readOnly {
 		controls = "↑↓ Navigate · ←→ Panes · Tab Areas · Esc Back"
 	}
@@ -2575,7 +2669,11 @@ func (m *FormModel) splitLayout() formLayout {
 		footer = m.message + "\n" + footer
 	}
 	if m.height <= 12 && (m.selected >= len(m.defs) || !isEditableCollection(m.defs[m.selected])) {
-		compact := "↑↓ Move · ←→ Pane · Tab Area · Ctrl-S Save · " + escapeAction
+		compactTabHint := "Tab Area"
+		if m.tabThroughControls {
+			compactTabHint = "Tab Controls"
+		}
+		compact := "↑↓ Move · ←→ Pane · " + compactTabHint + " · Ctrl-S Save · " + escapeAction
 		footer = strings.Join(areaLabels, " · ") + "\n" + compact + "\n" + actions
 		if m.message != "" {
 			footer = m.message + "\n" + footer
