@@ -54,6 +54,27 @@ type actionFailure struct {
 func (e actionFailure) Error() string { return e.message }
 func (e actionFailure) Unwrap() error { return e.cause }
 
+// ResolveActionCommand returns the command that will execute on this platform,
+// including the Windows override and its inherited target. Callers that gate
+// actions on their execution target must use the same resolution as RunAction.
+func ResolveActionCommand(definition catalog.MCP, action, goos string) (catalog.Command, bool) {
+	cmd, ok := definition.Actions[action]
+	if !ok {
+		return catalog.Command{}, false
+	}
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos == "windows" && cmd.Windows != nil {
+		target := cmd.Target
+		cmd = *cmd.Windows
+		if cmd.Target == "" {
+			cmd.Target = target
+		}
+	}
+	return cmd, true
+}
+
 func RunAction(ctx context.Context, p catalog.Package, q ActionRequest) (ActionResult, error) {
 	return (&ActionRunner{Executor: process.OSExecutor{}}).Run(ctx, p, q)
 }
@@ -73,20 +94,13 @@ func (r *ActionRunner) Run(ctx context.Context, p catalog.Package, q ActionReque
 			InputPolicy: q.Instance.InputPolicy,
 		}
 	}
-	cmd, ok := p.MCP.Actions[q.Action]
-	if !ok {
-		return ActionResult{}, fmt.Errorf("package %s has no %s action", p.ID, q.Action)
-	}
 	goos := r.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	if goos == "windows" && cmd.Windows != nil {
-		target := cmd.Target
-		cmd = *cmd.Windows
-		if cmd.Target == "" {
-			cmd.Target = target
-		}
+	cmd, ok := ResolveActionCommand(*p.MCP, q.Action, goos)
+	if !ok {
+		return ActionResult{}, fmt.Errorf("package %s has no %s action", p.ID, q.Action)
 	}
 	argv := append([]string{}, cmd.Argv...)
 	if len(argv) == 0 {

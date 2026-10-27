@@ -13,6 +13,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
+	mcpruntime "github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
@@ -641,6 +642,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				runtimeLine = "> " + runtimeLine
 			}
 			runtime = append(runtime, runtimeLine)
+			if m.runtimeLoginRunsOnHost(definition.Name) {
+				runtime = append(runtime, "  You can log in before starting this MCP. If Start asks for credentials, select Login.")
+			}
 			startProfile := profile
 			if startProfile == nil && len(preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 				parent := *m.workspace.Instance
@@ -998,11 +1002,43 @@ func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRo
 		}
 		return "Save valid inputs first"
 	}
+	definition := m.workspaceMCPDefinition(mcpName)
+	if definition == nil {
+		return "Refresh this target; its Login action is unavailable"
+	}
+	command, ok := mcpruntime.ResolveActionCommand(*definition, "authenticate", "")
+	if !ok {
+		return "This MCP does not declare a Login action"
+	}
+	if command.Target != "container" {
+		return ""
+	}
 	exactMCP := row.Key.MCP == mcpName || row.Key.MCPDefinition == mcpName || (row.Instance != nil && row.Instance.Name == mcpName)
 	if row.Instance == nil || !exactMCP || strings.ToLower(strings.TrimSpace(row.Status)) != "running" {
 		return "Start this MCP before logging in"
 	}
 	return ""
+}
+
+func (m *Model) workspaceMCPDefinition(name string) *catalog.MCP {
+	if m.workspace == nil || m.workspace.Preview == nil {
+		return nil
+	}
+	for i := range m.workspace.Preview.MCPDefinitions {
+		if m.workspace.Preview.MCPDefinitions[i].Name == name {
+			return &m.workspace.Preview.MCPDefinitions[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) runtimeLoginRunsOnHost(name string) bool {
+	definition := m.workspaceMCPDefinition(name)
+	if definition == nil {
+		return false
+	}
+	command, ok := mcpruntime.ResolveActionCommand(*definition, "authenticate", "")
+	return ok && command.Target != "container"
 }
 
 func (m *Model) refreshRuntimeActionAvailability() {

@@ -236,6 +236,27 @@ func TestActionResultDecodesOptionalProviderDiagnostic(t *testing.T) {
 	}
 }
 
+func TestResolveActionCommandUsesWindowsTargetOverride(t *testing.T) {
+	definition := catalog.MCP{Actions: map[string]catalog.Command{
+		"authenticate": {
+			Target:  "host",
+			Windows: &catalog.Command{Target: "container", Argv: []string{"windows-auth"}},
+		},
+	}}
+	command, ok := ResolveActionCommand(definition, "authenticate", "windows")
+	if !ok || command.Target != "container" || !reflect.DeepEqual(command.Argv, []string{"windows-auth"}) {
+		t.Fatalf("Windows action resolution = (%+v, %t), want container-target Windows command", command, ok)
+	}
+	definition.Actions["authenticate"] = catalog.Command{
+		Target:  "container",
+		Windows: &catalog.Command{Argv: []string{"windows-auth"}},
+	}
+	command, ok = ResolveActionCommand(definition, "authenticate", "windows")
+	if !ok || command.Target != "container" {
+		t.Fatalf("Windows action did not inherit parent target: (%+v, %t)", command, ok)
+	}
+}
+
 type recordingContainerActionExec struct {
 	argv   []string
 	stdin  []byte

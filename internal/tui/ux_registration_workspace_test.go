@@ -91,6 +91,75 @@ func TestUXAgentAccessInstallMouseUsesExactSelectedInstance(t *testing.T) {
 	}
 }
 
+func TestUXHostTargetLoginIsAvailableBeforeRuntimeStart(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
+	preview := *m.workspace.Preview
+	preview.Inputs = nil // Exercise the saved/configured gate without test credentials.
+	preview.Configured = true
+	preview.ValidationIssues = nil
+	for i := range preview.MCPDefinitions {
+		if preview.MCPDefinitions[i].Name == "cluster-inspector" {
+			command := preview.MCPDefinitions[i].Actions["authenticate"]
+			command.Target = "host"
+			preview.MCPDefinitions[i].Actions["authenticate"] = command
+		}
+	}
+	m.workspace.InputsSaved = true
+	m.workspace.Instance = nil // Host Login must not require any runtime observation.
+	m.configureWorkspaceForm(preview)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+
+	var login forms.FormAction
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "authenticate:cluster-inspector" {
+			login = action
+			break
+		}
+	}
+	if login.ID == "" || login.Disabled != "" {
+		t.Fatalf("host-target Login should be available while stopped: %+v", login)
+	}
+	view := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(view, "You can log in before starting this MCP.") || !strings.Contains(view, "select Login.") {
+		t.Fatalf("Runtime stage does not explain stopped Login: %s", view)
+	}
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: login.ID})
+	if cmd == nil {
+		t.Fatalf("activating the stopped host-target Login action was rejected: %s", m.output)
+	}
+}
+
+func TestUXContainerTargetLoginStillRequiresRunningRuntime(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
+	preview := *m.workspace.Preview
+	preview.Inputs = nil
+	preview.Configured = true
+	preview.ValidationIssues = nil
+	for i := range preview.MCPDefinitions {
+		if preview.MCPDefinitions[i].Name == "cluster-inspector" {
+			command := preview.MCPDefinitions[i].Actions["authenticate"]
+			command.Target = "container"
+			preview.MCPDefinitions[i].Actions["authenticate"] = command
+		}
+	}
+	m.workspace.InputsSaved = true
+	m.workspace.Instance = &viewmodel.Instance{Key: m.workspace.Key, RuntimeStatus: "stopped", Ownership: "local"}
+	m.configureWorkspaceForm(preview)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "authenticate:cluster-inspector" {
+			if !strings.Contains(action.Disabled, "Start this MCP before logging in") {
+				t.Fatalf("container-target Login must remain blocked while stopped: %+v", action)
+			}
+			return
+		}
+	}
+	t.Fatal("Runtime stage omitted the declared Login action")
+}
+
 func activateAgentAccessActionByKeyboard(t *testing.T, m *Model, label string) tea.Cmd {
 	return activateAgentAccessActionByKeyboardWithSelection(t, m, label, true)
 }

@@ -1919,7 +1919,8 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 			var result mcp.ActionResult
 			var instance mcp.Instance
 			var startErr error
-			if action == "authenticate" && definition.Actions[action].Target == "container" {
+			actionCommand, _ := mcp.ResolveActionCommand(definition, action, "")
+			if action == "authenticate" && actionCommand.Target == "container" {
 				instance, startErr = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
 				if startErr != nil {
 					return out, startErr
