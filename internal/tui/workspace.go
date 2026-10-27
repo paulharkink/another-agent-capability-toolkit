@@ -713,7 +713,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				runtimeLine = "> " + runtimeLine
 			}
 			runtime = append(runtime, runtimeLine)
-			if m.runtimeLoginRunsOnHost(definition.Name) {
+			foreignReason := m.workspaceForeignRuntimeReason(definition.Name)
+			if foreignReason == "" && m.runtimeLoginRunsOnHost(definition.Name) {
 				runtime = append(runtime, "  You can log in before starting this MCP. If Start asks for credentials, select Login.")
 			}
 			startProfile := profile
@@ -725,7 +726,6 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if startProfile != nil {
 				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
-			foreignReason := m.workspaceForeignRuntimeReason(definition.Name)
 			startDisabled := m.runtimeStartDisabledReason(definition.Name, startRow)
 			if foreignReason != "" {
 				startDisabled = foreignReason
@@ -982,6 +982,9 @@ func formSectionFields(sections []forms.FormSection, title string) []string {
 }
 
 func (m *Model) runtimeStartDisabledReason(mcpName string, row InstanceRow) string {
+	if reason := m.workspaceForeignRuntimeReason(mcpName); reason != "" {
+		return reason
+	}
 	if m.workspace == nil || m.workspace.Preview == nil {
 		return m.instanceActionReason(row, "s")
 	}

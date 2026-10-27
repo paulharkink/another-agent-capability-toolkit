@@ -27,10 +27,14 @@ func parseLXReparseTarget(raw []byte) (string, bool, error) {
 		return "", true, errors.New("unsupported LX symlink payload version")
 	}
 	pathBytes := payload[4:]
-	if len(pathBytes) < 2 || pathBytes[len(pathBytes)-1] != 0 || strings.IndexByte(string(pathBytes[:len(pathBytes)-1]), 0) >= 0 || !utf8.Valid(pathBytes[:len(pathBytes)-1]) {
+	targetBytes := pathBytes
+	if len(targetBytes) > 0 && targetBytes[len(targetBytes)-1] == 0 {
+		targetBytes = targetBytes[:len(targetBytes)-1]
+	}
+	if len(targetBytes) == 0 || strings.IndexByte(string(targetBytes), 0) >= 0 || !utf8.Valid(targetBytes) {
 		return "", true, errors.New("malformed LX symlink target")
 	}
-	target := string(pathBytes[:len(pathBytes)-1])
+	target := string(targetBytes)
 	if !strings.HasPrefix(target, "/") || strings.Contains(target, "\\") || path.Clean(target) != target {
 		return "", true, errors.New("invalid LX symlink target path")
 	}

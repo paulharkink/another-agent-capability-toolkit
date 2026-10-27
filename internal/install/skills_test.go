@@ -183,6 +183,18 @@ func proofFor(parentID string) *ForeignSkillProof {
 
 func TestParseLXReparseTargetBoundsAndVersion(t *testing.T) {
 	target := "/home/synthetic/.local/state/agent-skills/generated/" + strings.Repeat("c", 64) + "/output-9"
+	unterminatedPayload := make([]byte, 4+len(target))
+	binary.LittleEndian.PutUint32(unterminatedPayload[:4], 2)
+	copy(unterminatedPayload[4:], target)
+	unterminatedRaw := make([]byte, 8+len(unterminatedPayload))
+	binary.LittleEndian.PutUint32(unterminatedRaw[:4], lxSymlinkReparseTag)
+	binary.LittleEndian.PutUint16(unterminatedRaw[4:6], uint16(len(unterminatedPayload)))
+	copy(unterminatedRaw[8:], unterminatedPayload)
+	unterminatedGot, unterminatedIsLX, unterminatedErr := parseLXReparseTarget(unterminatedRaw)
+	if unterminatedErr != nil || !unterminatedIsLX || unterminatedGot != target {
+		t.Fatalf("unterminated target parsed as %q, isLX=%v, err=%v", unterminatedGot, unterminatedIsLX, unterminatedErr)
+	}
+
 	payload := make([]byte, 4+len(target)+1)
 	binary.LittleEndian.PutUint32(payload[:4], 2)
 	copy(payload[4:], target)

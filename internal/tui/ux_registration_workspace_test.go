@@ -99,12 +99,18 @@ func TestUXForeignCapabilityParentGuardsSiblingRuntimeActions(t *testing.T) {
 	m.workspace.Preview = &preview
 	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
 	m.configureWorkspaceForm(preview)
+	m.refreshRuntimeActionAvailability()
 	if reason := m.workspaceForeignRuntimeReason("sibling"); !strings.Contains(reason, "another AACT installation") {
 		t.Fatalf("read-only Capability Instance did not guard its unobserved sibling: %q", reason)
 	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
 
 	seen := map[string]bool{}
 	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "start:sibling" && action.Disabled != m.workspaceForeignRuntimeReason("sibling") {
+			t.Fatalf("foreign Start reason changed after refresh: got %q, want %q", action.Disabled, m.workspaceForeignRuntimeReason("sibling"))
+		}
 		if action.ID == "start:sibling" || action.ID == "authenticate:sibling" || action.ID == "stop:sibling" || action.ID == "edit-inputs:sibling" {
 			if !strings.Contains(action.Disabled, "another AACT installation") {
 				t.Fatalf("sibling runtime action lacks the parent management reason: %+v", action)
@@ -116,6 +122,10 @@ func TestUXForeignCapabilityParentGuardsSiblingRuntimeActions(t *testing.T) {
 		if !seen[id] {
 			t.Fatalf("read-only Capability Instance omitted sibling action %q", id)
 		}
+	}
+	view := ansi.Strip(m.form.View().Content)
+	if strings.Contains(view, "You can log in before starting this MCP.") {
+		t.Fatalf("foreign Runtime showed a local Login prerequisite despite Login being managed elsewhere:\n%s", view)
 	}
 }
 
