@@ -520,7 +520,18 @@ func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
 	old := []byte(`#!/bin/sh
 if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-old\n"; else printf "Another Agent Capability Toolkit (aact)\n"; fi
 `)
-	if err := os.WriteFile(legacy, old, 0755); err != nil {
+	oldRelease := filepath.Join(home, ".local", "share", "aact", "releases", "0.0.0-SNAPSHOT-old-linux-amd64")
+	if err := os.MkdirAll(filepath.Join(oldRelease, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldBinary := filepath.Join(oldRelease, "bin", "aact")
+	if err := os.WriteFile(oldBinary, old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRelease, ".archive-sha256"), []byte(strings.Repeat("0", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldBinary, legacy); err != nil {
 		t.Fatal(err)
 	}
 	canonical := filepath.Join(home, ".local", "share", "aact", "bin", "aact")
@@ -580,16 +591,24 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 	if target != want {
 		t.Fatalf("legacy launcher target = %q, want %q", target, want)
 	}
-	backup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-0.0.0-SNAPSHOT-old")
-	if got, err := os.ReadFile(backup); err != nil || string(got) != string(old) {
-		t.Fatalf("legacy executable backup = %q, %v", got, err)
+	backup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-managed-0.0.0-SNAPSHOT-old")
+	if got, err := os.Readlink(backup); err != nil || got != oldBinary {
+		t.Fatalf("managed legacy launcher backup target = %q, %v", got, err)
 	}
 	canonicalBackup := filepath.Join(home, ".local", "share", "aact", "legacy", "bin", "aact-canonical-0.0.0-SNAPSHOT-canonical")
 	if got, err := os.ReadFile(canonicalBackup); err != nil || string(got) != string(canonicalOld) {
 		t.Fatalf("canonical launcher backup = %q, %v", got, err)
 	}
-	if !strings.Contains(string(output), "Migrated legacy launcher") {
+	if !strings.Contains(string(output), "Migrated legacy AACT release symlink") {
 		t.Fatalf("migration was not reported: %s", output)
+	}
+	secondInstall := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+	secondInstall.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+	if secondOutput, err := secondInstall.CombinedOutput(); err != nil {
+		t.Fatalf("reinstall of the same managed release failed: %s: %v", secondOutput, err)
+	}
+	if target, err := os.Readlink(legacy); err != nil || target != want {
+		t.Fatalf("reinstall changed the canonical legacy launcher link: %q, %v", target, err)
 	}
 	if target, err := os.Readlink(agentLink); err != nil || target != generated {
 		t.Fatalf("managed agent link changed: %q %v", target, err)
@@ -614,8 +633,15 @@ func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
 		t.Fatal(err)
 	}
+	customLauncher := filepath.Join(home, "custom", "aact")
+	if err := os.MkdirAll(filepath.Dir(customLauncher), 0700); err != nil {
+		t.Fatal(err)
+	}
 	old := []byte("#!/bin/sh\nprintf 'not-aact\\n'\n")
-	if err := os.WriteFile(legacy, old, 0755); err != nil {
+	if err := os.WriteFile(customLauncher, old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(customLauncher, legacy); err != nil {
 		t.Fatal(err)
 	}
 	server := fixtureServer(t, false)
@@ -625,11 +651,11 @@ func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install failed: %s: %v", output, err)
 	}
-	got, err := os.ReadFile(legacy)
-	if err != nil || string(got) != string(old) {
-		t.Fatalf("unrecognized launcher changed: %q, %v", got, err)
+	got, err := os.Readlink(legacy)
+	if err != nil || got != customLauncher {
+		t.Fatalf("unrelated launcher symlink changed: %q, %v", got, err)
 	}
-	if !strings.Contains(string(output), "not recognized") {
+	if !strings.Contains(string(output), "unrelated symlink") {
 		t.Fatalf("unrecognized launcher was not reported: %s", output)
 	}
 }
