@@ -67,6 +67,14 @@ type ForeignSkillProof struct {
 	URL              string
 }
 
+// ForeignMCPRegistrationProof lets the application authorize reuse of one
+// exact native agent binding that matches a freshly observed foreign runtime.
+type ForeignMCPRegistrationProof struct {
+	ParentKeyID      string
+	RegistrationName string
+	URL              string
+}
+
 type SkillRequest struct {
 	Key                  state.Key
 	Package              catalog.Package
@@ -75,8 +83,9 @@ type SkillRequest struct {
 	VerifiedForeignSkill *ForeignSkillProof
 }
 type MCPRequest struct {
-	Key          state.Key
-	Registration Registration
+	Key                         state.Key
+	Registration                Registration
+	VerifiedForeignRegistration *ForeignMCPRegistrationProof
 }
 type PluginRequest struct {
 	Key                   state.Key

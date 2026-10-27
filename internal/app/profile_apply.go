@@ -1259,6 +1259,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	}
 	adapters := map[string]agents.Adapter{}
 	foreignSkillProofs := map[string]*agents.ForeignSkillProof{}
+	foreignMCPProofs := map[string]map[string]*agents.ForeignMCPRegistrationProof{}
 	for _, id := range destIDs {
 		a, e := s.adapterRegistry().Adapter(id)
 		if e != nil {
@@ -1284,6 +1285,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				return out, fmt.Errorf("inspect %s MCP bindings before installing foreign Capability Instance components: %w", id, observeErr)
 			}
 			var proof *agents.ForeignSkillProof
+			mcpProofs := map[string]*agents.ForeignMCPRegistrationProof{}
 			for name, runtime := range q.observedForeign.Runtimes {
 				for _, component := range observation.Components {
 					if component.Kind != "mcp" || component.RegistrationName != runtime.RegistrationName {
@@ -1298,10 +1300,16 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 					if len(skills) > 0 {
 						proof = &agents.ForeignSkillProof{ParentKeyID: key.ID(), RegistrationName: runtime.RegistrationName, URL: runtime.URL}
 					}
+					if mcps[name] && !q.Uninstall {
+						mcpProofs[name] = &agents.ForeignMCPRegistrationProof{ParentKeyID: key.ID(), RegistrationName: runtime.RegistrationName, URL: runtime.URL}
+					}
 				}
 			}
 			if len(skills) > 0 && !q.Uninstall {
 				foreignSkillProofs[id] = proof
+			}
+			if len(mcpProofs) > 0 {
+				foreignMCPProofs[id] = mcpProofs
 			}
 		}
 		for _, plugin := range p.Plugins {
@@ -1736,7 +1744,15 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 					}
 				}
 			}
-			registrationResult, e := a.(agents.MCPManager).Register(ctx, scope, agents.MCPRequest{Key: child, Registration: agents.Registration{Name: name, URL: urls[d.Name], Transport: d.Transport, TimeoutMS: registrationTimeoutMS(&d), Headers: headers}})
+			var verifiedForeign *agents.ForeignMCPRegistrationProof
+			if foreignMCPProofs[id] != nil {
+				verifiedForeign = foreignMCPProofs[id][d.Name]
+			}
+			registrationResult, e := a.(agents.MCPManager).Register(ctx, scope, agents.MCPRequest{
+				Key:                         child,
+				Registration:                agents.Registration{Name: name, URL: urls[d.Name], Transport: d.Transport, TimeoutMS: registrationTimeoutMS(&d), Headers: headers},
+				VerifiedForeignRegistration: verifiedForeign,
+			})
 			for _, removed := range registrationResult.Removed {
 				out.Changes = append(out.Changes, removed)
 				if removeErr := s.removeRegistration(removed); removeErr != nil {

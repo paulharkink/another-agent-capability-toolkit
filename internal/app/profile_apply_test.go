@@ -35,6 +35,7 @@ type profileAdapter struct {
 	registerErr    error
 	registerEffect func()
 	registrations  []agents.Registration
+	mcpRequests    []agents.MCPRequest
 	skillRequests  []agents.SkillRequest
 	observe        func(agents.ObservationRequest) agents.Observation
 }
@@ -69,6 +70,7 @@ func (a *profileAdapter) InstallSkill(_ context.Context, _ agents.Scope, q agent
 }
 func (a *profileAdapter) Register(_ context.Context, _ agents.Scope, q agents.MCPRequest) (agents.MCPRegistrationResult, error) {
 	a.registrations = append(a.registrations, q.Registration)
+	a.mcpRequests = append(a.mcpRequests, q)
 	if a.registerResult != nil {
 		if a.registerEffect != nil {
 			a.registerEffect()

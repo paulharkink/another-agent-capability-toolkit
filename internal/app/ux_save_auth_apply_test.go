@@ -1196,6 +1196,11 @@ func TestUIInstallAgentsCanBindObservedForeignInstanceWithoutLocalInputsOrInstan
 		Ownership: "other-aact", URL: endpoint, RegistrationName: "cluster-inspector",
 	}}}
 	svc.Options.Runtime = runtime
+	adapter.observe = func(agents.ObservationRequest) agents.Observation {
+		return agents.Observation{Components: []agents.ComponentObservation{{
+			Kind: "mcp", Status: "installed", RegistrationName: "cluster-inspector", URL: endpoint,
+		}}}
+	}
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref, Environment: "home", Target: "ota"},
 		ItemIDs:      []string{"mcp:cluster-inspector"}, DestinationIDs: []string{adapter.ID()},
@@ -1206,6 +1211,12 @@ func TestUIInstallAgentsCanBindObservedForeignInstanceWithoutLocalInputsOrInstan
 	}
 	if len(adapter.registrations) != 1 || adapter.registrations[0].URL != endpoint || adapter.registrations[0].Name != "cluster-inspector" {
 		t.Fatalf("registration did not use observed Docker endpoint identity: %+v", adapter.registrations)
+	}
+	if len(adapter.mcpRequests) != 1 || adapter.mcpRequests[0].VerifiedForeignRegistration == nil ||
+		adapter.mcpRequests[0].VerifiedForeignRegistration.ParentKeyID != parent.ID() ||
+		adapter.mcpRequests[0].VerifiedForeignRegistration.RegistrationName != "cluster-inspector" ||
+		adapter.mcpRequests[0].VerifiedForeignRegistration.URL != endpoint {
+		t.Fatalf("matching observed Windows binding did not carry its exact adoption proof: %+v", adapter.mcpRequests)
 	}
 	if runtime.starts != 0 || runtime.stops != 0 {
 		t.Fatalf("agent-only install changed foreign runtime: starts=%d stops=%d", runtime.starts, runtime.stops)

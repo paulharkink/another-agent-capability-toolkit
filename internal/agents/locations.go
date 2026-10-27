@@ -11,6 +11,8 @@ import (
 type Environment struct {
 	ID, Kind, Home, SkillsDir, ConfigPath string
 	Owned                                 map[string]Registration
+	OwnedDigests                          map[string]string
+	PreserveNativeEntries                 map[string]bool
 }
 
 func ResolveEnvironment(id, kind, home string) (Environment, error) {
