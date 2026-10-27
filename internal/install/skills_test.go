@@ -149,6 +149,14 @@ func TestForeignLXLinkRequiresExactGeneratedParentAndValidPayload(t *testing.T) 
 			} else if err := os.Symlink(tt.target, dest); err != nil {
 				t.Fatal(err)
 			}
+			var originalLinkTarget string
+			if !tt.directory {
+				var err error
+				originalLinkTarget, err = os.Readlink(dest)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			i.readLXLink = func(string) (string, bool, error) { return tt.target, tt.isLX, nil }
 			generated := filepath.Join(i.Store.Root(), "generated", k.ID(), "output-3")
 			if tt.outsideStore {
@@ -169,7 +177,7 @@ func TestForeignLXLinkRequiresExactGeneratedParentAndValidPayload(t *testing.T) 
 				}
 			} else {
 				got, err := os.Readlink(dest)
-				if err != nil || got != tt.target {
+				if err != nil || got != originalLinkTarget {
 					t.Fatalf("foreign link changed: target=%q err=%v", got, err)
 				}
 			}
