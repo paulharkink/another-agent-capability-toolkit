@@ -3,6 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -10,10 +16,6 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
-	"slices"
-	"sort"
-	"strings"
-	"time"
 )
 
 func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (snapshot viewmodel.CapabilityInstanceSnapshot, err error) {
@@ -353,10 +355,136 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	})
 	for _, key := range foreignKeys {
 		row := observedForeignCapabilityInstance(p.ID, key, foreignParents[key], p, snapshot.ObservedAt)
+		row.Components, err = s.observedForeignAgentComponents(ctx, p, key, rows, registry)
+		if err != nil {
+			snapshot.Errors = append(snapshot.Errors, err.Error())
+		}
 		snapshot.Instances = append(snapshot.Instances, row)
 		snapshot.Profiles = append(snapshot.Profiles, row)
 	}
 	return snapshot, nil
+}
+
+// observedForeignAgentComponents projects this installation's own agent
+// observations onto a Docker-discovered foreign parent. It reads only local
+// installation rows and the active Pack definitions; it never loads the
+// foreign instance's inputs, answers, or generated files.
+func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.Package, parent state.Key, rows []state.Installation, registry AdapterProvider) ([]viewmodel.ComponentStatus, error) {
+	managedByAgent := map[string][]state.Installation{}
+	for _, row := range rows {
+		if !sameCapabilityKey(row.Key, parent) || row.Component == "runtime" || row.AgentID == "" {
+			continue
+		}
+		switch row.Component {
+		case "skill", "mcp", "plugin":
+			managedByAgent[row.AgentID] = append(managedByAgent[row.AgentID], row)
+		}
+	}
+	agentIDs := make([]string, 0, len(managedByAgent))
+	for id := range managedByAgent {
+		agentIDs = append(agentIDs, id)
+	}
+	sort.Strings(agentIDs)
+	components := []viewmodel.ComponentStatus{}
+	errorsFound := []string{}
+	for _, id := range agentIDs {
+		managed := managedByAgent[id]
+		kind := id
+		scope := s.agentScope(id)
+		for _, row := range managed {
+			if row.AgentKind != "" {
+				kind = row.AgentKind
+			}
+			if row.AgentHome != "" {
+				scope.Home = row.AgentHome
+				scope.ExplicitHome = true
+			}
+			if row.Component == "mcp" && scope.ConfigPathOverride == "" {
+				scope.ConfigPathOverride = row.Destination
+			}
+		}
+		adapter, adapterErr := registry.Adapter(kind)
+		var observation agents.Observation
+		if adapterErr == nil {
+			observation, adapterErr = adapter.Observe(ctx, scope, agents.ObservationRequest{Key: parent, Managed: managed})
+		}
+		if adapterErr != nil {
+			errorsFound = append(errorsFound, id+": "+adapterErr.Error())
+		}
+		for _, row := range managed {
+			name := foreignAgentComponentName(p, parent, row)
+			status := viewmodel.ComponentStatus{AgentID: id, Kind: row.Component, Name: name, Status: "absent"}
+			if adapterErr != nil {
+				status.Status = "unavailable"
+				status.Error = adapterErr.Error()
+			} else {
+				for _, observed := range observation.Components {
+					if observedForeignAgentComponentMatches(row, observed) {
+						status.Status = observed.Status
+						status.Error = observed.Error
+						status.Managed = observed.Managed
+						break
+					}
+				}
+			}
+			components = append(components, status)
+		}
+		for _, message := range observation.Errors {
+			errorsFound = append(errorsFound, id+": "+message)
+		}
+	}
+	if len(errorsFound) > 0 {
+		return components, fmt.Errorf("observed agent components: %s", strings.Join(errorsFound, "; "))
+	}
+	return components, nil
+}
+
+func observedForeignAgentComponentMatches(row state.Installation, observed agents.ComponentObservation) bool {
+	if observed.Kind != row.Component {
+		return false
+	}
+	switch row.Component {
+	case "skill":
+		return observed.Path == row.Destination || observed.Name == filepath.Base(row.Destination)
+	case "mcp":
+		return observed.RegistrationName == row.RegistrationName || observed.Name == row.RegistrationName
+	case "plugin":
+		return observed.Name == foreignPluginName(row)
+	default:
+		return false
+	}
+}
+
+func foreignAgentComponentName(p catalog.Package, parent state.Key, row state.Installation) string {
+	switch row.Component {
+	case "skill":
+		return filepath.Base(row.Destination)
+	case "mcp":
+		for _, definition := range p.MCPDefinitions() {
+			if mcpDefinitionKey(parent, p, definition) == row.Key {
+				return definition.Name
+			}
+		}
+		if row.Key.MCPDefinition != "" {
+			return row.Key.MCPDefinition
+		}
+		if row.Key.MCP != "" {
+			return row.Key.MCP
+		}
+		return row.RegistrationName
+	case "plugin":
+		return foreignPluginName(row)
+	default:
+		return row.Component
+	}
+}
+
+func foreignPluginName(row state.Installation) string {
+	name, _, _ := strings.Cut(row.ReleaseID, "@")
+	if name != "" {
+		return name
+	}
+	return row.RegistrationName
 }
 
 func observedForeignRuntimeParents(sourceID, packageID string, runtimes []mcp.Instance, observed bool) map[state.Key][]mcp.Instance {

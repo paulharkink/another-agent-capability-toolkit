@@ -113,15 +113,37 @@ type snapshotRuntime struct {
 func (r *snapshotRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.err }
 
 func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t *testing.T) {
-	s, _, q := profileApplyFixture(t)
+	s, adapter, q := profileApplyFixture(t)
 	p := s.Source.Catalog[0]
 	parent := state.Key{Source: s.Source.ID, Package: p.ID, Environment: "custom-env", Target: "custom-target"}
 	definition := p.MCPDefinitions()[0]
 	child := mcpDefinitionKey(parent, p, definition)
+	endpoint := "http://localhost:18770/mcp"
 	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
 		Key: child, ID: "foreign-live", Name: "aact-foreign", Status: "running", Ownership: "other-aact",
-		URL: "http://localhost:18770/mcp",
+		RegistrationName: "alpha-remote", URL: endpoint,
 	}}}
+	managedSkill := state.Installation{Key: parent, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: filepath.Join(adapter.home, "skills", "one"), Mode: "symlink"}
+	managedMCP := state.Installation{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "mcp", Destination: filepath.Join(adapter.home, "config.toml"), RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Mode: "registration"}
+	for _, row := range []state.Installation{managedSkill, managedMCP} {
+		if err := s.Store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observedRequest := false
+	adapter.observe = func(request agents.ObservationRequest) agents.Observation {
+		if request.Key != parent {
+			return agents.Observation{}
+		}
+		if len(request.Managed) != 2 {
+			t.Errorf("foreign observation used the wrong local binding scope: managed=%+v", request.Managed)
+		}
+		observedRequest = true
+		return agents.Observation{Components: []agents.ComponentObservation{
+			{Kind: "skill", Name: "one", Path: managedSkill.Destination, Status: "installed", Managed: true},
+			{Kind: "mcp", Name: "alpha-remote", RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Status: "installed", Managed: true},
+		}}
+	}
 
 	snapshot, err := s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
 	if err != nil {
@@ -142,6 +164,24 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 	}
 	if len(observed.MCPs) != 1 || observed.MCPs[0].Key != child || observed.MCPs[0].Ownership != "other-aact" {
 		t.Fatalf("foreign child runtimes were not grouped under their parent: %+v", observed.MCPs)
+	}
+	if len(observed.Components) != 2 {
+		t.Fatalf("Windows-owned agent observations were omitted from the observed parent: %+v", observed.Components)
+	}
+	if !observedRequest {
+		t.Fatal("foreign parent did not observe this installation's exact-key agent bindings")
+	}
+	wantComponents := map[string]bool{"skill:one:installed": false, "mcp:alpha:installed": false}
+	for _, component := range observed.Components {
+		key := component.Kind + ":" + component.Name + ":" + component.Status
+		if _, ok := wantComponents[key]; ok {
+			wantComponents[key] = true
+		}
+	}
+	for key, found := range wantComponents {
+		if !found {
+			t.Errorf("observed parent omitted native agent state %q: %+v", key, observed.Components)
+		}
 	}
 	preview, err := s.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: parent.Source, CapabilityID: parent.Package, Name: parent.Target}})
 	if err != nil {
