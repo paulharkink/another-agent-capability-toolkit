@@ -145,6 +145,7 @@ type registrationWorkspaceBackend struct {
 	Backend
 	profileBackend *profileBackend
 	*setupBackendFixture
+	previewOverride    *viewmodel.SetupPreview
 	inputSaveRequest   *viewmodel.SetupInstallRequest
 	runtimeAction      string
 	runtimeKey         state.Key
@@ -243,6 +244,11 @@ func (b *registrationWorkspaceBackend) CheckConnection(ctx context.Context, url,
 }
 func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
+	if b.previewOverride != nil {
+		preview := *b.previewOverride
+		preview.Key = setupProfileKey(request)
+		return preview, nil
+	}
 	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: "Plain", MCP: true, HasManifestUI: true,
 		Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
 		Inputs:   []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string"}, Value: "http://127.0.0.1:8765/mcp", HasValue: true, Editable: true}}, MCPDefinitions: []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
@@ -269,9 +275,13 @@ func (b *registrationWorkspaceBackend) UIRemoveRuntimeRecord(_ context.Context, 
 }
 
 func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBackend) {
+	return openRegistrationActionForUXWithPreview(t, nil)
+}
+
+func openRegistrationActionForUXWithPreview(t *testing.T, previewOverride *viewmodel.SetupPreview) (*Model, *registrationWorkspaceBackend) {
 	t.Helper()
 	m, profile := typedProfileFixture()
-	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}}
+	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}, previewOverride: previewOverride}
 	m.backend = backend
 	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
@@ -883,16 +893,23 @@ func TestDirtyInputsBlockAgentInstallAndUninstallUntilSaved(t *testing.T) {
 }
 
 func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
-	m, backend := openRegistrationActionForUX(t)
+	preview := &viewmodel.SetupPreview{PackageName: "Plain", MCP: true, HasManifestUI: true, Configured: true,
+		Sections:          []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"port"}}},
+		Inputs:            []viewmodel.SetupInput{{Definition: catalog.Input{Name: "port", Label: "Local port", Type: "integer", Default: 8765}, Value: 8765, HasValue: true, Editable: true}},
+		MCPDefinitions:    []catalog.MCP{{Name: "plain", Transport: "streamable-http", HostPortInput: "port", EndpointPath: "/mcp", TokenInput: "token"}},
+		MCPDefinitionKeys: map[string]state.Key{"plain": {Source: "team-source", Package: "plain", Target: "foreign", MCPDefinition: "plain"}},
+		Destinations:      []viewmodel.SetupDestination{{ID: "codex", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"}}}
+	m, backend := openRegistrationActionForUXWithPreview(t, preview)
 	backend.capabilitySnapshot = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
 		Ref: m.workspace.InstanceRef, Key: m.workspace.Key,
 		CompletionScopeKnown: true, CompletionScopeRelevant: true,
 		SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "mcp", Name: "plain"}},
 		SelectedDestinations: []string{"codex"}, EligibleDestinations: []string{"codex"},
-		MCPs:       []viewmodel.RuntimeStatus{{MCPID: "plain", Status: "stopped", Ownership: "local", URL: "http://127.0.0.1:8765/mcp"}},
+		MCPs:       []viewmodel.RuntimeStatus{{MCPID: "plain", Status: "stopped", Ownership: "local", URL: "http://localhost:8765/mcp"}},
 		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "mcp", Name: "plain", Status: "installed", Managed: true}},
 	}}}}
 	m.Update(m.load()())
+	m.inventory = []state.Installation{{Key: state.Key{Source: m.workspace.Key.Source, Package: m.workspace.Key.Package, Environment: m.workspace.Key.Environment, Target: m.workspace.Key.Target, MCPDefinition: "plain"}, AgentID: "codex", Component: "mcp", RegistrationName: "plain", URL: "http://127.0.0.1:8765/mcp"}}
 	m.workspace.InputsSaved = true
 	m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
 	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(m.workspace.Key)
@@ -902,7 +919,13 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 	m.workspace.Instance.Ownership = "local"
 	m.workspace.Instance.CanStart = true
 	m.workspace.Instance.RuntimeStatus = "stopped"
-	if err := m.form.ApplyValues(map[string]any{"endpoint": "http://changed.example/mcp"}); err != nil {
+	if reason := m.mcpRegistrationAddressReason("plain"); reason != "" {
+		t.Fatalf("equivalent loopback spelling should preserve the existing binding: %q", reason)
+	}
+	if sameMCPRegistrationURL("http://[::1]:8765/mcp", "http://localhost:8765/mcp") {
+		t.Fatal("IPv6 loopback must not be assumed equivalent to the local IPv4 binding")
+	}
+	if err := m.form.ApplyValues(map[string]any{"port": 8766}); err != nil {
 		t.Fatal(err)
 	}
 	// A normal form event refreshes the Runtime action reason from the dirty
@@ -932,10 +955,13 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 		t.Fatal("save command did not preserve the dirty-input state")
 	}
 	m.Update(msg)
-	if !m.workspace.InputsSaved || m.workspace.Installed {
-		t.Fatalf("saving changed inputs must mark Inputs saved and require agent reinstall: saved=%t installed=%t", m.workspace.InputsSaved, m.workspace.Installed)
+	if !m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered("plain") {
+		t.Fatalf("saving changed inputs must preserve the observed installation fact: saved=%t installed=%t registered=%t", m.workspace.InputsSaved, m.workspace.Installed, m.workspaceMCPRegistered("plain"))
 	}
 	m.form.SelectSectionID(sectionRuntimeID)
+	if reason := m.runtimeStartDisabledReason("plain", InstanceRow{Key: m.workspace.Key, Instance: m.workspace.Instance}); !strings.Contains(reason, "http://127.0.0.1:8765/mcp") || !strings.Contains(reason, "http://localhost:8766/mcp") || !strings.Contains(reason, "Install") {
+		t.Fatalf("Runtime did not explain the stale local MCP address and required Install: %q", reason)
+	}
 	_, cmd = m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
 	if cmd != nil || backend.runtimeAction != "" {
 		t.Fatalf("runtime Start became available before reinstall: cmd=%t action=%q", cmd != nil, backend.runtimeAction)

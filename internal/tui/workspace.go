@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/app"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
@@ -897,7 +899,89 @@ func (m *Model) runtimeStartDisabledReason(mcpName string, row InstanceRow) stri
 	case !m.workspace.Installed || !m.workspaceMCPRegistered(mcpName):
 		reason = appendActionReason(reason, "Install this capability for an agent first")
 	}
+	if reason == "" {
+		reason = m.mcpRegistrationAddressReason(mcpName)
+	}
 	return reason
+}
+
+func (m *Model) mcpRegistrationAddressReason(mcpName string) string {
+	if m.workspace == nil || m.workspace.Preview == nil || mcpName == "" {
+		return ""
+	}
+	var definition *catalog.MCP
+	for i := range m.workspace.Preview.MCPDefinitions {
+		if m.workspace.Preview.MCPDefinitions[i].Name == mcpName {
+			definition = &m.workspace.Preview.MCPDefinitions[i]
+			break
+		}
+	}
+	// Older definitions without declared host ports use the observed runtime
+	// endpoint. They cannot be compared to a pre-Start address.
+	if definition == nil || definition.HostPortInput == "" {
+		return ""
+	}
+	childKey, ok := m.workspace.Preview.MCPDefinitionKeys[mcpName]
+	if !ok {
+		return ""
+	}
+	registeredURLs := make([]string, 0, 1)
+	for _, installation := range m.inventory {
+		if installation.Key == childKey && installation.Component == "mcp" && !installation.ExternalRegistration && installation.URL != "" {
+			registeredURLs = append(registeredURLs, installation.URL)
+		}
+	}
+	if len(registeredURLs) == 0 {
+		return ""
+	}
+	values := make(map[string]any, len(m.workspace.Preview.Inputs))
+	for _, input := range m.workspace.Preview.Inputs {
+		if input.HasValue {
+			values[input.Definition.Name] = input.Value
+		} else if input.Value != nil {
+			values[input.Definition.Name] = input.Value
+		} else if input.Definition.Default != nil {
+			values[input.Definition.Name] = input.Definition.Default
+		}
+	}
+	desiredURL, err := app.ConfiguredMCPRegistrationURL(*definition, values)
+	if err != nil {
+		return "Cannot resolve the saved MCP address: " + err.Error()
+	}
+	for _, registeredURL := range registeredURLs {
+		if sameMCPRegistrationURL(registeredURL, desiredURL) {
+			return ""
+		}
+	}
+	return fmt.Sprintf("Agent MCP registration points to %s; saved inputs resolve to %s. Select Install to update this agent binding before Start.", registeredURLs[0], desiredURL)
+}
+
+func sameMCPRegistrationURL(left, right string) bool {
+	if left == right {
+		return true
+	}
+	a, errA := url.Parse(left)
+	b, errB := url.Parse(right)
+	if errA != nil || errB != nil || a.User != nil || b.User != nil {
+		return false
+	}
+	if !strings.EqualFold(a.Scheme, b.Scheme) || a.Port() != b.Port() || a.Path != b.Path || a.RawPath != b.RawPath || a.RawQuery != b.RawQuery || a.ForceQuery != b.ForceQuery || a.Fragment != b.Fragment {
+		return false
+	}
+	hostA, hostB := strings.ToLower(a.Hostname()), strings.ToLower(b.Hostname())
+	if hostA == hostB {
+		return true
+	}
+	return isLoopbackName(hostA) && isLoopbackName(hostB)
+}
+
+func isLoopbackName(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRow) string {

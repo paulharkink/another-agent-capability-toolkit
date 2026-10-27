@@ -57,6 +57,7 @@ type SetupPreview struct {
 	Sections                                          []catalog.Section
 	HasManifestUI                                     bool
 	MCPDefinitions                                    []catalog.MCP
+	MCPDefinitionKeys                                 map[string]state.Key
 	CredentialState                                   string
 	CredentialNote                                    string
 	ActiveInputGroups                                 map[string]string

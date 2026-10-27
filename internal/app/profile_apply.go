@@ -73,6 +73,13 @@ func configuredMCPRegistrationURL(definition catalog.MCP, values map[string]any)
 	return endpoint, nil
 }
 
+// ConfiguredMCPRegistrationURL returns the local address that registration
+// should use for an MCP definition with a declared host port. Callers should
+// use this instead of reconstructing host and endpoint path rules.
+func ConfiguredMCPRegistrationURL(definition catalog.MCP, values map[string]any) (string, error) {
+	return configuredMCPRegistrationURL(definition, values)
+}
+
 func isDynamicChoice(input catalog.Input) bool {
 	switch input.Type {
 	case "choice", "multichoice", "multiple-choice":
@@ -616,7 +623,12 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 	}
 	p, pr, values, inherited, err := s.instanceValuesForPreview(p, pr, key, q)
 	credentialState, credentialNote := s.credentialObservation(p, key)
-	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, InstancePath: pr.Path, ProfilePath: pr.Path, InstanceOrigin: "local", ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: p.MCPDefinitions(), PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
+	mcpDefinitions := p.MCPDefinitions()
+	mcpDefinitionKeys := make(map[string]state.Key, len(mcpDefinitions))
+	for _, definition := range mcpDefinitions {
+		mcpDefinitionKeys[definition.Name] = mcpDefinitionKey(key, p, definition)
+	}
+	preview := viewmodel.SetupPreview{Key: key, PackageName: p.Name, PackRoot: s.Source.Root, InstancePath: pr.Path, ProfilePath: pr.Path, InstanceOrigin: "local", ProfileOrigin: "local", MCP: p.HasMCP(), MCPDefinitions: mcpDefinitions, MCPDefinitionKeys: mcpDefinitionKeys, PluginDefinitions: p.PluginDefinitions(), CredentialState: credentialState, CredentialNote: credentialNote}
 	if err != nil {
 		return preview, err
 	}

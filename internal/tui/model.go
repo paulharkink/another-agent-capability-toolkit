@@ -251,14 +251,10 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 		m.workspace.InputsSaved = true
 		m.workspace.SaveNotice = "Inputs saved successfully."
 		m.workspace.Draft = nil
-		if msg.inputsChanged {
-			m.workspace.Installed = false
-			m.workspace.RegisteredMCPs = nil
-		}
 	}
 	m.pendingSetup = &msg.preview
 	m.pendingSetupField = msg.destinationField
-	m.output = "Inputs saved. Install this capability for selected agents to enable Start."
+	m.output = "Inputs saved."
 	if m.form != nil {
 		m.form.ReopenAfterSave()
 		m.form.MarkClean()
