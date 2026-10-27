@@ -267,6 +267,39 @@ func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t 
 	if observed == nil || len(observed.Components) == 0 || observed.Components[0].Status != "unavailable" {
 		t.Fatalf("runtime without exact registration metadata must remain unknown, not absent: %+v", observed)
 	}
+
+	runtime.instances[0].RegistrationName = "alpha-remote"
+	optional := &profileAdapter{
+		adapterID:  "optional-agent",
+		home:       adapter.home,
+		detection:  &agents.Detection{State: "unverified", ConfigFiles: []agents.ConfigFile{{Path: filepath.Join(adapter.home, "optional-mcp.json"), Exists: false}}},
+		observeErr: fmt.Errorf("optional agent is not installed"),
+	}
+	s.Options.Adapters = fixtureAdaptersWithExtra{fixtureAdapters{adapter}, []agents.Adapter{optional}}
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 {
+		t.Fatalf("observed parent lost components after optional adapter filtering: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.AgentID == optional.ID() {
+			if component.Status != "absent" {
+				t.Fatalf("adapter with no detected install or existing config must be known absent, not poison binding status: %+v", observed.Components)
+			}
+		}
+	}
+	if optional.observeCalls != 0 {
+		t.Fatalf("optional adapter without a config was probed %d times", optional.observeCalls)
+	}
 }
 
 func TestObservedInstanceRuntimeDuplicateRowsRemainChildScopedAndStale(t *testing.T) {

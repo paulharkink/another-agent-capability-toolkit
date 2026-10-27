@@ -387,6 +387,7 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 	sort.Strings(agentIDs)
 	components := []viewmodel.ComponentStatus{}
 	errorsFound := []string{}
+	definitions := p.MCPDefinitions()
 	observations := map[string]agents.Observation{}
 	observeErrors := map[string]error{}
 	componentSeen := map[string]bool{}
@@ -450,6 +451,34 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 		}
 		id := adapter.ID()
 		if _, ok := observations[id]; !ok {
+			scope := s.agentScope(id)
+			detection, detectErr := adapter.Detect(ctx, scope)
+			configExists := false
+			configKnown := len(detection.ConfigFiles) > 0
+			for _, file := range detection.ConfigFiles {
+				configExists = configExists || file.Exists
+			}
+			if detectErr == nil && !detection.Installed && configKnown && !configExists && len(managedByAgent[id]) == 0 {
+				// Do not invoke optional agent commands for adapters that have no
+				// detected installation, native MCP config, or exact-key binding.
+				// Their configured MCP destination is known absent; they cannot
+				// make an otherwise confirmed empty inventory Unknown.
+				for _, definition := range definitions {
+					childKey := mcpDefinitionKey(parent, p, definition)
+					if !hasObservedRuntime(runtimes, childKey) {
+						continue
+					}
+					componentID := foreignObservedComponentID(id, "mcp", definition.Name)
+					if componentSeen[componentID] {
+						continue
+					}
+					components = append(components, viewmodel.ComponentStatus{
+						AgentID: id, Kind: "mcp", Name: definition.Name, Status: "absent",
+					})
+					componentSeen[componentID] = true
+				}
+				continue
+			}
 			observation, observeErr := adapter.Observe(ctx, s.agentScope(id), agents.ObservationRequest{
 				Key: parent, IncludeInventory: true,
 			})
@@ -464,7 +493,7 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 		}
 		observation := observations[id]
 		observeErr := observeErrors[id]
-		for _, definition := range p.MCPDefinitions() {
+		for _, definition := range definitions {
 			childKey := mcpDefinitionKey(parent, p, definition)
 			var runtime *mcp.Instance
 			for i := range runtimes {
@@ -525,6 +554,15 @@ func (s *Service) observedForeignAgentComponents(ctx context.Context, p catalog.
 
 func foreignObservedComponentID(agentID, kind, name string) string {
 	return agentID + "\x00" + kind + "\x00" + name
+}
+
+func hasObservedRuntime(runtimes []mcp.Instance, key state.Key) bool {
+	for _, runtime := range runtimes {
+		if runtime.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func observedForeignAgentComponentMatches(row state.Installation, observed agents.ComponentObservation) bool {
