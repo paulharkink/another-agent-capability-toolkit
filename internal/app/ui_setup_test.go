@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,6 +115,8 @@ func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 
 func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	svc, _, store := fixture(t)
+	runtimeSpy := &fakeRuntime{}
+	svc.Options.Runtime = runtimeSpy
 	const secret = "private-input-canary"
 	const definitionDefault = "definition-secret-canary"
 	svc.Source.Catalog[0].Inputs = []catalog.Input{
@@ -126,6 +129,13 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 		Inputs:       map[string]any{"label": "saved-only", "token": secret},
 	}); err != nil {
 		t.Fatalf("save-only input operation failed: %v", err)
+	}
+	if runtimeSpy.starts != 0 {
+		t.Fatalf("saving inputs started %d MCP runtimes; want none", runtimeSpy.starts)
+	}
+	installations, err := store.Installations()
+	if err != nil || len(installations) != 0 {
+		t.Fatalf("saving inputs wrote agent/runtime installation records: rows=%+v err=%v", installations, err)
 	}
 	key, err := store.ResolveInstanceKey(svc.Source.ID, "demo", "default")
 	if err != nil {
@@ -155,14 +165,16 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("private secret file missing: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
+	// Windows FileMode.Perm does not report ACL access; keep Unix mode checks
+	// on platforms where these bits describe the file's effective permissions.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("private secret file mode = %v; want 0600", info.Mode().Perm())
 	}
 	if got, err := os.ReadFile(filepath.Join(store.AuthDir(key), "inputs.json")); err != nil || string(got) != string(runtimeMarker) {
 		t.Fatalf("saving private inputs changed runtime-owned inputs.json: contentsPreserved=%t err=%v", string(got) == string(runtimeMarker), err)
 	}
 	dirInfo, err := os.Stat(store.AuthDir(key))
-	if err != nil || dirInfo.Mode().Perm() != 0700 {
+	if err != nil || (runtime.GOOS != "windows" && dirInfo.Mode().Perm() != 0700) {
 		t.Fatalf("private input directory permissions are not owner-only: err=%v", err)
 	}
 	preview, err := svc.PreviewInstance(context.Background(), InstanceRequest{Ref: ref})
@@ -213,7 +225,7 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	if err != nil || len(secretInputs) != 0 {
 		t.Fatalf("private secret reset left stored values: present=%t err=%v", len(secretInputs) > 0, err)
 	}
-	installations, err := store.Installations()
+	installations, err = store.Installations()
 	if err != nil || len(installations) != 0 {
 		t.Fatalf("save-only operation created installation effects: %+v err=%v", installations, err)
 	}
