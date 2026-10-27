@@ -8,6 +8,64 @@ param(
   [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
+
+function Get-NormalizedPathEntry([string]$entry) {
+  $value = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
+  if (-not $value) { return '' }
+  try { $value = [IO.Path]::GetFullPath($value) } catch { }
+  $root = [IO.Path]::GetPathRoot($value)
+  if ($value.Length -gt $root.Length) { $value = $value.TrimEnd([char[]]@('\', '/')) }
+  return $value
+}
+
+function Test-PathContainsEntry([string]$pathValue, [string]$entry) {
+  $wanted = Get-NormalizedPathEntry $entry
+  foreach ($candidate in ($pathValue -split ';')) {
+    if ($candidate -and [string]::Equals((Get-NormalizedPathEntry $candidate), $wanted, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Add-UserPathEntry([string]$entry) {
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+  if (-not $key) { $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
+  if (-not $key) { throw 'Could not open the current user environment settings' }
+  try {
+    $hasPath = $key.GetValueNames() -contains 'Path'
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    $pathValue = ''
+    if ($hasPath) {
+      $kind = $key.GetValueKind('Path')
+      if ($kind -notin @([Microsoft.Win32.RegistryValueKind]::String, [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+        throw "User Path has unsupported registry type $kind"
+      }
+      $pathValue = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    }
+    if (-not (Test-PathContainsEntry $pathValue $entry)) {
+      $separator = if (-not $pathValue -or $pathValue.EndsWith(';')) { '' } else { ';' }
+      $pathValue = $pathValue + $separator + $entry
+      $key.SetValue('Path', $pathValue, $kind)
+      return $true
+    }
+    return $false
+  } finally { $key.Dispose() }
+}
+
+function Send-EnvironmentChanged {
+  if (-not ('AactEnvironmentBroadcast' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AactEnvironmentBroadcast {
+  [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint message, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
+}
+'@
+  }
+  $result = [UIntPtr]::Zero
+  return [AactEnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result)
+}
+
 $architecture = $env:AACT_ARCH
 if (-not $architecture) {
   $architecture = $env:PROCESSOR_ARCHITEW6432
@@ -121,7 +179,24 @@ try {
     $releaseBackup = ''
   }
   Write-Output "Installed AACT $Version (windows/$arch) at $release"
-  if (($env:PATH -split ';') -notcontains $launchers) { Write-Output "Add $launchers to PATH to run aact. Your shell profiles were not modified." }
+  try {
+    $processPathHadLauncher = Test-PathContainsEntry $env:PATH $launchers
+    $addedToUserPath = Add-UserPathEntry $launchers
+    if (-not $processPathHadLauncher) {
+      $separator = if (-not $env:PATH -or $env:PATH.EndsWith(';')) { '' } else { ';' }
+      $env:PATH = $env:PATH + $separator + $launchers
+    }
+    if ($addedToUserPath) {
+      $broadcast = Send-EnvironmentChanged
+      if ($broadcast -eq [IntPtr]::Zero) { Write-Warning 'User PATH was updated, but Windows did not confirm the environment-change notification.' }
+      Write-Output "Added $launchers to your User PATH. Restart existing terminals if they do not recognize aact."
+    } elseif (-not $processPathHadLauncher) {
+      Write-Output 'Updated this installer process PATH. Restart existing terminals if they do not recognize aact.'
+    }
+  } catch {
+    Write-Warning "Installed successfully, but could not add the launcher directory to User PATH: $($_.Exception.Message)"
+    Write-Output "Run the launcher directly at $(Join-Path $launchers 'aact.cmd') or add that directory to PATH."
+  }
 } catch {
   if (-not $releaseCommitted -and $releaseBackup -and (Test-Path -LiteralPath $releaseBackup)) {
     try {
