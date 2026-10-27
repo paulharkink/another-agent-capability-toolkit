@@ -1147,6 +1147,58 @@ func TestDefaultedInputWithoutSavedOverrideIsNotDirty(t *testing.T) {
 	}
 }
 
+func TestAgentAccessRefreshUsesObservedInstallStatusWithoutReplacingDraftSelection(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	key := m.workspace.Key
+	preview := *m.workspace.Preview
+	preview.Destinations[0].Selected = true
+	preview.Destinations[1].Selected = false
+	m.workspace.Preview = &preview
+	m.configureWorkspaceForm(preview)
+
+	installed := viewmodel.CapabilityInstance{Key: key, Components: []viewmodel.ComponentStatus{
+		{AgentID: "codex", Kind: "skill", Status: "installed"},
+		{AgentID: "codex", Kind: "mcp", Name: "plain", Status: "installed"},
+	}}
+	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{
+		key.Package: {Instances: []viewmodel.CapabilityInstance{installed}},
+	}
+	m.workspace.Installed = m.targetHasInstallRecord(key)
+	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(key)
+	m.configureWorkspaceForm(preview)
+
+	// A user may be changing their next destination selection while a
+	// background refresh reconciles the actual installed state.
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"claude"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := viewmodel.CapabilityInstance{Key: key}
+	m.applyLoaded(loadedMsg{
+		catalog: m.catalog,
+		capabilityInstances: map[string]viewmodel.CapabilityInstanceSnapshot{
+			key.Package: {Instances: []viewmodel.CapabilityInstance{refreshed}},
+		},
+		instanceSnapshot: &viewmodel.InstanceSnapshot{},
+	})
+
+	got := ansi.Strip(m.View().Content)
+	codexLine := ""
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "codex") {
+			codexLine = line
+			break
+		}
+	}
+	if codexLine == "" || !strings.Contains(codexLine, "Not installed") {
+		t.Fatalf("Agent access retained stale installed status after observation refresh; codex row=%q\n%s", codexLine, got)
+	}
+	selected, _ := m.form.Values()[m.pendingSetupField].([]string)
+	if !reflect.DeepEqual(selected, []string{"claude"}) {
+		t.Fatalf("background refresh replaced the user's destination draft: got %v", selected)
+	}
+}
+
 func TestUXRuntimeStartsAfterInputsSavedAndAgentInstall(t *testing.T) {
 	m, backend := openRegistrationActionForUX(t)
 	setObservedRuntimeFacts(m, backend, "stopped", "local", "")

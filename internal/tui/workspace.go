@@ -72,6 +72,8 @@ type workspaceState struct {
 	Existing             bool
 	Installed            bool
 	RegisteredMCPs       map[string]bool
+	AgentAccessStatus    map[string]agentAccessInstallStatus
+	AgentAccessObserved  bool
 	InputsSaved          bool
 	SaveNotice           string
 	AgentActionsKnown    bool
@@ -81,6 +83,11 @@ type workspaceState struct {
 	Instance             *viewmodel.Instance
 	InstanceSnapshot     *viewmodel.InstanceSnapshot
 	Draft                map[string]any
+}
+
+type agentAccessInstallStatus struct {
+	Installed bool
+	MCP       bool
 }
 
 type runtimeRecordTarget struct {
@@ -573,6 +580,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	}
 	stored := preview
 	m.workspace.Preview = &stored
+	m.workspace.AgentAccessStatus, m.workspace.AgentAccessObserved = m.targetAgentAccessStatus(preview.Key)
 	orphanRuntimes := m.workspaceOrphanRuntimes(preview)
 	sections := workspaceFormSections(preview, m.form.Definitions(), m.pendingSetupField)
 	inputsReadOnly := m.workspaceInputsReadOnly()
@@ -654,13 +662,26 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		status := "Not installed"
 		marker := "[ ]"
 		if destination.Selected {
-			status, marker = "Installed", "[x]"
+			marker = "[x]"
 		}
 		mcpStatus := "Not installed"
 		if !preview.MCP {
 			mcpStatus = "—"
+		}
+		if m.workspace.AgentAccessObserved {
+			if observed := m.workspace.AgentAccessStatus[destination.ID]; observed.Installed {
+				status = "Installed"
+			}
+			if preview.MCP && m.workspace.AgentAccessStatus[destination.ID].MCP {
+				mcpStatus = "Installed"
+			}
 		} else if destination.Selected {
-			mcpStatus = "Installed"
+			// Older backends without component observations can only report the
+			// selected preview state. Modern backends use the observed rows above.
+			status = "Installed"
+			if preview.MCP {
+				mcpStatus = "Installed"
+			}
 		}
 		name := firstNonempty(destination.Name, destination.ID)
 		agentAccess = append(agentAccess, fmt.Sprintf("%-14s %-8s %-13s %s", name, marker, status, mcpStatus))

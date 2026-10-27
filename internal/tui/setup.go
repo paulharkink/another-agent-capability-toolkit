@@ -188,6 +188,34 @@ func (m *Model) targetRegisteredMCPs(key state.Key) map[string]bool {
 	return registered
 }
 
+func (m *Model) targetAgentAccessStatus(key state.Key) (map[string]agentAccessInstallStatus, bool) {
+	snapshot, observed := m.capabilityInstances[key.Package]
+	statuses := map[string]agentAccessInstallStatus{}
+	if !observed {
+		return statuses, false
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.AgentID == "" || component.Status != "installed" {
+				continue
+			}
+			status := statuses[component.AgentID]
+			switch component.Kind {
+			case "skill", "plugin", "mcp":
+				status.Installed = true
+				if component.Kind == "mcp" {
+					status.MCP = true
+				}
+			}
+			statuses[component.AgentID] = status
+		}
+	}
+	return statuses, true
+}
+
 func capabilityInstanceKey(instance viewmodel.CapabilityInstance) state.Key {
 	key := instance.Key
 	if key.Source == "" {
