@@ -54,7 +54,15 @@ func (a *skillAdapter) InstallSkill(ctx context.Context, scope Scope, request Sk
 	if !d.Installed {
 		return state.Installation{}, fmt.Errorf("agent %s is not installed: %s", a.Name(), d.Reason)
 	}
-	return install.NewSkills(a.deps.Store).InstallOne(ctx, request.Package, request.Skill, install.SkillDestination{ID: e.ID, Home: e.Home, Kind: e.Kind, SkillsDir: e.SkillsDir}, request.Key, request.StagedDir)
+	var proof *install.ForeignSkillProof
+	if request.VerifiedForeignSkill != nil {
+		proof = &install.ForeignSkillProof{
+			ParentKeyID:      request.VerifiedForeignSkill.ParentKeyID,
+			RegistrationName: request.VerifiedForeignSkill.RegistrationName,
+			URL:              request.VerifiedForeignSkill.URL,
+		}
+	}
+	return install.NewSkills(a.deps.Store).InstallOneWithProof(ctx, request.Package, request.Skill, install.SkillDestination{ID: e.ID, Home: e.Home, Kind: e.Kind, SkillsDir: e.SkillsDir}, request.Key, request.StagedDir, proof)
 }
 func (a *skillAdapter) RemoveSkill(ctx context.Context, scope Scope, row state.Installation) error {
 	if a.deps.Store == nil {

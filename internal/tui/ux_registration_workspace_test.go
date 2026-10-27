@@ -35,12 +35,19 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 		t.Fatalf("Enter on selected foreign target did not open its workspace: context=%+v selected=%t focus=%v output=%q view=%s", row, ok, m.home.Focus, m.output, ansi.Strip(m.View().Content))
 	}
 	m.Update(cmd())
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	if m.form == nil || m.workspace == nil || m.workspace.Instance == nil {
 		t.Fatalf("foreign target workspace did not load: %s", m.View().Content)
 	}
 	m.workspace.InputsSaved = true
-	if m.workspace.Instance.Ownership != "other-aact" || !strings.Contains(m.View().Content, "http://127.0.0.1:8765/mcp") {
-		t.Fatalf("foreign endpoint/ownership facts missing from Overview: %s", m.View().Content)
+	if m.workspace.Instance.Ownership != "other-aact" || !strings.Contains(m.View().Content, "Inputs are managed by another AACT installation") {
+		t.Fatalf("foreign Inputs did not explain management ownership: %s", m.View().Content)
+	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	if runtimeView := ansi.Strip(m.form.View().Content); !strings.Contains(runtimeView, "http://1") || !strings.Contains(runtimeView, "27.0.0.1:8765/mcp") || !strings.Contains(runtimeView, "ownership: other-aact") {
+		t.Fatalf("foreign runtime facts missing from Runtime: %s", runtimeView)
 	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
@@ -63,6 +70,52 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	m.Update(runTeaCmd(t, m, install))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.Name != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
 		t.Fatalf("Agent access install did not bind destinations on selected target: %+v", backend.installRequest)
+	}
+}
+
+func markWorkspaceForeignObserved(m *Model, mcpName, endpoint string) {
+	parentKey := m.workspace.Key
+	childKey := parentKey
+	childKey.MCP = mcpName
+	const reason = "This Capability Instance is managed by another AACT installation; change its inputs and runtime there."
+	if m.capabilityInstances == nil {
+		m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{}
+	}
+	m.capabilityInstances[parentKey.Package] = viewmodel.CapabilityInstanceSnapshot{Instances: []viewmodel.CapabilityInstance{{
+		Ref: config.InstanceRef{PackID: parentKey.Source, CapabilityID: parentKey.Package, Name: parentKey.Target},
+		Key: parentKey, Origin: "observed", ConfigStatus: "read-only", ConfigError: reason,
+		Ownership: "other-aact", ManagementReason: reason,
+		MCPs: []viewmodel.RuntimeStatus{{Key: childKey, MCPID: mcpName, Status: "running", Ownership: "other-aact", URL: endpoint}},
+	}}}
+}
+
+func TestUXForeignCapabilityParentGuardsSiblingRuntimeActions(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	preview := *m.workspace.Preview
+	preview.MCPDefinitions = []catalog.MCP{
+		{Name: "plain"},
+		{Name: "sibling", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"login"}}}},
+	}
+	m.workspace.Preview = &preview
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(preview)
+	if reason := m.workspaceForeignRuntimeReason("sibling"); !strings.Contains(reason, "another AACT installation") {
+		t.Fatalf("read-only Capability Instance did not guard its unobserved sibling: %q", reason)
+	}
+
+	seen := map[string]bool{}
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "start:sibling" || action.ID == "authenticate:sibling" || action.ID == "stop:sibling" || action.ID == "edit-inputs:sibling" {
+			if !strings.Contains(action.Disabled, "another AACT installation") {
+				t.Fatalf("sibling runtime action lacks the parent management reason: %+v", action)
+			}
+			seen[action.ID] = true
+		}
+	}
+	for _, id := range []string{"start:sibling", "authenticate:sibling", "stop:sibling", "edit-inputs:sibling"} {
+		if !seen[id] {
+			t.Fatalf("read-only Capability Instance omitted sibling action %q", id)
+		}
 	}
 }
 
@@ -760,23 +813,26 @@ func TestUXRegistrationButtonsExposeSeparateInstallAndUninstall(t *testing.T) {
 
 func TestUXInputsStageShowsSaveAndCancelAndSaveDoesNotInstall(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	selectWorkspaceSectionByKeyboard(t, m, sectionInputsID)
-	view := m.form.View().Content
-	for _, want := range []string{"Inputs", "Save", "Cancel"} {
+	view := ansi.Strip(m.form.View().Content)
+	for _, want := range []string{"Inputs", "Inputs are managed by another AACT installation"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("Inputs stage must visibly offer %q:\n%s", want, view)
+			t.Fatalf("foreign Inputs stage must explain its ownership with %q:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Save and apply") {
-		t.Fatalf("Inputs stage still combines saving and applying:\n%s", view)
+	for _, forbidden := range []string{"[ Save ]", "[ Cancel ]", "Save and apply", "Endpoint URI"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("foreign Inputs stage exposed local control or value %q:\n%s", forbidden, view)
+		}
 	}
 	_, cmd := m.Update(forms.ActionMsg{SectionID: "tool:inputs", ID: "save-inputs"})
-	if cmd == nil {
-		t.Fatal("Save inputs did not issue its save-only operation")
+	if cmd != nil {
+		t.Fatal("foreign Inputs Save route issued a save operation")
 	}
-	m.Update(cmd())
-	if b.inputSaveRequest == nil {
-		t.Fatal("Save inputs did not call save-only backend")
+	if b.inputSaveRequest != nil {
+		t.Fatal("foreign Inputs Save route called the save-only backend")
 	}
 	if b.installRequest != nil {
 		t.Fatal("saving inputs installed agent configuration")
@@ -969,6 +1025,11 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 		MCPDefinitionKeys: map[string]state.Key{"plain": {Source: "team-source", Package: "plain", Target: "foreign", MCPDefinition: "plain"}},
 		Destinations:      []viewmodel.SetupDestination{{ID: "codex", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"}}}
 	m, backend := openRegistrationActionForUXWithPreview(t, preview)
+	// This journey verifies the ordinary Windows-owned runtime input gate; the
+	// shared fixture starts from an observed foreign endpoint.
+	m.workspace.Instance.Ownership = "local"
+	m.workspace.Instance.RuntimeStatus = "stopped"
+	m.workspace.Instance.CanStart = true
 	backend.capabilitySnapshot = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
 		Ref: m.workspace.InstanceRef, Key: m.workspace.Key,
 		CompletionScopeKnown: true, CompletionScopeRelevant: true,
@@ -1099,20 +1160,22 @@ func TestUXRuntimeStartsAfterInputsSavedAndAgentInstall(t *testing.T) {
 }
 
 func TestUXApprovedThreeStageScreensRenderVisibleControls(t *testing.T) {
-	t.Run("Inputs", func(t *testing.T) {
+	t.Run("Foreign Inputs", func(t *testing.T) {
 		m, _ := openRegistrationActionForUX(t)
+		markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+		m.configureWorkspaceForm(*m.workspace.Preview)
 		m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 		m.Update(tea.KeyPressMsg{Code: tea.KeyUp}) // Navigate from Agent access to Inputs.
 		if m.form.SectionID() != sectionInputsID {
 			t.Fatalf("keyboard did not select Inputs: %q", m.form.SectionID())
 		}
 		view := ansi.Strip(m.View().Content)
-		for _, want := range []string{"Plain", "Instance: foreign", "Inputs", "Endpoint URI", "Save stores these inputs", "[ Save ]", "[ Cancel ]"} {
+		for _, want := range []string{"Plain", "Instance: foreign", "Inputs", "Inputs are managed by another AACT installation"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("rendered Inputs screen missing %q:\n%s", want, view)
 			}
 		}
-		for _, forbidden := range []string{"Install selected", "Start plain", "Save and apply"} {
+		for _, forbidden := range []string{"Endpoint URI", "Save stores these inputs", "[ Save ]", "[ Cancel ]", "Install selected", "Start plain", "Save and apply"} {
 			if strings.Contains(view, forbidden) {
 				t.Fatalf("Inputs screen exposes later-stage action %q:\n%s", forbidden, view)
 			}

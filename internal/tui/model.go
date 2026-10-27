@@ -448,6 +448,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionInputsID {
 		if action.ID == "save-inputs" && m.form != nil {
+			if m.workspaceInputsReadOnly() {
+				m.output = runtimeManagedElsewhereReason
+				return m, nil
+			}
 			if err := m.form.CommitPendingInput(); err != nil {
 				m.output = "Could not save inputs: " + err.Error()
 				return m, nil
@@ -482,6 +486,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		parts := strings.SplitN(action.ID, ":", 2)
 		if len(parts) == 2 {
 			if parts[0] == "edit-inputs" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
+					return m, nil
+				}
 				m.workspace.SelectedMCP = parts[1]
 				m.workspace.Section = "Inputs"
 				m.workspace.SectionID = sectionInputsID
@@ -502,6 +510,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				target := m.workspace.RuntimeRecordTargets[index]
+				if target.Ownership == "other-aact" {
+					m.output = runtimeManagedElsewhereReason
+					return m, nil
+				}
 				return m, func() tea.Msg {
 					output, err := backend.UIRemoveRuntimeRecord(m.ctx, target.Key, target.ID)
 					return operationMsg{origin: m.view, output: output, err: err, step: "delete runtime record", target: target.ID}
@@ -526,6 +538,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
+					return m, nil
+				}
 				profile := m.instanceForMCPName(parts[1])
 				if profile == nil && len(m.workspace.Preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 					parent := *m.workspace.Instance
@@ -550,6 +566,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
 			if parts[0] == "authenticate" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
+					return m, nil
+				}
 				if m.workspace.Preview == nil {
 					m.output = "Refresh this target before logging in."
 					return m, nil
@@ -759,9 +779,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.workspace.SectionID = m.form.SectionID()
 			m.workspace.Section = m.form.SectionTitle()
-			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
-			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
-			m.form.SetTabThroughControls(m.workspace.SectionID == sectionInputsID)
+			inputsReadOnly := m.workspaceInputsReadOnly()
+			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID || inputsReadOnly)
+			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID || inputsReadOnly)
+			m.form.SetTabThroughControls(m.workspace.SectionID == sectionInputsID && !inputsReadOnly)
 		}
 		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()

@@ -207,6 +207,37 @@ func packageMCPProfiles(p catalog.Package, values map[string]any) []catalog.MCP 
 func sameCapabilityKey(a, b state.Key) bool {
 	return a.Source == b.Source && a.Package == b.Package && a.Environment == b.Environment && a.Target == b.Target
 }
+
+const foreignRuntimeManagementReason = "This Capability Instance is managed by another AACT installation; change its inputs and runtime there."
+
+// rejectForeignRuntimeMutation prevents this installation from changing the
+// Pack instance whose exact runtime is currently owned by another AACT.
+// Agent-only installation deliberately does not use this guard: it changes
+// only this installation's agent bindings and never the observed runtime.
+func (s *Service) rejectForeignRuntimeMutation(ctx context.Context, key state.Key) error {
+	instances, err := s.Options.Runtime.List(ctx)
+	if err != nil {
+		// A failed refresh must not erase a previously observed foreign owner.
+		s.observationMu.Lock()
+		instances = append([]mcp.Instance(nil), s.lastInstances...)
+		s.observationMu.Unlock()
+	}
+	for _, instance := range instances {
+		if !sameCapabilityKey(instance.Key, key) || instance.Status != "running" || instance.Ownership != "other-aact" {
+			continue
+		}
+		return errors.New(foreignRuntimeManagementReason)
+	}
+	return nil
+}
+
+func runtimeChildName(key state.Key) string {
+	if key.MCPDefinition != "" {
+		return key.MCPDefinition
+	}
+	return key.MCP
+}
+
 func skillInstallInputs(p catalog.Package, skillsOnly bool) []catalog.Input {
 	defs := append([]catalog.Input{}, p.Inputs...)
 	if !skillsOnly || p.MCP == nil {

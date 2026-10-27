@@ -80,6 +80,9 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 	if err != nil {
 		return "", err
 	}
+	if err := source.rejectForeignRuntimeMutation(ctx, key); err != nil {
+		return "", err
+	}
 	rows, err := source.Store.Installations()
 	if err != nil {
 		return "", err

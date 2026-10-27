@@ -705,8 +705,8 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 	}
 	m.form.SetSubmitLabel("Save")
-	m.form.SetSubmitHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
-	m.form.SetCancelHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
+	m.form.SetSubmitHidden(m.workspace != nil && m.workspace.Active && (m.workspace.SectionID != sectionInputsID || m.workspaceInputsReadOnly()))
+	m.form.SetCancelHidden(m.workspace != nil && m.workspace.Active && (m.workspace.SectionID != sectionInputsID || m.workspaceInputsReadOnly()))
 	_, _, width, height, ok := m.setupOverlayBounds()
 	if !ok {
 		width, height = m.width, m.height

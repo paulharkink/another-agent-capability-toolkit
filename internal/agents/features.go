@@ -58,11 +58,21 @@ type Adapter interface {
 type ConfigPathProvider interface {
 	PlannedConfigPath(context.Context, Scope) (string, error)
 }
+
+// ForeignSkillProof lets the application pass verified runtime metadata to
+// an agent adapter without depending directly on installation mechanics.
+type ForeignSkillProof struct {
+	ParentKeyID      string
+	RegistrationName string
+	URL              string
+}
+
 type SkillRequest struct {
-	Key       state.Key
-	Package   catalog.Package
-	Skill     catalog.Skill
-	StagedDir string
+	Key                  state.Key
+	Package              catalog.Package
+	Skill                catalog.Skill
+	StagedDir            string
+	VerifiedForeignSkill *ForeignSkillProof
 }
 type MCPRequest struct {
 	Key          state.Key

@@ -446,7 +446,7 @@ func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
 	view := ansi.Strip(m.form.View().Content)
-	for _, want := range []string{"Owned by another installation"} {
+	for _, want := range []string{"another installation"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Runtime disabled Start omitted %q:\n%s", want, view)
 		}

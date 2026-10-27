@@ -84,8 +84,48 @@ type workspaceState struct {
 }
 
 type runtimeRecordTarget struct {
-	Key state.Key
-	ID  string
+	Key       state.Key
+	ID        string
+	Ownership string
+}
+
+const runtimeManagedElsewhereReason = "Runtime belongs to another installation (another AACT installation); manage it there."
+
+func (m *Model) workspaceForeignRuntimeReason(mcpName string) string {
+	if m.workspace == nil {
+		return ""
+	}
+	parent := m.workspaceObservedForeignCapability()
+	if parent == nil {
+		return ""
+	}
+	return firstNonempty(parent.ManagementReason, parent.ConfigError, runtimeManagedElsewhereReason)
+}
+
+func observedForeignRunningRuntime(ownership, status string) bool {
+	return ownership == "other-aact" && strings.EqualFold(strings.TrimSpace(status), "running")
+}
+
+func (m *Model) workspaceObservedForeignCapability() *viewmodel.CapabilityInstance {
+	if m.workspace == nil {
+		return nil
+	}
+	snapshot, ok := m.capabilityInstances[m.workspace.Key.Package]
+	if !ok {
+		return nil
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if capabilityInstanceKey(instance) != m.workspace.Key || instance.Origin != "observed" || instance.ConfigStatus != "read-only" || instance.Ownership != "other-aact" {
+			continue
+		}
+		copy := instance
+		return &copy
+	}
+	return nil
+}
+
+func (m *Model) workspaceInputsReadOnly() bool {
+	return m.workspaceForeignRuntimeReason("") != ""
 }
 
 type runtimeRecordRemovalBackend interface {
@@ -230,6 +270,14 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 }
 
 func workspaceOverviewLines(preview viewmodel.SetupPreview, installed bool, profile *viewmodel.Instance) []string {
+	if profile != nil && observedForeignRunningRuntime(profile.Ownership, profile.RuntimeStatus) {
+		return []string{
+			"Inputs are managed by another AACT installation.",
+			"MCP runtime: " + nonempty(profile.RuntimeStatus, "unknown"),
+			"Ownership: " + nonempty(profile.Ownership, "unknown"),
+			"Endpoint: " + nonempty(profile.URL, "not configured"),
+		}
+	}
 	configuration := "not saved"
 	if preview.Configured {
 		configuration = "saved"
@@ -527,6 +575,20 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.workspace.Preview = &stored
 	orphanRuntimes := m.workspaceOrphanRuntimes(preview)
 	sections := workspaceFormSections(preview, m.form.Definitions(), m.pendingSetupField)
+	inputsReadOnly := m.workspaceInputsReadOnly()
+	if inputsReadOnly {
+		found := false
+		for i := range sections {
+			if sections[i].ID == sectionInputsID {
+				sections[i].Fields = nil
+				found = true
+				break
+			}
+		}
+		if !found {
+			sections = append([]forms.FormSection{{ID: sectionInputsID, Title: "Inputs"}}, sections...)
+		}
+	}
 	if len(orphanRuntimes) > 0 && !preview.MCP {
 		sections = append(sections, forms.FormSection{ID: sectionRuntimeID, Title: "Runtime"})
 	}
@@ -559,19 +621,28 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		}
 	}
 	inputLines := []string{fmt.Sprintf("Inputs · %d / %d required ready", ready, required), "Save stores these inputs. It does not install or start anything."}
-	if m.workspace.SaveNotice != "" {
+	if inputsReadOnly {
+		inputLines = []string{"Inputs are managed by another AACT installation."}
+	}
+	if m.workspace.SaveNotice != "" && !inputsReadOnly {
 		inputLines = append(inputLines, m.workspace.SaveNotice)
 	}
-	if m.hasUnsavedSetupInputs() {
+	if m.hasUnsavedSetupInputs() && !inputsReadOnly {
 		inputLines = append(inputLines, "Unsaved changes · Save before installing or starting.")
 	}
 	for _, issue := range preview.ValidationIssues {
+		if inputsReadOnly {
+			break
+		}
 		inputLines = append(inputLines, "Needs attention: "+issue)
 	}
-	if m.workspace.SelectedMCP != "" {
+	if m.workspace.SelectedMCP != "" && !inputsReadOnly {
 		inputLines = append(inputLines, "Editing inputs for MCP "+m.workspace.SelectedMCP+" · answers are saved at this capability instance.")
 	}
 	for _, section := range preview.Sections {
+		if inputsReadOnly {
+			break
+		}
 		if len(section.Fields) > 0 {
 			inputLines = append(inputLines, strings.ToUpper(section.Title))
 		}
@@ -654,10 +725,17 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			if startProfile != nil {
 				startRow = InstanceRow{Key: startProfile.Key, Instance: startProfile, URL: startProfile.URL, Status: startProfile.RuntimeStatus}
 			}
+			foreignReason := m.workspaceForeignRuntimeReason(definition.Name)
 			startDisabled := m.runtimeStartDisabledReason(definition.Name, startRow)
+			if foreignReason != "" {
+				startDisabled = foreignReason
+			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
 				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
+				if foreignReason != "" {
+					authenticateDisabled = foreignReason
+				}
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "authenticate:" + definition.Name, Label: "Login to " + definition.Name, Disabled: authenticateDisabled})
 			}
 			if child != nil {
@@ -683,7 +761,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 						continue
 					}
 					targetIndex := len(m.workspace.RuntimeRecordTargets)
-					m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: child.Key, ID: record.ID})
+					m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: child.Key, ID: record.ID, Ownership: record.Ownership})
 					deleteLabel := "Delete runtime " + record.ID
 					deleteID := "delete-runtime:" + fmt.Sprint(targetIndex)
 					disabled := ""
@@ -696,17 +774,22 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 						}
 					case record.Status == "missing":
 						deleteLabel = "Forget missing runtime " + record.ID
+					case record.Ownership == "other-aact":
+						disabled = runtimeManagedElsewhereReason
 					case record.Ownership != "local":
 						disabled = "Runtime ownership is " + record.Ownership + "; AACT cannot delete it"
 					}
 					runtimeActions = append(runtimeActions, forms.FormAction{ID: deleteID, Label: deleteLabel, Disabled: disabled})
 				}
 			}
-			runtimeActions = append(runtimeActions, forms.FormAction{ID: "edit-inputs:" + definition.Name, Label: "Edit capability inputs for " + definition.Name})
+			editDisabled := foreignReason
+			runtimeActions = append(runtimeActions, forms.FormAction{ID: "edit-inputs:" + definition.Name, Label: "Edit capability inputs for " + definition.Name, Disabled: editDisabled})
 			if profile != nil && profile.CanStop && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name})
 			} else if profile != nil && profile.RuntimeStatus == "running" && child != nil && len(child.RuntimeRecords) > 1 {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name, Disabled: "Multiple runtime records are linked; select one exact record"})
+			} else if foreignReason != "" {
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "stop:" + definition.Name, Label: "Stop " + definition.Name, Disabled: foreignReason})
 			}
 			if profile != nil && profile.RuntimeStatus == "running" && (child == nil || len(child.RuntimeRecords) == 1) {
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "logs:" + definition.Name, Label: "View " + definition.Name + " logs"})
@@ -735,7 +818,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				}
 				runtime = append(runtime, line)
 				targetIndex := len(m.workspace.RuntimeRecordTargets)
-				m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: orphan.Key, ID: record.ID})
+				m.workspace.RuntimeRecordTargets = append(m.workspace.RuntimeRecordTargets, runtimeRecordTarget{Key: orphan.Key, ID: record.ID, Ownership: record.Ownership})
 				label := "Forget runtime record " + record.ID
 				disabled := ""
 				if orphan.Stale {
@@ -744,6 +827,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 					} else {
 						disabled = "Runtime observation is stale; refresh before removing this record"
 					}
+				} else if record.Ownership == "other-aact" {
+					disabled = runtimeManagedElsewhereReason
 				} else if record.Status != "missing" && record.Ownership == "local" {
 					label = "Delete runtime " + record.ID
 				} else if record.Status == "missing" {
@@ -778,19 +863,36 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			installStatus = "Complete"
 		}
 		header := []string{"Status: " + status}
-		if len(preview.ValidationIssues) > 0 {
-			header = append(header, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
+		if inputsReadOnly {
+			header = append(header, "Inputs are managed by another AACT installation.")
+		} else {
+			if len(preview.ValidationIssues) > 0 {
+				header = append(header, "Inputs need attention: "+strings.Join(preview.ValidationIssues, "; "))
+			}
+			if authentication != "" {
+				header = append(header, authentication)
+			}
+			header = append(header, "Inputs: "+inputStatus, "Agent install: "+installStatus, "This starts the Docker instance. It does not edit agent configuration.")
 		}
-		if authentication != "" {
-			header = append(header, authentication)
-		}
-		header = append(header, "Inputs: "+inputStatus, "Agent install: "+installStatus, "This starts the Docker instance. It does not edit agent configuration.")
 		runtime = append(header, runtime...)
 		m.form.SetSectionContentID(sectionRuntimeID, runtime)
 		m.form.SetSectionActionsID(sectionRuntimeID, runtimeActions...)
 		m.form.SetSectionContentID(sectionLogsID, logs)
 	}
-	information := workspaceInformationLines(preview, m.form.SectionContentWidth())
+	informationPreview := preview
+	if inputsReadOnly {
+		informationPreview.Inputs = nil
+		informationPreview.InstanceTOML = ""
+		informationPreview.ProfileTOML = ""
+		informationPreview.TargetTOML = ""
+		informationPreview.InstancePath = ""
+		informationPreview.ProfilePath = ""
+		informationPreview.TargetPath = ""
+	}
+	information := workspaceInformationLines(informationPreview, m.form.SectionContentWidth())
+	if inputsReadOnly {
+		information = append([]string{"Inputs are managed by another AACT installation."}, information...)
+	}
 	if preview.MCP {
 		if profileInformation := workspaceProfileInformationLines(m.workspace.Instance); len(profileInformation) > 0 {
 			information = append(profileInformation, information...)
@@ -815,9 +917,9 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 		m.form.FocusSection()
 	}
 	m.form.SetSubmitLabel("Save")
-	m.form.SetSubmitHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
-	m.form.SetCancelHidden(m.workspace.Active && m.form.SectionID() != sectionInputsID)
-	m.form.SetTabThroughControls(m.workspace.Active && m.form.SectionID() == sectionInputsID)
+	m.form.SetSubmitHidden(m.workspace.Active && (m.form.SectionID() != sectionInputsID || inputsReadOnly))
+	m.form.SetCancelHidden(m.workspace.Active && (m.form.SectionID() != sectionInputsID || inputsReadOnly))
+	m.form.SetTabThroughControls(m.workspace.Active && m.form.SectionID() == sectionInputsID && !inputsReadOnly)
 	m.refreshAgentAccessActions()
 }
 
@@ -990,6 +1092,9 @@ func isLoopbackName(host string) bool {
 }
 
 func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRow) string {
+	if reason := m.workspaceForeignRuntimeReason(mcpName); reason != "" {
+		return reason
+	}
 	if m.workspace == nil || m.workspace.Preview == nil {
 		return "Refresh this target before logging in"
 	}

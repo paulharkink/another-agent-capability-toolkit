@@ -49,6 +49,7 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 	} else {
 		snapshot.ObservedAt = time.Now()
 	}
+	foreignParents := observedForeignRuntimeParents(s.Source.ID, p.ID, runtimes, runtimeErr == nil)
 	if err = s.reconcileRuntimeLedger(ctx, p, configuredInstances, runtimes, runtimeErr == nil); err != nil {
 		snapshot.Errors = append(snapshot.Errors, "runtime ledger reconciliation: "+err.Error())
 	}
@@ -86,6 +87,14 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 		}
 		key, e := s.Store.ResolveInstanceKey(s.Source.ID, p.ID, instance.Ref.Name)
 		row.Key = key
+		if e == nil {
+			if _, observedForeign := foreignParents[key]; observedForeign {
+				// The running runtime is the authoritative cross-installation view.
+				// Do not present this Windows installation's preset/defaults/answers
+				// as the inputs used by the foreign instance.
+				continue
+			}
+		}
 		row.CompletionScopeRelevant = completionScopeRelevant(key, records, rows)
 		if e != nil {
 			row.ConfigStatus = "invalid"
@@ -334,7 +343,87 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 		snapshot.Instances = append(snapshot.Instances, row)
 		snapshot.Profiles = append(snapshot.Profiles, row)
 	}
+	foreignKeys := make([]state.Key, 0, len(foreignParents))
+	for key := range foreignParents {
+		foreignKeys = append(foreignKeys, key)
+	}
+	sort.Slice(foreignKeys, func(i, j int) bool {
+		left, right := foreignKeys[i], foreignKeys[j]
+		return strings.Join([]string{left.Source, left.Package, left.Environment, left.Target}, "\x00") < strings.Join([]string{right.Source, right.Package, right.Environment, right.Target}, "\x00")
+	})
+	for _, key := range foreignKeys {
+		row := observedForeignCapabilityInstance(p.ID, key, foreignParents[key], p, snapshot.ObservedAt)
+		snapshot.Instances = append(snapshot.Instances, row)
+		snapshot.Profiles = append(snapshot.Profiles, row)
+	}
 	return snapshot, nil
+}
+
+func observedForeignRuntimeParents(sourceID, packageID string, runtimes []mcp.Instance, observed bool) map[state.Key][]mcp.Instance {
+	parents := map[state.Key][]mcp.Instance{}
+	if !observed {
+		return parents
+	}
+	for _, runtime := range runtimes {
+		if runtime.Status != "running" || runtime.Ownership != "other-aact" || runtime.Key.Source != sourceID || runtime.Key.Package != packageID || runtime.Key.Target == "" {
+			continue
+		}
+		parent := runtime.Key
+		parent.MCP = ""
+		parent.MCPDefinition = ""
+		parents[parent] = append(parents[parent], runtime)
+	}
+	return parents
+}
+
+func observedForeignCapabilityInstance(packageID string, parent state.Key, runtimes []mcp.Instance, p catalog.Package, observedAt time.Time) viewmodel.CapabilityInstance {
+	const reason = foreignRuntimeManagementReason
+	row := viewmodel.CapabilityInstance{
+		Ref: config.InstanceRef{PackID: parent.Source, CapabilityID: packageID, Name: parent.Target},
+		Key: parent, Origin: "observed", ConfigStatus: "read-only", ConfigError: reason,
+		Ownership: "other-aact", ManagementReason: reason, Components: []viewmodel.ComponentStatus{}, MCPs: []viewmodel.RuntimeStatus{},
+	}
+	byChild := map[state.Key][]mcp.Instance{}
+	for _, runtime := range runtimes {
+		byChild[runtime.Key] = append(byChild[runtime.Key], runtime)
+	}
+	children := make([]state.Key, 0, len(byChild))
+	for child := range byChild {
+		children = append(children, child)
+	}
+	sort.Slice(children, func(i, j int) bool {
+		return runtimeChildName(children[i]) < runtimeChildName(children[j])
+	})
+	definitions := p.MCPDefinitions()
+	for _, child := range children {
+		matches := byChild[child]
+		name := runtimeChildName(child)
+		if name == "" && len(definitions) == 1 {
+			name = definitions[0].Name
+		}
+		if name == "" && len(matches) > 0 {
+			name = matches[0].RegistrationName
+		}
+		if name == "" && len(matches) > 0 {
+			name = matches[0].Name
+		}
+		status := summarizeRuntimeRecords(matches)
+		runtime := viewmodel.RuntimeStatus{MCPID: name, Key: child, Status: status, Ownership: "other-aact", ObservedAt: observedAt, RuntimeRecords: []viewmodel.RuntimeRecord{}}
+		if len(matches) > 1 {
+			runtime.Error = fmt.Sprintf("%d running runtimes are linked to this MCP", len(matches))
+		}
+		if len(matches) > 0 {
+			runtime.URL = matches[0].URL
+			for _, match := range matches {
+				runtime.RuntimeRecords = append(runtime.RuntimeRecords, viewmodel.RuntimeRecord{
+					ID: match.ID, Name: match.Name, Status: match.Status, Ownership: match.Ownership,
+					URL: match.URL, LastAction: match.LastAction, LastActionAt: match.LastActionAt,
+				})
+			}
+		}
+		row.MCPs = append(row.MCPs, runtime)
+	}
+	return row
 }
 
 func summarizeRuntimeRecords(records []mcp.Instance) string {

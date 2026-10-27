@@ -312,7 +312,7 @@ func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
 		m.focusPane(ProfilesPane)
 		m.selectPane(ProfilesPane, 1)
 		cmd := openProfileAction(t, m, action, false)
-		if cmd != nil || m.busy || !strings.Contains(m.output, "Owned by another installation") {
+		if cmd != nil || m.busy || !strings.Contains(m.output, "another installation") {
 			t.Fatalf("foreign action enabled or reason lost: %s", m.output)
 		}
 	}

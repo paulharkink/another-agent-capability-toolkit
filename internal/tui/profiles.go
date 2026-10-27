@@ -50,6 +50,9 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 		}
 		return ""
 	}
+	if owner == "other-aact" && (action == "s" || action == "x") {
+		return runtimeManagedElsewhereReason
+	}
 	if action == "registrations" || action == "remove-registrations" {
 		if _, ok := m.backend.(registrationBackend); !ok || p.Instance == nil {
 			return "The active AACT backend does not support registration-only changes."
@@ -96,7 +99,7 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 		return runtimeStopBlocker(p.Instance, "")
 	}
 	if owner == "other-aact" {
-		return "Runtime is owned by another AACT installation, not locally owned."
+		return "Runtime is owned by another AACT installation and is not locally owned."
 	}
 	if owner != "local" || status == "external" {
 		return "Runtime status for this MCP has not been observed; refresh this instance to check its owner and state."

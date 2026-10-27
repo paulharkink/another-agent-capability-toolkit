@@ -53,14 +53,15 @@ type RunSpec struct {
 	DeferProtocolHealth bool          `json:"-"`
 }
 type Instance struct {
-	Key          state.Key `json:"key"`
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Status       string    `json:"status"`
-	URL          string    `json:"url"`
-	Ownership    string    `json:"ownership"`
-	LastAction   string    `json:"last_action,omitempty"`
-	LastActionAt time.Time `json:"last_action_at,omitempty"`
+	Key              state.Key `json:"key"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	RegistrationName string    `json:"registration_name,omitempty"`
+	Status           string    `json:"status"`
+	URL              string    `json:"url"`
+	Ownership        string    `json:"ownership"`
+	LastAction       string    `json:"last_action,omitempty"`
+	LastActionAt     time.Time `json:"last_action_at,omitempty"`
 }
 type Runtime struct {
 	Store      *state.Store
@@ -730,7 +731,7 @@ func instance(d dockerInfo) Instance {
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), RegistrationName: l["aact.registration_name"], Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
 	instances, err := r.List(ctx)

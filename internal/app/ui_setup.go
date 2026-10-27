@@ -87,6 +87,24 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.SetupPreview{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
+	if q.Ref.PackID != "" && q.Ref.PackID != s.Source.ID {
+		return viewmodel.SetupPreview{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.Ref.PackID))
+	}
+	p, err := s.packageByID(q.Ref.CapabilityID)
+	if err != nil {
+		return viewmodel.SetupPreview{}, err
+	}
+	target := q.Target
+	if target == "" {
+		target = q.Ref.Name
+	}
+	parent, _, observed, observeErr := s.observedForeignParent(ctx, s.Source.ID, p.ID, target, q.Environment)
+	if observeErr != nil {
+		return viewmodel.SetupPreview{}, observeErr
+	}
+	if observed {
+		return s.observedForeignSetupPreview(ctx, p, parent)
+	}
 	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
 }
 
@@ -99,6 +117,9 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 	return s.Store.WithLock(ctx, func() error {
 		p, instance, key, err := s.loadInstance(q.Ref)
 		if err != nil {
+			return err
+		}
+		if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
 			return err
 		}
 		legacyAnswers, err := s.Store.Answers(key)
@@ -245,6 +266,19 @@ func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallR
 	}
 	if q.Ref.PackID != s.Source.ID {
 		return viewmodel.OperationResult{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.Ref.PackID))
+	}
+	p, err := s.packageByID(q.Ref.CapabilityID)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	if parent, runtimes, observed, observeErr := s.observedForeignInstall(ctx, p, q.Ref.Name, q.Environment); observeErr != nil {
+		return viewmodel.OperationResult{}, observeErr
+	} else if observed {
+		return s.ApplyInstance(ctx, InstanceRequest{
+			Ref: q.Ref, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+			Uninstall: q.Uninstall, InstallOnly: true,
+			observedForeign: &observedForeignAgentInstall{Parent: parent, Runtimes: runtimes},
+		})
 	}
 	p, _, key, err := s.loadInstance(q.Ref)
 	if err != nil {

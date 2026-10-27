@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -110,6 +111,47 @@ type snapshotRuntime struct {
 }
 
 func (r *snapshotRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.err }
+
+func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := s.Source.Catalog[0]
+	parent := state.Key{Source: s.Source.ID, Package: p.ID, Environment: "custom-env", Target: "custom-target"}
+	definition := p.MCPDefinitions()[0]
+	child := mcpDefinitionKey(parent, p, definition)
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "foreign-live", Name: "aact-foreign", Status: "running", Ownership: "other-aact",
+		URL: "http://localhost:18770/mcp",
+	}}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed *viewmodel.CapabilityInstance
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil {
+		t.Fatalf("running foreign runtime did not produce an L2 parent: %+v", snapshot.Instances)
+	}
+	if observed.Origin != "observed" || observed.ConfigStatus != "read-only" || observed.ConfigError == "" {
+		t.Fatalf("foreign parent must be an observed read-only view, not a local configuration: %+v", observed)
+	}
+	if len(observed.MCPs) != 1 || observed.MCPs[0].Key != child || observed.MCPs[0].Ownership != "other-aact" {
+		t.Fatalf("foreign child runtimes were not grouped under their parent: %+v", observed.MCPs)
+	}
+	preview, err := s.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: parent.Source, CapabilityID: parent.Package, Name: parent.Target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.InstanceOrigin != "observed" || len(preview.Inputs) != 0 || preview.Key != parent {
+		t.Fatalf("foreign setup view exposed local values or lost observed identity: %+v", preview)
+	}
+}
+
 func TestObservedInstanceRuntimeDuplicateRowsRemainChildScopedAndStale(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	k, _ := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)

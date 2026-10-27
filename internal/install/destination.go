@@ -19,6 +19,13 @@ func (s *Skills) recordInstallation(row state.Installation) error {
 }
 
 func (s *Skills) InstallOne(ctx context.Context, pkg catalog.Package, skill catalog.Skill, destination SkillDestination, key state.Key, staged string) (state.Installation, error) {
+	return s.InstallOneWithProof(ctx, pkg, skill, destination, key, staged, nil)
+}
+
+// InstallOneWithProof opts into replacing a narrowly verified external LX
+// skill link. Callers must supply proof obtained from current runtime and agent
+// observations; an absent proof preserves the default refusal behavior.
+func (s *Skills) InstallOneWithProof(ctx context.Context, pkg catalog.Package, skill catalog.Skill, destination SkillDestination, key state.Key, staged string, proof *ForeignSkillProof) (state.Installation, error) {
 	pkg.Skill = &skill
 	pkg.Skills = nil
 	if skill.Source != "" {
@@ -31,7 +38,7 @@ func (s *Skills) InstallOne(ctx context.Context, pkg catalog.Package, skill cata
 	engine := *s
 	var effect state.Installation
 	engine.recordEffect = func(row state.Installation) error { effect = row; return nil }
-	err := engine.Install(ctx, pkg, destination, key, staged)
+	err := engine.install(ctx, pkg, destination, key, staged, proof)
 	return effect, err
 }
 

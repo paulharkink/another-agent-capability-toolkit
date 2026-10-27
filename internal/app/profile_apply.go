@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,11 +40,17 @@ type InstanceRequest struct {
 	InstallOnly                          bool
 	Uninstall                            bool
 	ExternalURLs                         map[string]string
+	observedForeign                      *observedForeignAgentInstall
 }
 
 // ProfileRequest remains as a source-compatibility alias for callers compiled
 // against the previous selected-instance API.
 type ProfileRequest = InstanceRequest
+
+type observedForeignAgentInstall struct {
+	Parent   state.Key
+	Runtimes map[string]mcp.Instance
+}
 
 // configuredMCPRegistrationURL computes the stable host endpoint used by the
 // Docker runtime from the capability's declared inputs. Agent registration
@@ -120,6 +127,73 @@ func editProfileInputs(ctx context.Context, editor Editor, defs []catalog.Input,
 	}
 	for name, value := range merged {
 		values[name] = value
+	}
+	return nil
+}
+
+func validateObservedSkillInputs(pkg catalog.Package, skill catalog.Skill, values map[string]any) error {
+	missingValue := func(input catalog.Input) bool {
+		value, available := values[input.Name]
+		if !available || value == nil {
+			return true
+		}
+		if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+			return true
+		}
+		return false
+	}
+	if skill.Generator != nil {
+		for _, input := range pkg.Inputs {
+			if missingValue(input) {
+				return fmt.Errorf("cannot run skill generator for the observed foreign instance: input value %q is unavailable from the running Docker observation; enter it in the owning AACT instance or remove the input dependency from the generator", input.Name)
+			}
+		}
+	}
+	root := skill.Source
+	if root == "" {
+		root = pkg.Dir
+	} else if !filepath.IsAbs(root) {
+		root = filepath.Join(pkg.Dir, root)
+	}
+	for _, template := range skill.Templates {
+		name := template.Source
+		if name == "" || filepath.IsAbs(name) || strings.Contains(name, "\\") {
+			return fmt.Errorf("unsafe package path %q", name)
+		}
+		clean := filepath.Clean(name)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("unsafe package path %q", name)
+		}
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			return err
+		}
+		templatePath := filepath.Join(rootAbs, clean)
+		resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+		if err != nil {
+			return err
+		}
+		resolvedPath, err := filepath.EvalSymlinks(templatePath)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(resolvedRoot, resolvedPath)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("package resource %q escapes skill source", name)
+		}
+		contents, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return err
+		}
+		for _, input := range pkg.Inputs {
+			if !missingValue(input) {
+				continue
+			}
+			pattern := `{{\s*[#^/]?\s*inputs\.` + regexp.QuoteMeta(input.Name) + `(?:\s|\})`
+			if regexp.MustCompile(pattern).Match(contents) {
+				return fmt.Errorf("cannot render skill %q for the observed foreign instance: input value %q is unavailable from the running Docker observation; enter it in the owning AACT instance or make the skill template independent of it", skill.Name, input.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -250,6 +324,9 @@ func (s *Service) CreateInstance(ctx context.Context, ref config.InstanceRef) er
 	}
 	key, err := s.Store.ResolveInstanceKey(s.Source.ID, ref.CapabilityID, ref.Name)
 	if err != nil {
+		return err
+	}
+	if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
 		return err
 	}
 	return s.Store.WithLock(ctx, func() error {
@@ -941,23 +1018,90 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			out.Errors = append(out.Errors, err.Error())
 		}
 	}()
-	p, pr, key, err := s.loadInstance(q.Ref)
-	if err != nil {
-		return out, err
+	var p catalog.Package
+	var pr config.Instance
+	var key state.Key
+	var values map[string]any
+	if q.observedForeign == nil {
+		p, pr, key, err = s.loadInstance(q.Ref)
+		if err != nil {
+			return out, err
+		}
+	} else {
+		p, err = s.packageByID(q.Ref.CapabilityID)
+		if err != nil {
+			return out, err
+		}
+		key = q.observedForeign.Parent
+		if key.Source != s.Source.ID || key.Package != p.ID || key.Target != q.Ref.Name {
+			return out, invalid(errors.New("observed runtime no longer matches the selected Pack Capability Instance"))
+		}
+		pr = config.Instance{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}, Raw: map[string]any{}}
+	}
+	if !q.InstallOnly {
+		if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
+			return out, err
+		}
 	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
-	p, pr, values, _, err := s.instanceValues(p, pr, key, q)
-	if err != nil {
-		return out, err
+	if q.observedForeign == nil {
+		p, pr, values, _, err = s.instanceValues(p, pr, key, q)
+		if err != nil {
+			return out, err
+		}
+	} else {
+		values = map[string]any{}
+		observedKey, live, found, observeErr := s.observedForeignParent(ctx, key.Source, key.Package, key.Target, key.Environment)
+		if observeErr != nil {
+			return out, observeErr
+		}
+		if !found || observedKey != key {
+			return out, invalid(errors.New("the foreign runtime is no longer running; refresh the Capability Instance before installing agent bindings"))
+		}
+		for name, expected := range q.observedForeign.Runtimes {
+			matched := false
+			for _, current := range live {
+				if current.Key == expected.Key && current.ID == expected.ID && current.URL == expected.URL && current.RegistrationName == expected.RegistrationName {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return out, invalid(fmt.Errorf("observed runtime for MCP %q changed; refresh before installing agent bindings", name))
+			}
+		}
+		q.InstallOnly = true
+		q.Interactive = false
+		q.ExternalURLs = make(map[string]string, len(q.observedForeign.Runtimes))
+		for name, runtime := range q.observedForeign.Runtimes {
+			q.ExternalURLs[name] = runtime.URL
+			for _, definition := range p.MCPDefinitions() {
+				if definition.Name != name {
+					continue
+				}
+				if definition.RegistrationNameInput != "" {
+					values[definition.RegistrationNameInput] = runtime.RegistrationName
+				}
+				if definition.EnabledInput != "" {
+					values[definition.EnabledInput] = true
+				}
+			}
+		}
 	}
-	records, err := s.Store.Instances()
-	if err != nil {
-		return out, err
+	var records []state.ProfileRecord
+	if q.observedForeign == nil {
+		records, err = s.Store.Instances()
+		if err != nil {
+			return out, err
+		}
 	}
 	ids := q.ItemIDs
 	destIDs := q.DestinationIDs
 	local := pr.Path == ""
 	for _, r := range records {
+		if q.observedForeign != nil {
+			break
+		}
 		if r.Key == key && r.Selection != nil {
 			if ids == nil {
 				ids = r.Selection.ItemIDs
@@ -971,15 +1115,22 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	if err != nil {
 		return out, invalid(err)
 	}
-	fixed, err := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
-	if err != nil {
-		return out, invalid(err)
+	var fixed map[string]any
+	var activeGroups map[string]string
+	var previousGroups map[string]string
+	if q.observedForeign == nil {
+		fixed, err = fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
+		if err != nil {
+			return out, invalid(err)
+		}
+		previousGroups, err = s.Store.ActiveInputGroups(key)
+		if err != nil {
+			return out, err
+		}
+		activeGroups = effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
+	} else {
+		activeGroups = map[string]string{}
 	}
-	previousGroups, err := s.Store.ActiveInputGroups(key)
-	if err != nil {
-		return out, err
-	}
-	activeGroups := effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
 	if q.Interactive {
 		if s.Options.Editor == nil {
 			return out, invalid(errors.New("interactive editor is unavailable"))
@@ -1038,8 +1189,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 		}
 	}
-	if err = validateProfileValuesForActiveGroups(p.Inputs, values, activeGroups); err != nil {
-		return out, invalid(err)
+	if q.observedForeign == nil {
+		if err = validateProfileValuesForActiveGroups(p.Inputs, values, activeGroups); err != nil {
+			return out, invalid(err)
+		}
 	}
 	items, selected, err = componentSelection(p, values, ids, q.SkillsOnly)
 	if err != nil {
@@ -1055,6 +1208,13 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 		for _, v := range item.Plugins {
 			plugins[v] = true
+		}
+	}
+	if q.observedForeign != nil {
+		for name := range q.ExternalURLs {
+			if !mcps[name] {
+				delete(q.ExternalURLs, name)
+			}
 		}
 	}
 	authenticationRequired := map[string]bool{}
@@ -1098,6 +1258,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		return out, invalid(errors.New("Install requires at least one agent; use Uninstall to remove registrations"))
 	}
 	adapters := map[string]agents.Adapter{}
+	foreignSkillProofs := map[string]*agents.ForeignSkillProof{}
 	for _, id := range destIDs {
 		a, e := s.adapterRegistry().Adapter(id)
 		if e != nil {
@@ -1117,6 +1278,32 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		if (len(skills) > 0 && !f.Skills) || (len(mcps) > 0 && !f.MCPs) {
 			return out, invalid(fmt.Errorf("agent %s cannot install every selected capability component", id))
 		}
+		if q.observedForeign != nil {
+			observation, observeErr := a.Observe(ctx, s.agentScope(id), agents.ObservationRequest{IncludeInventory: true, Key: key})
+			if observeErr != nil {
+				return out, fmt.Errorf("inspect %s MCP bindings before installing foreign Capability Instance components: %w", id, observeErr)
+			}
+			var proof *agents.ForeignSkillProof
+			for name, runtime := range q.observedForeign.Runtimes {
+				for _, component := range observation.Components {
+					if component.Kind != "mcp" || component.RegistrationName != runtime.RegistrationName {
+						continue
+					}
+					if component.Status != "installed" || component.URL != runtime.URL {
+						if mcps[name] && !q.Uninstall {
+							return out, invalid(fmt.Errorf("agent %s already has MCP registration %q with a different or unavailable endpoint; resolve it before installing foreign Capability Instance components", id, runtime.RegistrationName))
+						}
+						continue
+					}
+					if len(skills) > 0 {
+						proof = &agents.ForeignSkillProof{ParentKeyID: key.ID(), RegistrationName: runtime.RegistrationName, URL: runtime.URL}
+					}
+				}
+			}
+			if len(skills) > 0 && !q.Uninstall {
+				foreignSkillProofs[id] = proof
+			}
+		}
 		for _, plugin := range p.Plugins {
 			if plugins[plugin.Name] && !slices.Contains(f.PluginFormats, plugin.Format) {
 				return out, invalid(fmt.Errorf("agent %s does not support plugin format %s", id, plugin.Format))
@@ -1124,15 +1311,19 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 		adapters[id] = a
 	}
-	if err = s.validateRegistrationNames(p, packageMCPProfiles(p, values), key, values, nil); err != nil {
-		return out, invalid(err)
+	if q.observedForeign == nil {
+		if err = s.validateRegistrationNames(p, packageMCPProfiles(p, values), key, values, nil); err != nil {
+			return out, invalid(err)
+		}
 	}
 	for _, definition := range p.MCPDefinitions() {
 		if !mcps[definition.Name] {
 			continue
 		}
-		if _, e := profileRegistrationHeaders(definition, values); e != nil {
-			return out, invalid(e)
+		if q.observedForeign == nil {
+			if _, e := profileRegistrationHeaders(definition, values); e != nil {
+				return out, invalid(e)
+			}
 		}
 		if endpoint := q.ExternalURLs[definition.Name]; endpoint != "" {
 			if e := validateEndpointURL(endpoint); e != nil {
@@ -1154,8 +1345,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			return out, err
 		}
 	}
-	if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
-		return out, invalid(err)
+	if q.observedForeign == nil {
+		if err = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); err != nil {
+			return out, invalid(err)
+		}
 	}
 	old, err := s.Store.Installations()
 	if err != nil {
@@ -1172,8 +1365,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			return out, err
 		}
 		out.Saved = true
-	} else if err = s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); err != nil {
-		return out, err
+	} else if q.observedForeign == nil {
+		if err = s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); err != nil {
+			return out, err
+		}
 	}
 	stages := map[string]string{}
 	pluginStages := map[string]string{}
@@ -1181,8 +1376,13 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	reportOperationStep(ctx, out.Step)
 	renderer := render.Renderer{Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}}
 	for _, skill := range p.SkillDefinitions() {
-		if !skills[skill.Name] {
+		if q.Uninstall || !skills[skill.Name] {
 			continue
+		}
+		if q.observedForeign != nil {
+			if e := validateObservedSkillInputs(p, skill, values); e != nil {
+				return out, invalid(e)
+			}
 		}
 		stage, e := renderer.StageSkill(ctx, p, skill, values, pr, s.Store.GeneratedDir(key))
 		if e != nil {
@@ -1196,7 +1396,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		stages[skill.Name] = published
 	}
 	for _, plugin := range p.Plugins {
-		if plugins[plugin.Name] {
+		if !q.Uninstall && plugins[plugin.Name] {
 			stage, e := render.StagePlugin(ctx, p, plugin, s.Store.GeneratedDir(key))
 			if e != nil {
 				return out, e
@@ -1370,7 +1570,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 					urls[definition.Name] = instance.URL
 				}
 			}
-			if definition.HealthPath != "" {
+			if definition.HealthPath != "" && q.observedForeign == nil {
 				headers, headerErr := profileRegistrationHeaders(definition, values)
 				if headerErr != nil {
 					return out, headerErr
@@ -1484,6 +1684,9 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		out.Changes = append(out.Changes, row)
 	}
 	for _, id := range destIDs {
+		if q.Uninstall {
+			continue
+		}
 		a := adapters[id]
 		scope := s.agentScope(id)
 		for _, skill := range p.SkillDefinitions() {
@@ -1492,7 +1695,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 			out.Step = "skill"
 			reportOperationStep(ctx, out.Step)
-			row, e := a.(agents.SkillManager).InstallSkill(ctx, scope, agents.SkillRequest{Key: key, Package: p, Skill: skill, StagedDir: stages[skill.Name]})
+			row, e := a.(agents.SkillManager).InstallSkill(ctx, scope, agents.SkillRequest{Key: key, Package: p, Skill: skill, StagedDir: stages[skill.Name], VerifiedForeignSkill: foreignSkillProofs[id]})
 			if e != nil {
 				return out, e
 			}
@@ -1507,13 +1710,24 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			out.Step = "register"
 			reportOperationStep(ctx, out.Step)
 			child := mcpDefinitionKey(key, p, d)
-			name, e := declaredRegistrationName(d, child, values)
-			if e != nil {
-				return out, invalid(e)
-			}
-			headers, e := profileRegistrationHeaders(d, values)
-			if e != nil {
-				return out, invalid(e)
+			name := ""
+			var headers map[string]string
+			var e error
+			if q.observedForeign != nil {
+				runtime, exists := q.observedForeign.Runtimes[d.Name]
+				if !exists {
+					return out, invalid(fmt.Errorf("observed Docker runtime for MCP %q is unavailable; refresh before installing agent bindings", d.Name))
+				}
+				name = runtime.RegistrationName
+			} else {
+				name, e = declaredRegistrationName(d, child, values)
+				if e != nil {
+					return out, invalid(e)
+				}
+				headers, e = profileRegistrationHeaders(d, values)
+				if e != nil {
+					return out, invalid(e)
+				}
 			}
 			for _, r := range old {
 				if r.Component == "mcp" && r.Key == child && r.AgentID == id && r.RegistrationName != name {
@@ -1648,6 +1862,9 @@ func (s *Service) RemoveInstance(ctx context.Context, q InstanceRequest) (out vi
 	if err != nil {
 		return out, err
 	}
+	if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
+		return out, err
+	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name
 	out.Step = "remove"
 	rows, err := s.Store.Installations()
@@ -1758,6 +1975,9 @@ func (s *Service) ResetInstanceToPreset(ctx context.Context, q InstanceRequest) 
 	if err != nil {
 		return out, err
 	}
+	if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
+		return out, err
+	}
 	if preset.Path == "" {
 		return out, invalid(fmt.Errorf("instance %q has no pack preset to restore", q.Ref.Name))
 	}
@@ -1860,6 +2080,11 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 		return out, invalid(err)
 	}
 	child := mcpDefinitionKey(key, p, definition)
+	if action == "start" || action == "prepare" || action == "authenticate" || action == "stop" {
+		if err := s.rejectForeignRuntimeMutation(ctx, child); err != nil {
+			return out, err
+		}
+	}
 	out.Target = s.Source.ID + "/" + p.ID + " — " + pr.Ref.Name + " / " + definition.Name
 	out.Step = action
 	switch action {

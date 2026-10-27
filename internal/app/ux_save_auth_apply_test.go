@@ -170,7 +170,11 @@ type uxOrderedRuntime struct {
 	order *[]string
 }
 
-type uxForeignRuntime struct{ starts, stops int }
+type uxForeignRuntime struct {
+	starts, stops int
+	instances     []mcp.Instance
+	listErr       error
+}
 
 func (r *uxForeignRuntime) Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error) {
 	r.starts++
@@ -180,7 +184,9 @@ func (r *uxForeignRuntime) Stop(context.Context, state.Key) error {
 	r.stops++
 	return errors.New("foreign runtime cannot be stopped")
 }
-func (*uxForeignRuntime) List(context.Context) ([]mcp.Instance, error) { return nil, nil }
+func (r *uxForeignRuntime) List(context.Context) ([]mcp.Instance, error) {
+	return r.instances, r.listErr
+}
 func (*uxForeignRuntime) Logs(context.Context, state.Key) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
 }
@@ -1028,21 +1034,372 @@ func TestUXForeignRuntimeSaveCannotRestartIt(t *testing.T) {
 	svc.Source.Catalog[0].Skill = nil
 	svc.Source.Catalog[0].MCP = &catalog.MCP{Image: "fixture", HostPortInput: "port", ContainerPort: 8765, Transport: "streamable-http"}
 	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "port", Type: "integer", Required: true}}
-	runtime := &uxForeignRuntime{}
+	key := state.Key{Source: svc.Source.ID, Package: "demo", Target: "default"}
+	runtime := &uxForeignRuntime{instances: []mcp.Instance{{
+		Key: key, ID: "foreign-demo-runtime", Status: "running", Ownership: "other-aact", URL: "http://127.0.0.1:18765/mcp",
+	}}}
 	svc.Options.Runtime = runtime
 	result, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
 		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"},
 		Inputs:       map[string]any{"port": int64(9000)}, DestinationIDs: []string{"opencode"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "another installation") {
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "managed by another aact installation") {
 		t.Fatalf("foreign runtime control did not fail with ownership: %v", err)
 	}
-	if runtime.starts != 1 || runtime.stops != 0 {
-		t.Fatalf("foreign runtime was restarted or stopped: starts=%d stops=%d", runtime.starts, runtime.stops)
+	if runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("foreign runtime action was attempted: starts=%d stops=%d", runtime.starts, runtime.stops)
 	}
-	if !result.Saved || len(result.Changes) != 0 || result.Step != "start" {
-		t.Fatalf("foreign runtime apply result is inaccurate: %#v", result)
+	if result.Saved || len(result.Changes) != 0 || result.Step != "" {
+		t.Fatalf("foreign runtime apply should reject before saving or applying: %#v", result)
 	}
+}
+
+func TestObservedForeignRuntimeBlocksInstanceMutationsButAllowsAgentBindings(t *testing.T) {
+	svc, adapter, q := profileApplyFixture(t)
+	key, err := svc.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := svc.Source.Catalog[0]
+	foreignRuntime := &uxForeignRuntime{}
+	endpoints := map[string]string{}
+	for _, definition := range pkg.MCPDefinitions() {
+		child := mcpDefinitionKey(key, pkg, definition)
+		endpoint := "http://127.0.0.1:18765/" + definition.Name + "/mcp"
+		foreignRuntime.instances = append(foreignRuntime.instances, mcp.Instance{
+			Key: child, ID: "foreign-" + definition.Name, Name: "aact-" + definition.Name,
+			Status: "running", Ownership: "other-aact", URL: endpoint, RegistrationName: registrationName(child),
+		})
+		endpoints[definition.Name] = endpoint
+	}
+	svc.Options.Runtime = foreignRuntime
+	ctx := context.Background()
+	managementReason := "managed by another aact installation"
+	assertRejected := func(operation string, operationErr error) {
+		t.Helper()
+		if operationErr == nil || !strings.Contains(strings.ToLower(operationErr.Error()), managementReason) {
+			t.Fatalf("%s should explain that the observed instance is managed elsewhere: %v", operation, operationErr)
+		}
+	}
+	assertRejected("save inputs", svc.UISaveInputs(ctx, viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, Inputs: map[string]any{"label": "changed", "enabled": true},
+	}))
+	_, err = svc.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, DestinationIDs: q.DestinationIDs, ItemIDs: q.ItemIDs})
+	assertRejected("combined apply", err)
+	_, err = svc.RunInstanceMCP(ctx, "start", InstanceRequest{Ref: q.Ref}, "alpha")
+	assertRejected("start", err)
+	_, err = svc.RunInstanceMCP(ctx, "authenticate", InstanceRequest{Ref: q.Ref}, "alpha")
+	assertRejected("login", err)
+	_, err = svc.RunInstanceMCP(ctx, "stop", InstanceRequest{Ref: q.Ref}, "alpha")
+	assertRejected("stop", err)
+	_, err = svc.RunInstanceMCP(ctx, "start", InstanceRequest{Ref: q.Ref}, "beta")
+	assertRejected("sibling runtime start", err)
+	_, err = svc.UIRemoveRuntimeRecord(ctx, foreignRuntime.instances[0].Key, foreignRuntime.instances[0].ID)
+	assertRejected("delete runtime", err)
+	_, err = svc.ResetInstanceToPreset(ctx, InstanceRequest{Ref: q.Ref})
+	assertRejected("reset instance", err)
+	_, err = svc.RemoveInstance(ctx, InstanceRequest{Ref: q.Ref})
+	assertRejected("delete instance", err)
+	shadowRef := q.Ref
+	shadowRef.Name = "foreign-runtime"
+	shadowKey := state.Key{Source: q.Ref.PackID, Package: q.Ref.CapabilityID, Target: shadowRef.Name}
+	foreignRuntime.instances = append(foreignRuntime.instances, mcp.Instance{
+		Key: shadowKey, ID: "foreign-shadow", Status: "running", Ownership: "other-aact", URL: "http://127.0.0.1:18765/mcp",
+	})
+	assertRejected("create duplicate instance", svc.CreateInstance(ctx, shadowRef))
+	if foreignRuntime.starts != 0 || foreignRuntime.stops != 0 || len(adapter.calls) != 0 {
+		t.Fatalf("rejected mutations changed runtime or agent state: starts=%d stops=%d adapterCalls=%v", foreignRuntime.starts, foreignRuntime.stops, adapter.calls)
+	}
+
+	// Agent Access is local to this Windows installation. It may bind the
+	// selected Windows agents to the exact observed endpoints without touching
+	// the foreign runtime or editing this instance's inputs.
+	installed, err := svc.UIInstallAgents(ctx, viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, Inputs: q.Inputs,
+		DestinationIDs: q.DestinationIDs, ItemIDs: q.ItemIDs, ExternalURLs: endpoints,
+	})
+	if err != nil {
+		t.Fatalf("Windows agent binding should remain available for a foreign runtime: %v", err)
+	}
+	rows, err := svc.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := false
+	for _, row := range rows {
+		if row.Component == "mcp" && row.ExternalRegistration {
+			registered = true
+		}
+	}
+	registrationURLsMatch := len(adapter.registrations) == len(endpoints)
+	for _, registration := range adapter.registrations {
+		matched := false
+		for _, endpoint := range endpoints {
+			matched = matched || endpoint == registration.URL
+		}
+		if !matched {
+			registrationURLsMatch = false
+		}
+	}
+	if !registered || !registrationURLsMatch || len(installed.Changes) == 0 || foreignRuntime.starts != 0 || foreignRuntime.stops != 0 {
+		t.Fatalf("Agent Access install changed foreign runtime: result=%+v registrations=%+v urlMatch=%v starts=%d stops=%d", installed, adapter.registrations, registrationURLsMatch, foreignRuntime.starts, foreignRuntime.stops)
+	}
+	if err := os.RemoveAll(svc.Source.ProfileRoot); err != nil {
+		t.Fatal(err)
+	}
+	uninstalled, err := svc.UIInstallAgents(ctx, viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, DestinationIDs: []string{},
+		ItemIDs: q.ItemIDs, Uninstall: true, ExternalURLs: endpoints,
+	})
+	if err != nil {
+		t.Fatalf("Windows Agent access Uninstall should remain available: %v", err)
+	}
+	rows, err = svc.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Component == "mcp" || row.Component == "skill" {
+			t.Fatalf("Windows agent Uninstall left a local binding: %+v; result=%+v", row, uninstalled)
+		}
+	}
+	if foreignRuntime.starts != 0 || foreignRuntime.stops != 0 {
+		t.Fatalf("Windows agent Uninstall affected foreign runtime: starts=%d stops=%d", foreignRuntime.starts, foreignRuntime.stops)
+	}
+}
+
+func TestUIInstallAgentsCanBindObservedForeignInstanceWithoutLocalInputsOrInstanceRecord(t *testing.T) {
+	svc, adapter, q := profileApplyFixture(t)
+	store := svc.Store
+	if err := os.RemoveAll(svc.Source.ProfileRoot); err != nil {
+		t.Fatal(err)
+	}
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill = nil
+	pkg.Skills = nil
+	pkg.MCPs = nil
+	pkg.Sets = nil
+	pkg.MCP = &catalog.MCP{
+		Name: "cluster-inspector", Transport: "streamable-http", HostPortInput: "port",
+		RegistrationNameInput: "registration_name", ContainerPort: 8080,
+	}
+	pkg.Inputs = []catalog.Input{
+		{Name: "port", Type: "integer", Required: true},
+		{Name: "registration_name", Type: "string", Required: true},
+		{Name: "token", Type: "secret", Required: true},
+	}
+	parent := state.Key{Source: svc.Source.ID, Package: pkg.ID, Environment: "home", Target: "ota"}
+	child := mcpDefinitionKey(parent, *pkg, *pkg.MCP)
+	endpoint := "http://localhost:18770/mcp"
+	runtime := &uxForeignRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "observed-container", Name: "aact-cluster-inspector-ota", Status: "running",
+		Ownership: "other-aact", URL: endpoint, RegistrationName: "cluster-inspector",
+	}}}
+	svc.Options.Runtime = runtime
+	request := viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref, Environment: "home", Target: "ota"},
+		ItemIDs:      []string{"mcp:cluster-inspector"}, DestinationIDs: []string{adapter.ID()},
+	}
+	result, err := svc.UIInstallAgents(context.Background(), request)
+	if err != nil {
+		t.Fatalf("agent-only install should use the observed endpoint without local answers or inputs: %v", err)
+	}
+	if len(adapter.registrations) != 1 || adapter.registrations[0].URL != endpoint || adapter.registrations[0].Name != "cluster-inspector" {
+		t.Fatalf("registration did not use observed Docker endpoint identity: %+v", adapter.registrations)
+	}
+	if runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("agent-only install changed foreign runtime: starts=%d stops=%d", runtime.starts, runtime.stops)
+	}
+	if result.Saved || len(result.Changes) == 0 {
+		t.Fatalf("agent-only install should report bindings without saving a local instance: %+v", result)
+	}
+	answers, err := store.Answers(parent)
+	if err != nil || len(answers) != 0 {
+		t.Fatalf("foreign install must not create or consume local input answers: %#v, %v", answers, err)
+	}
+	instances, err := store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, instance := range instances {
+		if instance.Key == parent {
+			t.Fatalf("foreign Docker parent was persisted as a Windows Capability Instance: %+v", instance)
+		}
+	}
+}
+
+func TestUIInstallAgentsCanBindSelectedRunningMCPWhenSiblingIsStopped(t *testing.T) {
+	svc, adapter, q := profileApplyFixture(t)
+	pkg := &svc.Source.Catalog[0]
+	pkg.Sets = []catalog.ComponentSet{
+		{Name: "alpha-only", MCPs: []string{"alpha"}},
+		{Name: "beta-only", MCPs: []string{"beta"}},
+	}
+	parent, err := svc.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mcpDefinitionKey(parent, *pkg, pkg.MCPs[0])
+	endpoint := "http://127.0.0.1:18765/alpha/mcp"
+	runtime := &uxForeignRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "foreign-alpha", Status: "running", Ownership: "other-aact",
+		URL: endpoint, RegistrationName: "alpha-remote",
+	}}}
+	svc.Options.Runtime = runtime
+	result, err := svc.UIInstallAgents(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, ItemIDs: []string{"set:alpha-only"},
+		DestinationIDs: []string{adapter.ID()},
+	})
+	if err != nil {
+		t.Fatalf("installing the running MCP should not require its stopped sibling: %v", err)
+	}
+	if len(adapter.registrations) != 1 || adapter.registrations[0].Name != "alpha-remote" || adapter.registrations[0].URL != endpoint {
+		t.Fatalf("selected registration did not use the exact running Docker child: %+v", adapter.registrations)
+	}
+	if len(result.Changes) != 1 || runtime.starts != 0 || runtime.stops != 0 {
+		t.Fatalf("subset install effects were inaccurate: result=%+v starts=%d stops=%d", result, runtime.starts, runtime.stops)
+	}
+}
+
+func TestUIInstallAgentsDoesNotPassUnselectedObservedMCPURLs(t *testing.T) {
+	svc, adapter, q := profileApplyFixture(t)
+	pkg := &svc.Source.Catalog[0]
+	pkg.Sets = []catalog.ComponentSet{
+		{Name: "alpha-only", MCPs: []string{"alpha"}},
+		{Name: "beta-only", MCPs: []string{"beta"}},
+	}
+	parent, err := svc.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alphaKey := mcpDefinitionKey(parent, *pkg, pkg.MCPs[0])
+	betaKey := mcpDefinitionKey(parent, *pkg, pkg.MCPs[1])
+	alphaURL := "http://127.0.0.1:18765/alpha/mcp"
+	betaURL := "http://127.0.0.1:18766/beta/mcp"
+	runtime := &uxForeignRuntime{instances: []mcp.Instance{
+		{Key: alphaKey, ID: "foreign-alpha", Status: "running", Ownership: "other-aact", URL: alphaURL, RegistrationName: "alpha-remote"},
+		{Key: betaKey, ID: "foreign-beta", Status: "running", Ownership: "other-aact", URL: betaURL, RegistrationName: "beta-remote"},
+	}}
+	svc.Options.Runtime = runtime
+	adapter.observe = func(agents.ObservationRequest) agents.Observation {
+		return agents.Observation{Components: []agents.ComponentObservation{{
+			Kind: "mcp", RegistrationName: "beta-remote", URL: "http://wrong.example/mcp", Status: "installed",
+		}}}
+	}
+	_, err = svc.UIInstallAgents(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, ItemIDs: []string{"set:alpha-only"},
+		DestinationIDs: []string{adapter.ID()},
+	})
+	if err != nil {
+		t.Fatalf("installing only alpha should ignore beta's observed endpoint: %v", err)
+	}
+	if len(adapter.registrations) != 1 || adapter.registrations[0].Name != "alpha-remote" || adapter.registrations[0].URL != alphaURL {
+		t.Fatalf("unselected MCP was included in agent registration: %+v", adapter.registrations)
+	}
+}
+
+func TestUISetupPreviewDoesNotFallBackToLocalInputsWhenDockerObservationFails(t *testing.T) {
+	svc, _, q := profileApplyFixture(t)
+	svc.Options.Runtime = &uxForeignRuntime{listErr: errors.New("docker unavailable")}
+	preview, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: q.Ref})
+	if err == nil {
+		t.Fatalf("preview should report failed foreign-runtime observation instead of returning local inputs: %+v", preview)
+	}
+}
+
+func TestObservedForeignUninstallOnlyRemovesSelectedBindingsWithoutInputsOrReinstall(t *testing.T) {
+	svc, adapter, q := profileApplyFixture(t)
+	parent, err := svc.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageDef := svc.Source.Catalog[0]
+	foreignRuntime := &uxForeignRuntime{}
+	for _, definition := range packageDef.MCPDefinitions() {
+		foreignRuntime.instances = append(foreignRuntime.instances, mcp.Instance{
+			Key: mcpDefinitionKey(parent, packageDef, definition), ID: "foreign-" + definition.Name,
+			Status: "running", Ownership: "other-aact", URL: "http://localhost:18765/" + definition.Name + "/mcp",
+			RegistrationName: definition.Name + "-remote",
+		})
+	}
+	svc.Options.Runtime = foreignRuntime
+	if _, err := svc.UIInstallAgents(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, ItemIDs: q.ItemIDs,
+		DestinationIDs: []string{adapter.ID()},
+	}); err != nil {
+		t.Fatalf("seed the remaining agent bindings: %v", err)
+	}
+	parentRows, err := svc.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removedAgentRow := state.Installation{
+		Key: parent, AgentID: "removed-agent", AgentKind: "removed-agent", Component: "skill",
+		Destination: filepath.Join(t.TempDir(), "removed-agent-skill"),
+	}
+	if err := svc.Store.Record(removedAgentRow); err != nil {
+		t.Fatal(err)
+	}
+	adapter.calls = nil
+	adapter.registrations = nil
+	adapter.skillRequests = nil
+
+	// The kept destination represents an agent that was not selected for
+	// removal. It must remain untouched: Uninstall cannot regenerate or
+	// re-register it as a side effect.
+	if _, err := svc.UIInstallAgents(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, ItemIDs: q.ItemIDs,
+		DestinationIDs: []string{adapter.ID()}, Uninstall: true,
+	}); err != nil {
+		t.Fatalf("remove selected agent bindings: %v", err)
+	}
+	rows, err := svc.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(parentRows) {
+		t.Fatalf("partial Uninstall changed the kept binding set: before=%+v after=%+v", parentRows, rows)
+	}
+	for _, row := range rows {
+		if row.AgentID != adapter.ID() {
+			t.Fatalf("partial Uninstall left the selected destination: %+v", row)
+		}
+	}
+	if len(adapter.calls) != 0 || len(adapter.registrations) != 0 || len(adapter.skillRequests) != 0 {
+		t.Fatalf("Uninstall reapplied a kept destination: calls=%v registrations=%+v skills=%+v", adapter.calls, adapter.registrations, adapter.skillRequests)
+	}
+
+	// Removing the final destination must not need unavailable inputs just to
+	// regenerate a skill that is immediately being deleted.
+	if err := os.WriteFile(filepath.Join(packageDef.Dir, "required-input.mustache"), []byte("{{inputs.token}}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc.Source.Catalog[0].Inputs = append(svc.Source.Catalog[0].Inputs, catalog.Input{Name: "token", Type: "secret", Required: true})
+	svc.Source.Catalog[0].Skills[0].Templates = []catalog.Template{{Source: "required-input.mustache", Destination: "SKILL.md"}}
+	adapter.calls = nil
+	if _, err := svc.UIInstallAgents(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{Ref: q.Ref}, ItemIDs: q.ItemIDs,
+		DestinationIDs: []string{}, Uninstall: true,
+	}); err != nil {
+		t.Fatalf("Uninstall should not require an unavailable runtime input: %v", err)
+	}
+	rows, err = svc.Store.Installations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("final Uninstall left agent bindings: %+v", rows)
+	}
+	if len(adapter.calls) != 0 || len(adapter.registrations) != 0 || len(adapter.skillRequests) != 0 {
+		t.Fatalf("final Uninstall regenerated or re-registered bindings: calls=%v registrations=%+v skills=%+v", adapter.calls, adapter.registrations, adapter.skillRequests)
+	}
+}
+
+func mcpChildName(key state.Key) string {
+	if key.MCPDefinition != "" {
+		return key.MCPDefinition
+	}
+	return key.MCP
 }
 
 func TestUXChangedParametersDoNotReimportRemovedSourceWhenManagedCredentialsExist(t *testing.T) {
