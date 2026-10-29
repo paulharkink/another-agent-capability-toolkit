@@ -1,0 +1,41 @@
+--- a/dist/src/infrastructure/client/SearchClient.js
++++ b/dist/src/infrastructure/client/SearchClient.js
+@@ -23,30 +23,22 @@
+     async searchBitbucketContent(input) {
+         const { workspaceSlug, query, scope, extension, language } = input;
+         const projectKey = workspaceSlug;
+-        const searchUrl = `${this.api.defaults.baseURL}/search/codes`;
+-        const payload = {
+-            query,
+-            limits: {
+-                primary: 10,
+-                secondary: 5
+-            }
+-        };
++        const apiBaseUrl = this.api.defaults.baseURL.replace(/\/rest\/api\/1\.0\/?$/, "");
++        const searchUrl = `${apiBaseUrl}/rest/search/latest/search`;
++        const advancedQuery = [];
+         if (scope) {
+-            payload.scope = {
+-                type: 'REPOSITORY',
+-                resource: { project: { key: projectKey }, slug: scope }
+-            };
++            advancedQuery.push(`project:${projectKey}`, `repo:${scope}`);
+         }
+-        const advancedQuery = [];
+         if (extension) {
+             advancedQuery.push(`ext:${extension}`);
+         }
+         if (language) {
+             advancedQuery.push(`lang:${language}`);
+         }
+-        if (advancedQuery.length > 0) {
+-            payload.advancedQuery = advancedQuery.join(' ');
+-        }
++        const payload = {
++            query: [query, ...advancedQuery].join(' '),
++            entities: { code: { start: 0, limit: 10 } }
++        };
+         try {
+             this.logger.info(`Searching content with payload: ${JSON.stringify(payload)}`);
+             const response = await this.api.post(searchUrl, payload);
