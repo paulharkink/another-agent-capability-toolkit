@@ -107,6 +107,138 @@ func TestMCPTransportIsStreamedThroughWithoutRewriting(t *testing.T) {
 	}
 }
 
+func TestExpiredMCPPostSessionIsTranslatedToNotFound(t *testing.T) {
+	const expiredSessionBody = `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"},"id":1}`
+	for _, test := range []struct {
+		name       string
+		provider   string
+		method     string
+		sessionID  string
+		body       string
+		wantStatus int
+	}{
+		{name: "expired session on POST", method: http.MethodPost, sessionID: "expired-session", body: expiredSessionBody, wantStatus: http.StatusNotFound},
+		{name: "headerless POST remains bad request", method: http.MethodPost, body: expiredSessionBody, wantStatus: http.StatusBadRequest},
+		{name: "unrelated POST error remains bad request", method: http.MethodPost, sessionID: "session", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: Invalid request"},"id":1}`, wantStatus: http.StatusBadRequest},
+		{name: "different JSON-RPC error code remains bad request", method: http.MethodPost, sessionID: "session", body: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Bad Request: No valid session ID provided"},"id":1}`, wantStatus: http.StatusBadRequest},
+		{name: "different JSON-RPC version remains bad request", method: http.MethodPost, sessionID: "session", body: `{"jsonrpc":"1.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"},"id":1}`, wantStatus: http.StatusBadRequest},
+		{name: "oversized error body remains intact", method: http.MethodPost, sessionID: "session", body: strings.Repeat("x", mcpErrorBodyLimit+10), wantStatus: http.StatusBadRequest},
+		{name: "other provider retains exact 400", provider: "gitlab", method: http.MethodPost, sessionID: "expired-session", body: expiredSessionBody, wantStatus: http.StatusBadRequest},
+		{name: "noncanonical provider name retains exact 400", provider: "BITBUCKET", method: http.MethodPost, sessionID: "expired-session", body: expiredSessionBody, wantStatus: http.StatusBadRequest},
+		{name: "expired session on GET remains unchanged", method: http.MethodGet, sessionID: "expired-session", body: expiredSessionBody, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Mcp-Session-Id"); got != test.sessionID {
+					t.Errorf("upstream session ID = %q, want %q", got, test.sessionID)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Upstream", "preserved")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer upstream.Close()
+
+			provider := test.provider
+			if provider == "" {
+				provider = "bitbucket"
+			}
+			handler := New(Config{Provider: provider, UpstreamURL: upstream.URL})
+			request := httptest.NewRequest(test.method, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list","id":1}`))
+			if test.sessionID != "" {
+				request.Header.Set("Mcp-Session-Id", test.sessionID)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%q", recorder.Code, test.wantStatus, recorder.Body.String())
+			}
+			if recorder.Body.String() != test.body {
+				t.Fatalf("response body changed: got %q, want %q", recorder.Body.String(), test.body)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+			if got := recorder.Header().Get("X-Upstream"); got != "preserved" {
+				t.Fatalf("X-Upstream = %q, want preserved", got)
+			}
+		})
+	}
+}
+
+func environmentValue(environment []string, name string) string {
+	prefix := name + "="
+	for _, item := range environment {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func TestStartChildNormalizesOnlyBitbucketURLInChildEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		wantURL  string
+	}{
+		{provider: "bitbucket", wantURL: "https://bitbucket.example/context"},
+		{provider: "gitlab", wantURL: "https://bitbucket.example/context///"},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			t.Setenv("MCP_HEALTH_PROVIDER", test.provider)
+			t.Setenv("BITBUCKET_URL", "https://bitbucket.example/context///")
+			t.Setenv("BITBUCKET_TOKEN", "secret-token")
+			t.Setenv("AACT_GIT_HEALTH_HELPER", "1")
+
+			child, done, err := startChild([]string{os.Args[0], "-test.run=TestOwnedChildHelperProcess"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopChild(child, done)
+
+			if value := environmentValue(child.Env, "BITBUCKET_URL"); value != test.wantURL {
+				t.Fatalf("child BITBUCKET_URL = %q, want %q", value, test.wantURL)
+			}
+			if value := environmentValue(child.Env, "BITBUCKET_TOKEN"); value != "secret-token" {
+				t.Fatalf("child BITBUCKET_TOKEN changed: %q", value)
+			}
+			if value := os.Getenv("BITBUCKET_URL"); value != "https://bitbucket.example/context///" {
+				t.Fatalf("parent BITBUCKET_URL was mutated: %q", value)
+			}
+		})
+	}
+}
+
+type closeTrackingBody struct {
+	*strings.Reader
+	closed bool
+}
+
+func (body *closeTrackingBody) Close() error {
+	body.closed = true
+	return nil
+}
+
+func TestExpiredMCPSessionResponseClosesUpstreamBody(t *testing.T) {
+	upstreamBody := &closeTrackingBody{Reader: strings.NewReader(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"},"id":1}`)}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request.Header.Set("Mcp-Session-Id", "expired-session")
+	response := &http.Response{StatusCode: http.StatusBadRequest, Request: request, Body: upstreamBody}
+
+	if err := translateExpiredSessionResponse(response); err != nil {
+		t.Fatalf("translate response: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read translated response: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close translated response: %v", err)
+	}
+	if !upstreamBody.closed {
+		t.Fatal("closing translated response did not close upstream body")
+	}
+}
+
 func TestGitHubHostNormalizationMatchesPinnedServer(t *testing.T) {
 	for _, test := range []struct {
 		input string
