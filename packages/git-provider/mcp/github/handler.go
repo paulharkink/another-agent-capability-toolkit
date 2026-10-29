@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,15 @@ import (
 const (
 	defaultProbeTimeout = 3 * time.Second
 	probeBodyLimit      = 64 << 10
+	mcpErrorBodyLimit   = 64 << 10
 )
+
+const invalidMCPSessionMessage = "Bad Request: No valid session ID provided"
+
+type preservedResponseBody struct {
+	io.Reader
+	io.Closer
+}
 
 type Config struct {
 	Provider       string
@@ -80,6 +89,12 @@ func New(config Config) http.Handler {
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.FlushInterval = -1
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if config.Provider != "bitbucket" {
+			return nil
+		}
+		return translateExpiredSessionResponse(response)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/health" {
 			authenticated := backendReady(r.Context(), config, upstream) && probeIdentity(r.Context(), config, r)
@@ -92,6 +107,39 @@ func New(config Config) http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func translateExpiredSessionResponse(response *http.Response) error {
+	if response == nil || response.StatusCode != http.StatusBadRequest || response.Request == nil ||
+		response.Request.Method != http.MethodPost || strings.TrimSpace(response.Request.Header.Get("Mcp-Session-Id")) == "" {
+		return nil
+	}
+
+	originalBody := response.Body
+	body, err := io.ReadAll(io.LimitReader(originalBody, mcpErrorBodyLimit+1))
+	if err != nil {
+		response.Body = preservedResponseBody{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
+		return err
+	}
+	if len(body) > mcpErrorBodyLimit {
+		response.Body = preservedResponseBody{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
+		return nil
+	}
+	response.Body = preservedResponseBody{Reader: bytes.NewReader(body), Closer: originalBody}
+	var rpcError struct {
+		JSONRPC string `json:"jsonrpc"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcError); err != nil || rpcError.JSONRPC != "2.0" || rpcError.Error == nil || rpcError.Error.Code != -32000 || rpcError.Error.Message != invalidMCPSessionMessage {
+		return nil
+	}
+
+	response.StatusCode = http.StatusNotFound
+	response.Status = "404 Not Found"
+	return nil
 }
 
 func backendReady(ctx context.Context, config Config, upstream *url.URL) bool {
