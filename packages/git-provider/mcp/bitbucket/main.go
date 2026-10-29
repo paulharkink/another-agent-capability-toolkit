@@ -97,7 +97,7 @@ func listenAddress() string {
 
 func startChild(args []string) (*exec.Cmd, <-chan error, error) {
 	child := exec.Command(args[0], args[1:]...)
-	child.Env = os.Environ()
+	child.Env = childEnvironment(os.Getenv("MCP_HEALTH_PROVIDER"), os.Environ())
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	configureWrapperChildProcessTree(child)
 	if err := child.Start(); err != nil {
@@ -106,6 +106,21 @@ func startChild(args []string) (*exec.Cmd, <-chan error, error) {
 	done := make(chan error, 1)
 	go func() { done <- child.Wait() }()
 	return child, done, nil
+}
+
+func childEnvironment(provider string, environment []string) []string {
+	childEnv := append([]string(nil), environment...)
+	if provider != "bitbucket" {
+		return childEnv
+	}
+	for i, item := range childEnv {
+		name, value, found := strings.Cut(item, "=")
+		if found && name == "BITBUCKET_URL" {
+			childEnv[i] = name + "=" + strings.TrimRight(value, "/")
+			break
+		}
+	}
+	return childEnv
 }
 
 func stopChild(child *exec.Cmd, childDone <-chan error) {

@@ -166,6 +166,49 @@ func TestExpiredMCPPostSessionIsTranslatedToNotFound(t *testing.T) {
 	}
 }
 
+func environmentValue(environment []string, name string) string {
+	prefix := name + "="
+	for _, item := range environment {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func TestStartChildNormalizesOnlyBitbucketURLInChildEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		wantURL  string
+	}{
+		{provider: "bitbucket", wantURL: "https://bitbucket.example/context"},
+		{provider: "gitlab", wantURL: "https://bitbucket.example/context///"},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			t.Setenv("MCP_HEALTH_PROVIDER", test.provider)
+			t.Setenv("BITBUCKET_URL", "https://bitbucket.example/context///")
+			t.Setenv("BITBUCKET_TOKEN", "secret-token")
+			t.Setenv("AACT_GIT_HEALTH_HELPER", "1")
+
+			child, done, err := startChild([]string{os.Args[0], "-test.run=TestOwnedChildHelperProcess"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopChild(child, done)
+
+			if value := environmentValue(child.Env, "BITBUCKET_URL"); value != test.wantURL {
+				t.Fatalf("child BITBUCKET_URL = %q, want %q", value, test.wantURL)
+			}
+			if value := environmentValue(child.Env, "BITBUCKET_TOKEN"); value != "secret-token" {
+				t.Fatalf("child BITBUCKET_TOKEN changed: %q", value)
+			}
+			if value := os.Getenv("BITBUCKET_URL"); value != "https://bitbucket.example/context///" {
+				t.Fatalf("parent BITBUCKET_URL was mutated: %q", value)
+			}
+		})
+	}
+}
+
 type closeTrackingBody struct {
 	*strings.Reader
 	closed bool
