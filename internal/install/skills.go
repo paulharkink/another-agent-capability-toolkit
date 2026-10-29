@@ -8,6 +8,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -16,12 +17,27 @@ type Skills struct {
 	Store             *state.Store
 	Link              func(string, string) error
 	AllowSourceUpdate bool
+	readLXLink        func(string) (string, bool, error)
 	recordEffect      func(state.Installation) error
 	removeDestination string
 }
 
-func NewSkills(s *state.Store) *Skills { return &Skills{Store: s, Link: os.Symlink} }
+func NewSkills(s *state.Store) *Skills {
+	return &Skills{Store: s, Link: os.Symlink, readLXLink: readLXReparseLink}
+}
 func (s *Skills) Install(ctx context.Context, p catalog.Package, e SkillDestination, k state.Key, generatedDir string) error {
+	return s.install(ctx, p, e, k, generatedDir, nil)
+}
+
+// ForeignSkillProof is supplied only after the caller has verified the exact
+// external Docker instance and its matching Windows MCP binding.
+type ForeignSkillProof struct {
+	ParentKeyID      string
+	RegistrationName string
+	URL              string
+}
+
+func (s *Skills) install(ctx context.Context, p catalog.Package, e SkillDestination, k state.Key, generatedDir string, proof *ForeignSkillProof) error {
 	if s.Store == nil {
 		return errors.New("state store required")
 	}
@@ -83,7 +99,9 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e SkillDestinat
 			return statErr
 		}
 		if exists && len(shared) == 0 {
-			return fmt.Errorf("refusing foreign skill at %s", destination)
+			if err := s.allowVerifiedForeignLXLink(destination, source, k.ID(), proof); err != nil {
+				return fmt.Errorf("refusing foreign skill at %s: %w", destination, err)
+			}
 		}
 		for _, row := range shared {
 			if row.Key.Source != k.Source || row.Key.Package != k.Package {
@@ -171,6 +189,83 @@ func (s *Skills) Install(ctx context.Context, p catalog.Package, e SkillDestinat
 		}
 		return nil
 	}()
+}
+
+func (s *Skills) allowVerifiedForeignLXLink(destination, source, requestedKeyID string, proof *ForeignSkillProof) error {
+	if proof == nil || !validForeignSkillProof(*proof) {
+		return errors.New("verified external binding proof required")
+	}
+	if proof.ParentKeyID != requestedKeyID {
+		return errors.New("verified external parent key does not match requested skill key")
+	}
+	if !isUnder(filepath.Join(s.Store.Root(), "generated"), source) {
+		return errors.New("replacement skill must be staged under local generated storage")
+	}
+	reader := s.readLXLink
+	if reader == nil {
+		reader = readLXReparseLink
+	}
+	target, isLX, err := reader(destination)
+	if err != nil {
+		return err
+	}
+	if !isLX {
+		return errors.New("destination is not a verified Linux LX symlink")
+	}
+	if !matchesGeneratedLXTarget(target, requestedKeyID) {
+		return errors.New("LX link target does not match the verified external parent key")
+	}
+	return nil
+}
+
+func validForeignSkillProof(proof ForeignSkillProof) bool {
+	if len(proof.ParentKeyID) != 64 || proof.RegistrationName == "" || proof.URL == "" {
+		return false
+	}
+	for _, c := range proof.ParentKeyID {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isUnder(root, target string) bool {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func matchesGeneratedLXTarget(target, parentKeyID string) bool {
+	if target == "" || !strings.HasPrefix(target, "/") || strings.ContainsAny(target, "\\\x00") || path.Clean(target) != target {
+		return false
+	}
+	suffix := "/generated/" + parentKeyID + "/output-"
+	idx := strings.LastIndex(target, suffix)
+	if idx <= 0 {
+		return false
+	}
+	prefix := target[:idx]
+	if !strings.HasPrefix(prefix, "/") || path.Clean(prefix) != prefix {
+		return false
+	}
+	output := target[idx+len(suffix):]
+	if output == "" {
+		return false
+	}
+	for _, c := range output {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 func (s *Skills) Uninstall(ctx context.Context, k state.Key, e SkillDestination) error {
 	if s.Store == nil {

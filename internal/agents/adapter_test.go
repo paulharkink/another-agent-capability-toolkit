@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
 type call struct {
@@ -289,6 +291,86 @@ func TestOpenCodeUpdatesExistingJSONAndJSONC(t *testing.T) {
 	m := server(t, v, "mcp", "local")
 	if m["url"] != reg.URL || m["type"] != "remote" || m["timeout"] != float64(30000) {
 		t.Fatalf("%v", v)
+	}
+}
+
+func TestOpenCodeAdoptsVerifiedForeignRegistrationWithoutRewritingIt(t *testing.T) {
+	const body = `{"theme":"dark","mcp":{"sample-mcp":{"enabled":true,"oauth":false,"timeout":60000,"type":"remote","url":"http://127.0.0.1:9999/mcp"}}}`
+	a, e := configFixture(t, "opencode", body)
+	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"
+	if err := os.WriteFile(jsonc, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := state.Key{Source: "fixture-pack", Package: "sample-capability", Environment: "test", Target: "sample", MCPDefinition: "sample-mcp"}
+	parent := key
+	parent.MCP, parent.MCPDefinition = "", ""
+	registration := Registration{Name: "sample-mcp", URL: "http://127.0.0.1:9999/mcp", TimeoutMS: 60000}
+	request := MCPRequest{
+		Key:          key,
+		Registration: registration,
+		VerifiedForeignRegistration: &ForeignMCPRegistrationProof{
+			ParentKeyID: parent.ID(), RegistrationName: registration.Name, URL: registration.URL,
+		},
+	}
+	scope := Scope{ID: e.ID, Home: e.Home, ConfigPathOverride: e.ConfigPath, ExplicitHome: true}
+
+	first, err := a.mcpAdapter.Register(context.Background(), scope, request)
+	if err != nil {
+		t.Fatalf("verified exact foreign binding should be adoptable: %v", err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != body {
+			t.Fatalf("adoption rewrote native config fields or formatting in %s:\nwant %s\ngot  %s", path, body, got)
+		}
+	}
+	if first.Installation.Digest == "" {
+		t.Fatal("adopted installation did not record a digest for later ownership checks")
+	}
+	if err := a.deps.Store.Record(first.Installation); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := a.mcpAdapter.Register(context.Background(), scope, request)
+	if err != nil {
+		t.Fatalf("repeated install should preserve the adopted native entry: %v", err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != body || second.Installation.Digest != first.Installation.Digest {
+			t.Fatalf("repeated install changed the adopted entry or digest in %s: body=%s row=%+v", path, got, second.Installation)
+		}
+	}
+	if err := a.mcpAdapter.Unregister(context.Background(), scope, first.Installation); err != nil {
+		t.Fatalf("uninstall of the adopted binding failed: %v", err)
+	}
+	if err := a.deps.Store.Remove(first.Installation); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{e.ConfigPath, jsonc} {
+		if servers := readJSON(t, path)["mcp"].(map[string]any); servers[registration.Name] != nil {
+			t.Fatalf("uninstall left the adopted entry behind in %s: %#v", path, servers[registration.Name])
+		}
+	}
+	const mismatched = `{"theme":"dark","mcp":{"sample-mcp":{"enabled":true,"oauth":false,"timeout":60000,"type":"remote","url":"http://127.0.0.1:9998/mcp"}}}`
+	if err := os.WriteFile(e.ConfigPath, []byte(mismatched), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.mcpAdapter.Register(context.Background(), scope, request); err == nil {
+		t.Fatal("proof for a different endpoint allowed adopting the native entry")
+	}
+	got, err := os.ReadFile(e.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != mismatched {
+		t.Fatalf("mismatched entry was modified: %s", got)
 	}
 }
 

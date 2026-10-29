@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
@@ -52,6 +53,9 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 		return "", err
 	}
 	result, err := source.RunInstanceMCP(ctx, action, instanceRequestForStateKey(key), mcpNameForStateKey(key))
+	if result.LoginURL != "" {
+		return "Login URL: " + result.LoginURL, err
+	}
 	if err != nil {
 		return "", err
 	}
@@ -61,9 +65,10 @@ func (s *Service) UIInstanceRun(ctx context.Context, action string, key state.Ke
 	return result.Message, nil
 }
 
-// UIRemoveRuntimeRecord removes one exact runtime identity for a declared MCP
-// child. Missing containers lose only their local ledger row; a live container
-// is removed only through the runtime's exact-ID ownership-checked operation.
+// UIRemoveRuntimeRecord removes one exact runtime identity. A live container
+// is stopped only when it is still locally owned under this exact key; stale,
+// unlinked, missing, external, or otherwise unowned entries lose only their
+// exact local ledger row.
 func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runtimeID string) (string, error) {
 	if runtimeID == "" {
 		return "", errors.New("runtime ID is required")
@@ -75,8 +80,8 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 	if err != nil {
 		return "", err
 	}
-	if !source.declaredMCPChild(key) {
-		return "", errors.New("runtime record does not link to a declared MCP instance")
+	if err := source.rejectForeignRuntimeMutation(ctx, key); err != nil {
+		return "", err
 	}
 	rows, err := source.Store.Installations()
 	if err != nil {
@@ -91,9 +96,6 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			break
 		}
 	}
-	if record == nil {
-		return "", errors.New("exact runtime ledger record was not found")
-	}
 	instances, err := source.Options.Runtime.List(ctx)
 	if err != nil {
 		return "", fmt.Errorf("refresh runtime observation before removing record: %w", err)
@@ -103,13 +105,25 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 			continue
 		}
 		if instance.Key != key {
-			return "", fmt.Errorf("refusing to forget runtime %s: it is still observed under a different instance key", runtimeID)
+			if record == nil {
+				return "", errors.New("runtime ID is observed under a different MCP key; refusing to remove it")
+			}
+			if err := source.Store.Remove(*record); err != nil {
+				return "", fmt.Errorf("forget stale runtime record %s: %w", runtimeID, err)
+			}
+			return "Forgot stale runtime record " + runtimeID + "; the observed runtime was left running under its current instance key", nil
 		}
 		if instance.Status == "missing" {
 			continue
 		}
 		if instance.Ownership != "local" {
-			return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+			if record == nil {
+				return "", fmt.Errorf("refusing to delete runtime %s: ownership is %s", runtimeID, instance.Ownership)
+			}
+			if err := source.Store.Remove(*record); err != nil {
+				return "", fmt.Errorf("forget runtime record %s: %w", runtimeID, err)
+			}
+			return "Forgot runtime record " + runtimeID + "; runtime ownership is " + instance.Ownership + " and no container was removed", nil
 		}
 		exact, ok := source.Options.Runtime.(interface {
 			StopExact(context.Context, state.Key, string) error
@@ -122,27 +136,13 @@ func (s *Service) UIRemoveRuntimeRecord(ctx context.Context, key state.Key, runt
 		}
 		return "Removed exact AACT-owned runtime " + runtimeID, nil
 	}
+	if record == nil {
+		return "", errors.New("exact runtime ID is no longer observed; refresh before removing it")
+	}
 	if err := source.Store.Remove(*record); err != nil {
 		return "", fmt.Errorf("forget missing runtime %s: %w", runtimeID, err)
 	}
 	return "Forgot exact missing runtime record " + runtimeID + "; no container was removed", nil
-}
-
-func (s *Service) declaredMCPChild(key state.Key) bool {
-	base := key
-	base.MCP = ""
-	base.MCPDefinition = ""
-	for _, p := range s.Source.Catalog {
-		if p.ID != key.Package {
-			continue
-		}
-		for _, definition := range p.MCPDefinitions() {
-			if mcpDefinitionKey(base, p, definition) == key {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Service) UIProfileRun(ctx context.Context, action string, key state.Key) (string, error) {
@@ -288,35 +288,57 @@ func (s *Service) UIInstanceSnapshot(ctx context.Context) (viewmodel.InstanceSna
 			profile.RuntimeStatus = "unavailable"
 			profile.ObservationStale = true
 		}
-		profile.CanStart = !stale && profile.Ownership == "local" && (profile.RuntimeStatus == "never-started" || profile.RuntimeStatus == "missing" || profile.RuntimeStatus == "exited")
+		profile.CanStart = !stale && profile.Ownership == "local" && (profile.RuntimeStatus == "never-started" || profile.RuntimeStatus == "stopped" || profile.RuntimeStatus == "missing" || profile.RuntimeStatus == "exited")
 		profile.CanStop = !stale && profile.Ownership == "local" && profile.RuntimeStatus == "running"
 		profile.CanConfigureRegistrations = profile.URL != ""
 		if !profile.CanStart {
 			switch {
 			case stale:
-				profile.StartDisabledReason = "Docker observation is unavailable"
+				if strings.TrimSpace(snapshot.DockerError) != "" {
+					profile.StartDisabledReason = "Docker observation failed: " + strings.TrimSpace(snapshot.DockerError)
+				} else {
+					profile.StartDisabledReason = "Docker observation is stale; refresh this instance before starting"
+				}
 			case profile.RuntimeStatus == "conflict":
 				profile.StartDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
-				profile.StartDisabledReason = "Runtime belongs to another AACT installation"
+				profile.StartDisabledReason = "Owned by another installation (another AACT installation)"
 			case profile.Ownership != "local":
 				profile.StartDisabledReason = "Runtime owner is unknown"
-			default:
+			case profile.RuntimeStatus == "running":
 				profile.StartDisabledReason = "Runtime is already running"
+			case profile.RuntimeStatus == "disabled":
+				profile.StartDisabledReason = "This MCP is disabled by the saved inputs"
+			default:
+				status := strings.TrimSpace(profile.RuntimeStatus)
+				if status == "" {
+					status = "unknown"
+				}
+				profile.StartDisabledReason = "Runtime status is " + status + "; refresh this instance before starting"
 			}
 		}
 		if !profile.CanStop {
 			switch {
 			case stale:
-				profile.StopDisabledReason = "Docker observation is unavailable"
+				if strings.TrimSpace(snapshot.DockerError) != "" {
+					profile.StopDisabledReason = "Docker observation failed: " + strings.TrimSpace(snapshot.DockerError)
+				} else {
+					profile.StopDisabledReason = "Docker observation is stale; refresh this instance before stopping"
+				}
 			case profile.RuntimeStatus == "conflict":
 				profile.StopDisabledReason = "Multiple running containers claim this MCP definition"
 			case profile.Ownership == "other-aact":
-				profile.StopDisabledReason = "Runtime belongs to another AACT installation"
+				profile.StopDisabledReason = "Owned by another installation (another AACT installation)"
+			case profile.Ownership == "external":
+				profile.StopDisabledReason = "Runtime is externally managed and cannot be stopped by AACT"
 			case profile.Ownership != "local":
 				profile.StopDisabledReason = "Runtime owner is unknown"
 			default:
-				profile.StopDisabledReason = "Runtime is not running"
+				status := strings.TrimSpace(profile.RuntimeStatus)
+				if status == "" {
+					status = "unknown"
+				}
+				profile.StopDisabledReason = "Runtime is " + status + "; there is no running container to stop"
 			}
 		}
 		if !profile.CanConfigureRegistrations {

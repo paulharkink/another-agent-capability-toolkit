@@ -53,14 +53,15 @@ type RunSpec struct {
 	DeferProtocolHealth bool          `json:"-"`
 }
 type Instance struct {
-	Key          state.Key `json:"key"`
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Status       string    `json:"status"`
-	URL          string    `json:"url"`
-	Ownership    string    `json:"ownership"`
-	LastAction   string    `json:"last_action,omitempty"`
-	LastActionAt time.Time `json:"last_action_at,omitempty"`
+	Key              state.Key `json:"key"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	RegistrationName string    `json:"registration_name,omitempty"`
+	Status           string    `json:"status"`
+	URL              string    `json:"url"`
+	Ownership        string    `json:"ownership"`
+	LastAction       string    `json:"last_action,omitempty"`
+	LastActionAt     time.Time `json:"last_action_at,omitempty"`
 }
 type Runtime struct {
 	Store      *state.Store
@@ -730,7 +731,7 @@ func instance(d dockerInfo) Instance {
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), Status: s, URL: l["aact.url"]}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), RegistrationName: l["aact.registration_name"], Status: s, URL: l["aact.url"]}
 }
 func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
 	instances, err := r.List(ctx)
@@ -794,16 +795,28 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 		return err
 	}
 	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
-	if e == nil {
-		if _, err := r.recordAction(k, observed, "stop"); err != nil {
-			return err
+	if e != nil {
+		return e
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return fmt.Errorf("runtime %s was removed but its ledger could not be read: %w", observed.ID, err)
+	}
+	for _, row := range rows {
+		if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.SourcePath != observed.ID {
+			continue
+		}
+		if err := r.Store.Remove(row); err != nil {
+			return fmt.Errorf("runtime %s was removed but its ledger record could not be cleared: %w", observed.ID, err)
 		}
 	}
-	return e
+	return nil
 }
 
 // StopExact removes one container only after verifying its exact state key,
-// locally recorded container ID, and AACT ownership. It is intentionally
+// exact container ID, and AACT ownership. A matching local ledger row is
+// removed when present, but is not required when Docker labels prove ownership.
+// It is intentionally
 // separate from Stop, whose key-based lookup refuses ambiguous instances.
 func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if id == "" {
@@ -813,14 +826,17 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if err != nil {
 		return err
 	}
-	record, ok := runtimeRecord(rows, k, id)
-	if !ok || record.AgentID != "docker" {
-		return errors.New("exact runtime ID is not recorded for this MCP")
+	record, recorded := runtimeRecord(rows, k, id)
+	if recorded && record.AgentID != "docker" {
+		return errors.New("exact runtime ID has a non-Docker ledger record")
 	}
 	info, err := r.inspect(ctx, id)
 	if err != nil {
 		if isDockerNotFound(err) {
-			return r.Store.Remove(record)
+			if recorded {
+				return r.Store.Remove(record)
+			}
+			return nil
 		}
 		return err
 	}
@@ -838,8 +854,10 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
 		return err
 	}
-	if err := r.Store.Remove(record); err != nil {
-		return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+	if recorded {
+		if err := r.Store.Remove(record); err != nil {
+			return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+		}
 	}
 	return nil
 }

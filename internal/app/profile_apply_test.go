@@ -23,6 +23,15 @@ type fixtureAdapters struct{ a *profileAdapter }
 func (f fixtureAdapters) Adapter(string) (agents.Adapter, error) { return f.a, nil }
 func (f fixtureAdapters) Adapters() []agents.Adapter             { return []agents.Adapter{f.a} }
 
+type fixtureAdaptersWithExtra struct {
+	fixtureAdapters
+	extra []agents.Adapter
+}
+
+func (f fixtureAdaptersWithExtra) Adapters() []agents.Adapter {
+	return append(f.fixtureAdapters.Adapters(), f.extra...)
+}
+
 type profileAdapter struct {
 	calls          []string
 	fail           string
@@ -34,22 +43,39 @@ type profileAdapter struct {
 	registerResult *agents.MCPRegistrationResult
 	registerErr    error
 	registerEffect func()
+	registrations  []agents.Registration
+	mcpRequests    []agents.MCPRequest
+	skillRequests  []agents.SkillRequest
 	observe        func(agents.ObservationRequest) agents.Observation
+	observeErr     error
+	observeCalls   int
+	adapterID      string
+	detection      *agents.Detection
+	detectErr      error
 }
 
-func (a *profileAdapter) ID() string   { return "test-agent" }
+func (a *profileAdapter) ID() string {
+	if a.adapterID != "" {
+		return a.adapterID
+	}
+	return "test-agent"
+}
 func (a *profileAdapter) Name() string { return "Test agent" }
 func (a *profileAdapter) Features() agents.FeatureSet {
 	return agents.FeatureSet{Skills: true, MCPs: true, PluginFormats: []string{"claude-code"}}
 }
 func (a *profileAdapter) Detect(context.Context, agents.Scope) (agents.Detection, error) {
+	if a.detection != nil {
+		return *a.detection, a.detectErr
+	}
 	return agents.Detection{Installed: true, State: "installed"}, nil
 }
 func (a *profileAdapter) Observe(_ context.Context, _ agents.Scope, request agents.ObservationRequest) (agents.Observation, error) {
+	a.observeCalls++
 	if a.observe != nil {
-		return a.observe(request), nil
+		return a.observe(request), a.observeErr
 	}
-	return agents.Observation{}, nil
+	return agents.Observation{}, a.observeErr
 }
 func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installation, error) {
 	if a.inspect != nil {
@@ -62,9 +88,12 @@ func (a *profileAdapter) effect(k state.Key, kind, name string) (state.Installat
 	return state.Installation{Key: k, AgentID: a.ID(), AgentKind: a.ID(), Component: kind, Destination: filepath.Join(a.home, kind, name), RegistrationName: name}, nil
 }
 func (a *profileAdapter) InstallSkill(_ context.Context, _ agents.Scope, q agents.SkillRequest) (state.Installation, error) {
+	a.skillRequests = append(a.skillRequests, q)
 	return a.effect(q.Key, "skill", q.Skill.Name)
 }
 func (a *profileAdapter) Register(_ context.Context, _ agents.Scope, q agents.MCPRequest) (agents.MCPRegistrationResult, error) {
+	a.registrations = append(a.registrations, q.Registration)
+	a.mcpRequests = append(a.mcpRequests, q)
 	if a.registerResult != nil {
 		if a.registerEffect != nil {
 			a.registerEffect()

@@ -99,9 +99,8 @@ func TestSingleSelectableBundleWithSkillAndMCPIsAutoSelectedAndHidden(t *testing
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("one selectable bundle rendered a redundant Components section")
 	}
-	ids, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
-	if len(ids) != 1 || ids[0] != "bundle:server" {
-		t.Fatalf("single selectable bundle was not selected automatically: %v", ids)
+	if len(m.pendingSetup.SelectedItemIDs) != 1 || m.pendingSetup.SelectedItemIDs[0] != "bundle:server" {
+		t.Fatalf("single selectable bundle was not selected automatically: %v", m.pendingSetup.SelectedItemIDs)
 	}
 }
 
@@ -114,8 +113,7 @@ func TestSingleComponentIsAutoSelectedAndHidden(t *testing.T) {
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("single component still has a redundant Components section")
 	}
-	ids, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
-	if len(ids) != 1 || ids[0] != "skill:one" {
-		t.Fatalf("single component was not selected automatically: %v", ids)
+	if len(m.pendingSetup.SelectedItemIDs) != 1 || m.pendingSetup.SelectedItemIDs[0] != "skill:one" {
+		t.Fatalf("single component was not selected automatically: %v", m.pendingSetup.SelectedItemIDs)
 	}
 }

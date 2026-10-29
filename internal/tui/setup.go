@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 type setupBackend interface {
 	UISetupPreview(context.Context, viewmodel.SetupRequest) (viewmodel.SetupPreview, error)
 	UIInstall(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
+}
+
+type setupAgentInstallBackend interface {
+	UIInstallAgents(context.Context, viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error)
 }
 
 type setupInputSaveBackend interface {
@@ -84,7 +89,7 @@ func (m *Model) openTargetWorkspace(request viewmodel.SetupRequest, selectedSect
 	}
 	backend, ok := m.backend.(setupBackend)
 	if !ok {
-		m.output = "Unified setup service unavailable"
+		m.output = "The active AACT backend does not support setup operations"
 		return nil
 	}
 	if selectedSection == "Overview" {
@@ -165,6 +170,52 @@ func (m *Model) targetHasInstallRecord(key state.Key) bool {
 	return false
 }
 
+func (m *Model) targetRegisteredMCPs(key state.Key) map[string]bool {
+	registered := map[string]bool{}
+	for _, instance := range capabilityInstances(m.capabilityInstances[key.Package]) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.Kind != "mcp" || component.Status != "installed" || component.AgentID == "" {
+				continue
+			}
+			if component.Name != "" {
+				registered[component.Name] = true
+			}
+		}
+	}
+	return registered
+}
+
+func (m *Model) targetAgentAccessStatus(key state.Key) (map[string]agentAccessInstallStatus, bool) {
+	snapshot, observed := m.capabilityInstances[key.Package]
+	statuses := map[string]agentAccessInstallStatus{}
+	if !observed {
+		return statuses, false
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if capabilityInstanceKey(instance) != key {
+			continue
+		}
+		for _, component := range instance.Components {
+			if component.AgentID == "" || component.Status != "installed" {
+				continue
+			}
+			status := statuses[component.AgentID]
+			switch component.Kind {
+			case "skill", "plugin", "mcp":
+				status.Installed = true
+				if component.Kind == "mcp" {
+					status.MCP = true
+				}
+			}
+			statuses[component.AgentID] = status
+		}
+	}
+	return statuses, true
+}
+
 func capabilityInstanceKey(instance viewmodel.CapabilityInstance) state.Key {
 	key := instance.Key
 	if key.Source == "" {
@@ -206,25 +257,73 @@ func (m *Model) workspaceMCPRegistered(mcp string) bool {
 	return m.targetHasMCPRegistration(m.workspace.Key, mcp)
 }
 
-const dirtyInputsAgentActionReason = "Save changed inputs before installing or uninstalling agents."
+const dirtyInputsAgentActionReason = "Save changed inputs before installing."
+
+const unsavedInputsAgentActionReason = "Save valid inputs before installing."
+
+func (m *Model) agentAccessInputGuardReason() string {
+	if m.workspace == nil || m.workspace.Preview == nil {
+		return ""
+	}
+	hasEditableInputs := false
+	for _, input := range m.workspace.Preview.Inputs {
+		if input.Editable {
+			hasEditableInputs = true
+			break
+		}
+	}
+	if len(m.workspace.Preview.ValidationIssues) > 0 {
+		return "Inputs need attention: " + strings.Join(m.workspace.Preview.ValidationIssues, "; ")
+	}
+	if hasEditableInputs && !m.workspace.InputsSaved {
+		return unsavedInputsAgentActionReason
+	}
+	if m.hasUnsavedSetupInputs() {
+		return dirtyInputsAgentActionReason
+	}
+	return ""
+}
 
 func (m *Model) hasUnsavedSetupInputs() bool {
 	if m.form == nil || m.workspace == nil || m.workspace.Preview == nil {
 		return false
 	}
+	values := m.form.Values()
 	for _, input := range m.workspace.Preview.Inputs {
-		if input.Editable && m.form.HasUnsavedField(input.Definition.Name) {
-			return true
+		if !input.Editable {
+			continue
 		}
+		if input.Definition.Type == "secret" {
+			if value, ok := values[input.Definition.Name].(string); !ok || strings.TrimSpace(value) == "" {
+				// Empty secret fields mean preserve the private saved value; only
+				// non-empty re-entry or an explicit ResetFields intent is a change.
+				continue
+			}
+		}
+		// TOML/JSON decoding can represent one typed value with different Go
+		// types. Compare current and saved values after the form's schema
+		// normalization so a persisted integer (for example, a port) is not
+		// treated as a new edit merely because its decoder type changed.
+		current, currentErr := forms.ResolvePartial([]catalog.Input{input.Definition}, values)
+		savedValues := map[string]any{}
+		if input.HasValue {
+			savedValues[input.Definition.Name] = input.Value
+		}
+		saved, savedErr := forms.ResolvePartial([]catalog.Input{input.Definition}, savedValues)
+		if currentErr == nil && savedErr == nil && reflect.DeepEqual(current[input.Definition.Name], saved[input.Definition.Name]) {
+			continue
+		}
+		return true
 	}
 	return len(m.form.ResetFields()) > 0
 }
 
 func (m *Model) guardAgentAccessForDirtyInputs() bool {
-	if !m.hasUnsavedSetupInputs() {
+	if reason := m.agentAccessInputGuardReason(); reason == "" {
 		return false
+	} else {
+		m.output = reason
 	}
-	m.output = dirtyInputsAgentActionReason
 	return true
 }
 
@@ -441,6 +540,9 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 }
 
 func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, overrides map[string]any) {
+	if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
+		preview.SelectedItemIDs = []string{preview.Items[0].ID}
+	}
 	defs := make([]catalog.Input, 0, len(preview.Inputs)+1)
 	values := make(map[string]any, len(preview.Inputs)+1)
 	visibilityContext := map[string]any{}
@@ -526,7 +628,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		destinationField = ""
 	}
 	m.pendingSetupItemsField = ""
-	if len(preview.Items) > 0 {
+	if len(preview.Items) > 1 {
 		field := "__aact_components"
 		for {
 			collision := false
@@ -544,9 +646,6 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		preview.ItemFieldName = field
 		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
-		if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
-			values[field] = []string{preview.Items[0].ID}
-		}
 	}
 	replayValues := make(map[string]any, len(overrides))
 	for name, value := range overrides {
@@ -595,6 +694,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		if !input.Editable {
 			continue
 		}
+		if input.Definition.Type == "secret" && input.SecretSaved {
+			m.form.SetHint(input.Definition.Name, "Credential saved · leave blank to keep")
+		}
 		if fixed := fixedGroups[input.Definition.ExclusiveGroup]; fixed != "" {
 			m.form.SetDisabled(input.Definition.Name, fixed+" is fixed by target")
 			continue
@@ -631,8 +733,8 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 	}
 	m.form.SetSubmitLabel("Save")
-	m.form.SetSubmitHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
-	m.form.SetCancelHidden(m.workspace != nil && m.workspace.Active && m.workspace.SectionID != sectionInputsID)
+	m.form.SetSubmitHidden(m.workspace != nil && m.workspace.Active && (m.workspace.SectionID != sectionInputsID || m.workspaceInputsReadOnly()))
+	m.form.SetCancelHidden(m.workspace != nil && m.workspace.Active && (m.workspace.SectionID != sectionInputsID || m.workspaceInputsReadOnly()))
 	_, _, width, height, ok := m.setupOverlayBounds()
 	if !ok {
 		width, height = m.width, m.height
@@ -657,15 +759,21 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 			request.Inputs[input.Definition.Name] = value
 		}
 	}
-	inputsChanged := m.form.HasUnsavedChanges()
+	inputsChanged := m.hasUnsavedSetupInputs()
 	ctx, key, destination := m.ctx, preview.Key, m.pendingSetupField
 	m.busy, m.action = true, "save inputs"
 	return func() tea.Msg {
 		err := backend.UISaveInputs(ctx, request)
 		if err == nil {
 			for i := range preview.Inputs {
-				if value, exists := request.Inputs[preview.Inputs[i].Definition.Name]; exists {
-					preview.Inputs[i].Value, preview.Inputs[i].HasValue, preview.Inputs[i].Provenance = value, true, "saved"
+				input := &preview.Inputs[i]
+				name := input.Definition.Name
+				if value, exists := request.Inputs[name]; exists {
+					input.Value, input.HasValue, input.Provenance = value, true, "saved"
+					if input.Definition.Type == "secret" {
+						secret, ok := value.(string)
+						input.SecretSaved = ok && strings.TrimSpace(secret) != ""
+					}
 				}
 			}
 			preview.Configured = true
@@ -675,9 +783,6 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) uninstallSelectedAgents() tea.Cmd {
-	if m.guardAgentAccessForDirtyInputs() {
-		return nil
-	}
 	if m.workspace == nil || m.workspace.Preview == nil || m.form == nil || m.pendingSetupField == "" {
 		m.output = "Agent selection is unavailable for uninstall."
 		return nil
@@ -687,7 +792,10 @@ func (m *Model) uninstallSelectedAgents() tea.Cmd {
 	for _, id := range selected {
 		remove[id] = true
 	}
-	var remaining []string
+	// An empty, non-nil destination set means uninstall every checked target.
+	// Preserve that distinction from an omitted destination selection, which
+	// the service interprets as the user's configured defaults.
+	remaining := make([]string, 0, len(m.workspace.Preview.Destinations))
 	for _, destination := range m.workspace.Preview.Destinations {
 		if destination.Selected && !remove[destination.ID] {
 			remaining = append(remaining, destination.ID)
@@ -770,19 +878,15 @@ func (m *Model) applySetup(values map[string]any) tea.Cmd {
 }
 
 func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string) tea.Cmd {
-	if m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionAgentsID && m.guardAgentAccessForDirtyInputs() {
+	uninstallingAgents := m.uninstallingAgents
+	m.uninstallingAgents = false
+	if !uninstallingAgents && m.workspace != nil && m.workspace.Active && m.workspace.SectionID == sectionAgentsID && m.guardAgentAccessForDirtyInputs() {
 		m.uninstallingAgents = false
 		return nil
 	}
-	uninstallingAgents := m.uninstallingAgents
-	m.uninstallingAgents = false
 	backend, ok := m.backend.(setupBackend)
 	if !ok || m.pendingSetup == nil {
-		m.output = "Unified setup service unavailable"
-		return nil
-	}
-	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Preview != nil && workspace.Preview.MCP && m.instanceError != nil {
-		m.output = "Runtime observation failed; refresh this target before applying an MCP configuration."
+		m.output = "The active AACT backend does not support setup operations"
 		return nil
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Instance != nil && workspace.Instance.Ownership != "local" && strings.TrimSpace(workspace.Instance.URL) == "" {
@@ -906,6 +1010,9 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	}
 	m.busy = true
 	m.action = "install"
+	if uninstallingAgents {
+		m.action = "uninstall"
+	}
 	m.progressStep = ""
 	m.progressOutput = ""
 	m.progressFrame = 0
@@ -917,7 +1024,9 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	setupID := m.setupOperationID
 	ctx := m.ctx
 	request.Inputs = cloneSetupValues(request.Inputs)
-	request.DestinationIDs = append([]string(nil), request.DestinationIDs...)
+	if request.DestinationIDs != nil {
+		request.DestinationIDs = append([]string{}, request.DestinationIDs...)
+	}
 	if len(request.ExternalURLs) > 0 {
 		urls := make(map[string]string, len(request.ExternalURLs))
 		for name, endpoint := range request.ExternalURLs {
@@ -931,9 +1040,20 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	m.setupProgressDone = progressDone
 	emitter := setupProgressEmitter{ctx: ctx, events: progressEvents, done: progressDone}
 	ctx = viewmodel.WithOperationProgress(ctx, emitter.emit)
+	stagedWorkspace := m.workspace != nil && m.workspace.Active
 	operationCmd := func() tea.Msg {
 		defer close(progressDone)
-		result, err := backend.UIInstall(ctx, request)
+		var result viewmodel.OperationResult
+		var err error
+		if stagedWorkspace {
+			if staged, ok := backend.(setupAgentInstallBackend); ok {
+				result, err = staged.UIInstallAgents(ctx, request)
+			} else {
+				err = fmt.Errorf("agent-only install service unavailable; refusing to run the combined save/start operation")
+			}
+		} else {
+			result, err = backend.UIInstall(ctx, request)
+		}
 		structured := result
 		structured.SavedApplicable = true
 		lines := []string{}
@@ -983,7 +1103,11 @@ func cloneSetupValues(values map[string]any) map[string]any {
 	copyValues := make(map[string]any, len(values))
 	for name, value := range values {
 		if list, ok := value.([]string); ok {
-			copyValues[name] = append([]string(nil), list...)
+			if list == nil {
+				copyValues[name] = []string(nil)
+			} else {
+				copyValues[name] = append([]string{}, list...)
+			}
 		} else {
 			copyValues[name] = value
 		}

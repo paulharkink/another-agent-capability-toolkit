@@ -109,7 +109,7 @@ func TestHomeContextDistinguishesActionsFromHeadings(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"── Capability", "── Related MCP instances", "── Installation · AACT records", "› View capability details", "Instance"} {
+	for _, want := range []string{"── Capability", "── MCP runtimes", "── Installation · AACT records", "› View capability details", "Instance"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("L2 lacks visible action or heading cue %q:\n%s", want, view)
 		}
@@ -121,7 +121,7 @@ func TestSkillOnlyContextHasNoMCPSection(t *testing.T) {
 	press(m, tea.KeyDown, "")
 	press(m, tea.KeyEnter, "")
 	view := ansi.Strip(m.View().Content)
-	for _, unwanted := range []string{"Related MCP instances", "No MCP instances", "MCP · definition", "related MCP instances"} {
+	for _, unwanted := range []string{"MCP runtimes", "No MCP instances", "MCP · definition", "related MCP instances"} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("skill-only L2 contains %q:\n%s", unwanted, view)
 		}
@@ -177,7 +177,7 @@ func TestHomeTwoPanesFilterAndEmptyStates(t *testing.T) {
 		t.Fatalf("runtime observation was lost from the selected profile: %q", got)
 	}
 	press(m, tea.KeyDown, "")
-	if strings.Contains(m.View().Content, "Related MCP instances") {
+	if strings.Contains(m.View().Content, "MCP runtimes") {
 		t.Fatal("skill-only context still shows MCP content", m.View().Content)
 	}
 	press(m, tea.KeyTab, "")
@@ -407,7 +407,7 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	if m.home.Modal != nil {
 		t.Fatal("focusing the context pane opened an unexpected overlay")
 	}
-	for _, want := range []string{"Configure now", "View capability details", "MCP · inspector", "Installation · AACT records"} {
+	for _, want := range []string{"Configure now", "View capability details", "Runtime · inspector", "Installation · AACT records"} {
 		if !strings.Contains(m.View().Content, want) {
 			t.Fatalf("context list missing %q:\n%s", want, m.View().Content)
 		}
@@ -427,6 +427,7 @@ func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 
 func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T) {
 	m, msg := homeFixture()
+	m.width, m.height = 160, 32
 	msg.mcps[0].Ownership = "foreign"
 	msg.instanceSnapshot.Profiles[0].Ownership = "other-aact"
 	msg.instanceSnapshot.Profiles[0].StartDisabledReason = "Owned by another installation"
@@ -437,10 +438,15 @@ func TestDisabledProfileOverviewStartStaysInactiveAndExplainsReason(t *testing.T
 	if m.form == nil || m.workspace == nil {
 		t.Fatalf("Enter did not open the selected target workspace: form=%v workspace=%+v", m.form != nil, m.workspace)
 	}
+	preview := *m.workspace.Preview
+	preview.Configured = true
+	m.workspace.Installed = true
+	m.workspace.RegisteredMCPs = map[string]bool{"inspect": true}
+	m.configureWorkspaceForm(preview)
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
 	view := ansi.Strip(m.form.View().Content)
-	for _, want := range []string{"Owned by another installation"} {
+	for _, want := range []string{"another installation"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Runtime disabled Start omitted %q:\n%s", want, view)
 		}

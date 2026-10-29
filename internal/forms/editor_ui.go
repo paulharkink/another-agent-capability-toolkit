@@ -52,6 +52,7 @@ type FormModel struct {
 	backNavigation              bool
 	unsavedExitGuard            bool
 	readOnly                    bool
+	tabThroughControls          bool
 	hideCancel                  bool
 	hideSubmit                  bool
 	result                      map[string]any
@@ -200,14 +201,41 @@ func (m *FormModel) SetSectionActionsID(id string, actions ...FormAction) {
 	m.setSectionActions(id, actions...)
 }
 
+// SectionActionsID returns a copy of the actions currently configured for a
+// section. Callers can update dynamic disabled reasons without rebuilding the
+// rest of a split form.
+func (m *FormModel) SectionActionsID(id string) []FormAction {
+	return append([]FormAction(nil), m.sectionActions[id]...)
+}
+
 func (m *FormModel) setSectionActions(key string, actions ...FormAction) {
 	if m.sectionActions == nil {
 		m.sectionActions = map[string][]FormAction{}
 	}
+	previous := m.sectionActions[key]
+	selectedID := ""
+	if m.sectionActionIndex >= 0 && m.sectionActionIndex < len(previous) {
+		selectedID = previous[m.sectionActionIndex].ID
+	}
 	m.sectionActions[key] = append([]FormAction(nil), actions...)
-	if key == m.currentSectionKey() && len(m.splitFieldIndices(m.sectionIndex)) == 0 {
-		m.focusedAction = len(actions) > 0
-		m.sectionActionIndex = 0
+	if key == m.currentSectionKey() {
+		if len(actions) == 0 {
+			m.focusedAction = false
+			m.sectionActionIndex = 0
+		} else {
+			if selectedID != "" {
+				for i := range actions {
+					if actions[i].ID == selectedID {
+						m.sectionActionIndex = i
+						break
+					}
+				}
+			}
+			m.sectionActionIndex = min(max(m.sectionActionIndex, 0), len(actions)-1)
+			if len(m.splitFieldIndices(m.sectionIndex)) == 0 {
+				m.focusedAction = true
+			}
+		}
 	}
 }
 
@@ -332,6 +360,10 @@ func (m *FormModel) SetBackNavigation(enabled bool)   { m.backNavigation = enabl
 func (m *FormModel) SetReadOnly(enabled bool)         { m.readOnly = enabled }
 func (m *FormModel) SetUnsavedExitGuard(enabled bool) { m.unsavedExitGuard = enabled }
 
+// SetTabThroughControls makes Tab visit the fields and global actions in the
+// current section. It is opt-in so legacy wizards keep their area-cycling keys.
+func (m *FormModel) SetTabThroughControls(enabled bool) { m.tabThroughControls = enabled }
+
 // SetCancelHidden hides the bottom Cancel action; Escape remains available.
 func (m *FormModel) SetCancelHidden(hidden bool) {
 	m.hideCancel = hidden
@@ -341,11 +373,125 @@ func (m *FormModel) SetCancelHidden(hidden bool) {
 			m.selected = len(m.defs)
 		}
 	}
+	m.normalizeActionArea()
 }
 
 // SetSubmitHidden hides the global submit control when a section owns its
 // explicit action button.
-func (m *FormModel) SetSubmitHidden(hidden bool) { m.hideSubmit = hidden }
+func (m *FormModel) SetSubmitHidden(hidden bool) {
+	m.hideSubmit = hidden
+	m.normalizeActionArea()
+}
+
+func (m *FormModel) hasVisibleGlobalActions() bool {
+	return !m.hideSubmit || !m.hideCancel
+}
+
+func (m *FormModel) globalActionCount() int {
+	count := 0
+	if !m.hideSubmit {
+		count++
+	}
+	if !m.hideCancel {
+		count++
+	}
+	return count
+}
+
+func (m *FormModel) moveGlobalAction(delta int) {
+	count := m.globalActionCount()
+	if count == 0 {
+		m.actionIndex = 0
+		return
+	}
+	m.actionIndex = (m.actionIndex + count + delta) % count
+}
+
+func (m *FormModel) moveInputTab(forward bool) {
+	indices := m.splitFieldIndices(m.sectionIndex)
+	count := m.globalActionCount()
+	if m.area == 0 {
+		if forward {
+			m.area = 1
+			if len(indices) > 0 {
+				m.selectSectionField()
+			}
+		} else if count > 0 {
+			m.area = 2
+			m.actionIndex = count - 1
+		}
+		return
+	}
+	if m.area == 1 {
+		if len(indices) == 0 {
+			if forward && count > 0 {
+				m.area, m.actionIndex = 2, 0
+			} else if !forward {
+				m.area = 0
+			}
+			return
+		}
+		position := 0
+		for i, field := range indices {
+			if field == m.selected {
+				position = i
+				break
+			}
+		}
+		if forward {
+			if position+1 < len(indices) {
+				m.selected = indices[position+1]
+				return
+			}
+			if count > 0 {
+				m.area, m.actionIndex = 2, 0
+			} else {
+				m.area = 0
+			}
+			return
+		}
+		if position > 0 {
+			m.selected = indices[position-1]
+		} else if count > 0 {
+			m.area, m.actionIndex = 2, count-1
+		} else {
+			m.area = 0
+		}
+		return
+	}
+	if m.area == 2 && count > 0 {
+		if forward {
+			if m.actionIndex+1 < count {
+				m.actionIndex++
+				return
+			}
+			if len(indices) > 0 {
+				m.area, m.selected = 1, indices[0]
+			} else {
+				m.area = 0
+			}
+			return
+		}
+		if m.actionIndex > 0 {
+			m.actionIndex--
+			return
+		}
+		if len(indices) > 0 {
+			m.area, m.selected = 1, indices[len(indices)-1]
+		} else {
+			m.area = 1
+		}
+	}
+}
+
+func (m *FormModel) normalizeActionArea() {
+	if count := m.globalActionCount(); m.actionIndex >= count {
+		m.actionIndex = max(0, count-1)
+	}
+	if len(m.sections) > 0 && m.area == 2 && !m.hasVisibleGlobalActions() {
+		m.area = 1
+	}
+}
 
 // ApplyValues loads a saved or restored draft through the declared field
 // normalizers while keeping the existing dirty baseline intact.
@@ -545,6 +691,27 @@ func (m *FormModel) SelectSection(title string) {
 
 // Values returns a copy of the current editable draft.
 func (m *FormModel) Values() map[string]any { return m.editor.Values() }
+
+// CommitPendingInput commits the active text buffer or staged scalar-choice
+// selection into the editable draft. Section actions can call this before
+// reading Values so their visible field state matches the submitted data.
+func (m *FormModel) CommitPendingInput() error {
+	if m.editing {
+		m.commitBuffer()
+		if m.editing {
+			return errors.New(m.message)
+		}
+	}
+	if m.selected >= 0 && m.selected < len(m.defs) && isScalarChoice(m.defs[m.selected]) {
+		m.message = ""
+		def := m.defs[m.selected]
+		m.choose(def, m.editor.Values()[def.Name])
+		if m.message != "" {
+			return errors.New(m.message)
+		}
+	}
+	return nil
+}
 
 // ReconcileDraftField replaces an editable draft value with observed state
 // after a partially applied operation. It intentionally skips validation:
@@ -1171,6 +1338,14 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
+		if m.tabThroughControls && !m.readOnly && (stroke == "tab" || stroke == "shift+tab") {
+			if err := m.CommitPendingInput(); err != nil {
+				return m, nil
+			}
+			m.moveInputTab(stroke == "tab")
+			m.message = ""
+			return m, nil
+		}
 		if stroke == "ctrl+r" && !m.editing && m.selected >= 0 && m.selected < len(m.defs) && (len(m.sections) == 0 || m.area == 1) {
 			name := m.defs[m.selected].Name
 			if fallback, ok := m.resetValues[name]; ok {
@@ -1234,7 +1409,7 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.cancel()
 		}
 		if stroke == "ctrl+s" {
-			if m.readOnly {
+			if m.readOnly || m.hideSubmit {
 				return m, nil
 			}
 			if m.editing {
@@ -1281,9 +1456,17 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.editing {
 					if len(m.sections) > 0 && (stroke == "tab" || stroke == "shift+tab") {
 						if stroke == "tab" {
-							m.area = (m.area + 1) % 3
+							areaCount := 2
+							if m.hasVisibleGlobalActions() {
+								areaCount = 3
+							}
+							m.area = (m.area + 1) % areaCount
 						} else {
-							m.area = (m.area + 2) % 3
+							areaCount := 2
+							if m.hasVisibleGlobalActions() {
+								areaCount = 3
+							}
+							m.area = (m.area + areaCount - 1) % areaCount
 						}
 					} else if len(m.sections) > 0 {
 						delta := 1
@@ -1309,25 +1492,29 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(m.sections) > 0 {
+			areaCount := 2
+			if m.hasVisibleGlobalActions() {
+				areaCount = 3
+			}
 			switch stroke {
 			case "tab":
-				m.area = (m.area + 1) % 3
+				m.area = (m.area + 1) % areaCount
 				return m, nil
 			case "shift+tab":
-				m.area = (m.area + 2) % 3
+				m.area = (m.area + areaCount - 1) % areaCount
 				return m, nil
 			case "left":
 				if m.area == 1 {
 					m.area = 0
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "right":
 				if m.area == 0 {
 					m.area = 1
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "up", "down":
@@ -1339,8 +1526,8 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.moveSection(delta)
 				} else if m.area == 1 {
 					m.moveSplitControl(delta)
-				} else if m.area == 2 && !m.hideCancel {
-					m.actionIndex = (m.actionIndex + 1) % 2
+				} else if m.area == 2 && m.hasVisibleGlobalActions() {
+					m.moveGlobalAction(1)
 				}
 				return m, nil
 			case "pgup", "pgdown":
@@ -1362,10 +1549,21 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.area == 2 {
-					if m.actionIndex == 0 {
+					if !m.hasVisibleGlobalActions() {
+						m.normalizeActionArea()
+						return m, nil
+					}
+					if !m.hideSubmit && m.actionIndex == 0 {
 						return m.save()
 					}
-					return m.cancel()
+					cancelIndex := 0
+					if !m.hideSubmit {
+						cancelIndex = 1
+					}
+					if !m.hideCancel && m.actionIndex == cancelIndex {
+						return m.cancel()
+					}
+					return m, nil
 				}
 				if m.area == 0 {
 					m.area = 1
@@ -1524,11 +1722,8 @@ func (m *FormModel) discard() (tea.Model, tea.Cmd) {
 // Submit commits an active field buffer and follows the same validation and
 // save path as Ctrl-S. Validation failures leave the form open for correction.
 func (m *FormModel) Submit() (tea.Model, tea.Cmd) {
-	if m.editing {
-		m.commitBuffer()
-		if m.editing {
-			return m, nil
-		}
+	if err := m.CommitPendingInput(); err != nil {
+		return m, nil
 	}
 	return m.save()
 }
@@ -2097,11 +2292,15 @@ func (m *FormModel) layout() formLayout {
 		}
 		actionsControl += "[ Cancel ]"
 	}
-	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\nCtrl+S save · " + escapeAction
+	shortcutLine := "Ctrl+S save · " + escapeAction
+	if m.hideSubmit {
+		shortcutLine = escapeAction
+	}
+	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\n" + shortcutLine
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
 		if isChoiceList(def) {
-			footer = actionsControl + "\n↑↓/Tab next control · Space/Enter toggle\nCtrl+S save · Esc cancel"
+			footer = actionsControl + "\n↑↓/Tab next control · Space/Enter toggle\n" + shortcutLine
 		}
 		if def.ExclusiveGroup != "" && m.disabledReason(def.Name) == "" {
 			others := []string{}
@@ -2155,10 +2354,10 @@ func (m *FormModel) layout() formLayout {
 	if m.readOnly {
 		actions = "[ Back ]"
 	}
-	if !m.readOnly && m.selected == len(m.defs) {
+	if !m.readOnly && (len(m.sections) == 0 || m.area == 2) && m.selected == len(m.defs) {
 		actions = focusedActionStyle.Render("> " + actionsControl)
 	}
-	if !m.readOnly && !m.hideCancel && m.selected == len(m.defs)+1 {
+	if !m.readOnly && (len(m.sections) == 0 || m.area == 2) && !m.hideCancel && m.selected == len(m.defs)+1 {
 		actions = focusedActionStyle.Render(saveControl + "  > [ Cancel ]")
 	}
 	footer = strings.Replace(footer, actionsControl, actions, 1)
@@ -2229,6 +2428,15 @@ func (m *FormModel) splitLayout() formLayout {
 	rightLines := []string{focusedPaneTitle(rightTitle, m.area == 1)}
 	rightFields := []int{-1}
 	rightLineChoices := []int{-1}
+	sectionActions := m.sectionActions[m.currentSectionKey()]
+	actionRows, actionRowFields, actionRowChoices := []string{}, []int{}, []int{}
+	for actionIndex, action := range sectionActions {
+		focused := actionIndex == m.sectionActionIndex && m.area == 1 && m.focusedAction
+		label := sectionActionRow(action, focused, rightContentWidth)
+		actionRows = append(actionRows, label)
+		actionRowFields = append(actionRowFields, -1)
+		actionRowChoices = append(actionRowChoices, actionIndex)
+	}
 	sectionContent := m.sectionContent[m.currentSectionKey()]
 	for _, line := range sectionContent {
 		for part, wrapped := range wrapCellText(line, m.SectionContentWidth()) {
@@ -2378,24 +2586,6 @@ func (m *FormModel) splitLayout() formLayout {
 			rightLineChoices = append(rightLineChoices, -2)
 		}
 	}
-	sectionActions := m.sectionActions[m.currentSectionKey()]
-	for actionIndex, action := range sectionActions {
-		label := "› [ " + action.Label + " ]"
-		if action.Disabled != "" {
-			label += " · " + action.Disabled
-		}
-		if actionIndex == m.sectionActionIndex && m.focusedAction {
-			label = "> [ " + action.Label + " ]"
-			if action.Disabled != "" {
-				label += " · " + action.Disabled
-			}
-		}
-		for _, wrapped := range wrapCellText(label, rightContentWidth) {
-			rightLines = append(rightLines, wrapped)
-			rightFields = append(rightFields, -1)
-			rightLineChoices = append(rightLineChoices, actionIndex)
-		}
-	}
 	if len(indices) == 0 {
 		if len(sectionContent) == 0 {
 			rightLines = append(rightLines, "· No fields in this section")
@@ -2456,7 +2646,11 @@ func (m *FormModel) splitLayout() formLayout {
 	if m.backNavigation {
 		escapeAction = "Esc Back"
 	}
-	controls := "↑↓ Controls · ←→ Panes · Tab Areas · Ctrl-S Save · " + escapeAction
+	tabHint := "Tab Areas"
+	if m.tabThroughControls {
+		tabHint = "Tab Controls"
+	}
+	controls := "↑↓ Controls · ←→ Panes · " + tabHint + " · Ctrl-S Save · " + escapeAction
 	if m.readOnly {
 		controls = "↑↓ Navigate · ←→ Panes · Tab Areas · Esc Back"
 	}
@@ -2475,7 +2669,11 @@ func (m *FormModel) splitLayout() formLayout {
 		footer = m.message + "\n" + footer
 	}
 	if m.height <= 12 && (m.selected >= len(m.defs) || !isEditableCollection(m.defs[m.selected])) {
-		compact := "↑↓ Move · ←→ Pane · Tab Area · Ctrl-S Save · " + escapeAction
+		compactTabHint := "Tab Area"
+		if m.tabThroughControls {
+			compactTabHint = "Tab Controls"
+		}
+		compact := "↑↓ Move · ←→ Pane · " + compactTabHint + " · Ctrl-S Save · " + escapeAction
 		footer = strings.Join(areaLabels, " · ") + "\n" + compact + "\n" + actions
 		if m.message != "" {
 			footer = m.message + "\n" + footer
@@ -2494,14 +2692,6 @@ func (m *FormModel) splitLayout() formLayout {
 	rightTarget := 0
 	if len(indices) == 0 && len(sectionContent) > 0 {
 		rightTarget = min(max(0, m.sectionOffset+1), len(rightRows)-1)
-	}
-	if m.focusedAction {
-		for row, actionIndex := range rightRowChoices {
-			if actionIndex == m.sectionActionIndex && rightRowFields[row] < 0 {
-				rightTarget = row
-				break
-			}
-		}
 	}
 	for row, field := range rightRowFields {
 		if m.detailScrolled {
@@ -2531,14 +2721,28 @@ func (m *FormModel) splitLayout() formLayout {
 	}
 	var splitFields, splitChoices []int
 	rightTotal := len(rightRows)
-	rightScrollable := rightTotal > bodyHeight
+	actionHeight := min(len(actionRows), max(1, bodyHeight/3))
+	contentHeight := max(1, bodyHeight-actionHeight)
+	rightScrollable := rightTotal > contentHeight
 	if m.detailScrolled && len(rightRows) > 1 {
-		detailRows, detailFields, detailChoices := scrollSplitPaneAt(rightRows[1:], rightRowFields[1:], rightRowChoices[1:], m.detailOffset, bodyHeight-1)
+		detailRows, detailFields, detailChoices := scrollSplitPaneAt(rightRows[1:], rightRowFields[1:], rightRowChoices[1:], m.detailOffset, contentHeight-1)
 		rightRows = append([]string{rightRows[0]}, detailRows...)
 		splitFields = append([]int{-1}, detailFields...)
 		splitChoices = append([]int{-1}, detailChoices...)
 	} else {
-		rightRows, splitFields, splitChoices = scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, bodyHeight)
+		rightRows, splitFields, splitChoices = scrollSplitPane(rightRows, rightRowFields, rightRowChoices, rightTarget, contentHeight)
+	}
+	if actionHeight > 0 {
+		startAction := 0
+		if m.focusedAction && m.sectionActionIndex >= actionHeight {
+			startAction = m.sectionActionIndex - actionHeight + 1
+		}
+		lastStart := max(0, len(actionRows)-actionHeight)
+		startAction = min(startAction, lastStart)
+		endAction := min(len(actionRows), startAction+actionHeight)
+		rightRows = append(rightRows, actionRows[startAction:endAction]...)
+		splitFields = append(splitFields, actionRowFields[startAction:endAction]...)
+		splitChoices = append(splitChoices, actionRowChoices[startAction:endAction]...)
 	}
 	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
 	inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
@@ -2623,6 +2827,44 @@ func (m *FormModel) splitLayout() formLayout {
 		}
 	}
 	return formLayout{content: content, visibleFields: indices, footerY: footerY, bodyStart: bodyStart, split: true, splitLeftWidth: leftWidth, splitFields: splitFields, splitChoices: splitChoices, splitSections: splitSections, splitRemoveX: removeX}
+}
+
+func sectionActionRow(action FormAction, focused bool, width int) string {
+	marker := "›"
+	if focused {
+		marker = ">"
+	}
+	if action.Disabled == "" {
+		return ansi.Truncate(marker+" [ "+action.Label+" ]", width, "…")
+	}
+	// Keep a short, actionable reason visible even when the action label is
+	// long. Enter on the disabled row still exposes the complete explanation.
+	reason := conciseActionReason(action.Disabled)
+	reason = ansi.Truncate(reason, max(10, width/2), "…")
+	labelWidth := max(1, width-lipgloss.Width(marker+" [ ")+lipgloss.Width(" ] · ")-lipgloss.Width(reason))
+	label := ansi.Truncate(action.Label, labelWidth, "…")
+	return ansi.Truncate(marker+" [ "+label+" ] · "+reason, width, "…")
+}
+
+func conciseActionReason(reason string) string {
+	switch {
+	case strings.Contains(reason, "Save changed inputs"):
+		return "Save changes first"
+	case strings.Contains(reason, "Save valid inputs"):
+		return "Complete inputs first"
+	case strings.Contains(reason, "Inputs need attention"):
+		return "Fix input errors first"
+	case strings.Contains(reason, "Install this capability for an agent"):
+		return "Install for an agent first"
+	case strings.Contains(reason, "Multiple runtime records are linked"):
+		return "Select one runtime record"
+	case strings.Contains(reason, "Runtime observation is stale"):
+		return "Refresh runtime status first"
+	case strings.Contains(reason, "ownership is"):
+		return "Not managed by AACT"
+	default:
+		return reason
+	}
 }
 
 func scrollSplitPane(rows []string, primary, secondary []int, target, height int) ([]string, []int, []int) {

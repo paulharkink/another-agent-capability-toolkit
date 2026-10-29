@@ -10,13 +10,14 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 )
 
-// reconcileRuntimeLedger removes only local manager metadata for runtime rows
-// that cannot be linked to a declared MCP under any visible instance of this
-// capability. It never mutates Docker or agent registrations.
+// reconcileRuntimeLedger repairs identities for declared MCPs and preserves
+// undeclared runtime rows for explicit recovery from the instance UI. It never
+// mutates Docker or agent registrations.
 // Rows for declared MCPs are retained even if their runtime is missing. When
 // Docker observes the same ID under a different declared key, the ledger row
-// is rekeyed to keep the visible runtime manageable. Unlinked rows are removed
-// as metadata only; this function never mutates Docker or agent registrations.
+// is rekeyed to keep the visible runtime manageable. Undeclared rows remain
+// available for explicit recovery; this function never mutates Docker or
+// agent registrations.
 func (s *Service) reconcileRuntimeLedger(ctx context.Context, p catalog.Package, instances []config.Instance, observed []mcp.Instance, observationAvailable bool) error {
 	return s.Store.WithLock(ctx, func() error {
 		return s.reconcileRuntimeLedgerLocked(p, instances, observed, observationAvailable)
@@ -42,7 +43,10 @@ func (s *Service) reconcileRuntimeLedgerLocked(p catalog.Package, instances []co
 	observedByID := make(map[string][]mcp.Instance)
 	if observationAvailable {
 		for _, item := range observed {
-			if item.ID == "" {
+			// List includes synthetic missing rows for ledger entries that were
+			// absent from the fresh Docker inventory. They are not evidence that
+			// the container is still present.
+			if item.ID == "" || item.Status == "missing" {
 				continue
 			}
 			observedByID[item.ID] = append(observedByID[item.ID], item)
@@ -84,9 +88,23 @@ func (s *Service) reconcileRuntimeLedgerLocked(p catalog.Package, instances []co
 				}
 				continue
 			}
-			// A live ID observed under a key not declared for this capability
-			// cannot be safely controlled from this row; discard only stale
-			// manager metadata below.
+			// Keep an ID observed under an undeclared key linked to its ledger
+			// identity. The instance UI exposes it for exact-ID recovery; it must
+			// not disappear from view merely because its definition was removed.
+		}
+		if _, keyIsDeclared := known[row.Key]; !keyIsDeclared {
+			// Keep stale undeclared records visible so the user can explicitly
+			// forget them or remove the exact locally owned runtime.
+			continue
+		}
+		if observationAvailable && len(observedItems) == 0 && row.AgentID == "docker" && row.LastAction == "stop" {
+			// A successful stop removes the runtime. Once a fresh Docker list
+			// confirms that exact ID is absent, discard only its stale record so
+			// it cannot conflict with a later replacement runtime.
+			if err := s.Store.Remove(row); err != nil {
+				return fmt.Errorf("remove stopped runtime metadata %q: %w", row.SourcePath, err)
+			}
+			continue
 		}
 		if _, keyIsDeclared := known[row.Key]; keyIsDeclared && (!observationAvailable || len(observedItems) == 0) {
 			// Preserve declared rows when the runtime is missing or could not be

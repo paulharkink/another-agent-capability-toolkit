@@ -98,9 +98,18 @@ func (e *emptyDockerPS) Run(_ context.Context, args []string, _ string, _ []byte
 
 type localInstallCapture struct {
 	*app.Service
-	installRequest *viewmodel.SetupInstallRequest
-	installCalls   int
-	uiRunCalls     int
+	savedInputRequest    *viewmodel.SetupInstallRequest
+	installRequest       *viewmodel.SetupInstallRequest
+	installAgentsRequest *viewmodel.SetupInstallRequest
+	installCalls         int
+	uiRunCalls           int
+}
+
+func (b *localInstallCapture) UISaveInputs(_ context.Context, request viewmodel.SetupInstallRequest) error {
+	copy := request
+	copy.Inputs = cloneSetupValues(request.Inputs)
+	b.savedInputRequest = &copy
+	return nil
 }
 
 func (b *localInstallCapture) UIInstall(_ context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
@@ -110,6 +119,12 @@ func (b *localInstallCapture) UIInstall(_ context.Context, request viewmodel.Set
 	copy.DestinationIDs = append([]string(nil), request.DestinationIDs...)
 	b.installRequest = &copy
 	return viewmodel.OperationResult{Saved: true, Message: "captured local UIInstall"}, nil
+}
+
+func (b *localInstallCapture) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	copy := request
+	b.installAgentsRequest = &copy
+	return b.UIInstall(ctx, request)
 }
 
 func (b *localInstallCapture) UIRun(context.Context, string, string, string, string, string, string, string) (string, error) {
@@ -287,13 +302,13 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 		t.Fatalf("Agent access Install selected did not dispatch UIInstall: values=%#v view=%s", m.form.Values(), m.form.View().Content)
 	}
 	m.Update(runTeaCmd(t, m, installCmd))
-	if backend.installRequest == nil {
-		t.Fatal("Agent access Install selected did not call UIInstall")
+	if backend.installAgentsRequest == nil {
+		t.Fatal("Agent access Install selected did not call UIInstallAgents")
 	}
 	if backend.uiRunCalls != 0 {
 		t.Fatalf("Agent access Install selected fell back to legacy UIRun %d times", backend.uiRunCalls)
 	}
-	got := backend.installRequest
+	got := backend.installAgentsRequest
 	if got.SetupRequest != request || got.ExternalURL != "" || !containsString(got.DestinationIDs, "opencode") {
 		t.Fatalf("Agent access install did not submit the selected local registration target: %+v; form=%#v", *got, m.form.Values())
 	}
@@ -330,13 +345,53 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if foreignProfile == nil || foreignProfile.Ownership != "other-aact" || foreignProfile.RuntimeStatus != "running" || foreignProfile.CanStart {
 		t.Fatalf("observed foreign runtime was not guarded despite its loopback registration: %+v", foreignProfile)
 	}
+	backend.savedInputRequest = nil
 	foreignView := foreignModel.form.View().Content
-	if !strings.Contains(foreignView, "Inputs") || !strings.Contains(foreignView, "[ Save ]") || !strings.Contains(foreignView, "Cancel") || strings.Contains(foreignView, "Build and start MCP") || strings.Contains(foreignView, "[ Start ]") {
-		t.Fatalf("foreign runtime lost the separate Inputs Save stage or exposed a lifecycle shortcut:\n%s", foreignView)
+	if !strings.Contains(foreignView, "managed by another AACT") || strings.Contains(foreignView, "[ Save ]") || strings.Contains(foreignView, "Local port") || strings.Contains(foreignView, "API server") || strings.Contains(foreignView, "[ Start ]") {
+		t.Fatalf("foreign runtime must not show this OS's inputs or mutation controls:\n%s", foreignView)
+	}
+	_, saveForeign := foreignModel.Update(forms.ActionMsg{SectionID: sectionInputsID, ID: "save-inputs"})
+	if saveForeign != nil || foreignModel.busy || backend.savedInputRequest != nil {
+		t.Fatalf("foreign Inputs Save route must be rejected without persistence: cmd=%t busy=%t saved=%+v", saveForeign != nil, foreignModel.busy, backend.savedInputRequest)
+	}
+	foreignModel.form.SelectSectionID(sectionRuntimeID)
+	foreignModel.form.FocusSection()
+	foreignModel.workspace.SectionID = sectionRuntimeID
+	foreignRuntimeView := ansi.Strip(foreignModel.form.View().Content)
+	if !strings.Contains(foreignRuntimeView, "status: running") || !strings.Contains(foreignRuntimeView, endpoint) || strings.Contains(foreignRuntimeView, "Inputs: Saved") || strings.Contains(foreignRuntimeView, "Agent install: Complete") {
+		t.Fatalf("foreign Runtime must show observed runtime facts without Windows input/install state:\n%s", foreignRuntimeView)
+	}
+	var foreignEdit, foreignStart, foreignLogin, foreignStop, foreignDelete bool
+	for _, action := range foreignModel.form.SectionActionsID(sectionRuntimeID) {
+		switch action.ID {
+		case "edit-inputs:cluster-inspector":
+			foreignEdit = strings.Contains(strings.ToLower(action.Disabled), "another aact")
+		case "start:cluster-inspector":
+			foreignStart = strings.Contains(strings.ToLower(action.Disabled), "another aact")
+		case "authenticate:cluster-inspector":
+			foreignLogin = strings.Contains(strings.ToLower(action.Disabled), "another aact")
+		case "stop:cluster-inspector":
+			foreignStop = strings.Contains(strings.ToLower(action.Disabled), "another aact")
+		case "delete-runtime:0":
+			foreignDelete = strings.Contains(strings.ToLower(action.Disabled), "another aact")
+		}
+	}
+	if !foreignEdit || !foreignStart || !foreignLogin || !foreignStop || !foreignDelete {
+		t.Fatalf("foreign runtime mutation actions need truthful management-elsewhere reasons: actions=%+v", foreignModel.form.SectionActionsID(sectionRuntimeID))
+	}
+	_, editForeign := foreignModel.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "edit-inputs:cluster-inspector"})
+	_, startForeign := foreignModel.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:cluster-inspector"})
+	_, loginForeign := foreignModel.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "authenticate:cluster-inspector"})
+	_, stopForeign := foreignModel.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "stop:cluster-inspector"})
+	if editForeign != nil || startForeign != nil || loginForeign != nil || stopForeign != nil || foreignModel.workspace.SectionID != sectionRuntimeID || !strings.Contains(strings.ToLower(foreignModel.output), "another aact") {
+		t.Fatalf("direct foreign runtime actions must be rejected in the TUI: cmds=%t/%t/%t/%t section=%q output=%q", editForeign != nil, startForeign != nil, loginForeign != nil, stopForeign != nil, foreignModel.workspace.SectionID, foreignModel.output)
 	}
 	foreignRow := ProfileRow{Key: foreignProfile.Key, Instance: foreignProfile, URL: foreignProfile.URL, Status: foreignProfile.RuntimeStatus}
 	if reason := foreignModel.instanceActionReason(foreignRow, "s"); reason == "" {
 		t.Fatal("foreign runtime lifecycle controls were not disabled")
+	}
+	if len(foreignModel.form.SectionActionsID(sectionAgentsID)) == 0 {
+		t.Fatal("read-only foreign instance hid its separate Agent access actions")
 	}
 }
 

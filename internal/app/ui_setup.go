@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 
@@ -86,10 +87,31 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.SetupPreview{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
+	if q.Ref.PackID != "" && q.Ref.PackID != s.Source.ID {
+		return viewmodel.SetupPreview{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.Ref.PackID))
+	}
+	p, err := s.packageByID(q.Ref.CapabilityID)
+	if err != nil {
+		return viewmodel.SetupPreview{}, err
+	}
+	if !p.HasMCP() {
+		return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
+	}
+	target := q.Target
+	if target == "" {
+		target = q.Ref.Name
+	}
+	parent, _, observed, observeErr := s.observedForeignParent(ctx, s.Source.ID, p.ID, target, q.Environment)
+	if observeErr != nil {
+		return viewmodel.SetupPreview{}, observeErr
+	}
+	if observed {
+		return s.observedForeignSetupPreview(ctx, p, parent)
+	}
 	return s.PreviewInstance(ctx, InstanceRequest{Ref: q.Ref})
 }
 
-// UISaveInputs persists a capability instance's input answers without
+// UISaveInputs persists ordinary answers and private secret inputs without
 // installing agent links, changing MCP registrations, or starting runtimes.
 func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
@@ -100,8 +122,62 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 		if err != nil {
 			return err
 		}
+		if err := s.rejectForeignRuntimeMutation(ctx, key); err != nil {
+			return err
+		}
+		legacyAnswers, err := s.Store.Answers(key)
+		if err != nil {
+			return err
+		}
+		privateSecrets, err := s.Store.SecretInputs(key)
+		if err != nil {
+			return err
+		}
+		inputOverrides := make(map[string]any, len(q.Inputs))
+		for name, value := range q.Inputs {
+			inputOverrides[name] = value
+		}
+		resetRequested := make(map[string]bool, len(q.ResetInputs))
+		for _, name := range q.ResetInputs {
+			resetRequested[name] = true
+		}
+		resetSecrets := make([]string, 0)
+		secretValues := make(map[string]any)
+		for _, input := range p.Inputs {
+			if input.Type != "secret" {
+				continue
+			}
+			if value, exists := inputOverrides[input.Name]; exists {
+				if text, isText := value.(string); isText && text == "" {
+					// Secret fields are deliberately blank in reopened forms. A
+					// blank is not a request to erase the privately stored value.
+					delete(inputOverrides, input.Name)
+				} else if value != nil {
+					secretValues[input.Name] = value
+				}
+			}
+			if !resetRequested[input.Name] {
+				if _, alreadyPrivate := privateSecrets[input.Name]; !alreadyPrivate {
+					if legacy, exists := legacyAnswers[input.Name]; exists && hasSecretValue(legacy) {
+						if _, submitted := secretValues[input.Name]; !submitted {
+							secretValues[input.Name] = legacy
+						}
+					}
+				}
+			}
+		}
+		for _, name := range q.ResetInputs {
+			for _, input := range p.Inputs {
+				if input.Name == name && input.Type == "secret" {
+					resetSecrets = append(resetSecrets, name)
+					delete(inputOverrides, name)
+					delete(secretValues, name)
+					break
+				}
+			}
+		}
 		p, instance, values, _, err := s.instanceValuesForPreview(p, instance, key, InstanceRequest{
-			Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
+			Ref: q.Ref, Inputs: inputOverrides, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs,
 		})
 		if err != nil {
 			return err
@@ -131,6 +207,9 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 				safe[input.Name] = value
 			}
 		}
+		if err := s.Store.SaveSecretInputs(key, secretValues, resetSecrets); err != nil {
+			return err
+		}
 		return s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups)
 	})
 }
@@ -157,11 +236,88 @@ func (s *Service) discoveryProbe() agents.DiscoveryProbe {
 
 // targetInputChoices turns wildcard table keys in a target TOML into stable
 // checkbox values. For example, dbms.*.tenants.* yields dbms/tenant IDs.
+// UIInstall preserves the pre-workspace combined operation for API callers
+// that rely on its save/apply behavior. The staged TUI calls UIInstallAgents.
 func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
 	}
-	return s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups, ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs, Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs})
+	if q.ExternalURL != "" && len(q.ExternalURLs) == 0 {
+		p, _, _, err := s.loadInstance(q.Ref)
+		if err != nil {
+			return viewmodel.OperationResult{}, err
+		}
+		definitions := p.MCPDefinitions()
+		if len(definitions) != 1 {
+			return viewmodel.OperationResult{}, invalid(errors.New("a single external endpoint requires exactly one MCP definition"))
+		}
+		q.ExternalURLs = map[string]string{definitions[0].Name: q.ExternalURL}
+	}
+	return s.ApplyInstance(ctx, InstanceRequest{
+		Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups,
+		ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs,
+	})
+}
+
+// UIInstallAgents installs agent bindings without saving inputs or starting
+// MCP runtimes. Ordinary inputs must already be saved; secret inputs resolve
+// from private instance state, with a currently submitted value taking priority.
+func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return viewmodel.OperationResult{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	if q.Ref.PackID != s.Source.ID {
+		return viewmodel.OperationResult{}, invalid(fmt.Errorf("Capability Pack %q is not selected", q.Ref.PackID))
+	}
+	p, err := s.packageByID(q.Ref.CapabilityID)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	if parent, runtimes, observed, observeErr := s.observedForeignInstall(ctx, p, q.Ref.Name, q.Environment); observeErr != nil {
+		return viewmodel.OperationResult{}, observeErr
+	} else if observed {
+		return s.ApplyInstance(ctx, InstanceRequest{
+			Ref: q.Ref, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+			Uninstall: q.Uninstall, InstallOnly: true,
+			observedForeign: &observedForeignAgentInstall{Parent: parent, Runtimes: runtimes},
+		})
+	}
+	p, _, key, err := s.loadInstance(q.Ref)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	groups, err := s.Store.ActiveInputGroups(key)
+	if err != nil {
+		return viewmodel.OperationResult{}, err
+	}
+	externalURLs := q.ExternalURLs
+	if q.ExternalURL != "" && len(externalURLs) == 0 {
+		definitions := p.MCPDefinitions()
+		if len(definitions) != 1 {
+			return viewmodel.OperationResult{}, invalid(errors.New("a single external endpoint requires exactly one MCP definition"))
+		}
+		externalURLs = map[string]string{definitions[0].Name: q.ExternalURL}
+	}
+	// Secret values are never stored in ordinary answer files. Keep a secret
+	// entered in the open Inputs form available to configure the agent's MCP
+	// registration, while all other values come from the last explicit Save.
+	secrets := map[string]any{}
+	for _, input := range p.Inputs {
+		if input.Type == "secret" {
+			if value, ok := q.Inputs[input.Name]; ok && value != nil {
+				if text, isText := value.(string); isText && text == "" {
+					continue
+				}
+				secrets[input.Name] = value
+			}
+		}
+	}
+	return s.ApplyInstance(ctx, InstanceRequest{
+		Ref: q.Ref, Inputs: secrets, ActiveInputGroups: groups,
+		ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		Uninstall: q.Uninstall, ExternalURLs: externalURLs, InstallOnly: true,
+	})
 }
 
 // UIUninstallSkillOnly is retained for source compatibility. It translates
@@ -195,7 +351,7 @@ func (s *Service) UIUninstallSkillOnly(ctx context.Context, q viewmodel.SkillOnl
 			remaining = append(remaining, id)
 		}
 	}
-	return s.UIInstall(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: remaining, Uninstall: true})
+	return s.UIInstallAgents(ctx, viewmodel.SetupInstallRequest{SetupRequest: viewmodel.SetupRequest{Ref: ref}, DestinationIDs: remaining, Uninstall: true})
 }
 
 // UIInstallSkillOnly is retained for source compatibility, but uses the same

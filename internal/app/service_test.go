@@ -974,6 +974,17 @@ func TestProfileInputsOverrideSavedCredentials(t *testing.T) {
 	if err := store.SaveAnswers(key, map[string]any{"kubeconfig": "/saved/old.yaml", "token": "old-token"}); err != nil {
 		t.Fatal(err)
 	}
+	pkg, instance, key, err := svc.loadInstance(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, resolved, _, err := svc.instanceValues(pkg, instance, key, InstanceRequest{Ref: ref, Inputs: map[string]any{"token": "new-token", "kubeconfig": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved["token"] != "new-token" || resolved["kubeconfig"] != "" {
+		t.Fatalf("explicit profile inputs did not override saved answers (token matched=%t, kubeconfig empty=%t)", resolved["token"] == "new-token", resolved["kubeconfig"] == "")
+	}
 	preview, err := svc.PreviewProfile(context.Background(), ProfileRequest{Ref: ref, Inputs: map[string]any{"token": "new-token", "kubeconfig": ""}})
 	if err != nil {
 		t.Fatal(err)

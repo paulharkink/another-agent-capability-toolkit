@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
 )
 
 type uxWorkspaceLogsBackend struct {
@@ -28,8 +29,22 @@ func TestUXRuntimeVisibleLogsActionOpensSelectedInstanceLogs(t *testing.T) {
 	if m.workspace.Instance == nil {
 		t.Fatal("fixture has no selected instance observation")
 	}
-	m.workspace.Instance.RuntimeStatus = "running"
-	m.workspace.Instance.Ownership = "local"
+	setObservedRuntimeFacts(m, backend, "running", "local", "")
+	// Logs are tied to a concrete observed runtime, not merely a running MCP
+	// summary, so expose the selected runtime record in this fixture.
+	for packageID, snapshot := range m.capabilityInstances {
+		for i := range snapshot.Instances {
+			if snapshot.Instances[i].Key != m.workspace.Key {
+				continue
+			}
+			for j := range snapshot.Instances[i].MCPs {
+				snapshot.Instances[i].MCPs[j].RuntimeRecords = []viewmodel.RuntimeRecord{{
+					ID: "container-plain", Name: "aact-plain", Status: "running", Ownership: "local",
+				}}
+			}
+		}
+		m.capabilityInstances[packageID] = snapshot
+	}
 	logs := &uxWorkspaceLogsBackend{registrationWorkspaceBackend: backend, content: "selected instance log line"}
 	m.backend = logs
 	m.configureWorkspaceForm(*m.workspace.Preview)

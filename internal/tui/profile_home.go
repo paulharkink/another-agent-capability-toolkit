@@ -1,6 +1,7 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"context"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -136,6 +137,9 @@ func (m *Model) openInstanceCreation(c CapabilityRow) {
 	m.management.FormOverlay = true
 	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
 	m.form.SetTitle("New instance · " + c.Name)
+	if _, _, width, height, ok := managementFormOverlayBounds(m.width, m.height); ok {
+		m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	}
 }
 func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
 	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
@@ -157,6 +161,12 @@ func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.Ru
 	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, AuthenticationStatus: r.AuthenticationStatus, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
 	row.CanStart = !r.Stale && r.Ownership == "local" && (r.Status == "stopped" || r.Status == "missing" || r.Status == "exited" || r.Status == "never-started")
 	row.CanStop = !r.Stale && r.Ownership == "local" && r.Status == "running"
+	if !row.CanStart {
+		row.StartDisabledReason = runtimeStartBlocker(row, r.Error)
+	}
+	if !row.CanStop {
+		row.StopDisabledReason = runtimeStopBlocker(row, r.Error)
+	}
 	for _, c := range p.Components {
 		if c.Kind == "mcp" && c.Name == r.MCPID && c.Status == "installed" {
 			row.RegisteredAgents = append(row.RegisteredAgents, c.AgentID)
@@ -168,6 +178,82 @@ func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.Ru
 type configurationInstanceRunBackend interface {
 	UIConfigurationInstanceRun(context.Context, string, config.InstanceRef, string) (string, error)
 }
+
+func runtimeStartBlocker(profile *viewmodel.Profile, observationError string) string {
+	if profile == nil {
+		return "Runtime status for this MCP has not been observed; refresh this instance to check its state."
+	}
+	if strings.TrimSpace(observationError) != "" {
+		return "Runtime observation failed: " + strings.TrimSpace(observationError)
+	}
+	if profile.ObservationStale {
+		return "Runtime observation is stale; refresh this instance before starting."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "conflict") {
+		return "Multiple runtimes claim this MCP definition; resolve the duplicate runtime records first."
+	}
+	switch profile.Ownership {
+	case "other-aact":
+		return "Owned by another installation (another AACT installation)."
+	case "external":
+		return "Runtime is externally managed and cannot be started by AACT."
+	case "", "unknown":
+		return "Runtime owner is unknown; refresh this instance to identify the owner."
+	case "local":
+	default:
+		return "Runtime owner is " + profile.Ownership + "; AACT cannot start this runtime."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "running") {
+		return "Runtime is already running."
+	}
+	switch profile.RuntimeStatus {
+	case "disabled":
+		return "This MCP is disabled by the saved inputs."
+	case "unavailable", "unobserved", "unknown", "":
+		status := profile.RuntimeStatus
+		if status == "" {
+			status = "unknown"
+		}
+		return "Runtime status is " + status + "; refresh this instance before starting."
+	default:
+		return "Runtime status is " + profile.RuntimeStatus + "; AACT cannot start it in this state."
+	}
+}
+
+func runtimeStopBlocker(profile *viewmodel.Profile, observationError string) string {
+	if profile == nil {
+		return "Runtime status for this MCP has not been observed; refresh this instance to check its state."
+	}
+	if strings.TrimSpace(observationError) != "" {
+		return "Runtime observation failed: " + strings.TrimSpace(observationError)
+	}
+	if profile.ObservationStale {
+		return "Runtime observation is stale; refresh this instance before stopping."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "conflict") {
+		return "Multiple runtimes claim this MCP definition; resolve the duplicate runtime records first."
+	}
+	switch profile.Ownership {
+	case "other-aact":
+		return "Owned by another installation (another AACT installation)."
+	case "external":
+		return "Runtime is externally managed and cannot be stopped by AACT."
+	case "", "unknown":
+		return "Runtime owner is unknown; refresh this instance to identify the owner."
+	case "local":
+	default:
+		return "Runtime owner is " + profile.Ownership + "; AACT cannot stop this runtime."
+	}
+	if !strings.EqualFold(profile.RuntimeStatus, "running") {
+		status := profile.RuntimeStatus
+		if status == "" {
+			status = "unknown"
+		}
+		return "Runtime is " + status + "; there is no running container to stop."
+	}
+	return "Runtime is already running."
+}
+
 type configurationProfileRunBackend interface {
 	UIConfigurationProfileRun(context.Context, string, config.InstanceRef, string) (string, error)
 }

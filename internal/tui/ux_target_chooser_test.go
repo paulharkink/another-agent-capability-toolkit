@@ -40,6 +40,11 @@ func TestNewInstancePromptUsesStyledHomeOverlay(t *testing.T) {
 			t.Fatalf("New Instance prompt is missing styled home context or title %q:\n%s", want, view)
 		}
 	}
+	for _, want := range []string{"[ Save ]", "[ Cancel ]", "╚"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("New Instance form is missing visible control or bottom frame %q:\n%s", want, view)
+		}
+	}
 }
 
 func TestLegacyEnvironmentTargetDoesNotOpenWorkspaceWithoutInstanceReference(t *testing.T) {

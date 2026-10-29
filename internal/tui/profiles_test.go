@@ -80,6 +80,9 @@ func (b *capabilityProfileBackend) UISetupPreview(_ context.Context, request vie
 func (b *capabilityProfileBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return b.setup.UIInstall(ctx, request)
 }
+func (b *capabilityProfileBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setup.UIInstallAgents(ctx, request)
+}
 
 func capabilityProfilePreview() viewmodel.SetupPreview {
 	return viewmodel.SetupPreview{
@@ -220,6 +223,7 @@ func openRegistrationWorkspaceAction(t *testing.T, m *Model, removing bool) {
 	openCapabilityProfileWorkspace(t, m, profileBackend, "foreign", "Agents")
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
+	m.workspace.InputsSaved = true
 	press(m, tea.KeyRight, "")
 }
 func TestTypedProfilesIncludeSavedAndForeignRows(t *testing.T) {
@@ -271,17 +275,23 @@ func TestConfigureRegistrationsUsesTypedRequest(t *testing.T) {
 			// Add Codex while keeping the previously selected Claude binding.
 			press(m, tea.KeySpace, " ")
 			backend.setup.installResult = &viewmodel.OperationResult{Message: "Binding update completed with errors", Changes: []state.Installation{{AgentID: "codex", Component: "mcp"}}, Errors: []string{"claude: endpoint rejected"}}
-			_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-			if cmd == nil || !m.busy {
-				t.Fatal("Save did not schedule complete binding")
+			var action tea.Msg
+			if mouse {
+				action = clickFormAction(t, m, "Install selected")
+			} else {
+				action = activateWorkspaceActionByKeyboard(t, m, "Install selected")
 			}
-			if !m.busy || m.form != nil {
-				t.Error("binding save did not transition into its foreground operation")
+			_, cmd := m.Update(action)
+			if cmd == nil || !m.busy {
+				t.Fatal("Install selected did not schedule the complete binding")
+			}
+			if !m.busy {
+				t.Error("Agent access install did not start its foreground operation")
 			}
 			m.Update(runTeaCmd(t, m, cmd))
-			request := backend.setup.installRequest
+			request := backend.setup.installAgentsRequest
 			if request == nil {
-				t.Fatal("typed capability install backend not called")
+				t.Fatal("typed agent install backend not called")
 			}
 			want := b.snapshot.Profiles[1]
 			if request.SetupRequest.Ref.PackID != want.Key.Source || request.SetupRequest.Ref.CapabilityID != want.Key.Package || request.SetupRequest.Ref.Name != want.Key.Target || !reflect.DeepEqual(request.DestinationIDs, []string{"claude", "codex"}) {
@@ -302,7 +312,7 @@ func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
 		m.focusPane(ProfilesPane)
 		m.selectPane(ProfilesPane, 1)
 		cmd := openProfileAction(t, m, action, false)
-		if cmd != nil || m.busy || !strings.Contains(m.output, "Owned by another installation") {
+		if cmd != nil || m.busy || !strings.Contains(m.output, "another installation") {
 			t.Fatalf("foreign action enabled or reason lost: %s", m.output)
 		}
 	}
@@ -310,8 +320,15 @@ func TestTypedProfileActionsRespectDisabledReasons(t *testing.T) {
 	b.snapshot.Profiles[1].Transport = ""
 	m.Update(m.load()())
 	openCapabilityProfileWorkspace(t, m, b, "foreign", "Runtime")
-	if !strings.Contains(m.View().Content, "Runtime") || !strings.Contains(m.View().Content, "Check plain connection") {
+	selectWorkspaceSectionByKeyboard(t, m, sectionRuntimeID)
+	check := activateWorkspaceActionByKeyboard(t, m, "Check plain connection")
+	_, cmd := m.Update(check)
+	if cmd == nil {
 		t.Fatalf("known endpoint with unknown observed transport should remain diagnosable:\n%s", m.View().Content)
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	if b.checkedURL != "http://127.0.0.1:8765/mcp" {
+		t.Fatalf("connection check lost the known endpoint: %q", b.checkedURL)
 	}
 }
 func TestHomeLegacyUninstallShortcutIsDisabled(t *testing.T) {
@@ -331,7 +348,7 @@ func TestRegistrationCancelRestoresActions(t *testing.T) {
 		t.Fatal("Escape from the Agents details did not return to the workspace section list")
 	}
 }
-func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
+func TestRegistrationUninstallRemovesSelectedAgent(t *testing.T) {
 	m, _ := typedProfileFixture()
 	m.focusPane(ProfilesPane)
 	m.selectPane(ProfilesPane, 1)
@@ -340,18 +357,17 @@ func TestRegistrationDeselectionAppliesEmptyDesiredSet(t *testing.T) {
 	if got := m.form.Values()[m.pendingSetupField]; !containsStringFromValue(got, "claude") {
 		t.Fatal("saved Claude binding was not selected before editing")
 	}
-	press(m, tea.KeyDown, "") // Claude row.
-	press(m, tea.KeySpace, " ")
 	if strings.Contains(m.View().Content, "All —") {
 		t.Fatal("MCP binding exposed the global All destination")
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if cmd == nil || m.form != nil || !m.busy {
-		t.Fatal("empty desired selection must submit complete capability unbinding")
+	action := activateWorkspaceActionByKeyboard(t, m, "Uninstall selected")
+	_, cmd := m.Update(action)
+	if cmd == nil || !m.busy {
+		t.Fatal("Uninstall selected must submit removal of the checked agent")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
-	if backend.setup.installRequest == nil || len(backend.setup.installRequest.DestinationIDs) != 0 {
-		t.Fatalf("wrong complete desired set: %#v", backend.setup.installRequest)
+	if backend.setup.installAgentsRequest == nil || !backend.setup.installAgentsRequest.Uninstall || len(backend.setup.installAgentsRequest.DestinationIDs) != 0 {
+		t.Fatalf("wrong exact uninstall request: %#v", backend.setup.installAgentsRequest)
 	}
 }
 
@@ -364,15 +380,14 @@ func TestRemoveRegistrationsStartsUnselectedAndRemovesOnlySelectedAgents(t *test
 	if got := m.form.Values()[m.pendingSetupField]; !containsStringFromValue(got, "claude") {
 		t.Fatal("recorded Claude binding was not selected before editing")
 	}
-	press(m, tea.KeyDown, "")
-	press(m, tea.KeySpace, " ")
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	action := clickFormAction(t, m, "Uninstall selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
 		t.Fatal("selected removal was not submitted")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
-	if backend.setup.installRequest == nil || containsString(backend.setup.installRequest.DestinationIDs, "claude") {
-		t.Fatalf("complete desired set kept the removed Claude binding: %+v", backend.setup.installRequest)
+	if backend.setup.installAgentsRequest == nil || !backend.setup.installAgentsRequest.Uninstall || containsString(backend.setup.installAgentsRequest.DestinationIDs, "claude") {
+		t.Fatalf("selected removal did not remove the Claude binding: %+v", backend.setup.installAgentsRequest)
 	}
 }
 func TestRegistrationPreservesUnavailableRegisteredAgent(t *testing.T) {
@@ -385,14 +400,15 @@ func TestRegistrationPreservesUnavailableRegisteredAgent(t *testing.T) {
 	if got := m.form.Values()[m.pendingSetupField]; !containsStringFromValue(got, "opencode:old") || !strings.Contains(m.View().Content, "opencode:old") {
 		t.Fatal("unavailable existing binding was silently removed from the desired selection")
 	}
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	action := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
-		t.Fatal("prefilled registration selection could not submit")
+		t.Fatal("prefilled registration selection could not install")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	backend := m.backend.(*capabilityProfileBackend)
-	if backend.setup.installRequest == nil || !reflect.DeepEqual(backend.setup.installRequest.DestinationIDs, []string{"claude", "opencode:old"}) {
-		t.Fatalf("existing binding lost: %#v", backend.setup.installRequest)
+	if backend.setup.installAgentsRequest == nil || !reflect.DeepEqual(backend.setup.installAgentsRequest.DestinationIDs, []string{"claude", "opencode:old"}) {
+		t.Fatalf("existing binding lost: %#v", backend.setup.installAgentsRequest)
 	}
 }
 func TestRegistrationConnectionObservationIsVisible(t *testing.T) {

@@ -244,23 +244,28 @@ func (m *Model) load() tea.Cmd {
 func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 	m.busy = false
 	if msg.err != nil {
+		if m.unsavedExitIntent != nil && m.unsavedExitIntent.saveInputsOnly {
+			m.unsavedExitIntent = nil
+		}
 		m.output = "Could not save inputs: " + msg.err.Error()
 		return nil
 	}
 	if m.workspace != nil && m.workspace.Key == msg.key {
 		m.workspace.InputsSaved = true
-		if msg.inputsChanged {
-			m.workspace.Installed = false
-			m.workspace.RegisteredMCPs = nil
-		}
+		m.workspace.SaveNotice = "Inputs saved successfully."
+		m.workspace.Draft = nil
 	}
 	m.pendingSetup = &msg.preview
 	m.pendingSetupField = msg.destinationField
-	m.output = "Inputs saved. Install this capability for selected agents to enable Start."
+	m.output = "Inputs saved."
 	if m.form != nil {
 		m.form.ReopenAfterSave()
 		m.form.MarkClean()
 		m.configureWorkspaceForm(msg.preview)
+	}
+	if intent := m.unsavedExitIntent; intent != nil && intent.saveInputsOnly {
+		m.unsavedExitIntent = nil
+		return m.finishUnsavedExit(intent)
 	}
 	return nil
 }
@@ -326,13 +331,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.form != nil && m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
 			}
 			if m.form != nil && m.form.HasUnsavedChanges() {
-				m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+				m.unsavedExit = m.newUnsavedExit("quit")
 				return m, nil
 			}
 			return m, tea.Quit
@@ -350,7 +355,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "f10", "q":
 				if m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
@@ -361,7 +366,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if request, ok := msg.(forms.ExitRequestMsg); ok && m.form != nil {
-		m.unsavedExit = &unsavedExitState{reason: request.Reason, selected: 2}
+		m.unsavedExit = m.newUnsavedExit(request.Reason)
 		return m, nil
 	}
 	if m.unsavedExit != nil {
@@ -443,11 +448,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionInputsID {
 		if action.ID == "save-inputs" && m.form != nil {
+			if m.workspaceInputsReadOnly() {
+				m.output = runtimeManagedElsewhereReason
+				return m, nil
+			}
+			if err := m.form.CommitPendingInput(); err != nil {
+				m.output = "Could not save inputs: " + err.Error()
+				return m, nil
+			}
 			return m, m.saveSetupInputs(m.form.Values())
 		}
 	}
 	if action, ok := msg.(forms.ActionMsg); ok && m.workspace != nil && m.workspace.Active && action.SectionID == sectionAgentsID {
-		if action.ID == "install-selected" || action.ID == "uninstall-selected" {
+		if action.ID == "install-selected" {
 			if m.guardAgentAccessForDirtyInputs() {
 				return m, nil
 			}
@@ -461,7 +474,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.form != nil && m.pendingSetup != nil {
 				return m, m.uninstallSelectedAgents()
 			}
-			m.output = "Uninstall is unavailable until the agent selection is loaded."
+			m.output = "Agent destinations have not been loaded; reopen Agent Access to load them before uninstalling."
 			return m, nil
 		}
 	}
@@ -473,6 +486,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		parts := strings.SplitN(action.ID, ":", 2)
 		if len(parts) == 2 {
 			if parts[0] == "edit-inputs" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
+					return m, nil
+				}
 				m.workspace.SelectedMCP = parts[1]
 				m.workspace.Section = "Inputs"
 				m.workspace.SectionID = sectionInputsID
@@ -493,6 +510,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				target := m.workspace.RuntimeRecordTargets[index]
+				if target.Ownership == "other-aact" {
+					m.output = runtimeManagedElsewhereReason
+					return m, nil
+				}
 				return m, func() tea.Msg {
 					output, err := backend.UIRemoveRuntimeRecord(m.ctx, target.Key, target.ID)
 					return operationMsg{origin: m.view, output: output, err: err, step: "delete runtime record", target: target.ID}
@@ -517,8 +538,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if parts[0] == "start" || parts[0] == "stop" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
+					return m, nil
+				}
 				profile := m.instanceForMCPName(parts[1])
-				if profile == nil && m.workspace.Instance != nil {
+				if profile == nil && len(m.workspace.Preview.MCPDefinitions) == 0 && m.workspace.Instance != nil {
 					parent := *m.workspace.Instance
 					profile = &parent
 				}
@@ -526,19 +551,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if profile != nil {
 					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
-				guardAction := "s"
-				if parts[0] == "stop" {
-					guardAction = "x"
+				guardAction := "x"
+				if parts[0] == "start" {
+					guardAction = "s"
 				}
-				if reason := m.instanceActionReason(row, guardAction); reason != "" {
+				reason := m.instanceActionReason(row, guardAction)
+				if parts[0] == "start" {
+					reason = m.runtimeStartDisabledReason(parts[1], row)
+				}
+				if reason != "" {
 					m.output = reason
 					return m, nil
 				}
-				if parts[0] == "start" && (!m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered(parts[1]) || m.hasUnsavedSetupInputs()) {
-					m.output = "Save inputs and install this capability for an agent before starting the runtime."
+				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+			}
+			if parts[0] == "authenticate" {
+				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
+					m.output = reason
 					return m, nil
 				}
-				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+				if m.workspace.Preview == nil {
+					m.output = "Refresh this target before logging in."
+					return m, nil
+				}
+				var definition *catalog.MCP
+				for i := range m.workspace.Preview.MCPDefinitions {
+					if m.workspace.Preview.MCPDefinitions[i].Name == parts[1] {
+						definition = &m.workspace.Preview.MCPDefinitions[i]
+						break
+					}
+				}
+				if definition == nil {
+					m.output = "The selected MCP no longer declares a Login action; refresh this target."
+					return m, nil
+				}
+				if _, supported := definition.Actions["authenticate"]; !supported {
+					m.output = "This MCP does not declare a Login action."
+					return m, nil
+				}
+				profile := m.instanceForMCPName(parts[1])
+				row := InstanceRow{}
+				if profile != nil {
+					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
+				}
+				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row); reason != "" {
+					m.output = reason
+					return m, nil
+				}
+				m.workspace.cacheDraft(m.form.Values())
+				return m, m.run(operation{action: "authenticate", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
 		}
 		return m, nil
@@ -606,7 +667,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "f10":
 				if m.form.HasUnsavedChanges() {
-					m.unsavedExit = &unsavedExitState{reason: "quit", selected: 2}
+					m.unsavedExit = m.newUnsavedExit("quit")
 					return m, nil
 				}
 				return m, tea.Quit
@@ -713,13 +774,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
 		if m.workspace != nil && m.workspace.Active {
+			if m.hasUnsavedSetupInputs() || m.form.HasUnsavedChanges() {
+				m.workspace.SaveNotice = ""
+			}
 			m.workspace.SectionID = m.form.SectionID()
 			m.workspace.Section = m.form.SectionTitle()
-			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID)
-			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID)
+			inputsReadOnly := m.workspaceInputsReadOnly()
+			m.form.SetSubmitHidden(m.workspace.SectionID != sectionInputsID || inputsReadOnly)
+			m.form.SetCancelHidden(m.workspace.SectionID != sectionInputsID || inputsReadOnly)
+			m.form.SetTabThroughControls(m.workspace.SectionID == sectionInputsID && !inputsReadOnly)
 		}
 		m.refreshAgentAccessActions()
 		m.refreshComponentAvailability()
+		m.refreshRuntimeActionAvailability()
 		values, e := m.form.Result()
 		if errors.Is(e, forms.ErrNotSubmitted) {
 			if m.unsavedExitApplying {
@@ -894,6 +961,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.retryOperation = nil
 		if m.workspace != nil && m.workspace.InstanceRef.CapabilityID != "" {
 			m.workspace.Key = msg.preview.Key
+			// The initial request key can omit the environment. The resolved
+			// preview is authoritative; refresh record-derived gates after adopting
+			// its complete key so Agent access and Runtime show the same state.
+			m.workspace.Installed = m.targetHasInstallRecord(msg.preview.Key)
+			m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(msg.preview.Key)
 		}
 		if m.workspace != nil && m.workspace.SectionID == sectionInputsID && msg.preview.Configured {
 			m.workspace.Section = "Agent access"
@@ -1018,6 +1090,10 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 		m.busy = false
 	}
 	m.capabilityInstances = msg.capabilityInstances
+	if m.workspace != nil && m.workspace.Active {
+		m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
+		m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(m.workspace.Key)
+	}
 	m.catalog = msg.catalog
 	m.inventory = msg.inventory
 	m.inventoryError = msg.inventoryError
@@ -1143,27 +1219,11 @@ func (m *Model) handleOperationResult(msg operationMsg) tea.Cmd {
 	}
 	if succeeded {
 		if m.workspace != nil && m.workspace.Active && m.setupRetry != nil && m.form != nil {
-			m.workspace.Installed = true
-			m.workspace.RegisteredMCPs = map[string]bool{}
-			registeredMCP := false
-			if msg.result != nil {
-				for _, change := range msg.result.Changes {
-					if change.Component != "mcp" || change.AgentID == "" {
-						continue
-					}
-					registeredMCP = true
-					name := firstNonempty(change.Key.MCP, change.RegistrationName)
-					if name != "" {
-						m.workspace.RegisteredMCPs[name] = true
-					}
-				}
+			if m.setupRetry.uninstall {
+				m.form.SetSectionContentID(sectionAgentsID, []string{"Uninstall complete for selected agents.", "Agent access removed registrations only; it did not stop Docker."})
+			} else {
+				m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
 			}
-			if registeredMCP && len(m.workspace.RegisteredMCPs) == 0 && m.setupRetry.preview.MCP {
-				for _, definition := range m.setupRetry.preview.MCPDefinitions {
-					m.workspace.RegisteredMCPs[definition.Name] = true
-				}
-			}
-			m.form.SetSectionContentID(sectionAgentsID, []string{"Installation complete for selected agents.", "Agent install edits configuration only; it does not start Docker."})
 			m.configureWorkspaceForm(m.setupRetry.preview)
 		}
 		// Keep the retained workspace actionable after its result is dismissed.

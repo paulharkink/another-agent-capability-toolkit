@@ -26,7 +26,7 @@ func TestDirtySetupBackShowsUnsavedPopupAndKeepEditingPreservesDraft(t *testing.
 	}
 
 	view := m.View().Content
-	for _, want := range []string{"Apply changes", "Discard changes", "Keep editing"} {
+	for _, want := range []string{"Save inputs", "Discard changes", "Keep editing"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("dirty form exit omitted %q:\n%s", want, view)
 		}
@@ -145,26 +145,46 @@ func TestApplyFailureKeepsDirtyFormEditableAndShowsActualError(t *testing.T) {
 	}
 }
 
-func TestPopupApplyCompletesBackOnlyAfterBackendSuccessAndClearsProgress(t *testing.T) {
+func TestPopupSaveInputsCompletesBackOnlyAfterSaveAndNeverInstalls(t *testing.T) {
 	m, backend := openSetupInteraction(t)
 	enableWorkspaceBackForTest(m)
+	m.workspace.Preview = m.pendingSetup
 	dirtySetupAndRequestBack(t, m)
 	setupKey(m, tea.KeyUp, "")
 	setupKey(m, tea.KeyUp, "")
-	_, apply := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if apply == nil {
-		t.Fatal("Apply changes did not dispatch Save and apply")
+	backend.saveInputsErr = errors.New("fixture could not save inputs")
+	_, save := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if save == nil {
+		t.Fatal("Save inputs did not dispatch the input-only save")
 	}
-	result := runTeaCmd(t, m, apply)
+	result := save()
 	if m.form == nil || !m.workspace.Active {
-		t.Fatal("configuration left before the apply result arrived")
+		t.Fatal("configuration left before the Save result arrived")
 	}
 	m.Update(result)
-	if backend.installRequest == nil || m.form != nil || m.workspace.Active || m.workspace.Draft != nil {
-		t.Fatalf("successful apply did not complete the requested Back: request=%+v form=%t active=%t draft=%v", backend.installRequest, m.form != nil, m.workspace.Active, m.workspace.Draft)
+	if backend.savedInputRequest == nil || backend.installRequest != nil || m.form == nil || !m.workspace.Active || !m.form.HasUnsavedChanges() {
+		t.Fatalf("failed Save must keep the dirty form and never install: saved=%+v installed=%+v form=%t active=%t dirty=%t", backend.savedInputRequest, backend.installRequest, m.form != nil, m.workspace.Active, m.form != nil && m.form.HasUnsavedChanges())
+	}
+	backend.saveInputsErr = nil
+	if cmd := setupKey(m, tea.KeyEscape, ""); cmd != nil {
+		m.Update(cmd())
+	}
+	setupKey(m, tea.KeyUp, "")
+	setupKey(m, tea.KeyUp, "")
+	_, save = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if save == nil {
+		t.Fatal("retry Save inputs did not start")
+	}
+	result = save()
+	if m.form == nil || !m.workspace.Active {
+		t.Fatal("configuration left before the successful Save result arrived")
+	}
+	m.Update(result)
+	if backend.installRequest != nil || m.form != nil || m.workspace.Active || m.workspace.Draft != nil {
+		t.Fatalf("successful Save inputs did not complete the requested Back, or performed installation: install=%+v form=%t active=%t draft=%v", backend.installRequest, m.form != nil, m.workspace.Active, m.workspace.Draft)
 	}
 	if m.setupOperationPending || m.setupProgressEvents != nil || m.setupProgressDone != nil || m.unsavedExitIntent != nil {
-		t.Fatal("successful exit left setup operation/progress state pending")
+		t.Fatal("successful Save exit left setup operation/progress state pending")
 	}
 }
 
@@ -192,7 +212,7 @@ func TestF10OnDirtyFormPromptsAndCtrlCOnDirtyFormDiscards(t *testing.T) {
 	setupKey(m, 'm', "m")
 	setupKey(m, 'x', "x")
 	_, quit := m.Update(tea.KeyPressMsg{Code: tea.KeyF10})
-	if quit != nil || !strings.Contains(m.View().Content, "Apply changes") {
+	if quit != nil || !strings.Contains(m.View().Content, "Save inputs") {
 		t.Fatal("F10 on a dirty form did not open the unsaved changes popup")
 	}
 

@@ -19,6 +19,7 @@ type SetupInput struct {
 	Definition        catalog.Input
 	Value             any
 	HasValue          bool
+	SecretSaved       bool
 	Provenance        string
 	ProvenancePath    string
 	InheritedValue    any
@@ -56,6 +57,7 @@ type SetupPreview struct {
 	Sections                                          []catalog.Section
 	HasManifestUI                                     bool
 	MCPDefinitions                                    []catalog.MCP
+	MCPDefinitionKeys                                 map[string]state.Key
 	CredentialState                                   string
 	CredentialNote                                    string
 	ActiveInputGroups                                 map[string]string

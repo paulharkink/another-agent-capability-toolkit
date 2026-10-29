@@ -33,7 +33,7 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 	}
 	if action == "parameters" {
 		if _, ok := m.backend.(setupBackend); !ok {
-			return "setup service unavailable"
+			return "The active AACT backend does not support setup operations."
 		}
 		c, ok := m.selectedCapability()
 		if !ok || c.CatalogIndex < 0 {
@@ -43,16 +43,19 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 	}
 	if action == "check-connection" {
 		if _, ok := m.backend.(connectionBackend); !ok {
-			return "connection service support pending"
+			return "The active AACT backend does not provide connection checks."
 		}
 		if p.URL == "" {
 			return "No MCP endpoint is configured"
 		}
 		return ""
 	}
+	if owner == "other-aact" && (action == "s" || action == "x") {
+		return runtimeManagedElsewhereReason
+	}
 	if action == "registrations" || action == "remove-registrations" {
 		if _, ok := m.backend.(registrationBackend); !ok || p.Instance == nil {
-			return "registration-only service support pending"
+			return "The active AACT backend does not support registration-only changes."
 		}
 		if action == "remove-registrations" {
 			if len(p.Instance.RegisteredAgents) == 0 {
@@ -77,46 +80,29 @@ func (m *Model) instanceActionReason(p InstanceRow, action string) string {
 		}
 		return ""
 	}
-	if p.Instance != nil {
-		if action == "s" {
-			if owner != "local" {
-				if p.Instance.StartDisabledReason != "" {
-					return p.Instance.StartDisabledReason
-				}
-				if owner == "unknown" || owner == "" {
-					return "Runtime owner is unknown"
-				}
-				return "Runtime belongs to another installation"
-			}
-			if p.Instance.CanStart {
-				return ""
-			}
-			if p.Instance.StartDisabledReason != "" {
-				return p.Instance.StartDisabledReason
-			}
-			return "Start is unavailable"
+	if action == "s" {
+		if p.Instance != nil && p.Instance.CanStart && p.Instance.Ownership == "local" && !p.Instance.ObservationStale {
+			return ""
 		}
-		if action == "x" {
-			if owner != "local" {
-				if p.Instance.StopDisabledReason != "" {
-					return p.Instance.StopDisabledReason
-				}
-				if owner == "unknown" || owner == "" {
-					return "Runtime owner is unknown"
-				}
-				return "Runtime belongs to another installation"
-			}
-			if p.Instance.CanStop {
-				return ""
-			}
-			if p.Instance.StopDisabledReason != "" {
-				return p.Instance.StopDisabledReason
-			}
-			return "Stop is unavailable"
+		if p.Instance != nil && strings.TrimSpace(p.Instance.StartDisabledReason) != "" {
+			return p.Instance.StartDisabledReason
 		}
+		return runtimeStartBlocker(p.Instance, "")
+	}
+	if action == "x" {
+		if p.Instance != nil && p.Instance.CanStop && p.Instance.Ownership == "local" && !p.Instance.ObservationStale {
+			return ""
+		}
+		if p.Instance != nil && strings.TrimSpace(p.Instance.StopDisabledReason) != "" {
+			return p.Instance.StopDisabledReason
+		}
+		return runtimeStopBlocker(p.Instance, "")
+	}
+	if owner == "other-aact" {
+		return "Runtime is owned by another AACT installation and is not locally owned."
 	}
 	if owner != "local" || status == "external" {
-		return "Runtime action unavailable: this instance is not locally owned."
+		return "Runtime status for this MCP has not been observed; refresh this instance to check its owner and state."
 	}
 	return ""
 }
@@ -169,7 +155,7 @@ func (m *Model) removeRegistrationForm(p InstanceRow) {
 func (m *Model) configureRegistrations(request viewmodel.RegistrationRequest, removing bool) tea.Cmd {
 	backend, ok := m.backend.(registrationBackend)
 	if !ok {
-		m.output = "Registration service support pending"
+		m.output = "The active AACT backend does not support registration-only changes"
 		return nil
 	}
 	m.retryOperation = func() tea.Cmd { return m.configureRegistrations(request, removing) }

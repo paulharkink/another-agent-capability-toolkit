@@ -187,7 +187,17 @@ func (a *mcpAdapter) updateJSON(ctx context.Context, e Environment, name string,
 			if !ok {
 				return fmt.Errorf("refusing foreign MCP registration %q in %s", name, file)
 			}
-			if !sameJSON(current, a.registrationValue(owned)) {
+			if digest := e.OwnedDigests[name]; digest != "" {
+				entry, isObject := current.(map[string]any)
+				if !isObject || nativeEntryDigest(entry) != digest {
+					return fmt.Errorf("owned MCP registration %q changed in %s", name, file)
+				}
+				if r != nil && owned.URL == r.URL && e.PreserveNativeEntries[name] {
+					// Preserve the exact native descriptor and its agent-specific
+					// options when its AACT-managed fields have not changed.
+					continue
+				}
+			} else if !sameJSON(current, a.registrationValue(owned)) {
 				return fmt.Errorf("owned MCP registration %q changed in %s", name, file)
 			}
 		}

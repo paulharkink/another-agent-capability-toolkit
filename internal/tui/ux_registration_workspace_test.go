@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -19,6 +20,7 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	m, profileBackend := typedProfileFixture()
 	backend := &registrationWorkspaceBackend{Backend: profileBackend, profileBackend: profileBackend, setupBackendFixture: &setupBackendFixture{}}
 	m.backend = backend
+	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	foreign := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	for index, row := range m.contextRows() {
@@ -29,14 +31,23 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("Enter on the foreign target did not open its workspace")
+		row, ok := m.selectedContextRow()
+		t.Fatalf("Enter on selected foreign target did not open its workspace: context=%+v selected=%t focus=%v output=%q view=%s", row, ok, m.home.Focus, m.output, ansi.Strip(m.View().Content))
 	}
 	m.Update(cmd())
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	if m.form == nil || m.workspace == nil || m.workspace.Instance == nil {
 		t.Fatalf("foreign target workspace did not load: %s", m.View().Content)
 	}
-	if m.workspace.Instance.Ownership != "other-aact" || !strings.Contains(m.View().Content, "http://127.0.0.1:8765/mcp") {
-		t.Fatalf("foreign endpoint/ownership facts missing from Overview: %s", m.View().Content)
+	m.workspace.InputsSaved = true
+	if m.workspace.Instance.Ownership != "other-aact" || !strings.Contains(m.View().Content, "Inputs are managed by another AACT installation") {
+		t.Fatalf("foreign Inputs did not explain management ownership: %s", m.View().Content)
+	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+	if runtimeView := ansi.Strip(m.form.View().Content); !strings.Contains(runtimeView, "http://1") || !strings.Contains(runtimeView, "27.0.0.1:8765/mcp") || !strings.Contains(runtimeView, "ownership: other-aact") {
+		t.Fatalf("foreign runtime facts missing from Runtime: %s", runtimeView)
 	}
 	m.form.SelectSectionID(sectionAgentsID)
 	m.form.FocusSection()
@@ -59,6 +70,62 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	m.Update(runTeaCmd(t, m, install))
 	if backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.Name != "foreign" || !containsString(backend.installRequest.DestinationIDs, "codex") {
 		t.Fatalf("Agent access install did not bind destinations on selected target: %+v", backend.installRequest)
+	}
+}
+
+func markWorkspaceForeignObserved(m *Model, mcpName, endpoint string) {
+	parentKey := m.workspace.Key
+	childKey := parentKey
+	childKey.MCP = mcpName
+	const reason = "This Capability Instance is managed by another AACT installation; change its inputs and runtime there."
+	if m.capabilityInstances == nil {
+		m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{}
+	}
+	m.capabilityInstances[parentKey.Package] = viewmodel.CapabilityInstanceSnapshot{Instances: []viewmodel.CapabilityInstance{{
+		Ref: config.InstanceRef{PackID: parentKey.Source, CapabilityID: parentKey.Package, Name: parentKey.Target},
+		Key: parentKey, Origin: "observed", ConfigStatus: "read-only", ConfigError: reason,
+		Ownership: "other-aact", ManagementReason: reason,
+		MCPs: []viewmodel.RuntimeStatus{{Key: childKey, MCPID: mcpName, Status: "running", Ownership: "other-aact", URL: endpoint}},
+	}}}
+}
+
+func TestUXForeignCapabilityParentGuardsSiblingRuntimeActions(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	preview := *m.workspace.Preview
+	preview.MCPDefinitions = []catalog.MCP{
+		{Name: "plain"},
+		{Name: "sibling", Actions: map[string]catalog.Command{"authenticate": {Argv: []string{"login"}}}},
+	}
+	m.workspace.Preview = &preview
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(preview)
+	m.refreshRuntimeActionAvailability()
+	if reason := m.workspaceForeignRuntimeReason("sibling"); !strings.Contains(reason, "another AACT installation") {
+		t.Fatalf("read-only Capability Instance did not guard its unobserved sibling: %q", reason)
+	}
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+
+	seen := map[string]bool{}
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "start:sibling" && action.Disabled != m.workspaceForeignRuntimeReason("sibling") {
+			t.Fatalf("foreign Start reason changed after refresh: got %q, want %q", action.Disabled, m.workspaceForeignRuntimeReason("sibling"))
+		}
+		if action.ID == "start:sibling" || action.ID == "authenticate:sibling" || action.ID == "stop:sibling" || action.ID == "edit-inputs:sibling" {
+			if !strings.Contains(action.Disabled, "another AACT installation") {
+				t.Fatalf("sibling runtime action lacks the parent management reason: %+v", action)
+			}
+			seen[action.ID] = true
+		}
+	}
+	for _, id := range []string{"start:sibling", "authenticate:sibling", "stop:sibling", "edit-inputs:sibling"} {
+		if !seen[id] {
+			t.Fatalf("read-only Capability Instance omitted sibling action %q", id)
+		}
+	}
+	view := ansi.Strip(m.form.View().Content)
+	if strings.Contains(view, "You can log in before starting this MCP.") {
+		t.Fatalf("foreign Runtime showed a local Login prerequisite despite Login being managed elsewhere:\n%s", view)
 	}
 }
 
@@ -85,6 +152,75 @@ func TestUXAgentAccessInstallMouseUsesExactSelectedInstance(t *testing.T) {
 	if backend.profileBackend.request != nil {
 		t.Fatal("Agent access install unexpectedly changed the MCP runtime")
 	}
+}
+
+func TestUXHostTargetLoginIsAvailableBeforeRuntimeStart(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
+	preview := *m.workspace.Preview
+	preview.Inputs = nil // Exercise the saved/configured gate without test credentials.
+	preview.Configured = true
+	preview.ValidationIssues = nil
+	for i := range preview.MCPDefinitions {
+		if preview.MCPDefinitions[i].Name == "cluster-inspector" {
+			command := preview.MCPDefinitions[i].Actions["authenticate"]
+			command.Target = "host"
+			preview.MCPDefinitions[i].Actions["authenticate"] = command
+		}
+	}
+	m.workspace.InputsSaved = true
+	m.workspace.Instance = nil // Host Login must not require any runtime observation.
+	m.configureWorkspaceForm(preview)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+
+	var login forms.FormAction
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "authenticate:cluster-inspector" {
+			login = action
+			break
+		}
+	}
+	if login.ID == "" || login.Disabled != "" {
+		t.Fatalf("host-target Login should be available while stopped: %+v", login)
+	}
+	view := ansi.Strip(m.form.View().Content)
+	if !strings.Contains(view, "You can log in before starting this MCP.") || !strings.Contains(view, "select Login.") {
+		t.Fatalf("Runtime stage does not explain stopped Login: %s", view)
+	}
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: login.ID})
+	if cmd == nil {
+		t.Fatalf("activating the stopped host-target Login action was rejected: %s", m.output)
+	}
+}
+
+func TestUXContainerTargetLoginStillRequiresRunningRuntime(t *testing.T) {
+	m, _ := actualClusterWorkspace(t, tea.WindowSizeMsg{Width: 120, Height: 36})
+	preview := *m.workspace.Preview
+	preview.Inputs = nil
+	preview.Configured = true
+	preview.ValidationIssues = nil
+	for i := range preview.MCPDefinitions {
+		if preview.MCPDefinitions[i].Name == "cluster-inspector" {
+			command := preview.MCPDefinitions[i].Actions["authenticate"]
+			command.Target = "container"
+			preview.MCPDefinitions[i].Actions["authenticate"] = command
+		}
+	}
+	m.workspace.InputsSaved = true
+	m.workspace.Instance = &viewmodel.Instance{Key: m.workspace.Key, RuntimeStatus: "stopped", Ownership: "local"}
+	m.configureWorkspaceForm(preview)
+	m.form.SelectSectionID(sectionRuntimeID)
+	m.form.FocusSection()
+
+	for _, action := range m.form.SectionActionsID(sectionRuntimeID) {
+		if action.ID == "authenticate:cluster-inspector" {
+			if !strings.Contains(action.Disabled, "Start this MCP before logging in") {
+				t.Fatalf("container-target Login must remain blocked while stopped: %+v", action)
+			}
+			return
+		}
+	}
+	t.Fatal("Runtime stage omitted the declared Login action")
 }
 
 func activateAgentAccessActionByKeyboard(t *testing.T, m *Model, label string) tea.Cmd {
@@ -141,15 +277,96 @@ type registrationWorkspaceBackend struct {
 	Backend
 	profileBackend *profileBackend
 	*setupBackendFixture
-	inputSaveRequest  *viewmodel.SetupInstallRequest
-	runtimeAction     string
-	runtimeKey        state.Key
-	removedRuntimeKey state.Key
-	removedRuntimeID  string
+	previewOverride    *viewmodel.SetupPreview
+	inputSaveRequest   *viewmodel.SetupInstallRequest
+	runtimeAction      string
+	runtimeKey         state.Key
+	removedRuntimeKey  state.Key
+	removedRuntimeID   string
+	capabilitySnapshot map[string]viewmodel.CapabilityInstanceSnapshot
 }
 
 func (b *registrationWorkspaceBackend) UIProfileSnapshot(ctx context.Context) (viewmodel.InstanceSnapshot, error) {
 	return b.profileBackend.UIProfileSnapshot(ctx)
+}
+func (b *registrationWorkspaceBackend) UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error) {
+	if b.capabilitySnapshot != nil {
+		return b.capabilitySnapshot, nil
+	}
+	// Most journeys seed the older runtime-observation fixture. Expose those
+	// same exact targets through the current capability-instance interface so
+	// workspace loads exercise the production snapshot path.
+	instances := make(map[string][]viewmodel.CapabilityInstance)
+	for _, observed := range b.profileBackend.snapshot.Profiles {
+		instance := viewmodel.CapabilityInstance{
+			Ref: config.InstanceRef{PackID: observed.Key.Source, CapabilityID: observed.Key.Package, Name: observed.Key.Target},
+			Key: observed.Key,
+			MCPs: []viewmodel.RuntimeStatus{{
+				MCPID: "plain", Status: observed.RuntimeStatus, Ownership: observed.Ownership,
+				URL: observed.URL, Error: observed.StartDisabledReason, AuthenticationStatus: observed.AuthenticationStatus,
+			}},
+		}
+		for _, agentID := range observed.RegisteredAgents {
+			instance.Components = append(instance.Components, viewmodel.ComponentStatus{
+				AgentID: agentID, Kind: "mcp", Name: "plain", Status: "installed", Managed: true,
+			})
+		}
+		instances[observed.Key.Package] = append(instances[observed.Key.Package], instance)
+	}
+	snapshots := make(map[string]viewmodel.CapabilityInstanceSnapshot, len(instances))
+	for packageID, rows := range instances {
+		snapshots[packageID] = viewmodel.CapabilityInstanceSnapshot{Instances: rows}
+	}
+	return snapshots, nil
+}
+
+// setObservedRuntimeFacts changes the backend observation and reloads the
+// capability snapshot consumed by Runtime. Editing only workspace.Instance
+// does not change the rendered child status or its ownership gate.
+func setObservedRuntimeFacts(m *Model, b *registrationWorkspaceBackend, status, ownership, authentication string) {
+	for i := range b.profileBackend.snapshot.Profiles {
+		if b.profileBackend.snapshot.Profiles[i].Key != m.workspace.Key {
+			continue
+		}
+		b.profileBackend.snapshot.Profiles[i].RuntimeStatus = status
+		b.profileBackend.snapshot.Profiles[i].Ownership = ownership
+		b.profileBackend.snapshot.Profiles[i].AuthenticationStatus = authentication
+		if ownership == "local" {
+			b.profileBackend.snapshot.Profiles[i].StartDisabledReason = ""
+			b.profileBackend.snapshot.Profiles[i].StopDisabledReason = ""
+		}
+	}
+	b.capabilitySnapshot = nil
+	snapshot, err := b.UICapabilityInstances(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	m.capabilityInstances = snapshot
+	for i := range b.profileBackend.snapshot.Profiles {
+		if b.profileBackend.snapshot.Profiles[i].Key == m.workspace.Key {
+			copy := b.profileBackend.snapshot.Profiles[i]
+			m.workspace.Instance = &copy
+			break
+		}
+	}
+}
+
+func clearObservedAgentRegistrations(m *Model, b *registrationWorkspaceBackend) {
+	for i := range b.profileBackend.snapshot.Profiles {
+		if b.profileBackend.snapshot.Profiles[i].Key == m.workspace.Key {
+			b.profileBackend.snapshot.Profiles[i].RegisteredAgents = nil
+		}
+	}
+	b.capabilitySnapshot = nil
+	snapshot, _ := b.UICapabilityInstances(context.Background())
+	m.capabilityInstances = snapshot
+	m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
+	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(m.workspace.Key)
+}
+func (*registrationWorkspaceBackend) UICreateInstance(context.Context, config.InstanceRef) error {
+	// Workspace journey fixtures already contain their selected instance; none
+	// of these tests exercises instance creation.
+	return nil
 }
 func (b *registrationWorkspaceBackend) UIConfigureRegistrations(ctx context.Context, request viewmodel.RegistrationRequest) (viewmodel.OperationResult, error) {
 	return b.profileBackend.UIConfigureRegistrations(ctx, request)
@@ -159,6 +376,11 @@ func (b *registrationWorkspaceBackend) CheckConnection(ctx context.Context, url,
 }
 func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request viewmodel.SetupRequest) (viewmodel.SetupPreview, error) {
 	b.previewRequest = request
+	if b.previewOverride != nil {
+		preview := *b.previewOverride
+		preview.Key = setupProfileKey(request)
+		return preview, nil
+	}
 	return viewmodel.SetupPreview{Key: setupProfileKey(request), PackageName: "Plain", MCP: true, HasManifestUI: true,
 		Sections: []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
 		Inputs:   []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string"}, Value: "http://127.0.0.1:8765/mcp", HasValue: true, Editable: true}}, MCPDefinitions: []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
@@ -166,6 +388,9 @@ func (b *registrationWorkspaceBackend) UISetupPreview(_ context.Context, request
 }
 func (b *registrationWorkspaceBackend) UIInstall(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	return b.setupBackendFixture.UIInstall(ctx, request)
+}
+func (b *registrationWorkspaceBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.setupBackendFixture.UIInstallAgents(ctx, request)
 }
 func (b *registrationWorkspaceBackend) UISaveInputs(_ context.Context, request viewmodel.SetupInstallRequest) error {
 	copy := request
@@ -182,10 +407,15 @@ func (b *registrationWorkspaceBackend) UIRemoveRuntimeRecord(_ context.Context, 
 }
 
 func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBackend) {
+	return openRegistrationActionForUXWithPreview(t, nil)
+}
+
+func openRegistrationActionForUXWithPreview(t *testing.T, previewOverride *viewmodel.SetupPreview) (*Model, *registrationWorkspaceBackend) {
 	t.Helper()
 	m, profile := typedProfileFixture()
-	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}}
+	backend := &registrationWorkspaceBackend{Backend: profile, profileBackend: profile, setupBackendFixture: &setupBackendFixture{}, previewOverride: previewOverride}
 	m.backend = backend
+	m.Update(m.load()())
 	m.focusPane(ProfilesPane)
 	foreign := state.Key{Source: "team-source", Package: "plain", Target: "foreign"}
 	for i, row := range m.contextRows() {
@@ -199,6 +429,10 @@ func openRegistrationActionForUX(t *testing.T) (*Model, *registrationWorkspaceBa
 		t.Fatal("profile Enter did not open workspace")
 	}
 	m.Update(cmd())
+	// Most Agent access journeys begin after the user has saved Inputs.
+	preview := *m.workspace.Preview
+	preview.Configured = true
+	m.configureWorkspaceForm(preview)
 	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	return m, backend
@@ -335,17 +569,18 @@ func TestUXRuntimeSeparatesLivenessAndContainerAuthentication(t *testing.T) {
 		{name: "unauthenticated", runtime: "running", authentication: "AuthenticationFailed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _ := openRegistrationActionForUX(t)
+			m, backend := openRegistrationActionForUX(t)
 			if m.workspace.Instance == nil {
 				t.Fatal("fixture must include the selected runtime observation")
 			}
-			m.workspace.Instance.RuntimeStatus = tc.runtime
+			authenticationStatus := ""
 			switch tc.authentication {
 			case "AuthenticationComplete":
-				m.workspace.Instance.AuthenticationStatus = viewmodel.AuthenticationComplete
+				authenticationStatus = viewmodel.AuthenticationComplete
 			case "AuthenticationFailed":
-				m.workspace.Instance.AuthenticationStatus = viewmodel.AuthenticationFailed
+				authenticationStatus = viewmodel.AuthenticationFailed
 			}
+			setObservedRuntimeFacts(m, backend, tc.runtime, "local", authenticationStatus)
 			m.configureWorkspaceForm(*m.workspace.Preview)
 			m.form.SelectSectionID(sectionRuntimeID)
 			m.form.FocusSection()
@@ -490,6 +725,13 @@ func (b *uninstallRetryBackend) UIInstall(_ context.Context, request viewmodel.S
 	}
 	return viewmodel.OperationResult{Saved: true, Message: "Uninstalled"}, nil
 }
+func (b *uninstallRetryBackend) UIInstallAgents(_ context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.calls = append(b.calls, request)
+	if len(b.calls) == 1 {
+		return viewmodel.OperationResult{Step: "uninstall", Errors: []string{"permission denied"}}, errors.New("permission denied")
+	}
+	return viewmodel.OperationResult{Saved: true, Message: "Uninstalled"}, nil
+}
 
 func TestRetryingFailedFinalAgentUninstallPreservesUninstallIntent(t *testing.T) {
 	m, backend := openRegistrationActionForUX(t)
@@ -510,7 +752,7 @@ func TestRetryingFailedFinalAgentUninstallPreservesUninstallIntent(t *testing.T)
 		t.Fatal("explicit uninstall did not start")
 	}
 	m.Update(runTeaCmd(t, m, uninstall))
-	if m.result == nil || !m.result.CanRetry || len(retrying.calls) != 1 || !retrying.calls[0].Uninstall || len(retrying.calls[0].DestinationIDs) != 0 {
+	if m.result == nil || !m.result.CanRetry || m.result.Action != "uninstall" || len(retrying.calls) != 1 || !retrying.calls[0].Uninstall || retrying.calls[0].DestinationIDs == nil || len(retrying.calls[0].DestinationIDs) != 0 {
 		t.Fatalf("failed final uninstall was not retained as retryable uninstall: result=%+v calls=%+v", m.result, retrying.calls)
 	}
 	retry := m.retryResult()
@@ -518,7 +760,7 @@ func TestRetryingFailedFinalAgentUninstallPreservesUninstallIntent(t *testing.T)
 		t.Fatal("failed uninstall did not expose a retry operation")
 	}
 	m.Update(runTeaCmd(t, m, retry))
-	if len(retrying.calls) != 2 || !retrying.calls[1].Uninstall || len(retrying.calls[1].DestinationIDs) != 0 || retrying.calls[1].SetupRequest.Ref.Name != "foreign" {
+	if len(retrying.calls) != 2 || !retrying.calls[1].Uninstall || retrying.calls[1].DestinationIDs == nil || len(retrying.calls[1].DestinationIDs) != 0 || retrying.calls[1].SetupRequest.Ref.Name != "foreign" {
 		t.Fatalf("retry changed explicit Uninstall intent or target: %+v", retrying.calls)
 	}
 }
@@ -581,23 +823,26 @@ func TestUXRegistrationButtonsExposeSeparateInstallAndUninstall(t *testing.T) {
 
 func TestUXInputsStageShowsSaveAndCancelAndSaveDoesNotInstall(t *testing.T) {
 	m, b := openRegistrationActionForUX(t)
+	markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+	m.configureWorkspaceForm(*m.workspace.Preview)
 	selectWorkspaceSectionByKeyboard(t, m, sectionInputsID)
-	view := m.form.View().Content
-	for _, want := range []string{"Inputs", "Save", "Cancel"} {
+	view := ansi.Strip(m.form.View().Content)
+	for _, want := range []string{"Inputs", "Inputs are managed by another AACT installation"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("Inputs stage must visibly offer %q:\n%s", want, view)
+			t.Fatalf("foreign Inputs stage must explain its ownership with %q:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Save and apply") {
-		t.Fatalf("Inputs stage still combines saving and applying:\n%s", view)
+	for _, forbidden := range []string{"[ Save ]", "[ Cancel ]", "Save and apply", "Endpoint URI"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("foreign Inputs stage exposed local control or value %q:\n%s", forbidden, view)
+		}
 	}
 	_, cmd := m.Update(forms.ActionMsg{SectionID: "tool:inputs", ID: "save-inputs"})
-	if cmd == nil {
-		t.Fatal("Save inputs did not issue its save-only operation")
+	if cmd != nil {
+		t.Fatal("foreign Inputs Save route issued a save operation")
 	}
-	m.Update(cmd())
-	if b.inputSaveRequest == nil {
-		t.Fatal("Save inputs did not call save-only backend")
+	if b.inputSaveRequest != nil {
+		t.Fatal("foreign Inputs Save route called the save-only backend")
 	}
 	if b.installRequest != nil {
 		t.Fatal("saving inputs installed agent configuration")
@@ -633,13 +878,18 @@ func TestUXAgentAccessInstallsWithoutStartingRuntime(t *testing.T) {
 }
 
 func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) {
-	m, _ := openRegistrationActionForUX(t)
+	m, backend := openRegistrationActionForUX(t)
+	clearObservedAgentRegistrations(m, backend)
+	setObservedRuntimeFacts(m, backend, "stopped", "local", "")
 	if m.workspace.Instance != nil {
 		m.workspace.Instance.Ownership, m.workspace.Instance.CanStart, m.workspace.Instance.RuntimeStatus = "local", true, "stopped"
 	}
 	m.workspace.InputsSaved = false
 	m.workspace.Installed = false
-	m.configureWorkspaceForm(*m.workspace.Preview)
+	preview := *m.workspace.Preview
+	preview.Configured = false
+	m.configureWorkspaceForm(preview)
+	m.workspace.InputsSaved = false
 	m.form.FocusSection()
 	for attempts := 0; m.form.SectionID() != sectionRuntimeID && attempts < 4; attempts++ {
 		m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -648,22 +898,38 @@ func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) 
 		t.Fatalf("keyboard did not select Runtime: %q", m.form.SectionID())
 	}
 	view := m.form.View().Content
-	if !strings.Contains(view, "Start plain") || !strings.Contains(view, "Save inputs and install") {
-		t.Fatalf("Runtime stage lacks gated Start explanation:\n%s", view)
+	for _, want := range []string{"Start plain", "Inputs: Not saved", "Agent install: Not installed", "Complete inputs first"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Runtime stage lacks gated Start fact %q:\n%s", want, view)
+		}
 	}
 	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
 	if cmd != nil {
 		t.Fatal("runtime start was issued before inputs and agent installation")
 	}
-	if !strings.Contains(m.output, "Save inputs and install this capability for an agent before starting the runtime.") {
-		t.Fatalf("missing actionable gate message: %q", m.output)
+	if !strings.Contains(m.output, "Save valid inputs first") {
+		t.Fatalf("missing specific unsaved-input blocker: %q", m.output)
 	}
-	m.workspace.InputsSaved = true
-	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
+	save := m.saveSetupInputs(m.form.Values())
+	if save == nil {
+		t.Fatal("Inputs Save was unavailable while Start was gated")
+	}
+	m.Update(save())
+	m.form.SelectSectionID(sectionRuntimeID)
+	if m.workspace.Installed {
+		t.Fatal("Inputs Save incorrectly marked the agent installed")
+	}
+	_, cmd = m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
+	if cmd != nil || !strings.Contains(m.output, "Install this capability for an agent first") {
+		t.Fatalf("Start did not identify the missing agent registration after Inputs Save: cmd=%t output=%q", cmd != nil, m.output)
+	}
+	backend.capabilitySnapshot = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
 		Key:        m.workspace.Key,
 		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "mcp", Name: "plain", Status: "installed"}},
 	}}}}
+	m.capabilityInstances = backend.capabilitySnapshot
 	m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
+	m.workspace.RegisteredMCPs = map[string]bool{"plain": true}
 	m.workspace.Preview.Configured = true
 	m.configureWorkspaceForm(*m.workspace.Preview)
 	m.workspace.InputsSaved = true
@@ -678,7 +944,8 @@ func TestUXRuntimeStartRequiresSavedInputsAndInstalledAgentAccess(t *testing.T) 
 }
 
 func TestRuntimeLedgerAloneDoesNotEnableMCPStart(t *testing.T) {
-	m, _ := openRegistrationActionForUX(t)
+	m, backend := openRegistrationActionForUX(t)
+	clearObservedAgentRegistrations(m, backend)
 	key := m.workspace.Key
 	m.inventory = []state.Installation{{Key: key, AgentID: "codex", Component: "runtime", Mode: "managed"}}
 	request := viewmodel.SetupRequest{Ref: m.workspace.InstanceRef}
@@ -701,6 +968,15 @@ func TestRuntimeLedgerAloneDoesNotEnableMCPStart(t *testing.T) {
 
 func TestDirtyInputsBlockAgentInstallAndUninstallUntilSaved(t *testing.T) {
 	m, backend := openRegistrationActionForUX(t)
+	for i := range backend.profileBackend.snapshot.Profiles {
+		if backend.profileBackend.snapshot.Profiles[i].Key.Target == m.workspace.Key.Target {
+			backend.profileBackend.snapshot.Profiles[i].RegisteredAgents = []string{"codex"}
+		}
+	}
+	m.workspace.Installed = true
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.form.ApplyValues(map[string]any{"endpoint": "http://unsaved.example/mcp"}); err != nil {
 		t.Fatal(err)
 	}
@@ -709,17 +985,26 @@ func TestDirtyInputsBlockAgentInstallAndUninstallUntilSaved(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.form.SelectSectionID(sectionAgentsID)
 	view := ansi.Strip(m.form.View().Content)
-	if !strings.Contains(view, "Save changed inputs before") {
+	if !strings.Contains(view, "Save changes first") {
 		t.Fatalf("Agent Access did not explain its disabled state while Inputs are dirty:\n%s", view)
 	}
-	for _, action := range []string{"install-selected", "uninstall-selected"} {
-		_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: action})
-		if cmd != nil || backend.installRequest != nil || backend.inputSaveRequest != nil {
-			t.Fatalf("%s proceeded while Inputs were dirty: cmd=%t install=%+v input-save=%+v", action, cmd != nil, backend.installRequest, backend.inputSaveRequest)
-		}
+	_, install := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if install != nil || backend.installRequest != nil || backend.inputSaveRequest != nil {
+		t.Fatalf("Install proceeded while Inputs were dirty: cmd=%t install=%+v input-save=%+v", install != nil, backend.installRequest, backend.inputSaveRequest)
 	}
 	if !m.form.HasUnsavedChanges() || backend.installRequest != nil || backend.inputSaveRequest != nil {
-		t.Fatalf("rejected Agent action changed the input draft or saved state: dirty=%t install=%+v save=%+v", m.form.HasUnsavedChanges(), backend.installRequest, backend.inputSaveRequest)
+		t.Fatalf("rejected Install changed the input draft or saved state: dirty=%t install=%+v save=%+v", m.form.HasUnsavedChanges(), backend.installRequest, backend.inputSaveRequest)
+	}
+	_, uninstall := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "uninstall-selected"})
+	if uninstall == nil {
+		t.Fatalf("Uninstall was unavailable while Inputs were dirty: %q", m.output)
+	}
+	if !m.form.HasUnsavedChanges() || backend.inputSaveRequest != nil {
+		t.Fatalf("Uninstall saved or discarded the unsaved Inputs draft: dirty=%t save=%+v", m.form.HasUnsavedChanges(), backend.inputSaveRequest)
+	}
+	m.Update(runTeaCmd(t, m, uninstall))
+	if backend.installAgentsRequest == nil || !backend.installAgentsRequest.Uninstall || backend.inputSaveRequest != nil {
+		t.Fatalf("Uninstall did not preserve its exact intent while Inputs were dirty: request=%+v save=%+v", backend.installAgentsRequest, backend.inputSaveRequest)
 	}
 	save := m.saveSetupInputs(m.form.Values())
 	if save == nil {
@@ -743,28 +1028,59 @@ func TestDirtyInputsBlockAgentInstallAndUninstallUntilSaved(t *testing.T) {
 }
 
 func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
-	m, backend := openRegistrationActionForUX(t)
-	backend.installResult = &viewmodel.OperationResult{Changes: []state.Installation{{Key: state.Key{MCP: "plain"}, AgentID: "codex", Component: "mcp", RegistrationName: "plain"}}}
-	m.workspace.InputsSaved, m.workspace.Installed = true, true
+	preview := &viewmodel.SetupPreview{PackageName: "Plain", MCP: true, HasManifestUI: true, Configured: true,
+		Sections:          []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"port"}}},
+		Inputs:            []viewmodel.SetupInput{{Definition: catalog.Input{Name: "port", Label: "Local port", Type: "integer", Default: 8765}, Value: 8765, HasValue: true, Editable: true}},
+		MCPDefinitions:    []catalog.MCP{{Name: "plain", Transport: "streamable-http", HostPortInput: "port", EndpointPath: "/mcp", TokenInput: "token"}},
+		MCPDefinitionKeys: map[string]state.Key{"plain": {Source: "team-source", Package: "plain", Target: "foreign", MCPDefinition: "plain"}},
+		Destinations:      []viewmodel.SetupDestination{{ID: "codex", ConfigPath: "/home/test/.codex/config.toml", Detection: "installed"}}}
+	m, backend := openRegistrationActionForUXWithPreview(t, preview)
+	// This journey verifies the ordinary Windows-owned runtime input gate; the
+	// shared fixture starts from an observed foreign endpoint.
+	m.workspace.Instance.Ownership = "local"
+	m.workspace.Instance.RuntimeStatus = "stopped"
+	m.workspace.Instance.CanStart = true
+	backend.capabilitySnapshot = map[string]viewmodel.CapabilityInstanceSnapshot{"plain": {Instances: []viewmodel.CapabilityInstance{{
+		Ref: m.workspace.InstanceRef, Key: m.workspace.Key,
+		CompletionScopeKnown: true, CompletionScopeRelevant: true,
+		SelectedComponents:   []viewmodel.SelectedComponent{{Kind: "mcp", Name: "plain"}},
+		SelectedDestinations: []string{"codex"}, EligibleDestinations: []string{"codex"},
+		MCPs:       []viewmodel.RuntimeStatus{{MCPID: "plain", Status: "stopped", Ownership: "local", URL: "http://localhost:8765/mcp"}},
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "mcp", Name: "plain", Status: "installed", Managed: true}},
+	}}}}
+	m.Update(m.load()())
+	m.inventory = []state.Installation{{Key: state.Key{Source: m.workspace.Key.Source, Package: m.workspace.Key.Package, Environment: m.workspace.Key.Environment, Target: m.workspace.Key.Target, MCPDefinition: "plain"}, AgentID: "codex", Component: "mcp", RegistrationName: "plain", URL: "http://127.0.0.1:8765/mcp"}}
+	m.workspace.InputsSaved = true
+	m.workspace.Installed = m.targetHasInstallRecord(m.workspace.Key)
+	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(m.workspace.Key)
 	if m.workspace.Instance == nil {
 		t.Fatal("fixture lacks runtime instance")
 	}
 	m.workspace.Instance.Ownership = "local"
 	m.workspace.Instance.CanStart = true
 	m.workspace.Instance.RuntimeStatus = "stopped"
-	if err := m.form.ApplyValues(map[string]any{"endpoint": "http://changed.example/mcp"}); err != nil {
+	if reason := m.mcpRegistrationAddressReason("plain"); reason != "" {
+		t.Fatalf("equivalent loopback spelling should preserve the existing binding: %q", reason)
+	}
+	if sameMCPRegistrationURL("http://[::1]:8765/mcp", "http://localhost:8765/mcp") {
+		t.Fatal("IPv6 loopback must not be assumed equivalent to the local IPv4 binding")
+	}
+	if err := m.form.ApplyValues(map[string]any{"port": 8766}); err != nil {
 		t.Fatal(err)
 	}
+	// A normal form event refreshes the Runtime action reason from the dirty
+	// Inputs draft; ApplyValues above seeds the changed value deterministically.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.form.SelectSectionID(sectionRuntimeID)
 	m.form.FocusSection()
-	if !strings.Contains(m.form.View().Content, "Save inputs") {
+	if !strings.Contains(m.form.View().Content, "Save changes first") {
 		t.Fatalf("Runtime did not show the changed-input gate:\n%s", m.form.View().Content)
 	}
 	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
 	if cmd != nil || backend.runtimeAction != "" {
 		t.Fatalf("Start ran with an unsaved input draft: cmd=%t action=%q output=%q", cmd != nil, backend.runtimeAction, m.output)
 	}
-	if !strings.Contains(m.output, "Save inputs") {
+	if !strings.Contains(m.output, "Save changed inputs first") {
 		t.Fatalf("Start did not explain how to clear its gate: %q", m.output)
 	}
 	if !m.form.HasUnsavedChanges() {
@@ -779,10 +1095,13 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 		t.Fatal("save command did not preserve the dirty-input state")
 	}
 	m.Update(msg)
-	if !m.workspace.InputsSaved || m.workspace.Installed {
-		t.Fatalf("saving changed inputs must mark Inputs saved and require agent reinstall: saved=%t installed=%t", m.workspace.InputsSaved, m.workspace.Installed)
+	if !m.workspace.InputsSaved || !m.workspace.Installed || !m.workspaceMCPRegistered("plain") {
+		t.Fatalf("saving changed inputs must preserve the observed installation fact: saved=%t installed=%t registered=%t", m.workspace.InputsSaved, m.workspace.Installed, m.workspaceMCPRegistered("plain"))
 	}
 	m.form.SelectSectionID(sectionRuntimeID)
+	if reason := m.runtimeStartDisabledReason("plain", InstanceRow{Key: m.workspace.Key, Instance: m.workspace.Instance}); !strings.Contains(reason, "http://127.0.0.1:8765/mcp") || !strings.Contains(reason, "http://localhost:8766/mcp") || !strings.Contains(reason, "Install") {
+		t.Fatalf("Runtime did not explain the stale local MCP address and required Install: %q", reason)
+	}
 	_, cmd = m.Update(forms.ActionMsg{SectionID: sectionRuntimeID, ID: "start:plain"})
 	if cmd != nil || backend.runtimeAction != "" {
 		t.Fatalf("runtime Start became available before reinstall: cmd=%t action=%q", cmd != nil, backend.runtimeAction)
@@ -795,7 +1114,10 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("agent reinstall action unavailable after saving inputs: %q", m.output)
 	}
-	m.Update(runTeaCmd(t, m, cmd))
+	_, refresh := m.Update(runTeaCmd(t, m, cmd))
+	if refresh != nil {
+		m.Update(refresh())
+	}
 	if !m.workspace.Installed || backend.installRequest == nil || backend.installRequest.SetupRequest.Ref.Name != "foreign" || !reflect.DeepEqual(backend.installRequest.DestinationIDs, []string{"codex"}) {
 		t.Fatalf("reinstall did not restore exact target readiness: installed=%t request=%+v", m.workspace.Installed, backend.installRequest)
 	}
@@ -810,8 +1132,76 @@ func TestUXRuntimeStartIsBlockedWhenSavedInputsHaveChanged(t *testing.T) {
 	}
 }
 
+func TestDefaultedInputWithoutSavedOverrideIsNotDirty(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	preview := *m.workspace.Preview
+	preview.Inputs = append(preview.Inputs, viewmodel.SetupInput{
+		Definition: catalog.Input{Name: "local_port", Label: "Local port", Type: "integer", Default: 18765},
+		Editable:   true,
+		HasValue:   false,
+	})
+	m.workspace.Preview = &preview
+	m.pendingSetup = &preview
+	if m.hasUnsavedSetupInputs() {
+		t.Fatal("a definition default without a saved answer was treated as an unsaved edit")
+	}
+}
+
+func TestAgentAccessRefreshUsesObservedInstallStatusWithoutReplacingDraftSelection(t *testing.T) {
+	m, _ := openRegistrationActionForUX(t)
+	key := m.workspace.Key
+	preview := *m.workspace.Preview
+	preview.Destinations[0].Selected = true
+	preview.Destinations[1].Selected = false
+	m.workspace.Preview = &preview
+	m.configureWorkspaceForm(preview)
+
+	installed := viewmodel.CapabilityInstance{Key: key, Components: []viewmodel.ComponentStatus{
+		{AgentID: "codex", Kind: "skill", Status: "installed"},
+		{AgentID: "codex", Kind: "mcp", Name: "plain", Status: "installed"},
+	}}
+	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{
+		key.Package: {Instances: []viewmodel.CapabilityInstance{installed}},
+	}
+	m.workspace.Installed = m.targetHasInstallRecord(key)
+	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(key)
+	m.configureWorkspaceForm(preview)
+
+	// A user may be changing their next destination selection while a
+	// background refresh reconciles the actual installed state.
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"claude"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := viewmodel.CapabilityInstance{Key: key}
+	m.applyLoaded(loadedMsg{
+		catalog: m.catalog,
+		capabilityInstances: map[string]viewmodel.CapabilityInstanceSnapshot{
+			key.Package: {Instances: []viewmodel.CapabilityInstance{refreshed}},
+		},
+		instanceSnapshot: &viewmodel.InstanceSnapshot{},
+	})
+
+	got := ansi.Strip(m.View().Content)
+	codexLine := ""
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "codex") {
+			codexLine = line
+			break
+		}
+	}
+	if codexLine == "" || !strings.Contains(codexLine, "Not installed") {
+		t.Fatalf("Agent access retained stale installed status after observation refresh; codex row=%q\n%s", codexLine, got)
+	}
+	selected, _ := m.form.Values()[m.pendingSetupField].([]string)
+	if !reflect.DeepEqual(selected, []string{"claude"}) {
+		t.Fatalf("background refresh replaced the user's destination draft: got %v", selected)
+	}
+}
+
 func TestUXRuntimeStartsAfterInputsSavedAndAgentInstall(t *testing.T) {
 	m, backend := openRegistrationActionForUX(t)
+	setObservedRuntimeFacts(m, backend, "stopped", "local", "")
 	m.workspace.InputsSaved, m.workspace.Installed = true, true
 	m.workspace.RegisteredMCPs = map[string]bool{"plain": true}
 	if m.workspace.Instance == nil {
@@ -832,20 +1222,22 @@ func TestUXRuntimeStartsAfterInputsSavedAndAgentInstall(t *testing.T) {
 }
 
 func TestUXApprovedThreeStageScreensRenderVisibleControls(t *testing.T) {
-	t.Run("Inputs", func(t *testing.T) {
+	t.Run("Foreign Inputs", func(t *testing.T) {
 		m, _ := openRegistrationActionForUX(t)
+		markWorkspaceForeignObserved(m, "plain", "http://127.0.0.1:8765/mcp")
+		m.configureWorkspaceForm(*m.workspace.Preview)
 		m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 		m.Update(tea.KeyPressMsg{Code: tea.KeyUp}) // Navigate from Agent access to Inputs.
 		if m.form.SectionID() != sectionInputsID {
 			t.Fatalf("keyboard did not select Inputs: %q", m.form.SectionID())
 		}
 		view := ansi.Strip(m.View().Content)
-		for _, want := range []string{"Plain", "Instance: foreign", "Inputs", "Endpoint URI", "Save stores these inputs", "[ Save ]", "[ Cancel ]"} {
+		for _, want := range []string{"Plain", "Instance: foreign", "Inputs", "Inputs are managed by another AACT installation"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("rendered Inputs screen missing %q:\n%s", want, view)
 			}
 		}
-		for _, forbidden := range []string{"Install selected", "Start plain", "Save and apply"} {
+		for _, forbidden := range []string{"Endpoint URI", "Save stores these inputs", "[ Save ]", "[ Cancel ]", "Install selected", "Start plain", "Save and apply"} {
 			if strings.Contains(view, forbidden) {
 				t.Fatalf("Inputs screen exposes later-stage action %q:\n%s", forbidden, view)
 			}
@@ -869,15 +1261,14 @@ func TestUXApprovedThreeStageScreensRenderVisibleControls(t *testing.T) {
 		t.Logf("RENDERED AGENT ACCESS - 120x36\n%s", view)
 	})
 	t.Run("Runtime", func(t *testing.T) {
-		m, _ := openRegistrationActionForUX(t)
+		m, backend := openRegistrationActionForUX(t)
 		m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 		preview := *m.workspace.Preview
 		preview.Configured = true
 		m.workspace.Installed = true
+		setObservedRuntimeFacts(m, backend, "stopped", "local", "")
 		if m.workspace.Instance != nil {
-			m.workspace.Instance.Ownership = "local"
 			m.workspace.Instance.CanStart = true
-			m.workspace.Instance.RuntimeStatus = "stopped"
 		}
 		m.configureWorkspaceForm(preview)
 		m.form.SelectSectionID(sectionRuntimeID)

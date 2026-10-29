@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -34,6 +35,10 @@ func (b *streamingSetupBackend) UIInstall(ctx context.Context, request viewmodel
 	close(b.started)
 	<-b.release
 	return viewmodel.OperationResult{Saved: true, Step: "start", Target: "plain / dev / default"}, errors.New("runtime start failed: fixture daemon refused the build")
+}
+
+func (b *streamingSetupBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	return b.UIInstall(ctx, request)
 }
 
 func TestUXResultShowsExactLongChildErrorWrappedWithoutBlackRows(t *testing.T) {
@@ -353,9 +358,11 @@ func TestUXRegistrationResultListsOnlyStructuredAchievedEffectsAndKeepsMixedFail
 		Errors:  []string{"claude: endpoint rejected registration"},
 	}
 	backend.setup.installErr = errors.Join(errors.New("registration command returned a partial failure"), picker.ErrCancelled)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m.workspace.InputsSaved = true
+	action := activateWorkspaceActionByKeyboard(t, m, "Install selected")
+	_, cmd := m.Update(action)
 	if cmd == nil {
-		t.Fatal("registration update was not scheduled")
+		t.Fatal("agent registration update was not scheduled")
 	}
 	m.Update(runTeaCmd(t, m, cmd))
 	if m.result == nil || !m.result.Failed {
@@ -575,9 +582,10 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 	m.width, m.height = 120, 36
 	m.pendingSetup = &viewmodel.SetupPreview{PackageName: "Plain", Key: state.Key{Source: "team", Package: "plain", Environment: "dev", Target: "default"}}
 	m.pendingSetupField = "__aact_destinations"
-	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true, Section: "Connection"}
-	m.openSetupFormWithValues(*m.pendingSetup, map[string]any{})
-	cmd := m.applySetup(map[string]any{"__aact_destinations": []string{"codex"}})
+	m.workspace = &workspaceState{Key: m.pendingSetup.Key, Active: true, Section: sectionAgentsID, InputsSaved: true}
+	m.openSetupFormWithValues(*m.pendingSetup, map[string]any{"__aact_destinations": []string{"codex"}})
+	m.form.SelectSectionID(sectionAgentsID)
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
 	message := cmd()
 	batch, ok := message.(tea.BatchMsg)
 	if !ok || len(batch) != 3 {
@@ -606,7 +614,7 @@ func TestUXSaveApplyStreamsBeforeCompletionAndKeepsFailureRecovery(t *testing.T)
 		t.Fatal("operation completed before the fixture was released")
 	default:
 	}
-	writeUXCapture(t, "SaveApply install in progress", m.View().Content)
+	writeUXCapture(t, "Agent install in progress", m.View().Content)
 	releaseOnce.Do(func() { close(backend.release) })
 	var completed tea.Msg
 	select {

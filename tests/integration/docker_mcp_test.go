@@ -149,17 +149,38 @@ func TestDockerMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	stoppedRecord := false
+	stoppedRuntimePresent := false
 	for _, i := range all {
-		if i.Key == k {
-			if i.Status != "missing" || i.Ownership != "local" || i.LastAction != "stop" {
-				t.Fatalf("stopped container observation is incorrect: %+v", i)
-			}
-			stoppedRecord = true
+		if i.Key == k || i.ID == instance.ID {
+			stoppedRuntimePresent = true
 		}
 	}
-	if !stoppedRecord {
-		t.Fatal("stopped container's local last action was lost")
+	if stoppedRuntimePresent {
+		t.Fatalf("successful Stop left the stopped runtime in fresh inventory: %+v", all)
+	}
+
+	replacement, e := r.Start(ctx, k, mcp.RunSpec{BuildContext: build, Host: "127.0.0.1", HostPort: port, ContainerPort: 8765, Transport: "streamable-http", EndpointPath: "/mcp", Mounts: []mcp.Mount{{Source: mount, Destination: "/fixture", ReadOnly: true}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if replacement.ID == instance.ID || replacement.Status != "running" {
+		t.Fatalf("replacement runtime is not a new running container: old=%+v new=%+v", instance, replacement)
+	}
+	all, e = r.List(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	matching := 0
+	for _, i := range all {
+		if i.Key == k {
+			matching++
+			if i.ID != replacement.ID || i.Status != "running" {
+				t.Fatalf("fresh inventory contains stale or unexpected runtime after restart: %+v", i)
+			}
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("fresh inventory has %d runtimes after restart; want exactly one: %+v", matching, all)
 	}
 }
 

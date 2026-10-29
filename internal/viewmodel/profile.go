@@ -64,8 +64,11 @@ type CapabilityInstance struct {
 	Ref                               config.InstanceRef
 	Key                               state.Key
 	Origin, ConfigStatus, ConfigError string
-	Components                        []ComponentStatus
-	MCPs                              []RuntimeStatus
+	// Ownership and ManagementReason describe an observed runtime parent when
+	// no local configuration should be presented as the instance's inputs.
+	Ownership, ManagementReason string
+	Components                  []ComponentStatus
+	MCPs                        []RuntimeStatus
 	// Completion scope records saved/default selection intent separately from
 	// ComponentStatus observations. Only selected component/destination pairs
 	// that the adapter can handle belong in Installed/Partial aggregation.

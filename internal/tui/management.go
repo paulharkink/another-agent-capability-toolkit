@@ -584,8 +584,8 @@ func (m *Model) managementMenuEntries() []string {
 	}
 	switch m.view {
 	case "Agents":
-		viewer := "View configuration files — disabled: exact files unavailable from service"
-		refresh := "Refresh detection — disabled: detection evidence unavailable from service"
+		viewer := "View configuration files — disabled: the active service does not provide exact configuration file paths"
+		refresh := "Refresh detection — disabled: the active agent service exposes agent IDs but no detection evidence"
 		if row, ok := m.selectedAgentManagement(); ok {
 			for _, file := range row.ConfigFiles {
 				if file.Exists {
@@ -595,7 +595,7 @@ func (m *Model) managementMenuEntries() []string {
 			}
 			refresh = "Refresh detection"
 		}
-		return []string{viewer, "Configure location — disabled: service support pending", refresh, "Back"}
+		return []string{viewer, "Configure location — disabled: the active service cannot update agent locations", refresh, "Back"}
 	case "Environments":
 		viewer := "View target — disabled: select an actual TOML target"
 		entries := m.environmentEntries()
@@ -614,18 +614,18 @@ func (m *Model) managementMenuEntries() []string {
 		}
 		return []string{setup, viewer, "Environment directory", "Close"}
 	case "Settings":
-		defaults := "Default named agents — disabled: service support pending"
+		defaults := "Default named agents — disabled: the active service does not provide default-agent settings"
 		if _, ok := m.backend.(defaultAgentsBackend); ok {
 			defaults = "Default named agents"
 		}
-		return []string{"Edit environment directory", defaults, "Docker backend — disabled: service support pending", "Back"}
+		return []string{"Edit environment directory", defaults, "Docker backend — disabled: the active service does not provide runtime backend settings", "Back"}
 	}
 	return nil
 }
 
 func (m *Model) environmentSetupReason(selected environmentEntry) string {
 	if _, ok := m.backend.(setupBackend); !ok {
-		return "setup service unavailable"
+		return "The active AACT backend does not support setup operations"
 	}
 	if selected.NoFile {
 		capability, ok := m.selectedCapability()

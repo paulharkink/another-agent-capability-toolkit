@@ -153,6 +153,90 @@ func TestStopExactRefusesUnknownOwnerWithoutRemovingContainer(t *testing.T) {
 		t.Fatalf("unknown owner caused Docker mutation: %v", f.calls)
 	}
 }
+
+func TestStopExactRemovesLocallyOwnedContainerWithoutLedger(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "grafana"
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	container := dockerInfo{ID: "discovered-id", Name: "/aact-grafana", Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, spec)}, State: dockerState{Running: false, Status: "exited"}}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			if args[2] != "discovered-id" {
+				t.Fatalf("inspect targeted wrong runtime ID: %v", args)
+			}
+			return json.Marshal([]dockerInfo{container})
+		case "rm":
+			if !reflect.DeepEqual(args[2:], []string{"--force", "discovered-id"}) {
+				t.Fatalf("removal did not target exact ID: %v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected Docker action: %v", args)
+			return nil, nil
+		}
+	}
+	if err := r.StopExact(context.Background(), key, "discovered-id"); err != nil {
+		t.Fatalf("locally owned runtime without a ledger row was not removable: %v", err)
+	}
+	if len(f.calls) != 2 || f.calls[0][1] != "inspect" || f.calls[1][1] != "rm" {
+		t.Fatalf("exact removal made unexpected Docker calls: %v", f.calls)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("removing an unrecorded runtime changed ledger rows: %+v, %v", rows, err)
+	}
+}
+
+func TestStopThenStartDoesNotLeaveMissingRuntimeBesideReplacement(t *testing.T) {
+	r, f, key := testRuntime(t)
+	oldSpec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp", Env: map[string]string{"MODE": "old"}}
+	newSpec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp", Env: map[string]string{"MODE": "new"}}
+	name := containerName(key)
+	current := &dockerInfo{ID: "old-runtime", Name: "/" + name, Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, oldSpec)}, State: dockerState{Running: true, Status: "running"}}
+	if err := r.Store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: name, SourcePath: current.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "ps":
+			if current == nil {
+				return nil, nil
+			}
+			return []byte(current.ID + "\n"), nil
+		case "inspect":
+			if current != nil && (args[2] == current.ID || args[2] == strings.TrimPrefix(current.Name, "/")) {
+				return json.Marshal([]dockerInfo{*current})
+			}
+			return nil, errors.New("No such object: requested container")
+		case "rm":
+			if current == nil || args[len(args)-1] != current.ID {
+				t.Fatalf("stop removed a different runtime: current=%+v args=%v", current, args)
+			}
+			current = nil
+		case "run":
+			current = &dockerInfo{ID: "replacement-runtime", Name: "/" + name, Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, newSpec)}, State: dockerState{Running: true, Status: "running"}}
+			return []byte(current.ID), nil
+		default:
+			t.Fatalf("unexpected Docker action: %v", args)
+		}
+		return nil, nil
+	}
+	if err := r.Stop(context.Background(), key); err != nil {
+		t.Fatalf("stop old runtime: %v", err)
+	}
+	if _, err := r.Start(context.Background(), key, newSpec); err != nil {
+		t.Fatalf("start replacement runtime: %v", err)
+	}
+	instances, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 || instances[0].ID != "replacement-runtime" || instances[0].Status != "running" {
+		t.Fatalf("fresh runtime inventory included stale stopped history: %+v", instances)
+	}
+}
+
 func testRuntime(t *testing.T) (*Runtime, *fakeExec, state.Key) {
 	t.Helper()
 	s, e := state.Open(t.TempDir())

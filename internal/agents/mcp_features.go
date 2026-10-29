@@ -35,6 +35,8 @@ func (a *mcpAdapter) registrationScope(scope Scope, key state.Key) (Environment,
 	}
 	e.ConfigPath = path
 	e.Owned = map[string]Registration{}
+	e.OwnedDigests = map[string]string{}
+	e.PreserveNativeEntries = map[string]bool{}
 	if a.deps.Store != nil {
 		rows, err := a.deps.Store.Installations()
 		if err != nil {
@@ -60,6 +62,7 @@ func (a *mcpAdapter) registrationScope(scope Scope, key state.Key) (Environment,
 								}
 							}
 						}
+						e.OwnedDigests[row.RegistrationName] = row.Digest
 					}
 				}
 				e.Owned[row.RegistrationName] = owned
@@ -82,6 +85,26 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 	e, err := a.registrationScope(scope, request.Key)
 	if err != nil {
 		return MCPRegistrationResult{}, err
+	}
+	if proof := request.VerifiedForeignRegistration; proof != nil && a.supportsNativeJSONRegistration() {
+		parent := request.Key
+		parent.MCP, parent.MCPDefinition = "", ""
+		if proof.ParentKeyID == "" || proof.ParentKeyID != parent.ID() ||
+			proof.RegistrationName == "" || proof.RegistrationName != request.Registration.Name ||
+			proof.URL == "" || proof.URL != request.Registration.URL {
+			return MCPRegistrationResult{}, fmt.Errorf("verified foreign MCP registration proof does not match the requested native binding")
+		}
+		entries, readErr := a.readMCPEntries(e.ConfigPath)
+		if readErr != nil {
+			return MCPRegistrationResult{}, readErr
+		}
+		entry, exists := entries[proof.RegistrationName]
+		if !exists || !a.nativeRegistrationMatches(entry, request.Registration) {
+			return MCPRegistrationResult{}, fmt.Errorf("observed foreign MCP registration %q no longer matches the native agent entry", proof.RegistrationName)
+		}
+		e.Owned[proof.RegistrationName] = request.Registration
+		e.OwnedDigests[proof.RegistrationName] = nativeEntryDigest(entry)
+		e.PreserveNativeEntries[proof.RegistrationName] = true
 	}
 	var ownedRows []state.Installation
 	if a.deps.Store != nil {
@@ -115,6 +138,25 @@ func (a *mcpAdapter) Register(ctx context.Context, scope Scope, request MCPReque
 		}
 	}
 	return MCPRegistrationResult{Installation: row}, nil
+}
+
+func (a *mcpAdapter) supportsNativeJSONRegistration() bool {
+	switch a.kind {
+	case "opencode", "claude", "copilot-intellij":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *mcpAdapter) nativeRegistrationMatches(entry map[string]any, registration Registration) bool {
+	if entry["url"] != registration.URL {
+		return false
+	}
+	if expected, hasType := a.registrationValue(registration)["type"]; hasType && entry["type"] != expected {
+		return false
+	}
+	return true
 }
 
 func (a *mcpAdapter) registerMCPConfig(ctx context.Context, scope Environment, registration Registration) error {

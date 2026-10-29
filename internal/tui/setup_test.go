@@ -19,14 +19,15 @@ import (
 
 type setupBackendFixture struct {
 	fixtureBackend
-	previewRequest    viewmodel.SetupRequest
-	installRequest    *viewmodel.SetupInstallRequest
-	savedInputRequest *viewmodel.SetupInstallRequest
-	skillOnlyRequest  *viewmodel.SkillOnlyInstallRequest
-	extraInputs       []viewmodel.SetupInput
-	installResult     *viewmodel.OperationResult
-	installErr        error
-	saveInputsErr     error
+	previewRequest       viewmodel.SetupRequest
+	installRequest       *viewmodel.SetupInstallRequest
+	installAgentsRequest *viewmodel.SetupInstallRequest
+	savedInputRequest    *viewmodel.SetupInstallRequest
+	skillOnlyRequest     *viewmodel.SkillOnlyInstallRequest
+	extraInputs          []viewmodel.SetupInput
+	installResult        *viewmodel.OperationResult
+	installErr           error
+	saveInputsErr        error
 }
 
 func setupProfileKey(request viewmodel.SetupRequest) state.Key {
@@ -195,6 +196,12 @@ func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInst
 	return viewmodel.OperationResult{Message: "Installed", Changes: []state.Installation{{AgentID: "all", Component: "skill"}}}, nil
 }
 
+func (b *setupBackendFixture) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	copy := q
+	b.installAgentsRequest = &copy
+	return b.UIInstall(ctx, q)
+}
+
 func (b *setupBackendFixture) UISaveInputs(_ context.Context, q viewmodel.SetupInstallRequest) error {
 	b.savedInputRequest = &q
 	return b.saveInputsErr
@@ -230,6 +237,7 @@ func TestSelectedForeignWorkspaceForwardsItsExplicitEndpointOnSave(t *testing.T)
 			m.Update(m.load()())
 			backend := &registrationWorkspaceBackend{Backend: profiles, profileBackend: profiles, setupBackendFixture: &setupBackendFixture{}}
 			m.backend = backend
+			m.Update(m.load()())
 			m.focusPane(ProfilesPane)
 			foreignKey := profiles.snapshot.Profiles[1].Key
 			m.selectPane(ProfilesPane, 1)
@@ -356,9 +364,8 @@ func TestCapabilitySelectionNamesDeclaredSkillAndMCPForSelectedAgent(t *testing.
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("one selectable bundle with a skill and MCP rendered a redundant Components section")
 	}
-	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
-	if len(selected) != 1 || selected[0] != "set:starter" {
-		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", selected)
+	if len(m.pendingSetup.SelectedItemIDs) != 1 || m.pendingSetup.SelectedItemIDs[0] != "set:starter" {
+		t.Fatalf("single skill-and-MCP bundle was not selected implicitly: %v", m.pendingSetup.SelectedItemIDs)
 	}
 	status, _ := m.installationDetails(m.capabilities()[0])
 	if status != "Installed" {

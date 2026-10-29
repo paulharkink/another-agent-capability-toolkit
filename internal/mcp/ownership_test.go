@@ -188,8 +188,8 @@ func TestRenamedOwnedRuntimeLogsAndStopsByObservedID(t *testing.T) {
 		t.Fatalf("stop used %q, want observed ID replacement-id", stopID)
 	}
 	items, err = r.List(context.Background())
-	if err != nil || len(items) != 1 || items[0].ID != "replacement-id" || items[0].Status != "missing" {
-		t.Fatalf("manual rename created duplicate missing runtime history: %+v, %v", items, err)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("successfully stopped runtime remained as a current missing row: %+v, %v", items, err)
 	}
 }
 
@@ -308,11 +308,16 @@ func TestRecordActionDeduplicatesOnlySameKeyAndContainerID(t *testing.T) {
 	}
 }
 
-func TestStopRecordsLastSuccessfulActionAfterContainerRemoval(t *testing.T) {
+func TestStopClearsOnlyTheRemovedRuntimeRecord(t *testing.T) {
 	r, executor, key := testRuntime(t)
 	id, err := r.Store.InstallationID()
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, runtimeID := range []string{"cid", "sibling-cid"} {
+		if err := r.Store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Destination: containerName(key), SourcePath: runtimeID, Mode: "docker"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	containerLabels := labels(key, RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80})
 	containerLabels["aact.owner"] = id
@@ -337,11 +342,11 @@ func TestStopRecordsLastSuccessfulActionAfterContainerRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := r.Store.Installations()
-	if err != nil || len(rows) != 1 || rows[0].SourcePath != "cid" || rows[0].LastAction != "stop" || rows[0].LastActionAt.IsZero() {
-		t.Fatalf("last successful action after removal: %+v, %v", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "sibling-cid" {
+		t.Fatalf("stop must clear only the exact removed runtime row: %+v, %v", rows, err)
 	}
 	items, err := r.List(context.Background())
-	if err != nil || len(items) != 1 || items[0].Status != "missing" || items[0].LastAction != "stop" {
-		t.Fatalf("removed container observation: %+v, %v", items, err)
+	if err != nil || len(items) != 1 || items[0].Status != "missing" || items[0].ID != "sibling-cid" {
+		t.Fatalf("unrelated missing runtime record was changed: %+v, %v", items, err)
 	}
 }

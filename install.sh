@@ -209,8 +209,56 @@ if [ "$platform" != windows ] && [ "$MIGRATE_USER_BIN" = 1 ]; then
   legacy="$HOME/.local/bin/aact"
   if [ -L "$legacy" ]; then
     target=$(readlink "$legacy" 2>/dev/null || true)
-    if [ "$target" != "$ROOT/bin/aact" ]; then
-      printf 'Legacy launcher is a symlink and was left unchanged: %s\n' "$legacy"
+    case "$target" in
+      /*) legacy_target=$target ;;
+      *) legacy_target=$(CDPATH= cd -P "$(dirname "$legacy")" 2>/dev/null && pwd -P)/$target ;;
+    esac
+    if [ -e "$legacy_target" ]; then
+      legacy_target_dir=$(CDPATH= cd -P "$(dirname "$legacy_target")" 2>/dev/null && pwd -P || true)
+      [ -z "$legacy_target_dir" ] || legacy_target="$legacy_target_dir/$(basename "$legacy_target")"
+    fi
+    if [ "$target" = "$ROOT/bin/aact" ] || [ "$legacy_target" = "$ROOT_PHYSICAL/bin/aact" ]; then
+      : # Already points at the canonical launcher.
+    else
+      case "$legacy_target" in
+        "$ROOT_PHYSICAL"/releases/*/bin/aact)
+          managed_release=$(dirname "$(dirname "$legacy_target")")
+          if [ -f "$managed_release/.archive-sha256" ] && [ -f "$legacy_target" ] && [ ! -L "$legacy_target" ] && [ -x "$legacy_target" ]; then
+            legacy_help=$("$legacy" --help 2>/dev/null || true)
+            legacy_version=$("$legacy" --version 2>/dev/null || true)
+            legacy_version=$(printf '%s\n' "$legacy_version" | sed -n '1p')
+            case "$legacy_version" in
+              [0-9]*|v[0-9]*)
+                case "$legacy_version" in *[!A-Za-z0-9._+-]*|'') legacy_version= ;; esac ;;
+              *) legacy_version= ;;
+            esac
+            expected_release="$ROOT_PHYSICAL/releases/${legacy_version}-${platform}-${arch}"
+            if [ -n "$legacy_version" ] && [ "$managed_release" = "$expected_release" ] && printf '%s' "$legacy_help" | grep -Fq 'Another Agent Capability Toolkit (aact)'; then
+              backup_dir="$ROOT/legacy/bin"
+              backup="$backup_dir/aact-managed-$legacy_version"
+              if [ -e "$backup" ] || [ -L "$backup" ]; then
+                printf 'Cannot migrate managed legacy launcher; backup already exists: %s\n' "$backup" >&2
+                exit 1
+              fi
+              mkdir -p "$backup_dir"
+              legacy_next="$legacy.migrating-$$"
+              if mv "$legacy" "$backup" && ln -s "$ROOT/bin/aact" "$legacy_next" && mv -f "$legacy_next" "$legacy"; then
+                printf 'Migrated legacy AACT release symlink %s (%s); original saved at %s\n' "$legacy" "$legacy_version" "$backup"
+              else
+                rm -f "$legacy_next"
+                if [ -L "$backup" ] && [ ! -e "$legacy" ]; then mv "$backup" "$legacy"; fi
+                printf 'Failed to migrate managed legacy launcher: %s\n' "$legacy" >&2
+                exit 1
+              fi
+            else
+              printf 'Legacy launcher symlink is not a recognized AACT release and was left unchanged: %s\n' "$legacy"
+            fi
+          else
+            printf 'Legacy launcher symlink is not an AACT-managed release and was left unchanged: %s\n' "$legacy"
+          fi
+          ;;
+        *) printf 'Legacy launcher is an unrelated symlink and was left unchanged: %s\n' "$legacy" ;;
+      esac
     fi
   elif [ -e "$legacy" ]; then
     if [ -f "$legacy" ] && [ -x "$legacy" ]; then

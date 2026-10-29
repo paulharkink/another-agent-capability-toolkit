@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
@@ -110,6 +111,197 @@ type snapshotRuntime struct {
 }
 
 func (r *snapshotRuntime) List(context.Context) ([]mcp.Instance, error) { return r.instances, r.err }
+
+func TestCapabilityInstanceSnapshotProjectsRunningForeignCustomParentReadOnly(t *testing.T) {
+	s, adapter, q := profileApplyFixture(t)
+	p := s.Source.Catalog[0]
+	parent := state.Key{Source: s.Source.ID, Package: p.ID, Environment: "custom-env", Target: "custom-target"}
+	definition := p.MCPDefinitions()[0]
+	child := mcpDefinitionKey(parent, p, definition)
+	endpoint := "http://localhost:18770/mcp"
+	runtime := &snapshotRuntime{instances: []mcp.Instance{{
+		Key: child, ID: "foreign-live", Name: "aact-foreign", Status: "running", Ownership: "other-aact",
+		RegistrationName: "alpha-remote", URL: endpoint,
+	}}}
+	s.Options.Runtime = runtime
+	managedSkill := state.Installation{Key: parent, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "skill", Destination: filepath.Join(adapter.home, "skills", "one"), Mode: "symlink"}
+	managedMCP := state.Installation{Key: child, AgentID: adapter.ID(), AgentKind: adapter.ID(), Component: "mcp", Destination: filepath.Join(adapter.home, "config.toml"), RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Mode: "registration"}
+	for _, row := range []state.Installation{managedSkill, managedMCP} {
+		if err := s.Store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observedRequests := 0
+	adapter.observe = func(request agents.ObservationRequest) agents.Observation {
+		if request.Key != parent {
+			return agents.Observation{}
+		}
+		if !request.IncludeInventory {
+			t.Errorf("foreign observation must inspect current native agent inventory: %+v", request)
+		}
+		observedRequests++
+		if len(request.Managed) == 0 {
+			return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}}
+		}
+		if len(request.Managed) != 2 {
+			t.Errorf("foreign observation used the wrong local binding scope: managed=%+v", request.Managed)
+		}
+		return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}, Components: []agents.ComponentObservation{
+			{Kind: "skill", Name: "one", Path: managedSkill.Destination, Status: "installed", Managed: true},
+			{Kind: "mcp", Name: "alpha-remote", RegistrationName: "alpha-remote", URL: endpoint, Transport: "streamable-http", Status: "installed", Managed: true},
+		}}
+	}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed *viewmodel.CapabilityInstance
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil {
+		t.Fatalf("running foreign runtime did not produce an L2 parent: %+v", snapshot.Instances)
+	}
+	if observed.Origin != "observed" || observed.ConfigStatus != "read-only" || observed.ConfigError == "" {
+		t.Fatalf("foreign parent must be an observed read-only view, not a local configuration: %+v", observed)
+	}
+	if len(observed.MCPs) != 1 || observed.MCPs[0].Key != child || observed.MCPs[0].Ownership != "other-aact" {
+		t.Fatalf("foreign child runtimes were not grouped under their parent: %+v", observed.MCPs)
+	}
+	if len(observed.Components) != 2 {
+		t.Fatalf("Windows-owned agent observations were omitted from the observed parent: %+v", observed.Components)
+	}
+	if observedRequests != 1 {
+		t.Fatal("foreign parent did not observe this installation's exact-key agent bindings")
+	}
+	wantComponents := map[string]bool{"skill:one:installed": false, "mcp:alpha:installed": false}
+	for _, component := range observed.Components {
+		key := component.Kind + ":" + component.Name + ":" + component.Status
+		if _, ok := wantComponents[key]; ok {
+			wantComponents[key] = true
+		}
+	}
+	for key, found := range wantComponents {
+		if !found {
+			t.Errorf("observed parent omitted native agent state %q: %+v", key, observed.Components)
+		}
+	}
+	preview, err := s.UISetupPreview(context.Background(), viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: parent.Source, CapabilityID: parent.Package, Name: parent.Target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.InstanceOrigin != "observed" || len(preview.Inputs) != 0 || preview.Key != parent {
+		t.Fatalf("foreign setup view exposed local values or lost observed identity: %+v", preview)
+	}
+
+	for _, row := range []state.Installation{managedSkill, managedMCP} {
+		if err := s.Store.Remove(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil {
+		t.Fatalf("Docker-observed parent disappeared after local bindings were removed: %+v", snapshot.Instances)
+	}
+	if observedRequests != 2 {
+		t.Fatalf("fresh agent inventory was not observed after local bindings disappeared: requests=%d", observedRequests)
+	}
+	if len(observed.Components) == 0 {
+		t.Fatalf("known empty native binding inventory must project absent components, not Unknown: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.Status != "absent" {
+			t.Fatalf("empty successful inventory should project absent component status: %+v", observed.Components)
+		}
+	}
+	adapter.observeErr = fmt.Errorf("native agent inventory unavailable")
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 {
+		t.Fatalf("failed inventory observation should preserve an explicit unknown component: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.Status != "unavailable" {
+			t.Fatalf("failed inventory observation must not be flattened to absence: %+v", observed.Components)
+		}
+	}
+	adapter.observeErr = nil
+	adapter.observe = func(agents.ObservationRequest) agents.Observation {
+		return agents.Observation{Detection: agents.Detection{State: "installed", Installed: true}}
+	}
+	runtime.instances[0].RegistrationName = ""
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 || observed.Components[0].Status != "unavailable" {
+		t.Fatalf("runtime without exact registration metadata must remain unknown, not absent: %+v", observed)
+	}
+
+	runtime.instances[0].RegistrationName = "alpha-remote"
+	optional := &profileAdapter{
+		adapterID:  "optional-agent",
+		home:       adapter.home,
+		detection:  &agents.Detection{State: "unverified", ConfigFiles: []agents.ConfigFile{{Path: filepath.Join(adapter.home, "optional-mcp.json"), Exists: false}}},
+		observeErr: fmt.Errorf("optional agent is not installed"),
+	}
+	s.Options.Adapters = fixtureAdaptersWithExtra{fixtureAdapters{adapter}, []agents.Adapter{optional}}
+	snapshot, err = s.InstanceSnapshot(context.Background(), q.Ref.CapabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed = nil
+	for i := range snapshot.Instances {
+		if snapshot.Instances[i].Key == parent {
+			observed = &snapshot.Instances[i]
+			break
+		}
+	}
+	if observed == nil || len(observed.Components) == 0 {
+		t.Fatalf("observed parent lost components after optional adapter filtering: %+v", observed)
+	}
+	for _, component := range observed.Components {
+		if component.AgentID == optional.ID() {
+			if component.Status != "absent" {
+				t.Fatalf("adapter with no detected install or existing config must be known absent, not poison binding status: %+v", observed.Components)
+			}
+		}
+	}
+	if optional.observeCalls != 0 {
+		t.Fatalf("optional adapter without a config was probed %d times", optional.observeCalls)
+	}
+}
+
 func TestObservedInstanceRuntimeDuplicateRowsRemainChildScopedAndStale(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	k, _ := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
@@ -173,8 +365,8 @@ func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t
 		t.Fatalf("configured CapabilityInstance %s is absent: %+v", key.Target, snapshot.Instances)
 	}
 	instance := snapshot.Instances[instanceIndex]
-	if instance.ConfigStatus == "conflict" || len(instance.MCPs) != 1 {
-		t.Fatalf("stale child records were promoted to a parent conflict or hid the declared MCP: %+v", instance)
+	if instance.ConfigStatus == "conflict" || len(instance.MCPs) != 2 {
+		t.Fatalf("stale child records were promoted to a parent conflict or the recoverable orphan was hidden: %+v", instance)
 	}
 	if got := instance.MCPs[0].Status; got != "missing" {
 		t.Fatalf("duplicate missing runtime rows should stay recoverable under the declared MCP, status=%q error=%q", got, instance.MCPs[0].Error)
@@ -190,12 +382,56 @@ func TestCapabilityInstanceSnapshotKeepsDuplicateMissingMCPRuntimesRecoverable(t
 	if got := runtimeRecords.Index(1).FieldByName("ID").String(); got != "stale-container-b" {
 		t.Fatalf("second runtime identity = %q, want stale-container-b", got)
 	}
+	orphan := instance.MCPs[1]
+	if orphan.MCPID != "removed-definition" || orphan.Key != orphanKey || len(orphan.RuntimeRecords) != 1 || orphan.RuntimeRecords[0].ID != "orphan-container" {
+		t.Fatalf("runtime for removed MCP definition must remain visible under its exact recoverable record: %+v", orphan)
+	}
 	rows, err := s.Store.Installations()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("runtime metadata for undefined MCP was not reconciled without touching linked missing records: %+v", rows)
+	if len(rows) != 3 {
+		t.Fatalf("declared missing runtimes and the undefined-MCP orphan must all remain recoverable: %+v", rows)
+	}
+}
+
+func TestCapabilityInstanceSnapshotForgetsStoppedMissingRuntimeBesideLiveReplacement(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.MCP = nil
+	p.MCPs = []catalog.MCP{{Name: "grafana-inspector", Image: "fixture", Transport: "streamable-http"}}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childKey := mcpDefinitionKey(key, *p, p.MCPs[0])
+	for _, row := range []state.Installation{
+		{Key: childKey, AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "stopped-old-id", Mode: "docker", LastAction: "stop"},
+		{Key: childKey, AgentID: "docker", Component: "runtime", Destination: "aact-grafana", SourcePath: "current-live-id", Mode: "docker", LastAction: "start"},
+	} {
+		if err := s.Store.Record(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Options.Runtime = &snapshotRuntime{instances: []mcp.Instance{
+		{Key: childKey, ID: "stopped-old-id", Name: "aact-grafana", Status: "missing", Ownership: "local", LastAction: "stop"},
+		{Key: childKey, ID: "current-live-id", Name: "aact-grafana", Status: "running", Ownership: "local", URL: "http://localhost:9913/mcp", LastAction: "start"},
+	}}
+
+	snapshot, err := s.InstanceSnapshot(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Instances) != 1 || len(snapshot.Instances[0].MCPs) != 1 {
+		t.Fatalf("unexpected CapabilityInstance/MCP snapshot: %+v", snapshot.Instances)
+	}
+	runtime := snapshot.Instances[0].MCPs[0]
+	if runtime.Status != "running" || runtime.Error != "" || len(runtime.RuntimeRecords) != 1 || runtime.RuntimeRecords[0].ID != "current-live-id" {
+		t.Fatalf("stopped missing history poisoned the live MCP runtime: %+v", runtime)
+	}
+	rows, err := s.Store.Installations()
+	if err != nil || len(rows) != 1 || rows[0].SourcePath != "current-live-id" {
+		t.Fatalf("stopped missing row was not forgotten without changing the live runtime row: %+v, %v", rows, err)
 	}
 }
 

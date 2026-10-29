@@ -108,6 +108,11 @@ func (b *workspaceApplyBackend) UIInstall(ctx context.Context, request viewmodel
 	return b.setupBackendFixture.UIInstall(ctx, request)
 }
 
+func (b *workspaceApplyBackend) UIInstallAgents(ctx context.Context, request viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
+	b.installCalls++
+	return b.setupBackendFixture.UIInstall(ctx, request)
+}
+
 type profileWorkspaceBackend struct {
 	*profileBackend
 	*workspaceRouteBackend
@@ -205,12 +210,26 @@ func TestUXInputsSaveIsSeparateFromAgentInstallAndRuntimeStart(t *testing.T) {
 	key := state.Key{Source: "team-source", Package: "plain", Environment: "dev", Target: "prod"}
 	cmd := m.openTargetWorkspace(m.packInstanceRequest(key), "Overview")
 	m.Update(cmd())
+	observedKey := m.workspace.Key
+	m.capabilityInstances = map[string]viewmodel.CapabilityInstanceSnapshot{}
+	m.capabilityInstances[observedKey.Package] = viewmodel.CapabilityInstanceSnapshot{Instances: []viewmodel.CapabilityInstance{{
+		Key: observedKey,
+		Components: []viewmodel.ComponentStatus{{AgentID: "codex", Kind: "mcp", Name: "inspector", Status: "installed"}},
+	}}}
+	m.workspace.Installed = m.targetHasInstallRecord(observedKey)
+	m.workspace.RegisteredMCPs = m.targetRegisteredMCPs(observedKey)
+	if !m.workspace.Installed || !m.workspaceMCPRegistered("inspector") {
+		t.Fatal("fixture must begin with an observed installed MCP registration")
+	}
 	m.form.FocusSection()
 	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 
 	inputs := ansi.Strip(m.form.View().Content)
 	if !strings.Contains(inputs, "[ Save ]") || !strings.Contains(inputs, "[ Cancel ]") || strings.Contains(inputs, "Save and apply") {
 		t.Fatalf("Inputs must expose Save/Cancel without a combined apply action:\n%s", inputs)
+	}
+	if err := m.form.ApplyValues(map[string]any{"repo": "/repos/updated"}); err != nil {
+		t.Fatal(err)
 	}
 	_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if save == nil {
@@ -222,6 +241,9 @@ func TestUXInputsSaveIsSeparateFromAgentInstallAndRuntimeStart(t *testing.T) {
 	}
 	if setup.savedInputRequest == nil || setup.installRequest != nil || setup.installCalls != 0 {
 		t.Fatalf("Inputs Save did not persist answers independently: saved=%+v install=%+v calls=%d", setup.savedInputRequest, setup.installRequest, setup.installCalls)
+	}
+	if !m.workspace.Installed || !m.workspaceMCPRegistered("inspector") {
+		t.Fatalf("saving changed capability inputs incorrectly invalidated the observed MCP registration: installed=%t registered=%v", m.workspace.Installed, m.workspace.RegisteredMCPs)
 	}
 
 	m.form.FocusSection()
@@ -244,9 +266,9 @@ func TestUXInputsSaveIsSeparateFromAgentInstallAndRuntimeStart(t *testing.T) {
 	}
 	m.Update(runTeaCmd(t, m, install))
 	if setup.installCalls != 1 || setup.installRequest == nil {
-		t.Fatal("Agent access Install selected did not call UIInstall")
+		t.Fatal("Agent access Install selected did not call the agent-only install operation")
 	}
-	if setup.installRequest.SetupRequest.Ref.Name != key.Target || setup.installRequest.Inputs["repo"] != "/repos/team" {
+	if setup.installRequest.SetupRequest.Ref.Name != key.Target || setup.installRequest.Inputs["repo"] != "/repos/updated" {
 		t.Fatalf("install did not submit the exact target and saved inputs: %+v", setup.installRequest)
 	}
 

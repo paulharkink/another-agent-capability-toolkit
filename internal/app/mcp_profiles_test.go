@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
@@ -230,15 +231,25 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 	if !reflect.DeepEqual(runtime.actions, []string{"authenticate"}) {
 		t.Fatalf("container actions = %#v", runtime.actions)
 	}
+	runtime.results = []string{`{"login_url":"https://login.example/device"}`}
+	uiOutput, err := svc.UIConfigurationInstanceRun(context.Background(), "authenticate", ref, "alpha")
+	if err != nil || !strings.Contains(uiOutput, "https://login.example/device") {
+		t.Fatalf("UI login action did not return the browser URL: output=%q err=%v", uiOutput, err)
+	}
 	key, err := svc.Store.ResolveProfileKey(ref.PackID, ref.CapabilityID, ref.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantKey := mcpDefinitionKey(key, *pkg, definition)
-	if len(runtime.actionKeys) != 1 || runtime.actionKeys[0] != wantKey {
-		t.Fatalf("container action keys = %#v, want %#v", runtime.actionKeys, wantKey)
+	runtime.results = []string{`{"auth_required":true,"login_url":"https://login.example/device"}`}
+	uiOutput, uiErr := svc.UIInstanceRun(context.Background(), "authenticate", wantKey)
+	if uiErr == nil || !strings.Contains(uiOutput, "https://login.example/device") {
+		t.Fatalf("UI instance login lost URL when authentication is required: output=%q err=%v", uiOutput, uiErr)
 	}
-	if len(runtime.stateDirs) != 1 || runtime.stateDirs[0] != "/state" {
+	if len(runtime.actionKeys) != 3 || runtime.actionKeys[0] != wantKey || runtime.actionKeys[1] != wantKey || runtime.actionKeys[2] != wantKey {
+		t.Fatalf("container action keys = %#v, want three calls for %#v", runtime.actionKeys, wantKey)
+	}
+	if len(runtime.stateDirs) != 3 || runtime.stateDirs[0] != "/state" || runtime.stateDirs[1] != "/state" || runtime.stateDirs[2] != "/state" {
 		t.Fatalf("auth state dirs = %#v", runtime.stateDirs)
 	}
 	for _, forbidden := range []string{"authentication_status", "cancel_authentication"} {
