@@ -96,6 +96,9 @@ MAX_RANGE_SECONDS = 3600
 MAX_LOG_LIMIT = 1000
 MAX_QUERY_LENGTH = 10_000
 ROTATE_BEFORE_SECONDS = 10
+AUTH_RELOAD_INTERVAL_SECONDS = 30
+ROTATION_RETRY_INITIAL_SECONDS = 1
+ROTATION_RETRY_MAX_SECONDS = AUTH_RELOAD_INTERVAL_SECONDS
 
 mcp = FastMCP(
     "grafana-inspector",
@@ -171,6 +174,8 @@ try:
 except ValueError:
     CLIENT = None
 SESSION_LOCK = threading.Lock()
+ROTATION_START_LOCK = threading.Lock()
+ROTATION_THREAD: threading.Thread | None = None
 
 
 def _reload_auth_if_changed() -> None:
@@ -236,36 +241,50 @@ def _session_expiry() -> int:
 
 
 def _rotate_session() -> None:
-    if CLIENT is None:
-        raise ValueError("Grafana session authentication is unavailable.")
-    with SESSION_LOCK:
-        parsed_url = urlparse(GRAFANA_URL)
-        response = CLIENT.post(
-            f"{GRAFANA_URL}/api/user/auth-tokens/rotate",
-            data=b"",
-            headers={
-                "Accept": "*/*",
-                "Origin": f"{parsed_url.scheme}://{parsed_url.netloc}",
-                "Referer": f"{GRAFANA_URL}/",
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            allow_redirects=False,
-        )
-        _response_json(response)
-        _session_expiry()
-        _persist_refreshed_cookies()
+    # Keep auth reload from swapping CLIENT between the rotation response and
+    # its expiry/persistence reads. Auth reload never takes SESSION_LOCK, so the
+    # shared lock order is AUTH_LOCK then SESSION_LOCK.
+    with AUTH_LOCK:
+        if CLIENT is None:
+            raise ValueError("Grafana session authentication is unavailable.")
+        auth_content = _AUTH_CONTENT
+        with SESSION_LOCK:
+            parsed_url = urlparse(GRAFANA_URL)
+            response = CLIENT.post(
+                f"{GRAFANA_URL}/api/user/auth-tokens/rotate",
+                data=b"",
+                headers={
+                    "Accept": "*/*",
+                    "Origin": f"{parsed_url.scheme}://{parsed_url.netloc}",
+                    "Referer": f"{GRAFANA_URL}/",
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                allow_redirects=False,
+            )
+            _response_json(response)
+            _session_expiry()
+            if not _persist_refreshed_cookies(auth_content):
+                # An auth helper replaced the source while Grafana was rotating.
+                # Keep that new identity and let the worker use it next.
+                _reload_auth_if_changed()
 
 
-def _persist_refreshed_cookies() -> None:
+def _persist_refreshed_cookies(expected_content: bytes | None = None) -> bool:
     """Persist only refreshed session fields with private file permissions."""
-    if not AUTH_PATH.parent.is_dir(): return
+    if not AUTH_PATH.parent.is_dir(): return True
     values = {}
     for cookie in CLIENT.cookies:
         if cookie.name in {"grafana_session", "grafana_session_expiry", REFRESH_COOKIE_NAME}:
             values[cookie.name] = cookie.value
     try:
-        current = json.loads(AUTH_PATH.read_text()) if AUTH_PATH.exists() else {}
-    except (OSError, ValueError): current = {}
+        current_content = AUTH_PATH.read_bytes() if AUTH_PATH.exists() else None
+    except OSError:
+        current_content = None
+    if expected_content is not None and current_content != expected_content:
+        return False
+    try:
+        current = json.loads(current_content) if current_content is not None else {}
+    except (UnicodeDecodeError, ValueError): current = {}
     current.update({"grafana_session": values.get("grafana_session", GRAFANA_SESSION),
                     "session_expiry": values.get("grafana_session_expiry", GRAFANA_SESSION_EXPIRY)})
     if REFRESH_COOKIE_NAME:
@@ -279,6 +298,7 @@ def _persist_refreshed_cookies() -> None:
     finally:
         try: tmp.unlink()
         except FileNotFoundError: pass
+    return True
 
 
 def _rotate_before_expiry() -> None:
@@ -286,16 +306,78 @@ def _rotate_before_expiry() -> None:
         _rotate_session()
 
 
+def _wait_for_rotation(delay: float) -> None:
+    time.sleep(delay)
+
+
+def _log_rotation_failure(error: Exception, retry_delay: int) -> None:
+    """Log error category/status only; exception messages can contain secrets."""
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    message = error.args[0] if error.args and isinstance(error.args[0], str) else ""
+    if isinstance(status, int) and 100 <= status <= 599:
+        reason = f"{type(error).__name__}; HTTP {status}"
+    elif "HTTP 401" in message:
+        reason = "Grafana rejected credentials (HTTP 401)"
+    elif "HTTP 403" in message:
+        reason = "Grafana denied access (HTTP 403)"
+    elif "redirected to interactive login" in message:
+        reason = "Grafana redirected to interactive login"
+    elif "session-expiry cookie" in message:
+        reason = "Grafana session-expiry cookie unavailable or invalid"
+    elif "authentication is unavailable" in message:
+        reason = "Grafana session authentication unavailable"
+    elif isinstance(error, requests.RequestException):
+        reason = f"{type(error).__name__}; network/transport failure"
+    else:
+        reason = type(error).__name__
+    print(
+        f"Grafana {TARGET} session rotation failed ({reason}); "
+        f"retrying in {retry_delay}s.",
+        flush=True,
+    )
+
+
 def _rotation_worker() -> None:
-    """Rotate once per Grafana-issued expiry; each rotation schedules the next."""
+    """Keep session rotation alive, reloading auth and retrying with bounded backoff."""
+    retry_delay = ROTATION_RETRY_INITIAL_SECONDS
     while True:
-        delay = max(0, _session_expiry() - time.time() - ROTATE_BEFORE_SECONDS)
-        time.sleep(delay)
         try:
+            _reload_auth_if_changed()
+            if AUTH_MODE != "session_cookie":
+                _wait_for_rotation(AUTH_RELOAD_INTERVAL_SECONDS)
+                continue
+            if CLIENT is None:
+                raise ValueError("Grafana session authentication is unavailable.")
+            rotation_delay = _session_expiry() - time.time() - ROTATE_BEFORE_SECONDS
+            delay = min(max(0, rotation_delay), AUTH_RELOAD_INTERVAL_SECONDS)
+            _wait_for_rotation(delay)
+            if rotation_delay > AUTH_RELOAD_INTERVAL_SECONDS:
+                continue
+            _reload_auth_if_changed()
             _rotate_session()
-        except (requests.RequestException, ValueError):
-            # Requests return the rotation failure to callers; never leak credentials in logs.
+            retry_delay = ROTATION_RETRY_INITIAL_SECONDS
+        except Exception as error:
+            _log_rotation_failure(error, retry_delay)
+            _wait_for_rotation(retry_delay)
+            retry_delay = min(retry_delay * 2, ROTATION_RETRY_MAX_SECONDS)
+
+
+def _start_session_rotation() -> None:
+    """Start one background worker even when startup auth is temporarily unavailable."""
+    global ROTATION_THREAD
+    with ROTATION_START_LOCK:
+        if ROTATION_THREAD is not None:
             return
+        try:
+            _bootstrap_session()
+        except Exception as error:
+            _log_rotation_failure(error, ROTATION_RETRY_INITIAL_SECONDS)
+        ROTATION_THREAD = threading.Thread(
+            target=_rotation_worker,
+            name="grafana-session-rotation",
+            daemon=True,
+        )
+        ROTATION_THREAD.start()
 
 
 def _bootstrap_session() -> None:
@@ -525,12 +607,7 @@ def datasource_query_range(datasource_uid: str, query: dict[str, Any], start: st
 
 if __name__ == "__main__":
     if AUTH_MODE == "session_cookie":
-        try:
-            _bootstrap_session()
-        except (requests.RequestException, ValueError):
-            print("Grafana session authentication is unavailable; health checks will report false.", flush=True)
-        else:
-            threading.Thread(target=_rotation_worker, name="grafana-session-rotation", daemon=True).start()
+        _start_session_rotation()
     else:
         try:
             _validate_api_token()
