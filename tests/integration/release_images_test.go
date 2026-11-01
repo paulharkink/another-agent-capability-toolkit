@@ -76,7 +76,7 @@ func TestFindSessionReleaseImageContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := string(goreleaser)
+	config := strings.ReplaceAll(string(goreleaser), "\r\n", "\n")
 	for _, buildID := range []string{"find-session", "find-session-helper"} {
 		start := strings.Index(config, "- id: "+buildID+"\n")
 		if start < 0 {
