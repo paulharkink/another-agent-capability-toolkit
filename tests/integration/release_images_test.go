@@ -64,6 +64,13 @@ func TestFindSessionReleaseImageContract(t *testing.T) {
 			t.Errorf("assets-only recovery must verify the existing find-session image contract; missing %q", required)
 		}
 	}
+	archiveWorkflow, err := os.ReadFile("../../.github/workflows/artifacts.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(archiveWorkflow), "AACT_IMAGE_OWNER: ${{ github.repository_owner }}") {
+		t.Fatal("development archive builds must inject the repository owner for find-session image metadata")
+	}
 
 	goreleaser, err := os.ReadFile("../../.goreleaser.yaml")
 	if err != nil {

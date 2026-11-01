@@ -40,6 +40,7 @@ jobs:
         env:
           AACT_SNAPSHOT_BRANCH: ${{ steps.snapshot-branch.outputs.slug }}
           AACT_RELEASE_IMAGE_VERSION: ${{ steps.snapshot-branch.outputs.image-version }}
+          AACT_IMAGE_OWNER: ${{ github.repository_owner }}
       - uses: actions/upload-artifact@v4
         with:
           name: aact-development-archives
