@@ -26,6 +26,9 @@ builds:
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
 
   - id: repo-map
     main: ./packages/git-repo-map/generators/repo-map
@@ -61,6 +64,9 @@ builds:
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
 
   - id: repo-map-helper
     main: ./packages/git-repo-map/generators/repo-map

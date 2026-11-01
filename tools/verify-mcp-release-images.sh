@@ -49,3 +49,31 @@ while IFS=$'\t' read -r package profile context release_image; do
 
   echo "Verified public ${image} with linux/amd64 and linux/arm64 manifests."
 done < <(jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv' <<< "$builds")
+
+find_session_image="ghcr.io/${repository_lower}/${repository_name}/aact-find-session:${release_tag}"
+find_session_package="${repository_name}%2Faact-find-session"
+if ! metadata="$(gh api "/user/packages/container/${find_session_package}" 2>"$error_file")"; then
+  echo "Could not inspect GHCR visibility for ${find_session_image}." >&2
+  cat "$error_file" >&2
+  exit 1
+fi
+visibility="$(jq -r '.visibility // empty' <<<"$metadata")"
+if [[ "$visibility" != public ]]; then
+  echo "GHCR package aact-find-session has visibility '${visibility:-unknown}', not public." >&2
+  exit 1
+fi
+
+if ! docker buildx imagetools inspect "$find_session_image" --raw >"$manifest_file" 2>"$error_file"; then
+  echo "Could not inspect existing GHCR image ${find_session_image}." >&2
+  cat "$error_file" >&2
+  exit 1
+fi
+if ! jq -e '
+  type == "object" and (.manifests | type == "array") and
+  ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1) and
+  ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length == 1)
+' "$manifest_file" >/dev/null; then
+  echo "Existing GHCR image ${find_session_image} must contain exactly one linux/amd64 and one linux/arm64 manifest." >&2
+  exit 1
+fi
+echo "Verified public ${find_session_image} with linux/amd64 and linux/arm64 manifests."

@@ -14,6 +14,10 @@ var Version = "dev"
 // release images to the latest stable tag instead of an unpublished snapshot.
 var ImageVersion = "dev"
 
+// ImageOwner is the lowercased GitHub owner used for bundled release images.
+// GoReleaser replaces it for the published repository owner in release builds.
+var ImageOwner = "paulharkink"
+
 var releaseVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 
 func ResolveImage(reference string) (string, error) {

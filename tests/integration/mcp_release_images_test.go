@@ -213,6 +213,7 @@ func TestAssetsOnlyRecoveryValidatesExistingImagesAndSkipsImagePublishing(t *tes
 		"verify-existing-mcp-images:",
 		"if: inputs.publish_assets_only == true",
 		"run: bash tools/verify-mcp-release-images.sh",
+		"Verify existing release MCP and find-session images",
 		"needs: [prepare-release, publish-mcp-manifests, verify-existing-mcp-images]",
 		"always() && needs.prepare-release.result == 'success'",
 		"needs.verify-existing-mcp-images.result == 'success'",

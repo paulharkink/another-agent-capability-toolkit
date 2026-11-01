@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
 )
 
 type commandRecorder struct{ Args [][]string }
@@ -75,5 +77,24 @@ func TestWindowsLauncherPaths(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.Args[1], " "), "src="+filepath.Join(home, ".codex")) {
 		t.Fatal(r.Args)
+	}
+}
+
+func TestReleaseBuildUsesVersionedPublishedImageWithoutBuilding(t *testing.T) {
+	previousVersion, previousOwner := versioninfo.ImageVersion, versioninfo.ImageOwner
+	versioninfo.ImageVersion, versioninfo.ImageOwner = "0.4.2", "ExampleOwner"
+	t.Cleanup(func() { versioninfo.ImageVersion, versioninfo.ImageOwner = previousVersion, previousOwner })
+
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: filepath.Join(t.TempDir(), "missing-package")}
+	if err := s.Run(context.Background(), []string{"-g", "fixture"}, t.TempDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Args) != 1 {
+		t.Fatalf("commands = %#v, want only docker run", r.Args)
+	}
+	want := "ghcr.io/exampleowner/another-agent-capability-toolkit/aact-find-session:v0.4.2"
+	if got := r.Args[0]; len(got) < 5 || got[0] != "docker" || got[1] != "run" || got[len(got)-3] != want || got[len(got)-2] != "-g" {
+		t.Fatalf("docker run args = %#v, want published image %q", got, want)
 	}
 }
