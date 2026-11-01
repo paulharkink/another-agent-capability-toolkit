@@ -99,6 +99,7 @@ jobs:
           args: release --skip=publish --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          AACT_IMAGE_OWNER: ${{ github.repository_owner }}
 
   build-mcp-amd64:
     if: inputs.publish_assets_only != true
@@ -184,6 +185,25 @@ jobs:
             printf '%s %s %s\n' "$image" "$staging" "$digest" > "image-digests/amd64/${package}-${profile}.txt"
             rm -f "$metadata"
           done < <(jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv' <<< "$builds")
+
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/aact-find-session"
+          staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-amd64"
+          metadata="$(mktemp)"
+          docker buildx build \
+            --file packages/find-session/container/Dockerfile \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=v${version}" \
+            --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}" \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file "$metadata" \
+            --output "type=image,name=${staging},push=true" \
+            packages/find-session/container
+          digest="$(jq -r '."containerimage.digest" // empty' "$metadata")"
+          test -n "$digest" && test "$digest" != null
+          printf '%s %s %s\n' "$image" "$staging" "$digest" > image-digests/amd64/find-session.txt
+          rm -f "$metadata"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -277,6 +297,25 @@ jobs:
             rm -f "$metadata"
           done < <(jq -r '.[] | [.package_id, .profile, .build_context, .release_image] | @tsv' <<< "$builds")
 
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/aact-find-session"
+          staging="${image}:build-${{ needs.prepare-release.outputs.source_commit }}-arm64"
+          metadata="$(mktemp)"
+          docker buildx build \
+            --file packages/find-session/container/Dockerfile \
+            --platform linux/arm64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=v${version}" \
+            --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.source_commit }}" \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file "$metadata" \
+            --output "type=image,name=${staging},push=true" \
+            packages/find-session/container
+          digest="$(jq -r '."containerimage.digest" // empty' "$metadata")"
+          test -n "$digest" && test "$digest" != null
+          printf '%s %s %s\n' "$image" "$staging" "$digest" > image-digests/arm64/find-session.txt
+          rm -f "$metadata"
+
       - uses: actions/upload-artifact@v4
         with:
           name: mcp-image-digests-arm64-${{ needs.prepare-release.outputs.tag }}
@@ -363,7 +402,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify existing release MCP images
+      - name: Verify existing release MCP and find-session images
         env:
           GH_TOKEN: ${{ github.token }}
           AACT_RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
@@ -389,3 +428,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          AACT_IMAGE_OWNER: ${{ github.repository_owner }}

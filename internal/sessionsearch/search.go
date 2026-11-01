@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
 )
 
 type CommandRunner interface {
@@ -45,18 +47,6 @@ func PackageDirectory() (string, error) {
 	return filepath.Dir(filepath.Dir(executable)), nil
 }
 func (s *Search) Run(ctx context.Context, args []string, home string, interactive bool) error {
-	packageDir := s.PackageDir
-	if packageDir == "" {
-		var err error
-		packageDir, err = PackageDirectory()
-		if err != nil {
-			return err
-		}
-	}
-	packageDir, err := filepath.Abs(packageDir)
-	if err != nil {
-		return err
-	}
 	runner := s.Runner
 	if runner == nil {
 		runner = OSRunner{}
@@ -73,10 +63,26 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	hash := sha256.Sum256([]byte(packageDir))
-	image := "aact/find-session-" + hex.EncodeToString(hash[:])[:12] + ":local"
-	if err = runner.Run(ctx, []string{"docker", "build", "--quiet", "--tag", image, filepath.Join(packageDir, "container")}, nil, stderr, stderr); err != nil {
-		return err
+	imageReference := "ghcr.io/" + strings.ToLower(versioninfo.ImageOwner) + "/another-agent-capability-toolkit/aact-find-session:v{aact_version}"
+	image, releaseErr := versioninfo.ResolveImage(imageReference)
+	if releaseErr != nil {
+		packageDir := s.PackageDir
+		if packageDir == "" {
+			var err error
+			packageDir, err = PackageDirectory()
+			if err != nil {
+				return err
+			}
+		}
+		packageDir, err := filepath.Abs(packageDir)
+		if err != nil {
+			return err
+		}
+		hash := sha256.Sum256([]byte(packageDir))
+		image = "aact/find-session-" + hex.EncodeToString(hash[:])[:12] + ":local"
+		if err = runner.Run(ctx, []string{"docker", "build", "--quiet", "--tag", image, filepath.Join(packageDir, "container")}, nil, stderr, stderr); err != nil {
+			return err
+		}
 	}
 	argv := []string{"docker", "run", "--rm"}
 	for _, mapping := range []struct {
@@ -88,7 +94,7 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 		{[]string{".local", "share", "opencode"}, "/root/.local/share/opencode"},
 	} {
 		source := filepath.Join(append([]string{home}, mapping.parts...)...)
-		source, err = filepath.Abs(source)
+		source, err := filepath.Abs(source)
 		if err != nil {
 			return err
 		}
