@@ -231,6 +231,29 @@ func TestCLIInstallSkillToGlobalAllDestination(t *testing.T) {
 	}
 }
 
+func TestCLIInstallsZeroInputSkillWithoutCreatingProfile(t *testing.T) {
+	cfg, st, home := cliFixture(t)
+	pkg := filepath.Join(filepath.Dir(cfg), "demo")
+	if err := os.WriteFile(filepath.Join(pkg, "package.toml"), []byte("schema_version = 1\nid = \"demo\"\nname = \"Demo\"\n[skill]\nname = \"demo\"\n[[templates]]\nsource = \"SKILL.md.mustache\"\ndestination = \"SKILL.md\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "SKILL.md.mustache"), []byte("A zero-input skill."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	args := []string{"install", "demo", "--config", cfg, "--state-dir", st, "--agent", "all", "--agent-home", home, "--update-source"}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("zero-input skill install failed (%d): %s", code, errout.String())
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".agents", "skills", "demo", "SKILL.md"))
+	if err != nil || string(content) != "A zero-input skill." {
+		t.Fatalf("zero-input skill content = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg), "environments", "demo", "default.toml")); !os.IsNotExist(err) {
+		t.Fatalf("zero-input install created a profile file: %v", err)
+	}
+}
+
 func TestCLIInstallAcceptsHermesSkillsOnlyFlag(t *testing.T) {
 	cfg, st, home := cliFixture(t)
 	var out, errout bytes.Buffer

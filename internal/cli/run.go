@@ -345,8 +345,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					return fail(&app.InvalidInput{Err: err})
 				}
 				ref.Name = "default"
-				if err := svc.CreateInstance(ctx, ref); err != nil {
-					return fail(err)
+				if !(pkg.HasSkill() && !pkg.HasMCP() && len(pkg.Inputs) == 0) {
+					if err := svc.CreateInstance(ctx, ref); err != nil {
+						return fail(err)
+					}
 				}
 			}
 		}
