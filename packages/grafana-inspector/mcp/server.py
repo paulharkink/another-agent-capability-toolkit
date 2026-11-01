@@ -7,8 +7,10 @@ import ssl
 import threading
 import time
 from datetime import datetime, timezone
+from http.cookiejar import Cookie, DefaultCookiePolicy
 from typing import Any
 import json
+import re
 from pathlib import Path
 from config import GrafanaTarget, load_target
 from urllib.parse import urlparse
@@ -67,12 +69,118 @@ def _configured_api_token(auth: dict[str, Any], auth_mode: str | None = None) ->
     return auth.get("api_token", "")
 
 
+def _configured_route_cookies(auth: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read only OpenShift's host-bound, secure, session route-affinity cookie."""
+    configured = auth.get("route_cookies", [])
+    if not isinstance(configured, list):
+        return []
+    target_host = (urlparse(GRAFANA_URL).hostname or "").lower().rstrip(".")
+    cookies = []
+    for cookie in configured:
+        if not isinstance(cookie, dict):
+            continue
+        name, value = cookie.get("name"), cookie.get("value")
+        if not isinstance(name, str) or not name or not isinstance(value, str) or not value:
+            continue
+        if name in {"grafana_session", "grafana_session_expiry", REFRESH_COOKIE_NAME}:
+            continue
+        domain = cookie.get("domain")
+        if not _valid_route_affinity_metadata(
+            name=name,
+            domain=domain,
+            target_host=target_host,
+            path=cookie.get("path"),
+            secure=cookie.get("secure"),
+            domain_specified=cookie.get("domain_specified", "missing"),
+            expires=cookie.get("expires", "missing"),
+            http_only=cookie.get("http_only"),
+        ):
+            continue
+        restored = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": cookie["path"],
+            "secure": True,
+            "domain_specified": cookie["domain_specified"],
+            "expires": None,
+            "http_only": True,
+        }
+        cookies.append(restored)
+    return cookies
+
+
+def _valid_route_affinity_metadata(
+    *, name: Any, domain: Any, target_host: str, path: Any, secure: Any,
+    domain_specified: Any, expires: Any, http_only: Any,
+) -> bool:
+    """Accept only a 32-hex OpenShift hash cookie scoped to this HTTPS host at `/`.
+
+    OpenShift's generated route cookie is dynamic: its name is a 32-character
+    lowercase hex hash. It is host-bound (optionally represented with a leading
+    dot), Secure, HttpOnly, path `/`, and session-only. Requiring every trait
+    prevents unrelated cookies and superdomains from entering private auth state.
+    """
+    if not isinstance(name, str) or re.fullmatch(r"[0-9a-f]{32}", name) is None:
+        return False
+    if not target_host or not isinstance(domain, str) or not domain:
+        return False
+    if not isinstance(domain_specified, bool) or not domain_specified and domain.startswith("."):
+        return False
+    canonical_domain = domain[1:] if domain.startswith(".") else domain
+    if canonical_domain.lower().rstrip(".") != target_host:
+        return False
+    return (
+        path == "/"
+        and secure is True
+        and expires is None
+        and http_only is True
+    )
+
+
+def _route_cookie_records(cookies: Any) -> list[dict[str, Any]]:
+    """Capture only target-scoped OpenShift affinity cookies learned upstream."""
+    records = []
+    excluded = {"grafana_session", "grafana_session_expiry", REFRESH_COOKIE_NAME}
+    target_host = (urlparse(GRAFANA_URL).hostname or "").lower().rstrip(".")
+    for cookie in cookies:
+        if cookie.name in excluded:
+            continue
+        http_only = cookie.has_nonstandard_attr("HttpOnly")
+        if not cookie.discard or not _valid_route_affinity_metadata(
+            name=cookie.name,
+            domain=cookie.domain,
+            target_host=target_host,
+            path=cookie.path,
+            secure=cookie.secure,
+            domain_specified=cookie.domain_specified,
+            expires=cookie.expires,
+            http_only=http_only,
+        ):
+            continue
+        record = {
+            "name": cookie.name,
+            "value": cookie.value,
+            "domain": cookie.domain,
+            "path": cookie.path,
+            "secure": True,
+            "domain_specified": cookie.domain_specified,
+            "expires": None,
+            "http_only": True,
+        }
+        records.append(record)
+    return records
+
+
+ROUTE_COOKIES = _configured_route_cookies(_AUTH)
+
+
 def _fail_closed_auth(content: bytes | None | object) -> None:
     """Discard file-backed credentials and refresh the selected external source."""
     global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
-    global OAUTH_REFRESH, API_TOKEN, CLIENT
+    global OAUTH_REFRESH, API_TOKEN, ROUTE_COOKIES, CLIENT
 
-    previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN, ROUTE_COOKIES)
     auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or AUTH_MODE or PROFILE.auth_mode
     _AUTH = {}
     _AUTH_CONTENT = content
@@ -81,7 +189,8 @@ def _fail_closed_auth(content: bytes | None | object) -> None:
     GRAFANA_SESSION_EXPIRY = ""
     OAUTH_REFRESH = ""
     API_TOKEN = _configured_api_token(_AUTH, auth_mode)
-    current = (auth_mode, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+    ROUTE_COOKIES = []
+    current = (auth_mode, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN, ROUTE_COOKIES)
     if current == previous:
         return
     try:
@@ -158,6 +267,11 @@ def _session() -> requests.Session:
     client = _http_session()
     client.headers["Accept"] = "application/json"
     client.headers["User-Agent"] = "grafana-inspector-mcp/1.0"
+    set_cookie_policy = getattr(client.cookies, "set_policy", None)
+    if callable(set_cookie_policy):
+        set_cookie_policy(DefaultCookiePolicy(
+            strict_ns_domain=DefaultCookiePolicy.DomainStrictNonDomain,
+        ))
     cookie_path = parsed_url.path or "/"
     cookies = {"grafana_session": GRAFANA_SESSION}
     if REFRESH_COOKIE_NAME:
@@ -166,6 +280,26 @@ def _session() -> requests.Session:
         cookies["grafana_session_expiry"] = GRAFANA_SESSION_EXPIRY
     for name, value in cookies.items():
         client.cookies.set(name, value, domain=parsed_url.hostname, path=cookie_path, secure=True)
+    for cookie in ROUTE_COOKIES:
+        client.cookies.set_cookie(Cookie(
+            version=0,
+            name=cookie["name"],
+            value=cookie["value"],
+            port=None,
+            port_specified=False,
+            domain=cookie["domain"],
+            domain_specified=cookie["domain_specified"],
+            domain_initial_dot=cookie["domain"].startswith("."),
+            path=cookie["path"],
+            path_specified=True,
+            secure=True,
+            expires=None,
+            discard=True,
+            comment=None,
+            comment_url=None,
+            rest={"HttpOnly": None},
+            rfc2109=False,
+        ))
     return client
 
 
@@ -180,7 +314,7 @@ ROTATION_THREAD: threading.Thread | None = None
 
 def _reload_auth_if_changed() -> None:
     """Apply credentials atomically written by the existing auth helper."""
-    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY
+    global _AUTH, _AUTH_CONTENT, AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, ROUTE_COOKIES
     global OAUTH_REFRESH, API_TOKEN, CLIENT
 
     with AUTH_LOCK:
@@ -200,7 +334,7 @@ def _reload_auth_if_changed() -> None:
             _fail_closed_auth(content)
             return
 
-        previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN)
+        previous = (AUTH_MODE, GRAFANA_SESSION, GRAFANA_SESSION_EXPIRY, OAUTH_REFRESH, API_TOKEN, ROUTE_COOKIES)
         auth_unchanged = content == _AUTH_CONTENT
         auth_mode = os.environ.get("GRAFANA_AUTH_MODE") or (
             AUTH_MODE if auth_unchanged else auth.get("auth_mode") or PROFILE.auth_mode
@@ -208,12 +342,13 @@ def _reload_auth_if_changed() -> None:
         grafana_session = auth.get("grafana_session", "")
         session_expiry = auth.get("session_expiry", "")
         oauth_refresh = auth.get("oauth_refresh", "")
+        route_cookies = _configured_route_cookies(auth)
         try:
             api_token = _configured_api_token(auth, auth_mode)
         except OSError:
             _fail_closed_auth(AUTH_READ_ERROR)
             return
-        current = (auth_mode, grafana_session, session_expiry, oauth_refresh, api_token)
+        current = (auth_mode, grafana_session, session_expiry, oauth_refresh, api_token, route_cookies)
 
         _AUTH = auth
         _AUTH_CONTENT = content
@@ -222,6 +357,7 @@ def _reload_auth_if_changed() -> None:
         GRAFANA_SESSION_EXPIRY = session_expiry
         OAUTH_REFRESH = oauth_refresh
         API_TOKEN = api_token
+        ROUTE_COOKIES = route_cookies
         if current == previous:
             return
         try:
@@ -287,6 +423,7 @@ def _persist_refreshed_cookies(expected_content: bytes | None = None) -> bool:
     except (UnicodeDecodeError, ValueError): current = {}
     current.update({"grafana_session": values.get("grafana_session", GRAFANA_SESSION),
                     "session_expiry": values.get("grafana_session_expiry", GRAFANA_SESSION_EXPIRY)})
+    current["route_cookies"] = _route_cookie_records(CLIENT.cookies)
     if REFRESH_COOKIE_NAME:
         current.update({"oauth_refresh": values.get(REFRESH_COOKIE_NAME, OAUTH_REFRESH),
                         "refresh_cookie_name": REFRESH_COOKIE_NAME})
@@ -299,6 +436,28 @@ def _persist_refreshed_cookies(expected_content: bytes | None = None) -> bool:
         try: tmp.unlink()
         except FileNotFoundError: pass
     return True
+
+
+def _persist_route_cookies_if_changed() -> None:
+    """Persist router cookies learned by an ordinary upstream response."""
+    with AUTH_LOCK:
+        try:
+            content = AUTH_PATH.read_bytes() if AUTH_PATH.exists() else None
+        except OSError:
+            return
+        if content != _AUTH_CONTENT:
+            # Never overwrite credentials concurrently replaced by the auth helper.
+            return
+        try:
+            current = json.loads(content) if content is not None else {}
+        except (UnicodeDecodeError, ValueError):
+            return
+        if not isinstance(current, dict):
+            return
+        route_cookies = _route_cookie_records(CLIENT.cookies)
+        if current.get("route_cookies", []) == route_cookies:
+            return
+        _persist_refreshed_cookies(content)
 
 
 def _rotate_before_expiry() -> None:
@@ -411,6 +570,8 @@ def _request(method: str, path: str, parameters: dict[str, Any] | None = None, p
             timeout=REQUEST_TIMEOUT_SECONDS,
             allow_redirects=False,
         )
+    if AUTH_MODE == "session_cookie":
+        _persist_route_cookies_if_changed()
     return _response_json(response)
 
 

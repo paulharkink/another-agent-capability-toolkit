@@ -6,6 +6,22 @@ from pathlib import Path
 import sys
 import threading
 import types
+from email.message import Message
+from io import BytesIO
+from urllib.request import Request
+from urllib.response import addinfourl
+
+_mock_requests_module = sys.modules.get("requests")
+if _mock_requests_module is not None and not hasattr(_mock_requests_module, "__path__"):
+    del sys.modules["requests"]
+try:
+    from requests.cookies import RequestsCookieJar
+finally:
+    if _mock_requests_module is not None and not hasattr(_mock_requests_module, "__path__"):
+        for _module_name in tuple(sys.modules):
+            if _module_name.startswith("requests."):
+                del sys.modules[_module_name]
+        sys.modules["requests"] = _mock_requests_module
 
 import pytest
 
@@ -21,15 +37,29 @@ class StopWorker(BaseException):
     """Stop the synchronous worker after observable recovery assertions."""
 
 
-class Cookies:
-    def __init__(self):
-        self.values = {}
-
+class Cookies(RequestsCookieJar):
     def set(self, name, value, **kwargs):
-        self.values[name] = value
+        if name in {"grafana_session", "grafana_session_expiry"}:
+            kwargs.setdefault("domain", "grafana.example.test")
+            kwargs.setdefault("path", "/")
+            kwargs.setdefault("secure", True)
+        return super().set(name, value, **kwargs)
 
-    def __iter__(self):
-        return iter(types.SimpleNamespace(name=n, value=v) for n, v in self.values.items())
+    @property
+    def values(self):
+        return {cookie.name: cookie.value for cookie in self}
+
+    def metadata_for(self, name):
+        cookie = next(cookie for cookie in self if cookie.name == name)
+        return {
+            "domain": cookie.domain,
+            "path": cookie.path,
+            "secure": cookie.secure,
+            "expires": cookie.expires,
+            "discard": cookie.discard,
+            "domain_specified": cookie.domain_specified,
+            "http_only": cookie.has_nonstandard_attr("HttpOnly"),
+        }
 
 
 class FakeSession:
@@ -147,6 +177,178 @@ def test_worker_retries_transient_rotation_failure_and_persists_recovery(monkeyp
     assert persisted["session_expiry"] == "4102444800"
     assert persisted["auth_mode"] == "session_cookie"
     assert sleeps == [0, 1, 0, 30]
+
+
+def test_route_affinity_cookie_survives_auth_reload_and_process_restart(monkeypatch, tmp_path):
+    server, auth_path = load_server(monkeypatch, tmp_path)
+    route_cookie_name = "9b1c88d0b504a1c37ef94c2da7d6be43"
+    route_cookie_value = "synthetic-route-cookie"
+    route_cookie_metadata = {
+        "domain": ".grafana.example.test",
+        "path": "/",
+        "secure": True,
+        "expires": None,
+        "discard": True,
+        "domain_specified": True,
+        "http_only": True,
+    }
+    cookie_headers = Message()
+    cookie_headers.add_header(
+        "Set-Cookie",
+        f"{route_cookie_name}={route_cookie_value}; Domain=grafana.example.test; Path=/; Secure; HttpOnly",
+    )
+    cookie_headers.add_header(
+        "Set-Cookie",
+        "0123456789abcdef0123456789abcdef=not-session; Domain=grafana.example.test; "
+        "Path=/; Secure; HttpOnly; Max-Age=3600",
+    )
+    cookie_response = addinfourl(BytesIO(), cookie_headers, "https://grafana.example.test/")
+    cookie_response.code = 200
+    cookie_response.msg = "OK"
+    cookie_request = Request("https://grafana.example.test/")
+
+    # A successful upstream request teaches Requests the router's opaque
+    # affinity cookie, which must be persisted without waiting for rotation.
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {"Content-Type": "application/json"}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"id": 1}
+
+    def request(*args, **kwargs):
+        server.CLIENT.cookies.extract_cookies(cookie_response, cookie_request)
+        return Response()
+
+    server.CLIENT.request = request
+    monkeypatch.setattr(server, "_rotate_before_expiry", lambda: None)
+    assert server._request("GET", "/api/user") == {"id": 1}
+
+    persisted = json.loads(auth_path.read_text())
+    assert persisted["route_cookies"] == [{
+        "name": route_cookie_name,
+        "value": route_cookie_value,
+        "domain": ".grafana.example.test",
+        "path": "/",
+        "secure": True,
+        "expires": None,
+        "domain_specified": True,
+        "http_only": True,
+    }]
+    assert auth_path.stat().st_mode & 0o777 == 0o600
+
+    # A credential edit rebuilds the in-process Requests session, and a
+    # container restart reconstructs it from the private auth file.
+    auth_path.write_text(json.dumps({
+        **persisted,
+        "grafana_session": "replacement-session",
+    }))
+    server._reload_auth_if_changed()
+    assert server.CLIENT.cookies.values[route_cookie_name] == route_cookie_value
+    assert server.CLIENT.cookies.metadata_for(route_cookie_name) == route_cookie_metadata
+
+    restarted, _ = load_server(monkeypatch, tmp_path, with_auth=False)
+    assert restarted.CLIENT.cookies.values[route_cookie_name] == route_cookie_value
+    assert restarted.CLIENT.cookies.metadata_for(route_cookie_name) == route_cookie_metadata
+    for host in ("grafana.example.test", "sub.grafana.example.test"):
+        request = Request(f"https://{host}/api/user")
+        restarted.CLIENT.cookies.add_cookie_header(request)
+        assert route_cookie_name in (request.get_header("Cookie") or "")
+
+
+def test_only_host_bound_secure_session_route_cookie_is_restored(monkeypatch, tmp_path):
+    server, _ = load_server(monkeypatch, tmp_path)
+    base = {
+        "name": "9b1c88d0b504a1c37ef94c2da7d6be43",
+        "value": "synthetic-route-cookie",
+        "domain": "grafana.example.test",
+        "path": "/",
+        "secure": True,
+        "expires": None,
+        "domain_specified": True,
+        "http_only": True,
+    }
+    invalid_records = [
+        {key: value for key, value in base.items() if key != "domain"},
+        {key: value for key, value in base.items() if key != "domain_specified"},
+        {key: value for key, value in base.items() if key != "expires"},
+        {**base, "domain": ".example.test"},
+        {**base, "domain": ".grafana.example.test", "domain_specified": False},
+        {**base, "domain": ".grafana.example.test.evil.test"},
+        {**base, "path": "/other"},
+        {**base, "secure": False},
+        {**base, "http_only": False},
+        {**base, "expires": 4102444800},
+        {**base, "name": "grafana_session"},
+        {**base, "name": "not-a-route-cookie"},
+    ]
+
+    for record in invalid_records:
+        assert server._configured_route_cookies({"route_cookies": [record]}) == []
+
+    assert server._configured_route_cookies({"route_cookies": [base]}) == [base]
+    monkeypatch.setattr(server, "GRAFANA_URL", "https://other.example.test")
+    assert server._configured_route_cookies({"route_cookies": [base]}) == []
+
+
+def test_host_only_affinity_cookie_remains_host_only_after_reload_and_restart(monkeypatch, tmp_path):
+    server, auth_path = load_server(monkeypatch, tmp_path)
+    route_cookie_name = "91b1a8d0b504a1c37ef94c2da7d6be43"
+    route_cookie_value = "synthetic-host-only-cookie"
+    headers = Message()
+    headers.add_header(
+        "Set-Cookie",
+        f"{route_cookie_name}={route_cookie_value}; Path=/; Secure; HttpOnly",
+    )
+    response = addinfourl(BytesIO(), headers, "https://grafana.example.test/")
+    response.code = 200
+    response.msg = "OK"
+    request = Request("https://grafana.example.test/")
+
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {"Content-Type": "application/json"}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"id": 1}
+
+    def upstream_request(*args, **kwargs):
+        server.CLIENT.cookies.extract_cookies(response, request)
+        return Response()
+
+    server.CLIENT.request = upstream_request
+    monkeypatch.setattr(server, "_rotate_before_expiry", lambda: None)
+    assert server._request("GET", "/api/user") == {"id": 1}
+    persisted = json.loads(auth_path.read_text())["route_cookies"][0]
+    assert persisted["domain"] == "grafana.example.test"
+    assert persisted["domain_specified"] is False
+
+    auth_path.write_text(json.dumps({
+        "auth_mode": "session_cookie",
+        "grafana_session": "replacement-session",
+        "session_expiry": "4102444800",
+        "route_cookies": [persisted],
+    }))
+    server._reload_auth_if_changed()
+    restarted, _ = load_server(monkeypatch, tmp_path, with_auth=False)
+
+    cookie = next(item for item in restarted.CLIENT.cookies if item.name == route_cookie_name)
+    assert cookie.domain_specified is False
+    for client in (server.CLIENT.cookies, restarted.CLIENT.cookies):
+        host_request = Request("https://grafana.example.test/api/user")
+        client.add_cookie_header(host_request)
+        assert route_cookie_name in (host_request.get_header("Cookie") or "")
+        subdomain_request = Request("https://sub.grafana.example.test/api/user")
+        client.add_cookie_header(subdomain_request)
+        assert route_cookie_name not in (subdomain_request.get_header("Cookie") or "")
 
 
 def test_worker_failure_log_omits_exception_values(monkeypatch, tmp_path, capsys):
