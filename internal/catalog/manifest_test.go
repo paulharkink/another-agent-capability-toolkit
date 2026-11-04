@@ -95,6 +95,37 @@ health_path = "/health"
 	}
 }
 
+func TestManifestMCPExternalURLMustBeAbsoluteHTTPWithoutCredentials(t *testing.T) {
+	for _, endpoint := range []string{"https://mcp.example.invalid/v2/mcp", "http://127.0.0.1:1234/mcp"} {
+		dir := writeManifest(t, `schema_version = 1
+id = "external"
+name = "External"
+[mcp]
+name = "server"
+transport = "streamable-http"
+external_url = `+strconv.Quote(endpoint)+`
+`)
+		if _, err := Load(dir); err != nil {
+			t.Fatalf("valid external MCP URL %q rejected: %v", endpoint, err)
+		}
+	}
+	for _, endpoint := range []string{"/relative/mcp", "ftp://mcp.example.invalid/mcp", "https://user:password@mcp.example.invalid/mcp"} {
+		t.Run(endpoint, func(t *testing.T) {
+			dir := writeManifest(t, `schema_version = 1
+id = "external"
+name = "External"
+[mcp]
+name = "server"
+transport = "streamable-http"
+external_url = `+strconv.Quote(endpoint)+`
+`)
+			if _, err := Load(dir); err == nil {
+				t.Fatalf("invalid external MCP URL %q accepted", endpoint)
+			}
+		})
+	}
+}
+
 func TestConditionalPortsMayBindContainerPortToVisibleIntegerInput(t *testing.T) {
 	minPort, maxPort := float64(1), float64(65535)
 	base := Package{

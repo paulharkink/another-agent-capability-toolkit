@@ -1139,7 +1139,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		if len(q.ExternalURLs) > 0 {
 			localPrepare := prepare[:0]
 			for _, definition := range prepare {
-				if q.ExternalURLs[definition.Name] == "" {
+				if q.ExternalURLs[definition.Name] == "" && definition.ExternalURL == "" {
 					localPrepare = append(localPrepare, definition)
 				}
 			}
@@ -1422,6 +1422,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				urls[definition.Name] = endpoint
 				continue
 			}
+			if definition.ExternalURL != "" {
+				urls[definition.Name] = definition.ExternalURL
+				continue
+			}
 			// Uninstalling the last agent registration does not need a URL. When
 			// another selected agent remains, Install still needs a stable URL for
 			// the registration it is creating.
@@ -1465,6 +1469,9 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 			child := mcpDefinitionKey(key, p, definition)
 			externalURL := q.ExternalURLs[definition.Name]
+			if externalURL == "" {
+				externalURL = definition.ExternalURL
+			}
 			if externalURL != "" {
 				if e := validateEndpointURL(externalURL); e != nil {
 					return out, invalid(e)
@@ -1768,7 +1775,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				return out, e
 			}
 			row := registrationResult.Installation
-			row.ExternalRegistration = q.ExternalURLs[d.Name] != ""
+			row.ExternalRegistration = q.ExternalURLs[d.Name] != "" || d.ExternalURL != ""
 			if e = record(row); e != nil {
 				return out, e
 			}
@@ -1859,6 +1866,9 @@ func validateEndpointURL(value string) error {
 	u, err := url.Parse(value)
 	if err != nil {
 		return err
+	}
+	if u.User != nil {
+		return errors.New("MCP endpoint must not contain embedded credentials")
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("MCP endpoint %q must be an absolute HTTP(S) URL", value)

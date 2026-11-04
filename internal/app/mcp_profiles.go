@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -33,7 +34,7 @@ func mcpDefinitionKey(base state.Key, p catalog.Package, profile catalog.MCP) st
 	if p.MCP != nil && len(p.MCPs) == 0 {
 		return base
 	}
-	profileSemantics := profile.EnabledInput != "" || profile.TokenInput != "" || profile.TokenFileInput != "" || profile.TokenEnvInput != "" || profile.TokenHeader != "" || profile.TokenContainerEnv != "" || len(profile.Args) > 0 || len(profile.EnvInputs) > 0 || len(profile.SecretEnvInputs) > 0
+	profileSemantics := profile.EnabledInput != "" || profile.TokenInput != "" || profile.TokenFileInput != "" || profile.TokenEnvInput != "" || profile.TokenHeader != "" || profile.TokenAuthModeInput != "" || profile.TokenUsernameInput != "" || profile.TokenContainerEnv != "" || profile.ExternalURL != "" || len(profile.Args) > 0 || len(profile.EnvInputs) > 0 || len(profile.SecretEnvInputs) > 0
 	if profileSemantics {
 		base.MCPDefinition = profile.Name
 	} else {
@@ -105,6 +106,23 @@ func profileRegistrationHeaders(profile catalog.MCP, values map[string]any) (map
 	token, err := resolveProfileToken(profile, values)
 	if err != nil {
 		return nil, err
+	}
+	if profile.TokenAuthModeInput != "" {
+		mode, _ := values[profile.TokenAuthModeInput].(string)
+		switch mode {
+		case "service_account":
+			return map[string]string{profile.TokenHeader: profile.TokenPrefix + token}, nil
+		case "personal":
+			username, _ := values[profile.TokenUsernameInput].(string)
+			username = strings.TrimSpace(username)
+			if username == "" {
+				return nil, errors.New("personal API token authentication requires its username input")
+			}
+			credentials := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+			return map[string]string{profile.TokenHeader: "Basic " + credentials}, nil
+		default:
+			return nil, errors.New("select a supported API token authentication method")
+		}
 	}
 	return map[string]string{profile.TokenHeader: profile.TokenPrefix + token}, nil
 }

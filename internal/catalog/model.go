@@ -108,6 +108,8 @@ type MCP struct {
 	TokenEnvInput         string             `toml:"token_env_input" json:"token_env_input,omitempty"`
 	TokenHeader           string             `toml:"token_header" json:"token_header,omitempty"`
 	TokenPrefix           string             `toml:"token_prefix" json:"token_prefix,omitempty"`
+	TokenAuthModeInput    string             `toml:"token_auth_mode_input" json:"token_auth_mode_input,omitempty"`
+	TokenUsernameInput    string             `toml:"token_username_input" json:"token_username_input,omitempty"`
 	TokenContainerEnv     string             `toml:"token_container_env" json:"token_container_env,omitempty"`
 	Args                  []string           `toml:"args" json:"args,omitempty"`
 	Env                   map[string]string  `toml:"env" json:"env,omitempty"`
@@ -118,6 +120,7 @@ type MCP struct {
 	Image                 string             `toml:"image" json:"image"`
 	ReleaseImage          string             `toml:"release_image" json:"release_image,omitempty"`
 	Transport             string             `toml:"transport" json:"transport"`
+	ExternalURL           string             `toml:"external_url" json:"external_url,omitempty"`
 	ContainerPort         int                `toml:"container_port" json:"container_port"`
 	EndpointPath          string             `toml:"endpoint_path" json:"endpoint_path"`
 	HealthPath            string             `toml:"health_path" json:"health_path,omitempty"`
