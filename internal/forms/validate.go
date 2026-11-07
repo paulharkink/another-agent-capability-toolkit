@@ -19,6 +19,32 @@ func Validate(defs []catalog.Input, values map[string]any) error {
 	return validateValues(defs, values)
 }
 
+// ValidateActiveGroups applies requiredness to the selected member of each
+// declared exclusive group while retaining type and value checks for every
+// input. Inactive members may keep older values when the user changes modes.
+func ValidateActiveGroups(defs []catalog.Input, values map[string]any, active map[string]string) error {
+	selected := append([]catalog.Input(nil), defs...)
+	groupRequired := map[string]bool{}
+	for _, def := range defs {
+		if def.ExclusiveGroup != "" && def.Required {
+			groupRequired[def.ExclusiveGroup] = true
+		}
+	}
+	for i := range selected {
+		group := selected[i].ExclusiveGroup
+		if group == "" || active[group] == "" {
+			continue
+		}
+		if selected[i].Name != active[group] {
+			selected[i].ExclusiveGroup = ""
+			selected[i].Required = false
+			continue
+		}
+		selected[i].Required = selected[i].Required || groupRequired[group]
+	}
+	return Validate(selected, values)
+}
+
 // ValidateProvided checks supplied values independently of form completeness
 // and visibility. Requiredness and exclusive groups belong to Validate.
 func ValidateProvided(defs []catalog.Input, values map[string]any) error {

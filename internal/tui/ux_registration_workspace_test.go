@@ -73,6 +73,203 @@ func TestUXForeignEndpointCanRegisterWithoutRuntimeControl(t *testing.T) {
 	}
 }
 
+func TestUXAgentInstallIsEnabledAfterSavingPreviouslyInvalidInputs(t *testing.T) {
+	preview := viewmodel.SetupPreview{
+		Key:         state.Key{Source: "team-source", Package: "plain", Target: "foreign"},
+		PackageName: "Plain", MCP: true, HasManifestUI: true,
+		Sections:         []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
+		Inputs:           []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string", Required: true}, Value: "http://127.0.0.1:8765/mcp", HasValue: true, Editable: true}},
+		ValidationIssues: []string{"input endpoint is required"},
+		MCPDefinitions:   []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
+		Destinations:     []viewmodel.SetupDestination{{ID: "codex", Detection: "installed"}, {ID: "claude", Detection: "installed"}},
+	}
+	m, backend := openRegistrationActionForUXWithPreview(t, &preview)
+	preview = *m.workspace.Preview
+	preview.ValidationIssues = []string{"input endpoint is required"}
+	m.workspace.InputsSaved = false
+	m.workspace.Preview = &preview
+	m.pendingSetup = &preview
+	m.configureWorkspaceForm(preview)
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+	if action := m.form.SectionActionsID(sectionAgentsID)[0]; !strings.Contains(action.Disabled, "input endpoint is required") {
+		t.Fatalf("fixture did not begin with the reported stale validation block: %+v", action)
+	}
+
+	save := m.saveSetupInputs(m.form.Values())
+	if save == nil {
+		t.Fatal("valid input values could not be saved")
+	}
+	msg, ok := save().(setupInputsSavedMsg)
+	if !ok {
+		t.Fatal("saving inputs did not produce the saved-inputs result")
+	}
+	m.Update(msg)
+
+	if len(m.workspace.Preview.ValidationIssues) != 0 {
+		t.Fatalf("successful save retained stale validation issues: %v", m.workspace.Preview.ValidationIssues)
+	}
+	install := m.form.SectionActionsID(sectionAgentsID)[0]
+	if install.Disabled != "" {
+		t.Fatalf("Install selected remained blocked after the valid inputs were saved: %q", install.Disabled)
+	}
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if cmd == nil {
+		t.Fatalf("Install selected did not dispatch after saving valid inputs: %q", m.output)
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	if backend.installRequest == nil || !reflect.DeepEqual(backend.installRequest.DestinationIDs, []string{"codex"}) {
+		t.Fatalf("Install selected did not submit the chosen agent: %+v", backend.installRequest)
+	}
+}
+
+func TestUXAgentInstallRemainsEnabledWhenSavedRequiredSecretIsLeftBlank(t *testing.T) {
+	preview := viewmodel.SetupPreview{
+		Key:         state.Key{Source: "team-source", Package: "plain", Target: "foreign"},
+		PackageName: "Plain", MCP: true, HasManifestUI: true,
+		Sections: []catalog.Section{{ID: "authentication", Title: "Authentication", Fields: []string{"token"}}},
+		Inputs: []viewmodel.SetupInput{{
+			Definition: catalog.Input{Name: "token", Label: "Token", Type: "secret", Required: true},
+			Value:      "stored-token", HasValue: true, SecretSaved: true, Editable: true,
+		}},
+		ValidationIssues: []string{"input token is required"},
+		MCPDefinitions:   []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
+		Destinations:     []viewmodel.SetupDestination{{ID: "codex", Detection: "installed"}},
+	}
+	m, _ := openRegistrationActionForUXWithPreview(t, &preview)
+	preview = *m.workspace.Preview
+	preview.ValidationIssues = []string{"input token is required"}
+	m.workspace.InputsSaved = false
+	m.workspace.Preview = &preview
+	m.pendingSetup = &preview
+	m.configureWorkspaceForm(preview)
+
+	save := m.saveSetupInputs(map[string]any{m.pendingSetupField: []string{"codex"}, "token": ""})
+	if save == nil {
+		t.Fatal("saved-secret input save did not dispatch")
+	}
+	msg, ok := save().(setupInputsSavedMsg)
+	if !ok {
+		t.Fatal("saved-secret save did not produce the saved-inputs result")
+	}
+	m.Update(msg)
+
+	if len(m.workspace.Preview.ValidationIssues) != 0 || !m.workspace.Preview.Configured {
+		t.Fatalf("leaving an existing required secret blank was treated as missing: configured=%t issues=%v", m.workspace.Preview.Configured, m.workspace.Preview.ValidationIssues)
+	}
+	if !m.workspace.Preview.Inputs[0].SecretSaved {
+		t.Fatal("leaving the secret blank failed to retain its saved state")
+	}
+}
+
+func TestUXAgentInstallStaysDisabledAfterSavingIncompleteInputs(t *testing.T) {
+	preview := viewmodel.SetupPreview{
+		Key:         state.Key{Source: "team-source", Package: "plain", Target: "foreign"},
+		PackageName: "Plain", MCP: true, HasManifestUI: true,
+		Sections:         []catalog.Section{{ID: "connection", Title: "Connection", Fields: []string{"endpoint"}}},
+		Inputs:           []viewmodel.SetupInput{{Definition: catalog.Input{Name: "endpoint", Label: "Endpoint URI", Type: "string", Required: true}, Editable: true}},
+		ValidationIssues: []string{"input endpoint is required"},
+		MCPDefinitions:   []catalog.MCP{{Name: "plain", Transport: "streamable-http"}},
+		Destinations:     []viewmodel.SetupDestination{{ID: "codex", Detection: "installed"}, {ID: "claude", Detection: "installed"}},
+	}
+	m, _ := openRegistrationActionForUXWithPreview(t, &preview)
+	preview = *m.workspace.Preview
+	preview.ValidationIssues = []string{"input endpoint is required"}
+	m.workspace.InputsSaved = false
+	m.workspace.Preview = &preview
+	m.pendingSetup = &preview
+	m.configureWorkspaceForm(preview)
+	if err := m.form.ApplyValues(map[string]any{m.pendingSetupField: []string{"codex"}, "endpoint": ""}); err != nil {
+		t.Fatal(err)
+	}
+	selectWorkspaceSectionByKeyboard(t, m, sectionAgentsID)
+
+	save := m.saveSetupInputs(m.form.Values())
+	if save == nil {
+		t.Fatal("incomplete input save did not dispatch")
+	}
+	msg, ok := save().(setupInputsSavedMsg)
+	if !ok {
+		t.Fatal("saving incomplete inputs did not produce the saved-inputs result")
+	}
+	m.Update(msg)
+
+	if len(m.workspace.Preview.ValidationIssues) == 0 {
+		t.Fatal("successful save cleared validation issues for an incomplete input set")
+	}
+	if action := m.form.SectionActionsID(sectionAgentsID)[0]; action.Disabled == "" {
+		t.Fatal("Install selected became available after saving incomplete inputs")
+	}
+	_, cmd := m.Update(forms.ActionMsg{SectionID: sectionAgentsID, ID: "install-selected"})
+	if cmd != nil {
+		t.Fatal("Install selected dispatched despite incomplete required inputs")
+	}
+}
+
+func TestSavedInputValidationDoesNotReuseValuesRemovedByReset(t *testing.T) {
+	tests := []struct {
+		name  string
+		input viewmodel.SetupInput
+	}{
+		{
+			name: "required saved input without inherited fallback",
+			input: viewmodel.SetupInput{
+				Definition: catalog.Input{Name: "endpoint", Type: "string", Required: true},
+				Value:      "old-endpoint", HasValue: true,
+			},
+		},
+		{
+			name: "saved required secret",
+			input: viewmodel.SetupInput{
+				Definition: catalog.Input{Name: "token", Type: "secret", Required: true},
+				Value:      "old-secret", HasValue: true, SecretSaved: true,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configured, issues := validateSavedSetupInputs(
+				viewmodel.SetupPreview{Inputs: []viewmodel.SetupInput{tc.input}},
+				map[string]any{}, map[string]string{}, []string{tc.input.Definition.Name},
+			)
+			if configured || len(issues) == 0 {
+				t.Fatalf("reset stale value still counted as configured: configured=%t issues=%v", configured, issues)
+			}
+		})
+	}
+}
+
+func TestSavedInputResetClearsRemovedValuesFromPreview(t *testing.T) {
+	preview := viewmodel.SetupPreview{Inputs: []viewmodel.SetupInput{
+		{
+			Definition: catalog.Input{Name: "endpoint", Type: "string", Required: true},
+			Value:      "old-endpoint", HasValue: true,
+		},
+		{
+			Definition: catalog.Input{Name: "token", Type: "secret", Required: true},
+			Value:      "old-secret", HasValue: true, SecretSaved: true,
+		},
+		{
+			Definition: catalog.Input{Name: "namespace", Type: "string"},
+			Value:      "override", HasValue: true, InheritedValue: "default", HasInheritedValue: true, InheritedOrigin: "Capability Pack default", InheritedPath: "/pack/aact.toml",
+		},
+	}}
+
+	applySetupInputResetsToPreview(&preview, []string{"endpoint", "token", "namespace"})
+
+	if preview.Inputs[0].HasValue || preview.Inputs[0].Value != nil {
+		t.Fatalf("reset endpoint still shows its removed value: %+v", preview.Inputs[0])
+	}
+	if preview.Inputs[1].HasValue || preview.Inputs[1].Value != nil || preview.Inputs[1].SecretSaved {
+		t.Fatalf("reset secret still shows saved credential state: %+v", preview.Inputs[1])
+	}
+	if !preview.Inputs[2].HasValue || preview.Inputs[2].Value != "default" || preview.Inputs[2].Provenance != "Capability Pack default" || preview.Inputs[2].ProvenancePath != "/pack/aact.toml" {
+		t.Fatalf("reset input did not show its inherited fallback: %+v", preview.Inputs[2])
+	}
+}
+
 func markWorkspaceForeignObserved(m *Model, mcpName, endpoint string) {
 	parentKey := m.workspace.Key
 	childKey := parentKey

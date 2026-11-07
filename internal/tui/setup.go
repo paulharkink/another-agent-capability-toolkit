@@ -765,21 +765,101 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 	return func() tea.Msg {
 		err := backend.UISaveInputs(ctx, request)
 		if err == nil {
+			validationPreview := preview
+			validationPreview.Inputs = append([]viewmodel.SetupInput(nil), preview.Inputs...)
+			resetInputNames := make(map[string]bool, len(request.ResetInputs))
+			for _, name := range request.ResetInputs {
+				resetInputNames[name] = true
+			}
+			applySetupInputResetsToPreview(&preview, request.ResetInputs)
 			for i := range preview.Inputs {
 				input := &preview.Inputs[i]
 				name := input.Definition.Name
+				if resetInputNames[name] {
+					continue
+				}
 				if value, exists := request.Inputs[name]; exists {
 					input.Value, input.HasValue, input.Provenance = value, true, "saved"
 					if input.Definition.Type == "secret" {
 						secret, ok := value.(string)
-						input.SecretSaved = ok && strings.TrimSpace(secret) != ""
+						if ok && strings.TrimSpace(secret) != "" {
+							input.SecretSaved = true
+						}
 					}
 				}
 			}
-			preview.Configured = true
+			preview.Configured, preview.ValidationIssues = validateSavedSetupInputs(validationPreview, request.Inputs, request.ActiveInputGroups, request.ResetInputs)
 		}
 		return setupInputsSavedMsg{key: key, preview: preview, destinationField: destination, err: err, inputsChanged: inputsChanged}
 	}
+}
+
+func applySetupInputResetsToPreview(preview *viewmodel.SetupPreview, resetInputs []string) {
+	if preview == nil || len(resetInputs) == 0 {
+		return
+	}
+	reset := make(map[string]bool, len(resetInputs))
+	for _, name := range resetInputs {
+		reset[name] = true
+	}
+	for i := range preview.Inputs {
+		input := &preview.Inputs[i]
+		if !reset[input.Definition.Name] {
+			continue
+		}
+		if input.HasInheritedValue {
+			input.Value = input.InheritedValue
+			input.HasValue = true
+			input.Provenance = firstNonempty(input.InheritedOrigin, "inherited")
+			input.ProvenancePath = input.InheritedPath
+		} else {
+			input.Value = nil
+			input.HasValue = false
+			input.Provenance = "unset"
+			input.ProvenancePath = ""
+		}
+		if input.Definition.Type == "secret" {
+			input.SecretSaved = false
+		}
+	}
+}
+
+func validateSavedSetupInputs(preview viewmodel.SetupPreview, submitted map[string]any, activeGroups map[string]string, resetInputs []string) (bool, []string) {
+	definitions := make([]catalog.Input, 0, len(preview.Inputs))
+	values := make(map[string]any, len(preview.Inputs)+len(submitted))
+	reset := make(map[string]bool, len(resetInputs))
+	for _, name := range resetInputs {
+		reset[name] = true
+	}
+	for _, input := range preview.Inputs {
+		name := input.Definition.Name
+		definitions = append(definitions, input.Definition)
+		if reset[name] {
+			if input.HasInheritedValue {
+				values[name] = input.InheritedValue
+			}
+			continue
+		}
+		if input.HasValue {
+			values[name] = input.Value
+		}
+	}
+	for name, value := range submitted {
+		if secret, ok := value.(string); ok && strings.TrimSpace(secret) == "" && !reset[name] {
+			if _, alreadyPresent := values[name]; alreadyPresent {
+				continue
+			}
+		}
+		values[name] = value
+	}
+	groups := make(map[string]string, len(activeGroups))
+	for group, name := range activeGroups {
+		groups[group] = name
+	}
+	if err := forms.ValidateActiveGroups(definitions, values, groups); err != nil {
+		return false, []string{err.Error()}
+	}
+	return true, nil
 }
 
 func (m *Model) uninstallSelectedAgents() tea.Cmd {
