@@ -626,26 +626,7 @@ func effectiveActiveInputGroups(defs []catalog.Input, values, fixed map[string]a
 // selected member. Inactive methods may retain older populated values so a
 // method switch does not erase saved answers or let stale defaults block it.
 func validateProfileValuesForActiveGroups(defs []catalog.Input, values map[string]any, active map[string]string) error {
-	selected := append([]catalog.Input(nil), defs...)
-	groupRequired := map[string]bool{}
-	for _, def := range defs {
-		if def.ExclusiveGroup != "" && def.Required {
-			groupRequired[def.ExclusiveGroup] = true
-		}
-	}
-	for i := range selected {
-		group := selected[i].ExclusiveGroup
-		if group == "" || active[group] == "" {
-			continue
-		}
-		if selected[i].Name != active[group] {
-			selected[i].ExclusiveGroup = ""
-			selected[i].Required = false
-			continue
-		}
-		selected[i].Required = selected[i].Required || groupRequired[group]
-	}
-	return forms.Validate(selected, values)
+	return forms.ValidateActiveGroups(defs, values, active)
 }
 
 func formsValueFilled(value any) bool {
