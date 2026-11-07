@@ -91,7 +91,11 @@ func proxyHelperEnvironment(mode, proxyURL string) []string {
 		}
 		env = append(env, entry)
 	}
-	return append(env, "AACT_HEALTH_PROXY_HELPER="+mode, "HTTP_PROXY="+proxyURL, "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "NO_PROXY=", "no_proxy=")
+	// Windows environment variable names are case-insensitive. Supplying both
+	// HTTP_PROXY and http_proxy (or the other casing pairs) can leave the child
+	// process with an empty proxy value, so set only one canonical name after
+	// removing inherited variants above.
+	return append(env, "AACT_HEALTH_PROXY_HELPER="+mode, "HTTP_PROXY="+proxyURL)
 }
 
 func TestWaitForAuthenticatedTransportFailureIncludesSafeCause(t *testing.T) {
