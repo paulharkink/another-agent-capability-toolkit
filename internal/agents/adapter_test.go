@@ -391,6 +391,30 @@ func TestHTTPRegistrationIncludesHeadersForOpenCodeAndClaude(t *testing.T) {
 	}
 }
 
+func TestOpenCodeConfigPersistsAtlassianAuthorizationHeaders(t *testing.T) {
+	for _, auth := range []string{"Bearer fixture-token", "Basic ZGV2QGV4YW1wbGUuaW52YWxpZDpmaXh0dXJlLXRva2Vu"} {
+		name := "service-account"
+		if strings.HasPrefix(auth, "Basic ") {
+			name = "personal"
+		}
+		t.Run(name, func(t *testing.T) {
+			adapter, env := configFixture(t, "opencode", `{"mcp":{}}`)
+			registration := Registration{
+				Name: "atlassian", URL: "https://mcp.atlassian.com/v2/mcp", Transport: "http",
+				Headers: map[string]string{"Authorization": auth},
+			}
+			if err := adapter.Register(context.Background(), env, registration); err != nil {
+				t.Fatal("registering Atlassian MCP failed:", err)
+			}
+			entry := server(t, readJSON(t, env.ConfigPath), "mcp", "atlassian")
+			headers, ok := entry["headers"].(map[string]any)
+			if !ok || headers["Authorization"] != auth {
+				t.Fatal("generated OpenCode config did not preserve the selected Authorization value")
+			}
+		})
+	}
+}
+
 func TestOpenCodeJSONCOnlyDoesNotCreateJSON(t *testing.T) {
 	a, e := configFixture(t, "opencode", "")
 	jsonc := strings.TrimSuffix(e.ConfigPath, ".json") + ".jsonc"

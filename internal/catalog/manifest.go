@@ -33,6 +33,14 @@ func validateMCPHealthPath(value string) error {
 	return nil
 }
 
+func validateMCPExternalURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("must be an absolute HTTP(S) URL without embedded credentials")
+	}
+	return nil
+}
+
 func Load(dir string) (Package, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -439,6 +447,11 @@ func Validate(p Package) error {
 		if mcp.RegistrationTimeoutMS < 0 {
 			return fmt.Errorf("mcp registration_timeout_ms must be positive")
 		}
+		if mcp.ExternalURL != "" {
+			if err := validateMCPExternalURL(mcp.ExternalURL); err != nil {
+				return fmt.Errorf("mcp %s external_url: %w", mcp.Name, err)
+			}
+		}
 		if mcp.HealthPath != "" {
 			if err := validateMCPHealthPath(mcp.HealthPath); err != nil {
 				return fmt.Errorf("mcp %s health_path: %w", mcp.Name, err)
@@ -563,6 +576,8 @@ func Validate(p Package) error {
 			{"token_input", mcp.TokenInput, "secret"},
 			{"token_file_input", mcp.TokenFileInput, "file"},
 			{"token_env_input", mcp.TokenEnvInput, "string"},
+			{"token_auth_mode_input", mcp.TokenAuthModeInput, "choice"},
+			{"token_username_input", mcp.TokenUsernameInput, "string"},
 		} {
 			if ref.name == "" {
 				continue
@@ -571,6 +586,25 @@ func Validate(p Package) error {
 			if !ok || input.Type != ref.wantType {
 				return fmt.Errorf("mcp %s %s %q must reference a declared %s input", mcp.Name, ref.field, ref.name, ref.wantType)
 			}
+		}
+		if mcp.TokenAuthModeInput != "" {
+			if mcp.TokenInput == "" || mcp.TokenHeader == "" || mcp.TokenUsernameInput == "" {
+				return fmt.Errorf("mcp %s token auth mode requires token_input, token_header, and token_username_input", mcp.Name)
+			}
+			modeInput := inputsByName[mcp.TokenAuthModeInput]
+			modes := map[string]bool{}
+			for _, option := range modeInput.Options {
+				modes[option.Value] = true
+			}
+			if !modes["service_account"] || !modes["personal"] {
+				return fmt.Errorf("mcp %s token_auth_mode_input must offer service_account and personal choices", mcp.Name)
+			}
+			usernameInput := inputsByName[mcp.TokenUsernameInput]
+			if !usernameInput.Required || usernameInput.VisibleWhen[mcp.TokenAuthModeInput] != "personal" {
+				return fmt.Errorf("mcp %s token_username_input must be required when token auth mode is personal", mcp.Name)
+			}
+		} else if mcp.TokenUsernameInput != "" {
+			return fmt.Errorf("mcp %s token_username_input requires token_auth_mode_input", mcp.Name)
 		}
 		if mcp.TokenHeader != "" && mcp.TokenContainerEnv != "" {
 			return fmt.Errorf("mcp %s cannot set both token_header and token_container_env", mcp.Name)
