@@ -77,16 +77,16 @@ func safeHealthTransportCause(err error) string {
 // Health checks MCP protocol initialization readiness. Authentication health
 // is a separate package-declared signal handled by WaitForAuthenticated.
 func Health(ctx context.Context, endpoint, transport string) error {
-	return health(ctx, endpoint, transport, nil, true)
+	return health(ctx, endpoint, transport, nil, true, false)
 }
 
 // HealthWithHeaders checks MCP protocol readiness while including registration
 // headers. Redirects are never followed because headers may contain credentials.
 func HealthWithHeaders(ctx context.Context, endpoint, transport string, headers http.Header) error {
-	return health(ctx, endpoint, transport, headers, false)
+	return health(ctx, endpoint, transport, headers, false, true)
 }
 
-func health(ctx context.Context, endpoint, transport string, headers http.Header, followRedirects bool) error {
+func health(ctx context.Context, endpoint, transport string, headers http.Header, followRedirects, useProxyFromEnvironment bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	method := http.MethodPost
@@ -106,7 +106,11 @@ func health(ctx context.Context, endpoint, transport string, headers http.Header
 			request.Header.Add(name, value)
 		}
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 2 * time.Second}
+	httpTransport := &http.Transport{}
+	if useProxyFromEnvironment {
+		httpTransport.Proxy = http.ProxyFromEnvironment
+	}
+	client := &http.Client{Transport: httpTransport, Timeout: 2 * time.Second}
 	if !followRedirects {
 		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	}

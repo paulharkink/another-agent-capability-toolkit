@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,6 +21,77 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestAHealthWithHeadersUsesConfiguredProxy(t *testing.T) {
+	if mode := os.Getenv("AACT_HEALTH_PROXY_HELPER"); mode != "" {
+		err := HealthWithHeaders(context.Background(), "http://mcp-endpoint.invalid/mcp", "streamable-http", http.Header{"Authorization": []string{"Bearer health-token"}})
+		if err != nil {
+			t.Fatalf("health check through configured proxy failed: %v", err)
+		}
+		return
+	}
+
+	var proxyRequest string
+	var proxyAuthorization string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyRequest = r.URL.String()
+		proxyAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+	}))
+	defer proxy.Close()
+
+	command := exec.Command(os.Args[0], "-test.run=^TestAHealthWithHeadersUsesConfiguredProxy$")
+	command.Env = proxyHelperEnvironment("headers", proxy.URL)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("proxy helper failed: %v\n%s", err, output)
+	}
+	if proxyRequest != "http://mcp-endpoint.invalid/mcp" {
+		t.Fatalf("proxy received request URL %q, want %q", proxyRequest, "http://mcp-endpoint.invalid/mcp")
+	}
+	if proxyAuthorization != "Bearer health-token" {
+		t.Fatalf("proxy received Authorization header %q, want configured header", proxyAuthorization)
+	}
+}
+
+func TestAHealthRemainsDirectWithConfiguredProxy(t *testing.T) {
+	if mode := os.Getenv("AACT_HEALTH_PROXY_HELPER"); mode != "" {
+		err := Health(context.Background(), "http://mcp-endpoint.invalid/mcp", "streamable-http")
+		if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+			t.Fatalf("Health error = %v, want direct DNS lookup failure", err)
+		}
+		return
+	}
+
+	proxyRequests := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyRequests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`)
+	}))
+	defer proxy.Close()
+
+	command := exec.Command(os.Args[0], "-test.run=^TestAHealthRemainsDirectWithConfiguredProxy$")
+	command.Env = proxyHelperEnvironment("direct", proxy.URL)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("direct health helper failed: %v\n%s", err, output)
+	}
+	if proxyRequests != 0 {
+		t.Fatalf("Health sent %d request(s) through configured proxy, want direct transport", proxyRequests)
+	}
+}
+
+func proxyHelperEnvironment(mode, proxyURL string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "HTTP_PROXY") || strings.EqualFold(key, "HTTPS_PROXY") || strings.EqualFold(key, "NO_PROXY") || key == "AACT_HEALTH_PROXY_HELPER" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "AACT_HEALTH_PROXY_HELPER="+mode, "HTTP_PROXY="+proxyURL, "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "NO_PROXY=", "no_proxy=")
 }
 
 func TestWaitForAuthenticatedTransportFailureIncludesSafeCause(t *testing.T) {
