@@ -477,6 +477,53 @@ func TestApplyContinuesAfterFalseContainerHealthAndReportsLoginURL(t *testing.T)
 	}
 }
 
+func TestApplySkipsContainerAuthenticationWhenExplicitLoginIsConfigured(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skills, p.Skill, p.MCP = nil, nil, nil
+	applyAuth := false
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", AuthenticateOnApply: &applyAuth, Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}}
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	q.ItemIDs = []string{"set:alpha-only"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("unexpected health request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+	}))
+	defer server.Close()
+	runtime := &authenticationTestRuntime{providerTestRuntime: providerTestRuntime{url: server.URL + "/mcp"}, results: []string{`{"login_url":"https://login.example/device"}`}}
+	s.Options.Runtime = runtime
+
+	result, err := s.ApplyProfile(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.actions) != 0 {
+		t.Fatalf("automatic authenticate actions = %#v, want none", runtime.actions)
+	}
+	if result.AuthenticationStatus != viewmodel.AuthenticationFailed {
+		t.Fatalf("health authentication status = %q, want failed/unauthenticated observation", result.AuthenticationStatus)
+	}
+	if len(result.Changes) == 0 || len(runtime.keys) != 1 {
+		t.Fatalf("apply did not install/register the wrapper: result=%+v starts=%d", result, len(runtime.keys))
+	}
+
+	login, err := s.RunInstanceMCP(context.Background(), "authenticate", q, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if login.LoginURL != "https://login.example/device" {
+		t.Fatalf("explicit Login URL = %q, want login action result", login.LoginURL)
+	}
+	if len(runtime.actions) != 1 || runtime.actions[0] != "authenticate" {
+		t.Fatalf("explicit Login actions = %#v, want exactly one authenticate", runtime.actions)
+	}
+}
+
 func TestReconfiguredProfileAuthFailurePreservesSavedStateAndReportsAuthRequired(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]

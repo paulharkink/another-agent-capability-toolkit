@@ -95,6 +95,20 @@ health_path = "/health"
 	}
 }
 
+func TestAuthenticateOnApplyDefaultsToTrueAndCanBeDisabled(t *testing.T) {
+	if !(MCP{}).ShouldAuthenticateOnApply() {
+		t.Fatal("omitted authenticate_on_apply must preserve historical automatic authentication")
+	}
+	apply := false
+	if (MCP{AuthenticateOnApply: &apply}).ShouldAuthenticateOnApply() {
+		t.Fatal("explicit authenticate_on_apply=false must suppress only automatic authentication")
+	}
+	apply = true
+	if !(MCP{AuthenticateOnApply: &apply}).ShouldAuthenticateOnApply() {
+		t.Fatal("explicit authenticate_on_apply=true must enable automatic authentication")
+	}
+}
+
 func TestManifestMCPExternalURLMustBeAbsoluteHTTPWithoutCredentials(t *testing.T) {
 	for _, endpoint := range []string{"https://mcp.example.invalid/v2/mcp", "http://127.0.0.1:1234/mcp"} {
 		dir := writeManifest(t, `schema_version = 1

@@ -1,0 +1,106 @@
+schema_version = 1
+id = "atlassian-mcp"
+name = "Atlassian MCP"
+
+[[inputs]]
+name = "local_port"
+type = "integer"
+label = "Local MCP port"
+default = 8765
+min = 1024
+max = 65535
+
+[[inputs]]
+name = "host"
+type = "string"
+label = "Listen address"
+default = "127.0.0.1"
+
+[[inputs]]
+name = "advertised_host"
+type = "string"
+label = "Client address host"
+default = "localhost"
+
+[[inputs]]
+name = "registration_name"
+type = "string"
+label = "MCP registration name"
+default = "atlassian"
+required = true
+
+[[inputs]]
+name = "auth_method"
+type = "choice"
+label = "Authentication mode"
+default = "oauth"
+required = true
+options = [
+  { value = "oauth", label = "Atlassian OAuth" },
+  { value = "service_account", label = "Service account token" },
+  { value = "personal", label = "Personal API token" },
+]
+
+[[inputs]]
+name = "client_metadata_url"
+type = "string"
+label = "OAuth client metadata URL"
+default = "https://paulharkink.github.io/another-agent-capability-toolkit/oauth/client.json"
+visible_when = { auth_method = "oauth" }
+
+[[inputs]]
+name = "api_token"
+type = "secret"
+label = "API token"
+hint = "Required for service_account or personal authentication; unused in OAuth mode."
+
+[[inputs]]
+name = "email"
+type = "string"
+label = "Atlassian account email"
+hint = "Used with the API token in personal authentication mode."
+visible_when = { auth_method = "personal" }
+
+[mcp]
+name = "atlassian"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+health_path = "/health"
+authenticate_on_apply = false
+host_port_input = "local_port"
+bind_ip_input = "host"
+advertised_host_input = "advertised_host"
+registration_name_input = "registration_name"
+registration_timeout_ms = 60000
+credential_files = ["oauth-state.json"]
+build_context = "./mcp"
+release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/atlassian-mcp:v{aact_version}"
+
+[mcp.env]
+AACT_ATLASSIAN_AUTH_MODE = "${ inputs.auth_method }"
+AACT_ATLASSIAN_CLIENT_METADATA_URL = "${ inputs.client_metadata_url }"
+AACT_ATLASSIAN_LOCAL_PORT = "8765"
+AACT_ATLASSIAN_CALLBACK_PORT = "${ tostring(inputs.local_port) }"
+AACT_AUTH_STATE_DIR = "/state"
+
+[mcp.env_inputs]
+AACT_ATLASSIAN_EMAIL = "email"
+
+[mcp.secret_env_inputs]
+AACT_ATLASSIAN_API_TOKEN = "api_token"
+
+[mcp.actions.authenticate]
+target = "container"
+command = ["python", "/app/server.py", "action", "authenticate"]
+
+[ui]
+[[ui.sections]]
+id = "connection"
+title = "Connection"
+fields = ["local_port", "host", "advertised_host", "registration_name"]
+[[ui.sections]]
+id = "authentication"
+title = "Authentication"
+fields = ["auth_method", "client_metadata_url", "api_token", "email"]
