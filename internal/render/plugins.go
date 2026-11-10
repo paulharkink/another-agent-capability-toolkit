@@ -8,6 +8,9 @@ import (
 )
 
 func StagePlugin(ctx context.Context, pkg catalog.Package, plugin catalog.Plugin, parent string) (string, error) {
+	if plugin.Reference != "" && plugin.Source == "" {
+		return "", nil
+	}
 	source := plugin.Source
 	if filepath.IsAbs(source) {
 		relative, err := filepath.Rel(pkg.Dir, source)

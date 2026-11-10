@@ -31,6 +31,17 @@ func (g Generator) Generate(ctx context.Context, p catalog.Package, inputs map[s
 func (g Generator) GenerateProfile(ctx context.Context, p catalog.Package, inputs map[string]any, profile config.Profile, staging string) (map[string]any, error) {
 	return g.generate(ctx, p, inputs, map[string]any{"profile": profile}, staging)
 }
+
+// BuildPlugin runs an optional capability-declared plugin builder through the
+// same bounded process executor and JSON protocol used by package generators.
+func (g Generator) BuildPlugin(ctx context.Context, p catalog.Package, plugin catalog.Plugin, inputs map[string]any, profile config.Profile, staging, stateRoot string) (map[string]any, error) {
+	if plugin.Build == nil {
+		return map[string]any{}, nil
+	}
+	buildPackage := p
+	buildPackage.Generator = plugin.Build
+	return g.generate(ctx, buildPackage, inputs, map[string]any{"profile": profile, "manager_state_dir": stateRoot}, staging)
+}
 func (g Generator) generate(ctx context.Context, p catalog.Package, inputs map[string]any, commandContext map[string]any, staging string) (map[string]any, error) {
 	if p.Generator == nil {
 		return map[string]any{}, nil

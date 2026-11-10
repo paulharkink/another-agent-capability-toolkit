@@ -19,10 +19,10 @@ func TestMustacheGoldenRendering(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name string
-		rows []Repository
+		rows []RepositoryOutput
 	}{
-		{"populated", []Repository{{"git.example", "team/widget", "/work/research & development/<widget>"}}},
-		{"empty", []Repository{}},
+		{"populated", []RepositoryOutput{{"git.example", "team/widget", "/work/research & development/<widget>", "fixture-repo-id"}}},
+		{"empty", []RepositoryOutput{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			encoded, err := json.Marshal(result{tc.rows})

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -40,12 +39,17 @@ func TestProtocolSubprocess(t *testing.T) {
 	}
 	decoder := json.NewDecoder(strings.NewReader(stdout))
 	var result struct {
-		Repositories []Repository `json:"repositories"`
+		Repositories []struct {
+			Host   string `json:"host"`
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			RepoID string `json:"repoId"`
+		} `json:"repositories"`
 	}
 	if err := decoder.Decode(&result); err != nil {
 		t.Fatalf("stdout %q: %v", stdout, err)
 	}
-	if !reflect.DeepEqual(result.Repositories, []Repository{{"git.example", "team/app", p}}) {
+	if len(result.Repositories) != 1 || result.Repositories[0].Host != "git.example" || result.Repositories[0].Name != "team/app" || result.Repositories[0].Path != p || result.Repositories[0].RepoID == "" {
 		t.Fatalf("unexpected repositories %#v", result.Repositories)
 	}
 	var extra any

@@ -44,20 +44,20 @@ func TestSeveralRoots(t *testing.T) {
 	z := fixtureRepo(t, filepath.Join(a, "z"), "git@z.example:org/apple.git")
 	x := fixtureRepo(t, filepath.Join(a, "x"), "https://a.example/org/zebra.git")
 	y := fixtureRepo(t, filepath.Join(b, "y"), "https://a.example/org/apple.git")
-	expectScan(t, []string{a, b}, nil, []Repository{{"a.example", "org/apple", y}, {"a.example", "org/zebra", x}, {"z.example", "org/apple", z}})
+	expectScan(t, []string{a, b}, nil, []Repository{{Host: "a.example", Name: "org/apple", Path: y}, {Host: "a.example", Name: "org/zebra", Path: x}, {Host: "z.example", Name: "org/apple", Path: z}})
 }
 func TestMultipleCheckoutsPreserved(t *testing.T) {
 	root := t.TempDir()
 	a := fixtureRepo(t, filepath.Join(root, "a"), "https://git.example/team/app.git")
 	b := fixtureRepo(t, filepath.Join(root, "b"), "git@git.example:team/app.git")
-	expectScan(t, []string{root, a}, nil, []Repository{{"git.example", "team/app", a}, {"git.example", "team/app", b}})
+	expectScan(t, []string{root, a}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: a}, {Host: "git.example", Name: "team/app", Path: b}})
 }
 func TestSameCoordinatesDifferentHosts(t *testing.T) {
 	root := t.TempDir()
 	a := fixtureRepo(t, filepath.Join(root, "a"), "https://a.example/team/app.git")
 	b := fixtureRepo(t, filepath.Join(root, "b"), "https://b.example/team/app.git")
-	expectScan(t, []string{root}, nil, []Repository{{"a.example", "team/app", a}, {"b.example", "team/app", b}})
-	expectScan(t, []string{root}, []string{"B.Example"}, []Repository{{"b.example", "team/app", b}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "a.example", Name: "team/app", Path: a}, {Host: "b.example", Name: "team/app", Path: b}})
+	expectScan(t, []string{root}, []string{"B.Example"}, []Repository{{Host: "b.example", Name: "team/app", Path: b}})
 }
 
 // Real worktrees keep origin in the common directory, not the .git file target.
@@ -82,7 +82,7 @@ func fixtureWorktree(t *testing.T, root string) (string, string, string) {
 func TestWorktreeGitFile(t *testing.T) {
 	root := t.TempDir()
 	a, worktree, gitdir := fixtureWorktree(t, root)
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", a}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: worktree}, {Host: "git.example", Name: "team/app", Path: a}})
 	// Scanning must release metadata handles so Windows can remove the checkout.
 	if err := os.Remove(filepath.Join(gitdir, "commondir")); err != nil {
 		t.Fatalf("scan retained commondir handle: %v", err)
@@ -103,7 +103,7 @@ func TestWorktreeConfigExtensionStillMapsOrigin(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", worktree}, {"git.example", "team/app", main}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: worktree}, {Host: "git.example", Name: "team/app", Path: main}})
 }
 
 func TestDanglingWorktreeIgnored(t *testing.T) {
@@ -117,7 +117,7 @@ func TestDanglingWorktreeIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := Scan(context.Background(), []string{root}, nil)
-	if err != nil || !reflect.DeepEqual(rows, []Repository{{"git.example", "team/app", valid}}) {
+	if err != nil || !reflect.DeepEqual(rows, []Repository{{Host: "git.example", Name: "team/app", Path: valid}}) {
 		t.Fatalf("rows=%#v err=%v", rows, err)
 	}
 }
@@ -129,7 +129,7 @@ func TestArchiveMetadataIgnored(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(archive, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", valid}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: valid}})
 }
 
 func TestPrunedDependencies(t *testing.T) {
@@ -138,7 +138,7 @@ func TestPrunedDependencies(t *testing.T) {
 	for _, dir := range []string{"node_modules", ".cache", ".npm", ".cargo", ".rustup", ".gradle", ".venv", "vendor"} {
 		fixtureRepo(t, filepath.Join(root, dir, "hidden"), "https://git.example/team/hidden.git")
 	}
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", visible}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: visible}})
 }
 func TestUnreadableRootVisible(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing")
@@ -156,7 +156,7 @@ func TestSymlinkCycleDoesNotLoop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	got, err := Scan(ctx, []string{root}, nil)
-	if err != nil || !reflect.DeepEqual(got, []Repository{{"git.example", "team/app", p}}) {
+	if err != nil || !reflect.DeepEqual(got, []Repository{{Host: "git.example", Name: "team/app", Path: p}}) {
 		t.Fatalf("got %#v %v", got, err)
 	}
 }
@@ -199,7 +199,7 @@ func TestMalformedNestedGitMetadataIgnored(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("invalid git file\n"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if rows, err := Scan(context.Background(), []string{root}, nil); err != nil || !reflect.DeepEqual(rows, []Repository{{"git.example", "team/app", valid}}) {
+			if rows, err := Scan(context.Background(), []string{root}, nil); err != nil || !reflect.DeepEqual(rows, []Repository{{Host: "git.example", Name: "team/app", Path: valid}}) {
 				t.Fatalf("rows=%v err=%v", rows, err)
 			}
 		})
@@ -227,17 +227,17 @@ func TestMultipleOriginURLs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectScan(t, []string{root}, nil, []Repository{{"a.example", "team/app", p}, {"b.example", "team/app", p}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "a.example", Name: "team/app", Path: p}, {Host: "b.example", Name: "team/app", Path: p}})
 }
 func TestExplicitCacheRootScanned(t *testing.T) {
 	root := filepath.Join(t.TempDir(), ".cache")
 	p := fixtureRepo(t, filepath.Join(root, "checkout"), "https://git.example/team/app.git")
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/app", p}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/app", Path: p}})
 }
 
 func TestPrunedLocalRuntimeState(t *testing.T) {
 	root := t.TempDir()
 	fixtureRepo(t, filepath.Join(root, ".local", "share", "hidden"), "https://git.example/team/hidden.git")
 	visible := fixtureRepo(t, filepath.Join(root, "project", "share", "visible"), "https://git.example/team/visible.git")
-	expectScan(t, []string{root}, nil, []Repository{{"git.example", "team/visible", visible}})
+	expectScan(t, []string{root}, nil, []Repository{{Host: "git.example", Name: "team/visible", Path: visible}})
 }
