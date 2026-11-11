@@ -1,0 +1,53 @@
+name: Publish OAuth client metadata
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/atlassian-mcp/oauth/client.json'
+      - '.github/workflows/publish-oauth-client-metadata.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate OAuth client metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata='packages/atlassian-mcp/oauth/client.json'
+          jq -e '
+            .client_id == "https://paulharkink.github.io/another-agent-capability-toolkit/oauth/client.json" and
+            .application_type == "native" and
+            .token_endpoint_auth_method == "none" and
+            .grant_types == ["authorization_code", "refresh_token"] and
+            .response_types == ["code"] and
+            (.redirect_uris | index("http://127.0.0.1/callback") != null) and
+            (.redirect_uris | index("http://localhost/callback") != null)
+          ' "$metadata" >/dev/null
+          mkdir -p _site/oauth
+          cp "$metadata" _site/oauth/client.json
+          test "$(find _site -type f | wc -l | tr -d ' ')" = 1
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

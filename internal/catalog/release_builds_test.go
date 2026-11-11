@@ -57,7 +57,7 @@ image="vendor/server:1"
 	}
 }
 
-func TestBundledReleaseDiscoveryFindsAllSevenMCPImages(t *testing.T) {
+func TestBundledReleaseDiscoveryFindsAllEightMCPImages(t *testing.T) {
 	builds, err := DiscoverMCPReleaseBuilds("../../packages")
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +72,7 @@ func TestBundledReleaseDiscoveryFindsAllSevenMCPImages(t *testing.T) {
 	}
 	want := []string{
 		"argocd/argocd",
+		"atlassian-mcp/atlassian",
 		"azure-inspector/azure-inspector",
 		"cluster-inspector/cluster-inspector",
 		"git-provider/github",

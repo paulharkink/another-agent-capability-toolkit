@@ -41,6 +41,7 @@ func TestReleaseWorkflowDiscoversOnlyBundledMCPBuildContexts(t *testing.T) {
 	}
 	want := map[string]bool{
 		"argocd/argocd":                       false,
+		"atlassian-mcp/atlassian":            false,
 		"azure-inspector/azure-inspector":     false,
 		"cluster-inspector/cluster-inspector": false,
 		"git-provider/github":                 false,

@@ -1,0 +1,18 @@
+{
+  "client_id": "https://paulharkink.github.io/another-agent-capability-toolkit/oauth/client.json",
+  "client_name": "Another Agent Capability Toolkit",
+  "client_uri": "https://github.com/paulharkink/another-agent-capability-toolkit",
+  "application_type": "native",
+  "token_endpoint_auth_method": "none",
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "redirect_uris": [
+    "http://127.0.0.1/callback",
+    "http://localhost/callback"
+  ]
+}

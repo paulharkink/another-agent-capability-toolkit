@@ -1498,7 +1498,8 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 						return out, e
 					}
 					authenticated := false
-					if containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups) {
+					authenticateOnApply := definition.ShouldAuthenticateOnApply() && (containerAuthentication && definition.HealthPath != "" || needsProfileAuthentication(s, cp, child, values, previousAnswers, pendingGroups, activeGroups))
+					if authenticateOnApply {
 						out.Step = "authenticate"
 						reportOperationStep(ctx, out.Step)
 						result, e := (&mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(child), OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "authenticate", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(child), Interactive: q.Interactive})
