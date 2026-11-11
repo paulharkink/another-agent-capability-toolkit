@@ -850,7 +850,7 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 	ids := q.ItemIDs
 	for _, r := range records {
 		if r.Key == key && r.Selection != nil && ids == nil {
-			ids = r.Selection.ItemIDs
+			ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
 		}
 	}
 	selectedItems, selectedItemIDs, err := componentSelection(p, values, ids, q.SkillsOnly)
@@ -1141,7 +1141,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 		if r.Key == key && r.Selection != nil {
 			if ids == nil {
-				ids = r.Selection.ItemIDs
+				ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
 			}
 			if destIDs == nil {
 				destIDs = r.Selection.DestinationIDs

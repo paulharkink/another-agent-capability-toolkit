@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -147,6 +148,112 @@ func profileApplyFixture(t *testing.T) (*Service, *profileAdapter, ProfileReques
 	s.Options.Runtime = &fakeRuntime{}
 	return s, a, ProfileRequest{Ref: config.ProfileRef{PackID: s.Source.ID, CapabilityID: "demo", Name: "ota"}, DestinationIDs: []string{a.ID()}, ItemIDs: []string{"set:core"}, Inputs: map[string]any{"label": "invalid123"}}
 }
+
+func recordLegacyMCPSelection(t *testing.T, s *Service, q ProfileRequest, adapterID string) {
+	t.Helper()
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.ProfileRecord{
+		Key: key, Name: q.Ref.Name,
+		Selection: &state.ProfileSelection{ItemIDs: []string{"mcp:alpha"}, DestinationIDs: []string{adapterID}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func configureLinkedAtlassianFixture(s *Service) {
+	s.Source.Catalog[0].Sets = []catalog.ComponentSet{{Name: "atlassian-confluence", Skills: []string{"one"}, MCPs: []string{"alpha"}}}
+}
+
+func TestPreviewMigratesPersistedLegacyMCPSelectionToLinkedSet(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	configureLinkedAtlassianFixture(s)
+	q.ItemIDs = nil
+	q.DestinationIDs = nil
+	recordLegacyMCPSelection(t, s, q, a.ID())
+
+	preview, err := s.PreviewProfile(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(preview.SelectedItemIDs, []string{"set:atlassian-confluence"}) {
+		t.Fatalf("preview selection = %v, want the current linked set", preview.SelectedItemIDs)
+	}
+
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil && !reflect.DeepEqual(record.Selection.ItemIDs, []string{"mcp:alpha"}) {
+			t.Fatalf("read-only preview rewrote saved selection: %v", record.Selection.ItemIDs)
+		}
+	}
+}
+
+func TestNormalizePersistedItemIDsPreservesOrderAndDeduplicatesMappedSet(t *testing.T) {
+	s, _, _ := profileApplyFixture(t)
+	configureLinkedAtlassianFixture(s)
+	ids := []string{"skill:two", "mcp:alpha", "set:atlassian-confluence"}
+	got := normalizePersistedItemIDs(s.Source.Catalog[0], ids)
+	want := []string{"skill:two", "set:atlassian-confluence"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalized selection = %v, want %v", got, want)
+	}
+}
+
+func TestApplyInstanceUsesPersistedLegacyMCPSelectionWithoutItemIDs(t *testing.T) {
+	s, a, q := profileApplyFixture(t)
+	configureLinkedAtlassianFixture(s)
+	q.ItemIDs = nil
+	q.DestinationIDs = nil
+	recordLegacyMCPSelection(t, s, q, a.ID())
+
+	out, err := s.ApplyInstance(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.calls) != 2 || a.calls[0] != "skill:one" || !strings.HasSuffix(a.calls[1], "-alpha") || !strings.HasPrefix(a.calls[1], "mcp:") {
+		t.Fatalf("installed components = %v, want linked skill and alpha MCP only", a.calls)
+	}
+	if len(out.Changes) != 2 {
+		t.Fatalf("operation changes = %+v, want linked skill and MCP", out.Changes)
+	}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			if !reflect.DeepEqual(record.Selection.ItemIDs, []string{"set:atlassian-confluence"}) {
+				t.Fatalf("successful install did not persist normalized selection: %v", record.Selection.ItemIDs)
+			}
+			if !reflect.DeepEqual(record.Selection.DestinationIDs, []string{a.ID()}) {
+				t.Fatalf("successful install changed saved destinations: %v", record.Selection.DestinationIDs)
+			}
+			answers, err := s.Store.Answers(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answers["label"] != "company" || answers["enabled"] != false {
+				t.Fatalf("successful install changed saved inputs: %#v", answers)
+			}
+			return
+		}
+	}
+	t.Fatal("successful install did not retain the instance selection")
+}
+
 func TestApplyProfileReportsRemovedMCPAfterFailedReplacementAndRetries(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	q.Inputs = nil
