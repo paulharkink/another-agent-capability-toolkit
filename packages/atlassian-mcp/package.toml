@@ -2,6 +2,9 @@ schema_version = 1
 id = "atlassian-mcp"
 name = "Atlassian MCP"
 
+[skill]
+name = "atlassian-confluence"
+
 [[inputs]]
 name = "local_port"
 type = "integer"
