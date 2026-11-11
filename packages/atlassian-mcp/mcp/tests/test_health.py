@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 
 import httpx
+import pytest
 
 import server
 from server import observe_login_task, protected_health
@@ -108,7 +110,63 @@ def test_container_authenticate_action_accepts_authenticated_status_without_url(
     monkeypatch.setattr(server.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
 
     assert server.authenticate_action() == 0
-    assert capsys.readouterr().out == ""
+    assert json.loads(capsys.readouterr().out) == {"auth_required": False}
+
+
+def test_container_authenticate_action_returns_oauth_url_as_action_json(monkeypatch, capsys):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"authorization_url":"https://auth.example/authorize?state=opaque"}'
+
+    monkeypatch.setattr(server.sys, "argv", ["server.py", "action", "authenticate"])
+    monkeypatch.setattr(server, "AUTH_MODE", "oauth")
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    assert server.authenticate_action() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "login_url": "https://auth.example/authorize?state=opaque"
+    }
+
+
+@pytest.mark.parametrize(
+    ("auth_mode", "authenticated"),
+    [(mode, result) for mode in ("personal", "service_account") for result in (True, False)],
+)
+def test_container_authenticate_action_validates_static_credentials(monkeypatch, capsys, auth_mode, authenticated):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return json.dumps({"authenticated": authenticated}).encode()
+
+    calls = []
+
+    def urlopen(request, **kwargs):
+        calls.append((request.full_url, request.method, kwargs.get("timeout")))
+        return Response()
+
+    monkeypatch.setattr(server.sys, "argv", ["server.py", "action", "authenticate"])
+    monkeypatch.setattr(server, "AUTH_MODE", auth_mode)
+    monkeypatch.setattr(server.urllib.request, "urlopen", urlopen)
+
+    assert server.authenticate_action() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert calls == [("http://127.0.0.1:8765/health", "GET", 35)]
+    if authenticated:
+        assert result == {"auth_required": False}
+    else:
+        assert result["auth_required"] is True
+        assert "credentials" in result["diagnostic"].lower()
 
 
 def test_background_login_failure_is_consumed_without_logging_exception_text(caplog):
