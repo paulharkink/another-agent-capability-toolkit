@@ -1,7 +1,9 @@
 package catalog
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +93,36 @@ func TestAtlassianWrapperPackageDeclaresLocalOAuthAndLegacyAuthModes(t *testing.
 	}
 	if got := resolved.MCP.Env["AACT_ATLASSIAN_CALLBACK_PORT"]; got != "23456" {
 		t.Errorf("resolved callback port = %q, want published host port", got)
+	}
+}
+
+func TestAtlassianWrapperDeclaresConfluenceReadingSkill(t *testing.T) {
+	pkg, err := Load(filepath.Join("..", "..", "packages", "atlassian-mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Skill == nil || pkg.Skill.Name != "atlassian-confluence" {
+		t.Fatalf("Atlassian skill = %#v, want atlassian-confluence", pkg.Skill)
+	}
+	content, err := os.ReadFile(filepath.Join(pkg.Dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read Atlassian companion skill: %v", err)
+	}
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	frontmatter, ok := strings.CutPrefix(text, "---\n")
+	if !ok {
+		t.Fatal("Atlassian companion skill is missing YAML frontmatter")
+	}
+	frontmatter, _, _ = strings.Cut(frontmatter, "\n---\n")
+	wantName := "name: " + pkg.Skill.Name
+	foundName := false
+	for _, line := range strings.Split(frontmatter, "\n") {
+		if strings.TrimSpace(line) == wantName {
+			foundName = true
+			break
+		}
+	}
+	if !foundName {
+		t.Fatalf("skill frontmatter name does not match manifest skill %q", pkg.Skill.Name)
 	}
 }
