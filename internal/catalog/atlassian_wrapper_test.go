@@ -108,7 +108,8 @@ func TestAtlassianWrapperDeclaresConfluenceReadingSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Atlassian companion skill: %v", err)
 	}
-	frontmatter, ok := strings.CutPrefix(string(content), "---\n")
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	frontmatter, ok := strings.CutPrefix(text, "---\n")
 	if !ok {
 		t.Fatal("Atlassian companion skill is missing YAML frontmatter")
 	}
