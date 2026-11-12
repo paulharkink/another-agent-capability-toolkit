@@ -5,6 +5,36 @@ setting. AACT selects **Pack → Capability → Profile**. There is no additiona
 Environment or Target selector. The `environments` directory stores profiles;
 its historical name remains a storage convention.
 
+## Named Profiles across capabilities
+
+A Pack can also define a named Profile that groups existing Capability
+Instances across its catalog. This group is separate from the per-capability
+input profiles described below. A group may contain no members or many members:
+
+```toml
+[[profiles]]
+name = "Operations"
+description = "Production services"
+
+[[profiles.members]]
+capability = "grafana-inspector"
+instance = "production"
+
+[[profiles.members]]
+capability = "git-provider"
+instance = "release"
+```
+
+Open **F9 Main menu → Profiles** to preview and edit group membership, launch
+all members, or open an individual instance. Pack declarations remain
+read-only; membership edits are saved in local AACT state and override the
+matching Pack Profile without changing its Capability Instances. Launch all
+continues through missing, skipped, failed, and authentication-needed members.
+The status shown for an MCP comes from a fresh runtime observation and its
+declared authentication health check. When authentication is needed, AACT
+prompts only visible required authentication fields and explicitly requested
+prompt fields; optional visible inputs are not added automatically.
+
 ## A pack you maintain
 
 ```text
