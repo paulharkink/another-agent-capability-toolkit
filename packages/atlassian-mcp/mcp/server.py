@@ -212,19 +212,43 @@ app = mcp.http_app(path="/mcp", transport="streamable-http")
 
 
 def authenticate_action() -> int:
+    if AUTH_MODE in {"personal", "service_account"}:
+        request = urllib.request.Request(f"http://127.0.0.1:{PORT}/health", method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=35) as response:
+                result = json.load(response)
+        except Exception:
+            result = {"authenticated": False}
+        if result.get("authenticated") is True:
+            print(json.dumps({"auth_required": False}, separators=(",", ":")))
+        else:
+            print(json.dumps({
+                "auth_required": True,
+                "diagnostic": "Atlassian user identity check failed; verify the configured authentication mode and credentials.",
+            }, separators=(",", ":")))
+        return 0
+
     request = urllib.request.Request(f"http://127.0.0.1:{PORT}/auth/login", method="POST")
     try:
         with urllib.request.urlopen(request, timeout=65) as response:
             result = json.load(response)
     except Exception:
-        print("Atlassian OAuth login could not start.", file=sys.stderr)
-        return 1
-    if result.get("authenticated") is True:
+        print(json.dumps({
+            "auth_required": True,
+            "diagnostic": "Atlassian OAuth login could not start; check the client metadata URL and wrapper health.",
+        }, separators=(",", ":")))
         return 0
-    if not result.get("authorization_url"):
-        print("Atlassian OAuth login could not start.", file=sys.stderr)
-        return 1
-    print(result["authorization_url"])
+    if result.get("authenticated") is True:
+        print(json.dumps({"auth_required": False}, separators=(",", ":")))
+        return 0
+    authorization_url = result.get("authorization_url")
+    if not isinstance(authorization_url, str) or not authorization_url:
+        print(json.dumps({
+            "auth_required": True,
+            "diagnostic": "Atlassian OAuth login did not return an authorization URL.",
+        }, separators=(",", ":")))
+        return 0
+    print(json.dumps({"login_url": authorization_url}, separators=(",", ":")))
     return 0
 
 

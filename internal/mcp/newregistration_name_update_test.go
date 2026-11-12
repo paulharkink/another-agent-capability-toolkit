@@ -371,6 +371,75 @@ func TestStartUpdatesRunningLegacyHashNamedRuntimeToReadableName(t *testing.T) {
 	}
 }
 
+func TestStartRegistrationReplacementStillChecksReadinessBeforeRemovingPreviousRuntime(t *testing.T) {
+	r, executor, key := testRuntime(t)
+	r.SkipHealth = false
+	legacySpec := RunSpec{Image: "fixture", Host: "127.0.0.1", HostPort: 8765, ContainerPort: 80}
+	legacy := dockerInfo{ID: "legacy-runtime-id", Name: "/" + containerName(key), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, key, legacySpec)}, State: dockerState{Running: true, Status: "running"}}
+	if err := r.Store.Record(state.Installation{Key: key, AgentID: "docker", Component: "runtime", Destination: containerName(key), SourcePath: legacy.ID, Mode: "docker"}); err != nil {
+		t.Fatal(err)
+	}
+	var checks int
+	removed := false
+	healthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if removed {
+			t.Error("previous runtime was removed before replacement passed protocol readiness")
+		}
+		checks++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+	}))
+	defer healthServer.Close()
+	parsedHealth, err := url.Parse(healthServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthPort, err := strconv.Atoi(parsedHealth.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := RunSpec{
+		Image: "fixture", Host: parsedHealth.Hostname(), HostPort: healthPort,
+		ContainerPort: 80, Transport: "streamable-http", EndpointPath: "/mcp",
+		RegistrationName: "Readable Replacement", SkipProtocolHealthForExisting: true,
+	}
+	executor.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			if args[2] == legacy.ID || args[2] == containerName(key) {
+				return json.Marshal([]dockerInfo{legacy})
+			}
+			return nil, errors.New("No such object: requested container")
+		case "ps":
+			return []byte(legacy.ID), nil
+		case "stop":
+			legacy.State.Running = false
+			legacy.State.Status = "exited"
+			return nil, nil
+		case "rename":
+			legacy.Name = "/" + args[3]
+			return nil, nil
+		case "run":
+			return []byte("replacement-runtime-id"), nil
+		case "rm":
+			if args[len(args)-1] == legacy.ID {
+				removed = true
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker operation: %v", args)
+		}
+	}
+
+	instance, err := r.Start(context.Background(), key, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks == 0 || !removed || instance.ID != "replacement-runtime-id" {
+		t.Fatalf("replacement skipped readiness or did not clean up prior runtime afterward: checks=%d removed=%v instance=%+v calls=%v", checks, removed, instance, executor.calls)
+	}
+}
+
 func TestFailedRegistrationNameReplacementLeavesPriorRuntimeStoppedInBackup(t *testing.T) {
 	r, executor, key := testRuntime(t)
 	ownerID, err := r.Store.InstallationID()

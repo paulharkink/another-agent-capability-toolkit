@@ -93,6 +93,29 @@ func TestActionJSONContract(t *testing.T) {
 	}
 }
 
+func TestAuthenticateActionResultPreservesOAuthURL(t *testing.T) {
+	f := &actionExec{output: `{"login_url":"https://auth.example/authorize?state=opaque"}`}
+	result, err := (&ActionRunner{Executor: f}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LoginURL != "https://auth.example/authorize?state=opaque" || result.AuthRequired {
+		t.Fatalf("authenticate action result = %+v", result)
+	}
+}
+
+func TestAuthenticateActionResultPreservesCredentialValidationDiagnostic(t *testing.T) {
+	const diagnostic = "Atlassian user identity check failed; verify configured credentials."
+	f := &actionExec{output: `{"auth_required":true,"diagnostic":"` + diagnostic + `"}`}
+	result, err := (&ActionRunner{Executor: f}).Run(context.Background(), actionPackage(), ActionRequest{Action: "authenticate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AuthRequired || result.Diagnostic != diagnostic || result.LoginURL != "" {
+		t.Fatalf("authenticate action result = %+v", result)
+	}
+}
+
 func TestActionUsesProfileAsLegacyTargetContext(t *testing.T) {
 	f := &actionExec{output: `{}`}
 	profile := config.Profile{

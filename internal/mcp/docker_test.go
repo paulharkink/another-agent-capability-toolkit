@@ -69,6 +69,71 @@ func TestStartDefersInitialProtocolProbeWhenRunSpecRequestsIt(t *testing.T) {
 	}
 }
 
+func TestStartSkipsProtocolProbeOnlyForUnchangedRunningInstance(t *testing.T) {
+	r, f, k := testRuntime(t)
+	r.SkipHealth = false
+	spec := unhealthySpec(t)
+	deferExisting := reflect.ValueOf(&spec).Elem().FieldByName("SkipProtocolHealthForExisting")
+	if !deferExisting.IsValid() {
+		t.Fatal("RunSpec lacks the skip-only-for-existing-runtime option")
+	}
+	deferExisting.SetBool(true)
+	spec = normalizedTestSpec(k, spec)
+	preexisting := dockerInfo{ID: "healthy-existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: true, Status: "running"}}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] == "inspect" {
+			return json.Marshal([]dockerInfo{preexisting})
+		}
+		return nil, nil
+	}
+	if _, err := r.Start(context.Background(), k, spec); err != nil {
+		t.Fatalf("unchanged running instance unexpectedly ran the protocol probe: %v", err)
+	}
+}
+
+func TestStartKeepsProtocolReadinessForStoppedInstanceWithSkipExistingOption(t *testing.T) {
+	r, f, k := testRuntime(t)
+	r.SkipHealth = false
+	spec, protocolChecks := healthySpec(t)
+	deferExisting := reflect.ValueOf(&spec).Elem().FieldByName("SkipProtocolHealthForExisting")
+	if !deferExisting.IsValid() {
+		t.Fatal("RunSpec lacks the skip-only-for-existing-runtime option")
+	}
+	deferExisting.SetBool(true)
+	spec = normalizedTestSpec(k, spec)
+	preexisting := dockerInfo{ID: "stopped-existing", Name: "/" + containerName(k), Config: dockerConfig{Labels: locallyOwnedLabels(t, r, k, spec)}, State: dockerState{Running: false, Status: "exited"}}
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			return json.Marshal([]dockerInfo{preexisting})
+		case "run":
+			return []byte("replacement-id"), nil
+		default:
+			return nil, nil
+		}
+	}
+	if _, err := r.Start(context.Background(), k, spec); err != nil {
+		t.Fatalf("stopped instance failed to start with ordinary readiness: %v", err)
+	}
+	if *protocolChecks == 0 {
+		t.Fatal("stopped instance was replaced without a protocol readiness check")
+	}
+	if !reflect.DeepEqual(f.calls[len(f.calls)-1][1:2], []string{"rm"}) {
+		// Successful replacement cleans up the prior container only after its
+		// protocol readiness check has passed.
+		t.Fatalf("stopped runtime replacement did not complete cleanup after readiness: %v", f.calls)
+	}
+}
+
+func normalizedTestSpec(k state.Key, spec RunSpec) RunSpec {
+	spec.BindIP = effectiveBindIP(spec)
+	spec.AdvertisedHost = effectiveAdvertisedHost(spec)
+	if spec.RegistrationName == "" {
+		spec.RegistrationName = strings.Join([]string{k.Package, k.Environment, k.Target, k.MCPDefinition, k.MCP}, " ")
+	}
+	return spec
+}
+
 func TestDockerListReconstructsNamedMCPKeyAndOwnership(t *testing.T) {
 	r, f, key := testRuntime(t)
 	key.MCP = "secondary"
@@ -686,6 +751,19 @@ func unhealthySpec(t *testing.T) RunSpec {
 	u, _ := url.Parse(server.URL)
 	port, _ := strconv.Atoi(u.Port())
 	return RunSpec{Image: "fixture", Host: u.Hostname(), HostPort: port, ContainerPort: 80, Transport: "streamable-http", EndpointPath: "/mcp"}
+}
+
+func healthySpec(t *testing.T) (RunSpec, *int) {
+	t.Helper()
+	checks := new(int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*checks++
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+	}))
+	t.Cleanup(server.Close)
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	return RunSpec{Image: "fixture", Host: u.Hostname(), HostPort: port, ContainerPort: 80, Transport: "streamable-http", EndpointPath: "/mcp"}, checks
 }
 
 func TestFailedNewRuntimeHealthCleansWithIndependentContextAndPreservesLedger(t *testing.T) {

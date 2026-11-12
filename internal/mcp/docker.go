@@ -51,6 +51,9 @@ type RunSpec struct {
 	Transport           string        `json:"transport"`
 	EndpointPath        string        `json:"endpoint_path"`
 	DeferProtocolHealth bool          `json:"-"`
+	// SkipProtocolHealthForExisting skips only the repeat probe for an exact
+	// running instance with the same spec. New or replaced instances still check readiness.
+	SkipProtocolHealthForExisting bool `json:"-"`
 }
 type Instance struct {
 	Key              state.Key `json:"key"`
@@ -527,7 +530,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			}
 			out := instance(old)
 			out.Ownership = "local"
-			if !s.DeferProtocolHealth {
+			if !s.DeferProtocolHealth && !s.SkipProtocolHealthForExisting {
 				if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
 					return out, fmt.Errorf("existing MCP health check failed: %w", e)
 				}

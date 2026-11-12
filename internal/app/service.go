@@ -433,7 +433,12 @@ func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (Result, erro
 	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
 }
 
-func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Instance, k state.Key, values map[string]any, interactive bool, deferProtocolHealth ...bool) (mcp.Instance, error) {
+type profileStartOptions struct {
+	deferProtocolHealth           bool
+	skipProtocolHealthForExisting bool
+}
+
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Instance, k state.Key, values map[string]any, interactive bool, options ...profileStartOptions) (mcp.Instance, error) {
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
@@ -549,7 +554,10 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
 	}
-	spec.DeferProtocolHealth = p.MCP.HealthPath != "" && len(deferProtocolHealth) > 0 && deferProtocolHealth[0]
+	if len(options) > 0 && p.MCP.HealthPath != "" {
+		spec.DeferProtocolHealth = options[0].deferProtocolHealth
+		spec.SkipProtocolHealthForExisting = options[0].skipProtocolHealthForExisting
+	}
 	stateMount := mcp.Mount{Source: stateDir, Destination: "/state", ReadOnly: false}
 	for i := 0; i < len(spec.Mounts); {
 		if spec.Mounts[i].Destination == stateMount.Destination {

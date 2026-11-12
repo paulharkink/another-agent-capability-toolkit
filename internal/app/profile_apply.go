@@ -1472,7 +1472,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				if needsOwnedInstance && containerAuthentication {
 					out.Step = "start"
 					reportOperationStep(ctx, out.Step)
-					instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+					instance, err = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
 					if err != nil {
 						var authFailure authenticationRequiredFailure
 						if definition.HealthPath == "" && errors.As(err, &authFailure) {
@@ -1552,7 +1552,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				if needsOwnedInstance && !containerAuthentication {
 					out.Step = "start"
 					reportOperationStep(ctx, out.Step)
-					instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+					instance, startErr := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
 					if startErr != nil {
 						var authFailure authenticationRequiredFailure
 						if definition.HealthPath == "" && errors.As(startErr, &authFailure) {
@@ -2124,7 +2124,7 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 		cp.MCP = &definition
 		cp.MCPs = nil
 		if action == "start" {
-			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, definition.HealthPath != "")
+			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
 			if e != nil {
 				return out, e
 			}
@@ -2154,7 +2154,7 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 			var startErr error
 			actionCommand, _ := mcp.ResolveActionCommand(definition, action, "")
 			if action == "authenticate" && actionCommand.Target == "container" {
-				instance, startErr = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive)
+				instance, startErr = s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, profileStartOptions{skipProtocolHealthForExisting: definition.HealthPath != ""})
 				if startErr != nil {
 					return out, startErr
 				}

@@ -226,7 +226,11 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 		t.Fatalf("authenticate result = %#v", result)
 	}
 	if len(runtime.specs) != 1 || runtime.specs[0].DeferProtocolHealth {
-		t.Fatalf("direct authenticate unexpectedly deferred normal runtime readiness: %+v", runtime.specs)
+		t.Fatalf("container authenticate must retain normal startup readiness: %+v", runtime.specs)
+	}
+	skipExisting := reflect.ValueOf(runtime.specs[0]).FieldByName("SkipProtocolHealthForExisting")
+	if !skipExisting.IsValid() || !skipExisting.Bool() {
+		t.Fatalf("container authenticate must skip protocol re-probe only for an already-running instance: %+v", runtime.specs[0])
 	}
 	if !reflect.DeepEqual(runtime.actions, []string{"authenticate"}) {
 		t.Fatalf("container actions = %#v", runtime.actions)
@@ -256,6 +260,47 @@ func TestRunProfileMCPAuthenticateReturnsURLAndUsesOwnedContainer(t *testing.T) 
 		if _, err := svc.RunProfileMCP(context.Background(), forbidden, ProfileRequest{Ref: ref}, "alpha"); err == nil {
 			t.Fatalf("obsolete action %q remained available", forbidden)
 		}
+	}
+}
+
+func TestRunProfileMCPAuthenticateKeepsProtocolReadinessWhenNoHealthPathExists(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &authenticationTestRuntime{results: []string{`{"login_url":"https://login.example/device"}`}}
+	svc.Options.Runtime = runtime
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill, pkg.Skills, pkg.MCP = nil, nil, nil
+	pkg.MCPs = []catalog.MCP{{Name: "alpha", Image: "example/alpha:1", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}}
+	pkg.Inputs = nil
+	ref := writeProfileForTest(t, svc, pkg.ID, "runtime", "")
+	if _, err := svc.RunProfileMCP(context.Background(), "authenticate", ProfileRequest{Ref: ref}, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.specs) != 1 {
+		t.Fatalf("authenticate run specs = %+v, want one", runtime.specs)
+	}
+	skipExisting := reflect.ValueOf(runtime.specs[0]).FieldByName("SkipProtocolHealthForExisting")
+	if runtime.specs[0].DeferProtocolHealth || skipExisting.IsValid() && skipExisting.Bool() {
+		t.Fatalf("container authenticate without a declared health path must retain normal readiness: %+v", runtime.specs)
+	}
+}
+
+func TestRunProfileMCPAuthenticateSurfacesStaticCredentialValidationFailure(t *testing.T) {
+	const diagnostic = "Atlassian user identity check failed; verify the configured authentication mode and credentials."
+	svc, _, _ := fixture(t)
+	runtime := &authenticationTestRuntime{results: []string{`{"auth_required":true,"diagnostic":"` + diagnostic + `"}`}}
+	svc.Options.Runtime = runtime
+	pkg := &svc.Source.Catalog[0]
+	pkg.Skill, pkg.Skills, pkg.MCP = nil, nil, nil
+	pkg.MCPs = []catalog.MCP{{Name: "alpha", Image: "example/alpha:1", HealthPath: "/health", Actions: map[string]catalog.Command{
+		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "container"},
+	}}}
+	pkg.Inputs = nil
+	ref := writeProfileForTest(t, svc, pkg.ID, "runtime", "")
+	result, err := svc.RunProfileMCP(context.Background(), "authenticate", ProfileRequest{Ref: ref}, "alpha")
+	if err == nil || !strings.Contains(err.Error(), diagnostic) {
+		t.Fatalf("static credential validation result=%+v err=%v, want actionable identity diagnostic", result, err)
 	}
 }
 
