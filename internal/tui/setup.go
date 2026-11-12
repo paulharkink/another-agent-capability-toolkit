@@ -544,8 +544,11 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		preview.SelectedItemIDs = []string{preview.Items[0].ID}
 	}
 	defs := make([]catalog.Input, 0, len(preview.Inputs)+1)
+	fullDefs := make([]catalog.Input, 0, len(preview.Inputs)+1)
 	values := make(map[string]any, len(preview.Inputs)+1)
 	visibilityContext := map[string]any{}
+	hiddenInputs := []string{}
+	hiddenChoices := map[string][]string{}
 	destinationField := "__aact_destinations"
 	for {
 		collision := false
@@ -571,7 +574,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 				}
 			}
 		}
-		if input.Editable && input.Definition.ExclusiveGroup != "" {
+		if input.Editable && !input.Hidden && input.Definition.ExclusiveGroup != "" {
 			groups[input.Definition.ExclusiveGroup] = append(groups[input.Definition.ExclusiveGroup], i)
 		}
 	}
@@ -596,6 +599,14 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 				origin := input.Provenance
 				def.Label = label + " [" + origin + "]"
 			}
+		}
+		fullDefs = append(fullDefs, def)
+		if input.Hidden {
+			hiddenInputs = append(hiddenInputs, def.Name)
+			continue
+		}
+		if len(input.HiddenChoices) > 0 {
+			hiddenChoices[def.Name] = append([]string(nil), input.HiddenChoices...)
 		}
 		defs = append(defs, def)
 	}
@@ -622,7 +633,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 	}
 	if len(choices) > 0 {
-		defs = append(defs, catalog.Input{Name: destinationField, Label: "Destinations", Type: "multichoice", Options: choices})
+		destinationDef := catalog.Input{Name: destinationField, Label: "Destinations", Type: "multichoice", Options: choices}
+		defs = append(defs, destinationDef)
+		fullDefs = append(fullDefs, destinationDef)
 		values[destinationField] = selected
 	} else {
 		destinationField = ""
@@ -632,7 +645,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		field := "__aact_components"
 		for {
 			collision := false
-			for _, def := range defs {
+			for _, def := range fullDefs {
 				if def.Name == field {
 					collision = true
 				}
@@ -644,7 +657,9 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		}
 		m.pendingSetupItemsField = field
 		preview.ItemFieldName = field
-		defs = append(defs, catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)})
+		componentDef := catalog.Input{Name: field, Label: "Components selected to apply", Type: "multichoice", Options: componentOptions(preview, selected)}
+		defs = append(defs, componentDef)
+		fullDefs = append(fullDefs, componentDef)
 		values[field] = append([]string{}, preview.SelectedItemIDs...)
 	}
 	replayValues := make(map[string]any, len(overrides))
@@ -658,7 +673,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 	}
 	m.pendingSetup = &preview
 	m.pendingSetupField = destinationField
-	m.form = forms.NewFormWithContext(m.ctx, defs, values, visibilityContext)
+	m.form = forms.NewFormWithPresentation(m.ctx, fullDefs, values, visibilityContext, hiddenInputs, hiddenChoices)
 	if m.workspace != nil && m.workspace.Key == preview.Key {
 		m.form.SetBackNavigation(true)
 	}
@@ -691,7 +706,7 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		m.form.SetActiveExclusiveGroup(group, preview.ActiveInputGroups[group], names...)
 	}
 	for _, input := range preview.Inputs {
-		if !input.Editable {
+		if !input.Editable || input.Hidden {
 			continue
 		}
 		if input.Definition.Type == "secret" && input.SecretSaved {

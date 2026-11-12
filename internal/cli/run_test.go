@@ -346,6 +346,9 @@ func TestDryRunCannotSilentlyInstall(t *testing.T) {
 func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
 	var tuiTerminal bytes.Buffer
 	tuiOptions := appOptions(&tuiTerminal, "", true)
+	if tuiOptions.PresentationEditor == nil {
+		t.Fatal("TUI CLI did not configure the presentation-aware editor")
+	}
 	if tuiOptions.OnStderr != nil {
 		tuiOptions.OnStderr([]byte("BuildKit output\n"))
 	}
@@ -355,6 +358,9 @@ func TestSubprocessStderrOwnershipDependsOnCLIInvocation(t *testing.T) {
 
 	var cliDiagnostics bytes.Buffer
 	cliOptions := appOptions(&cliDiagnostics, "", false)
+	if cliOptions.PresentationEditor == nil {
+		t.Fatal("noninteractive CLI did not configure the presentation-aware editor")
+	}
 	if cliOptions.OnStderr == nil {
 		t.Fatal("noninteractive CLI lost its subprocess stderr diagnostics")
 	}

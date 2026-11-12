@@ -36,6 +36,40 @@ func destinationDisplayPath(preview viewmodel.SetupPreview, destination viewmode
 	return "skills: " + skillsPath + " · config: " + configPath
 }
 
+func setupInputDisplayValue(input viewmodel.SetupInput) string {
+	hidden := func(value string) bool {
+		for _, hiddenValue := range input.HiddenChoices {
+			if value == hiddenValue {
+				return true
+			}
+		}
+		return false
+	}
+	switch value := input.Value.(type) {
+	case string:
+		if hidden(value) {
+			return "hidden selection"
+		}
+		return value
+	case []string:
+		visible := make([]string, 0, len(value))
+		hasHidden := false
+		for _, selected := range value {
+			if hidden(selected) {
+				hasHidden = true
+				continue
+			}
+			visible = append(visible, selected)
+		}
+		if hasHidden {
+			visible = append(visible, "hidden selection")
+		}
+		return fmt.Sprint(visible)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
 func firstNonempty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -233,7 +267,7 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 	}
 	lines = append(lines, "Resolved inputs and value origins")
 	for _, input := range preview.Inputs {
-		if !input.HasValue {
+		if input.Hidden || !input.HasValue {
 			continue
 		}
 		label := input.Definition.Label
@@ -244,7 +278,7 @@ func workspaceInformationLines(preview viewmodel.SetupPreview, width int) []stri
 		if path == "" {
 			path = "path unavailable"
 		}
-		lines = append(lines, splitDisplayLine(fmt.Sprintf("%s: %v · from %s · %s", label, input.Value, input.Provenance, path), inner)...)
+		lines = append(lines, splitDisplayLine(fmt.Sprintf("%s: %s · from %s · %s", label, setupInputDisplayValue(input), input.Provenance, path), inner)...)
 	}
 	destinations := workspaceDestinations(preview)
 	if preview.MCP {
@@ -620,7 +654,7 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 	m.workspace.InputsSaved = preview.Configured
 	ready, required := 0, 0
 	for _, input := range preview.Inputs {
-		if !input.Definition.Required {
+		if input.Hidden || !input.Definition.Required {
 			continue
 		}
 		required++
