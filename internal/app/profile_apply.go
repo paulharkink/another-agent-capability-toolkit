@@ -112,12 +112,18 @@ func selectedPrepareMCPs(p catalog.Package, values map[string]any, items []catal
 	return result
 }
 
-func editProfileInputs(ctx context.Context, editor Editor, defs []catalog.Input, values, fixed map[string]any) error {
+func editProfileInputs(ctx context.Context, editor Editor, presentationEditor PresentationEditor, defs []catalog.Input, values, fixed map[string]any, ui config.PackageUI) error {
 	visible, editable := editableWithFixedContext(defs, values, fixed)
 	if len(visible) == 0 {
 		return nil
 	}
-	edited, err := editor(ctx, visible, editable)
+	var edited map[string]any
+	var err error
+	if presentationEditor != nil {
+		edited, err = presentationEditor(ctx, visible, editable, ui.HideInputs, ui.HideChoices)
+	} else {
+		edited, err = editor(ctx, visible, editable)
+	}
 	if err != nil {
 		return err
 	}
@@ -779,7 +785,8 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 				def.Hint += " " + current
 			}
 		}
-		input := viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path}
+		ui := s.Source.PackageUI[p.ID]
+		input := viewmodel.SetupInput{Definition: def, Value: v, HasValue: ok, Editable: editable, Provenance: provenance, ProvenancePath: pr.Path, InheritedValue: iv, HasInheritedValue: iok, InheritedOrigin: origin, InheritedPath: pr.Path, Hidden: slices.Contains(ui.HideInputs, def.Name), HiddenChoices: append([]string(nil), ui.HideChoices[def.Name]...)}
 		if def.Type == "secret" {
 			if secret, stored := privateSecrets[def.Name]; stored && hasSecretValue(secret) {
 				input.SecretSaved = true
@@ -1113,7 +1120,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		activeGroups = map[string]string{}
 	}
 	if q.Interactive {
-		if s.Options.Editor == nil {
+		if s.Options.Editor == nil && s.Options.PresentationEditor == nil {
 			return out, invalid(errors.New("interactive editor is unavailable"))
 		}
 		prepare := selectedPrepareMCPs(p, values, items)
@@ -1135,7 +1142,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				}
 			}
 		}
-		if err = editProfileInputs(ctx, s.Options.Editor, seedInputs, values, fixed); err != nil {
+		if err = editProfileInputs(ctx, s.Options.Editor, s.Options.PresentationEditor, seedInputs, values, fixed, s.Source.PackageUI[p.ID]); err != nil {
 			return out, err
 		}
 		if len(prepare) > 0 {
@@ -1161,7 +1168,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 			if len(choices) > 0 {
 				choiceInputs := withChoices(p.Inputs, choices)
-				if err = editProfileInputs(ctx, s.Options.Editor, choiceInputs, values, fixed); err != nil {
+				if err = editProfileInputs(ctx, s.Options.Editor, s.Options.PresentationEditor, choiceInputs, values, fixed, s.Source.PackageUI[p.ID]); err != nil {
 					return out, err
 				}
 				if err = validateProfileValuesForActiveGroups(choiceInputs, values, activeGroups); err != nil {

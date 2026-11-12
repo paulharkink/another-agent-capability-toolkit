@@ -83,7 +83,7 @@ func bundledRoot() string {
 }
 
 func appOptions(errOut io.Writer, bundle string, tuiMode bool) app.Options {
-	options := app.Options{Editor: forms.RunEditor, BundledRoot: bundle}
+	options := app.Options{Editor: forms.RunEditor, PresentationEditor: forms.RunEditorWithPresentation, BundledRoot: bundle}
 	if !tuiMode {
 		options.OnStderr = func(b []byte) { errOut.Write(b) }
 	}

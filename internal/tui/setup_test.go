@@ -185,6 +185,37 @@ func TestSetupDestinationFieldDoesNotOverwritePackageInput(t *testing.T) {
 	}
 }
 
+func TestSetupFormHidesPackChoicesWithoutChangingSavedValue(t *testing.T) {
+	m := NewContext(context.Background(), &setupBackendFixture{})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	preview := viewmodel.SetupPreview{
+		Key:           state.Key{Source: "dso-skills", Package: "atlassian"},
+		HasManifestUI: true,
+		Sections:      []catalog.Section{{ID: "auth", Title: "Authentication", Fields: []string{"auth_method"}}},
+		Inputs: []viewmodel.SetupInput{{
+			Definition: catalog.Input{Name: "auth_method", Label: "Authentication method", Type: "choice", Options: []catalog.Choice{{Value: "oauth", Label: "OAuth"}, {Value: "service_account", Label: "Service account"}, {Value: "personal", Label: "Personal token"}}},
+			Value:      "personal", HasValue: true, Editable: true, HiddenChoices: []string{"personal"},
+		}},
+	}
+	m.openSetupForm(preview)
+	view := ansi.Strip(m.form.View().Content)
+	if strings.Contains(view, "Personal token") || !strings.Contains(view, "OAuth") || !strings.Contains(view, "Service account") {
+		t.Fatalf("pack presentation policy not reflected in setup form: %s", view)
+	}
+	if got := m.form.Values()["auth_method"]; got != "personal" {
+		t.Fatalf("hidden saved choice was changed by opening form: %#v", got)
+	}
+}
+
+func TestSetupInputSummaryDoesNotExposeHiddenChoiceValues(t *testing.T) {
+	if got := setupInputDisplayValue(viewmodel.SetupInput{Value: "personal", HiddenChoices: []string{"personal"}}); got != "hidden selection" {
+		t.Fatalf("hidden scalar choice summary = %q", got)
+	}
+	if got := setupInputDisplayValue(viewmodel.SetupInput{Value: []string{"public", "internal"}, HiddenChoices: []string{"internal"}}); strings.Contains(got, "internal") || !strings.Contains(got, "public") || !strings.Contains(got, "hidden selection") {
+		t.Fatalf("hidden multichoice summary = %q", got)
+	}
+}
+
 func (b *setupBackendFixture) UIInstall(_ context.Context, q viewmodel.SetupInstallRequest) (viewmodel.OperationResult, error) {
 	b.installRequest = &q
 	if b.installResult != nil || b.installErr != nil {

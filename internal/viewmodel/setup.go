@@ -27,6 +27,8 @@ type SetupInput struct {
 	InheritedOrigin   string
 	InheritedPath     string
 	Editable          bool
+	Hidden            bool
+	HiddenChoices     []string
 }
 
 type SetupDestination struct {

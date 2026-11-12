@@ -22,7 +22,16 @@ type Source struct {
 	ProfileRoot     string                    `json:"profile_root,omitempty"`
 	Catalog         []catalog.Package         `json:"catalog"`
 	PackageDefaults map[string]map[string]any `json:"package_defaults"`
+	PackageUI       map[string]PackageUI      `json:"package_ui,omitempty"`
 }
+
+// PackageUI contains presentation-only controls for capability input forms.
+// These controls never affect input validation or persisted values.
+type PackageUI struct {
+	HideInputs  []string            `toml:"hide_inputs" json:"hide_inputs,omitempty"`
+	HideChoices map[string][]string `toml:"hide_choices" json:"hide_choices,omitempty"`
+}
+
 type sourceManifest struct {
 	SchemaVersion int             `toml:"schema_version"`
 	SourceID      string          `toml:"source_id"`
@@ -37,6 +46,7 @@ type sourceManifest struct {
 	} `toml:"environments"`
 	Packages map[string]struct {
 		Inputs map[string]any `toml:"inputs"`
+		UI     PackageUI      `toml:"ui"`
 	} `toml:"packages"`
 }
 
@@ -140,9 +150,12 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	if _, statErr := os.Stat(legacyInstancesRoot); statErr == nil {
 		instanceRoot = legacyInstancesRoot
 	}
-	s := Source{ID: id, Root: root, ManifestPath: manifest, InstanceRoot: instanceRoot, EnvironmentRoot: instanceRoot, ProfileRoot: instanceRoot, PackageDefaults: map[string]map[string]any{}}
+	s := Source{ID: id, Root: root, ManifestPath: manifest, InstanceRoot: instanceRoot, EnvironmentRoot: instanceRoot, ProfileRoot: instanceRoot, PackageDefaults: map[string]map[string]any{}, PackageUI: map[string]PackageUI{}}
 	for name, values := range m.Packages {
 		s.PackageDefaults[name] = values.Inputs
+		if len(values.UI.HideInputs) > 0 || len(values.UI.HideChoices) > 0 {
+			s.PackageUI[name] = values.UI
+		}
 	}
 	if m.Instances.Root != "" && m.Environments.Root != "" {
 		newRoot, e1 := resolvePath(m.Instances.Root, manifest)
@@ -190,7 +203,7 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	return s, nil
 }
 func bundledSource(root, stateRoot string) (Source, error) {
-	s := Source{ID: "bundled", InstanceRoot: legacyRoot(stateRoot), EnvironmentRoot: legacyRoot(stateRoot), ProfileRoot: legacyRoot(stateRoot), PackageDefaults: map[string]map[string]any{}}
+	s := Source{ID: "bundled", InstanceRoot: legacyRoot(stateRoot), EnvironmentRoot: legacyRoot(stateRoot), ProfileRoot: legacyRoot(stateRoot), PackageDefaults: map[string]map[string]any{}, PackageUI: map[string]PackageUI{}}
 	if root == "" {
 		return s, nil
 	}

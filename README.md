@@ -134,6 +134,23 @@ have a value in that target file, is omitted from setup and Parameters forms,
 and cannot be overridden with `--set`. A `default` input remains editable.
 Input policy is read only from target TOML. `--environment` and `--target` are
 used together.
+
+Pack authors can hide inputs or choices from interactive forms without
+changing validation or saved values:
+
+```toml
+[packages.atlassian.inputs]
+auth_method = "oauth"
+
+[packages.atlassian.ui]
+hide_inputs = ["internal_note"]
+hide_choices = { auth_method = ["personal"] }
+```
+
+Hidden inputs and choices remain valid in existing saved values and explicit
+CLI/API overrides. A form edit preserves hidden values; hiding is a display
+preference, not an authorization or validation rule.
+
 For target-backed checkbox inputs, a package can declare `type = "multichoice"`
 and `options_from = "dbms.*.tenants.*"`. Each `*` reads table names from the
 selected target TOML; the selected names are joined with `/` (for example,

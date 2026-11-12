@@ -97,6 +97,31 @@ func TestUISetupPreviewUsesInjectedAdapterDetectionAndFeatures(t *testing.T) {
 	t.Fatal("codex destination missing")
 }
 
+func TestPackUIPresentationIsSeparateFromPreviewValidationDefinitions(t *testing.T) {
+	svc, _, _ := fixture(t)
+	svc.Source.Catalog[0].Inputs = []catalog.Input{{Name: "auth_method", Type: "choice", Default: "oauth", Options: []catalog.Choice{
+		{Value: "oauth"}, {Value: "service_account"}, {Value: "personal"},
+	}}, {Name: "private_note", Type: "string"}}
+	svc.Source.PackageUI = map[string]config.PackageUI{"demo": {HideInputs: []string{"private_note"}, HideChoices: map[string][]string{"auth_method": {"personal"}}}}
+	preview, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil || len(preview.Inputs) != 2 {
+		t.Fatalf("preview input: %#v %v", preview.Inputs, err)
+	}
+	input := preview.Inputs[0]
+	if !reflect.DeepEqual(input.HiddenChoices, []string{"personal"}) || len(input.Definition.Options) != 3 || !preview.Inputs[1].Hidden {
+		t.Fatalf("presentation policy altered the validation definition: %+v", input)
+	}
+	if _, err := svc.applyProfileFixtureUI(context.Background(), viewmodel.SetupInstallRequest{
+		SetupRequest: viewmodel.SetupRequest{PackageID: "demo"}, Inputs: map[string]any{"auth_method": "personal", "private_note": "kept"}, ItemIDs: []string{},
+	}); err != nil {
+		t.Fatalf("manual hidden option was rejected: %v", err)
+	}
+	after, err := svc.previewProfileFixture(context.Background(), viewmodel.SetupRequest{PackageID: "demo"})
+	if err != nil || after.Inputs[0].Value != "personal" || after.Inputs[1].Value != "kept" || !after.Inputs[1].Hidden || !reflect.DeepEqual(after.Inputs[0].Definition.Options, input.Definition.Options) {
+		t.Fatalf("saved hidden option was coerced or definition changed: %+v err=%v", after.Inputs, err)
+	}
+}
+
 func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 	svc, _, _ := fixture(t)
 	if _, err := svc.UISetupPreview(context.Background(), viewmodel.SetupRequest{PackageID: "demo", Environment: "old", Target: "default"}); err == nil || !strings.Contains(err.Error(), "instance reference") {

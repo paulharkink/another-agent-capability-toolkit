@@ -21,6 +21,7 @@ import (
 )
 
 type Editor func(context.Context, []catalog.Input, map[string]any) (map[string]any, error)
+type PresentationEditor func(context.Context, []catalog.Input, map[string]any, []string, map[string][]string) (map[string]any, error)
 type MCPRuntime interface {
 	Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error)
 	Stop(context.Context, state.Key) error
@@ -52,6 +53,7 @@ type Options struct {
 	AgentScopes        map[string]agents.Scope
 	Runner             process.Executor
 	Editor             Editor
+	PresentationEditor PresentationEditor
 	Runtime            MCPRuntime
 	DiscoveryProbe     *agents.DiscoveryProbe
 	OnStderr           func([]byte)

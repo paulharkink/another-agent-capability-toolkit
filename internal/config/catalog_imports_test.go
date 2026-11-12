@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,43 @@ source = "./capabilities/guidance"
 	}
 	if p.PackageDefaults["company-handoff"]["company"] != "local-default" || p.PackageDefaults["handoff-kit"] != nil {
 		t.Fatal("imported environment defaults escaped into company pack")
+	}
+}
+
+func TestPackAcceptsCapabilityUIPresentationPolicy(t *testing.T) {
+	root := t.TempDir()
+	packFile(t, filepath.Join(root, "capabilities", "atlassian", "package.toml"), `schema_version = 1
+id = "atlassian-mcp"
+name = "Atlassian MCP"
+[skill]
+name = "atlassian-confluence"
+[[inputs]]
+name = "auth_method"
+type = "choice"
+default = "oauth"
+options = [{ value = "oauth" }, { value = "service_account" }, { value = "personal" }]
+`)
+	packFile(t, filepath.Join(root, "aact.toml"), `schema_version = 1
+pack_id = "dso-skills"
+[[catalog]]
+id = "atlassian"
+source = "./capabilities/atlassian"
+[packages.atlassian.inputs]
+auth_method = "oauth"
+[packages.atlassian.ui]
+hide_inputs = ["private_note"]
+hide_choices = { auth_method = ["personal"] }
+`)
+	pack, err := DiscoverPack(root, "", "", t.TempDir())
+	if err != nil {
+		t.Fatalf("pack-level UI policy should be accepted: %v", err)
+	}
+	ui := pack.PackageUI["atlassian"]
+	if !reflect.DeepEqual(ui.HideInputs, []string{"private_note"}) || !reflect.DeepEqual(ui.HideChoices, map[string][]string{"auth_method": {"personal"}}) {
+		t.Fatalf("pack-level UI policy = %#v", ui)
+	}
+	if len(pack.Catalog) != 1 || len(pack.Catalog[0].Inputs) != 1 || len(pack.Catalog[0].Inputs[0].Options) != 3 {
+		t.Fatalf("pack UI policy modified the catalog validation choices: %#v", pack.Catalog)
 	}
 }
 

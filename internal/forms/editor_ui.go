@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -48,6 +49,7 @@ type FormModel struct {
 	hints                       map[string]string
 	conditions                  map[string]fieldCondition
 	disabled                    map[string]string
+	hiddenChoices               map[string][]string
 	done                        bool
 	backNavigation              bool
 	unsavedExitGuard            bool
@@ -705,7 +707,11 @@ func (m *FormModel) CommitPendingInput() error {
 	if m.selected >= 0 && m.selected < len(m.defs) && isScalarChoice(m.defs[m.selected]) {
 		m.message = ""
 		def := m.defs[m.selected]
-		m.choose(def, m.editor.Values()[def.Name])
+		current := m.editor.Values()[def.Name]
+		if hasUnlistedChoiceValues(def, current) {
+			return nil
+		}
+		m.choose(def, current)
 		if m.message != "" {
 			return errors.New(m.message)
 		}
@@ -1117,13 +1123,40 @@ type fieldCondition struct {
 }
 
 func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) *FormModel {
-	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: append([]catalog.Input{}, defs...), title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}}
+	return NewFormWithPresentation(ctx, defs, prefill, nil, nil, nil)
+}
+
+// NewFormWithPresentation keeps full definitions in its editor for validation
+// and returned values while applying presentation-only hiding to rendered
+// fields and choices.
+func NewFormWithPresentation(ctx context.Context, defs []catalog.Input, prefill, visibilityContext map[string]any, hiddenInputs []string, hiddenChoices map[string][]string) *FormModel {
+	visibleDefs := make([]catalog.Input, 0, len(defs))
+	hiddenInputSet := make(map[string]bool, len(hiddenInputs))
+	for _, name := range hiddenInputs {
+		hiddenInputSet[name] = true
+	}
+	for _, def := range defs {
+		if hiddenInputSet[def.Name] {
+			continue
+		}
+		if hidden := hiddenChoices[def.Name]; len(hidden) > 0 {
+			filtered := make([]catalog.Choice, 0, len(def.Options))
+			for _, option := range def.Options {
+				if !slices.Contains(hidden, option.Value) {
+					filtered = append(filtered, option)
+				}
+			}
+			def.Options = filtered
+		}
+		visibleDefs = append(visibleDefs, def)
+	}
+	m := &FormModel{ctx: ctx, editor: NewEditor(defs, prefill), defs: visibleDefs, title: "Edit package inputs", width: 80, height: 24, choiceIndex: map[string]int{}, rowIndex: map[string]int{}, hints: map[string]string{}, conditions: map[string]fieldCondition{}, disabled: map[string]string{}, hiddenChoices: cloneHiddenChoices(hiddenChoices)}
 	m.fieldErrors = map[string]string{}
 	for name, err := range m.editor.initialErrors {
 		m.fieldErrors[name] = err.Error()
 	}
 	values := m.editor.Values()
-	for _, def := range defs {
+	for _, def := range visibleDefs {
 		if len(def.VisibleWhen) > 0 {
 			m.conditions[def.Name] = fieldCondition{Equals: cloneCondition(def.VisibleWhen)}
 		}
@@ -1137,16 +1170,17 @@ func NewForm(ctx context.Context, defs []catalog.Input, prefill map[string]any) 
 			}
 		}
 	}
+	if visibilityContext != nil {
+		m.visibilityContext = copyAnswers(visibilityContext)
+		m.editor.SetVisibilityContext(visibilityContext)
+	}
 	return m
 }
 
 // NewFormWithContext evaluates visibility and required validation using fixed
 // controller values that are not editable or included in the returned answers.
 func NewFormWithContext(ctx context.Context, defs []catalog.Input, prefill, visibilityContext map[string]any) *FormModel {
-	m := NewForm(ctx, defs, prefill)
-	m.visibilityContext = copyAnswers(visibilityContext)
-	m.editor.SetVisibilityContext(visibilityContext)
-	return m
+	return NewFormWithPresentation(ctx, defs, prefill, visibilityContext, nil, nil)
 }
 
 func (m *FormModel) conditionValues() map[string]any {
@@ -1274,6 +1308,17 @@ func (m *FormModel) Result() (map[string]any, error) {
 }
 func RunEditor(ctx context.Context, defs []catalog.Input, prefill map[string]any) (map[string]any, error) {
 	model := NewForm(ctx, defs, prefill)
+	return runEditorModel(ctx, model)
+}
+
+// RunEditorWithPresentation edits full definitions and values while hiding
+// pack-selected fields and choices only in the rendered form.
+func RunEditorWithPresentation(ctx context.Context, defs []catalog.Input, prefill map[string]any, hiddenInputs []string, hiddenChoices map[string][]string) (map[string]any, error) {
+	model := NewFormWithPresentation(ctx, defs, prefill, nil, hiddenInputs, hiddenChoices)
+	return runEditorModel(ctx, model)
+}
+
+func runEditorModel(ctx context.Context, model *FormModel) (map[string]any, error) {
 	result, e := tea.NewProgram(model, tea.WithContext(ctx)).Run()
 	if e != nil {
 		if ctx.Err() != nil || errors.Is(e, tea.ErrProgramKilled) {
@@ -1847,6 +1892,10 @@ func (m *FormModel) validationMessage(def catalog.Input, err error) string {
 	return label + ": " + message
 }
 func (m *FormModel) choose(def catalog.Input, current any) {
+	if len(def.Options) == 0 {
+		m.message = "No choices are available in this form."
+		return
+	}
 	selectedOption := def.Options[m.choiceIndex[def.Name]%len(def.Options)]
 	option := selectedOption.Value
 	if def.Multiple || def.Type == "multichoice" || def.Type == "multiple-choice" {
@@ -1880,6 +1929,57 @@ func (m *FormModel) choose(def catalog.Input, current any) {
 			m.refreshSections()
 		}
 	}
+}
+
+func hasUnlistedChoice(def catalog.Input, value string) bool {
+	for _, option := range def.Options {
+		if option.Value == value {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func hasUnlistedChoiceValues(def catalog.Input, value any) bool {
+	selected, _ := value.([]string)
+	for _, current := range selected {
+		if hasUnlistedChoice(def, current) {
+			return true
+		}
+	}
+	if selected == nil {
+		current, _ := value.(string)
+		return hasUnlistedChoice(def, current)
+	}
+	return false
+}
+
+func cloneHiddenChoices(hidden map[string][]string) map[string][]string {
+	result := make(map[string][]string, len(hidden))
+	for name, values := range hidden {
+		result[name] = append([]string(nil), values...)
+	}
+	return result
+}
+
+func (m *FormModel) displayValue(def catalog.Input, value any) string {
+	if len(m.hiddenChoices[def.Name]) == 0 {
+		return inputDisplayValue(def, value)
+	}
+	if selected, ok := value.(string); ok && slices.Contains(m.hiddenChoices[def.Name], selected) {
+		return "selection hidden in this form"
+	}
+	selected, ok := value.([]string)
+	if !ok {
+		return inputDisplayValue(def, value)
+	}
+	visible := make([]string, 0, len(selected))
+	for _, current := range selected {
+		if !slices.Contains(m.hiddenChoices[def.Name], current) {
+			visible = append(visible, current)
+		}
+	}
+	return inputDisplayValue(def, visible)
 }
 func (m *FormModel) setError(e error) {
 	m.message = ""
@@ -2163,7 +2263,7 @@ func (m *FormModel) layout() formLayout {
 			label += " *"
 		}
 		value := values[def.Name]
-		display := inputDisplayValue(def, value)
+		display := m.displayValue(def, value)
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
 			display = m.emptyChoicesText(def)
 		} else if def.OptionsFrom != "" && len(def.Options) > 0 {
@@ -2208,10 +2308,18 @@ func (m *FormModel) layout() formLayout {
 			display += "\n    [Browse · b]"
 		}
 		if i == m.selected && len(def.Options) > 0 && def.Type != "multichoice" && def.Type != "multiple-choice" && !def.Multiple {
-			option := def.Options[m.choiceIndex[def.Name]%len(def.Options)]
-			labelValue := option.Label
+			labelValue := ""
+			for _, option := range def.Options {
+				if values[def.Name] == option.Value {
+					labelValue = option.Label
+					if labelValue == "" {
+						labelValue = option.Value
+					}
+					break
+				}
+			}
 			if labelValue == "" {
-				labelValue = option.Value
+				labelValue = "selection hidden in this form"
 			}
 			display += "  [" + labelValue + "]"
 		}
@@ -2235,6 +2343,9 @@ func (m *FormModel) layout() formLayout {
 					pointer = ">"
 				}
 				rows[len(rows)-1] += "\n    " + pointer + " " + mark + " " + name
+			}
+			if hasUnlistedChoiceValues(def, value) {
+				rows[len(rows)-1] += "\n    Hidden selections are preserved."
 			}
 		}
 	}
@@ -2459,7 +2570,7 @@ func (m *FormModel) splitLayout() formLayout {
 		if index == m.selected && m.area == 1 {
 			prefix = "> "
 		}
-		display := inputDisplayValue(def, values[def.Name])
+		display := m.displayValue(def, values[def.Name])
 		choiceRows := []string{}
 		choiceRowIndexes := []int{}
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
@@ -2551,6 +2662,10 @@ func (m *FormModel) splitLayout() formLayout {
 					choiceRowIndexes = append(choiceRowIndexes, optionIndex)
 				}
 			}
+		}
+		if (isChoiceList(def) || isScalarChoice(def)) && hasUnlistedChoiceValues(def, values[def.Name]) {
+			choiceRows = append(choiceRows, "Hidden selections are preserved.")
+			choiceRowIndexes = append(choiceRowIndexes, -1)
 		}
 		if reason := m.disabledReason(def.Name); reason != "" {
 			display += " — " + reason
