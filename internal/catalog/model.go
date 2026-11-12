@@ -67,6 +67,8 @@ type Input struct {
 	Label          string         `toml:"label" json:"label"`
 	Hint           string         `toml:"hint" json:"hint"`
 	Required       bool           `toml:"required" json:"required"`
+	AuthRequired   bool           `toml:"auth_required" json:"auth_required,omitempty"`
+	AuthPrompt     bool           `toml:"auth_prompt" json:"auth_prompt,omitempty"`
 	Multiple       bool           `toml:"multiple" json:"multiple"`
 	Default        any            `toml:"default" json:"default"`
 	Min            *float64       `toml:"min" json:"min"`

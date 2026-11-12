@@ -80,7 +80,7 @@ type environmentTargetMsg struct {
 
 func isManagementView(view string) bool {
 	switch view {
-	case "Agents", "Environments", "Settings", "Help":
+	case "Agents", "Environments", "Settings", "Help", "Profiles":
 		return true
 	default:
 		return false
@@ -213,6 +213,9 @@ func (m *Model) managementKey(stroke string) tea.Cmd {
 	}
 	if m.management.Modal != "" {
 		return m.managementModalKey(stroke)
+	}
+	if m.view == "Profiles" {
+		return m.groupProfilesKey(stroke)
 	}
 	if stroke == "esc" {
 		if m.view == "Help" && m.management.HelpOrigin != "" {
@@ -565,7 +568,7 @@ func (m *Model) activateSettingsCategory() tea.Cmd {
 
 func (m *Model) managementMenuEntries() []string {
 	if m.management.Modal == "main" {
-		return []string{"Agents", "Environments", "Settings", "Help", "Back"}
+		return []string{"Agents", "Environments", "Profiles", "Settings", "Help", "Back"}
 	}
 	if m.management.Modal == "files" {
 		row, ok := m.selectedAgentManagement()
@@ -709,6 +712,9 @@ func (m *Model) managementModalKey(stroke string) tea.Cmd {
 			m.management.Modal = ""
 			if entries[i] != "Back" && entries[i] != m.view {
 				m.navigate(entries[i])
+				if entries[i] == "Profiles" {
+					return m.loadGroupProfiles()
+				}
 			}
 			return nil
 		}
@@ -912,6 +918,9 @@ func (m *Model) managementView() tea.View {
 	}
 	if m.management.Modal == "viewer" {
 		return m.agentConfigView()
+	}
+	if m.view == "Profiles" {
+		return m.groupProfilesView()
 	}
 	lines := make([]string, height)
 	for i := range lines {

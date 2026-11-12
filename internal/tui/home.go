@@ -729,7 +729,7 @@ func (m *Model) homeMenuItems() []homeMenuItem {
 		return []homeMenuItem{{"Cancel", "cancel-delete", ""}, {confirmLabel, "confirm-delete", ""}}
 	}
 	if m.home.Modal.Kind == "main" {
-		return []homeMenuItem{{"Agents", "Agents", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
+		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Profiles", "Profiles", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
 	}
 	if m.instanceMode() {
 		c, _ := m.selectedCapability()
@@ -892,6 +892,9 @@ func (m *Model) modalKey(stroke string) tea.Cmd {
 			m.home.Modal = nil
 			if item.Action != "back" {
 				m.navigate(item.Action)
+				if item.Action == "Profiles" {
+					return m.loadGroupProfiles()
+				}
 			}
 			return nil
 		}

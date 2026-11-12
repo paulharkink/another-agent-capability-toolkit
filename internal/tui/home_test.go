@@ -247,7 +247,7 @@ func TestHomePaneFocusAndStableScrolling(t *testing.T) {
 	}
 }
 func TestHomeMenuDestinationsAndReturn(t *testing.T) {
-	for i, name := range []string{"Agents", "Settings", "Help"} {
+	for i, name := range []string{"Agents", "Environments", "Profiles", "Settings", "Help"} {
 		m, _ := homeFixture()
 		press(m, 'm', "m")
 		for j := 0; j < i; j++ {
@@ -399,7 +399,7 @@ func TestRemoveRegistrationsMenuCannotUninstallCapability(t *testing.T) {
 func TestHomeRoutesProfileToApprovedWorkspace(t *testing.T) {
 	m, _ := homeFixture()
 	press(m, tea.KeyF9, "")
-	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Settings", "Help", "Back"}) {
+	if got := m.menuEntries(); !reflect.DeepEqual(got, []string{"Agents", "Environments", "Profiles", "Settings", "Help", "Back"}) {
 		t.Fatalf("main menu: %v", got)
 	}
 	press(m, tea.KeyEscape, "")
