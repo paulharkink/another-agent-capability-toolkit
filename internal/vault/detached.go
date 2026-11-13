@@ -213,6 +213,23 @@ func IssueContainerToken(info DaemonInfo, controlToken []byte, namespace string)
 	return result.Token, nil
 }
 
+func IssueContainerPrivateInputToken(info DaemonInfo, controlToken []byte, namespace string, names []string) (string, error) {
+	if err := validateInstanceNamespace(namespace); err != nil {
+		return "", err
+	}
+	var result struct {
+		Token string `json:"token"`
+	}
+	request := struct {
+		Namespace string   `json:"namespace"`
+		Inputs    []string `json:"inputs"`
+	}{Namespace: namespace, Inputs: names}
+	if err := controlRequest(info, string(controlToken), http.MethodPost, "/tokens/private-inputs", request, &result); err != nil {
+		return "", err
+	}
+	return result.Token, nil
+}
+
 func RevokeContainerToken(info DaemonInfo, controlToken []byte, token string) error {
 	return controlRequest(info, string(controlToken), http.MethodDelete, "/tokens/"+token, nil, nil)
 }
@@ -241,6 +258,10 @@ func EnsureContainerAPIReachable(info DaemonInfo, controlToken []byte) (DaemonIn
 		return DaemonInfo{}, errors.New("vault daemon did not prepare a host.docker.internal container route")
 	}
 	return updated, nil
+}
+
+func RevokeContainerTokensByID(info DaemonInfo, controlToken []byte, containerID string) error {
+	return controlRequest(info, string(controlToken), http.MethodDelete, "/tokens/containers/"+containerID+"/all", nil, nil)
 }
 
 func StopDetached(info DaemonInfo, controlToken []byte) error {
@@ -321,6 +342,17 @@ func (s *Store) EnsureContainerAPIReachable() error {
 }
 
 func (s *Store) IssueContainerHandoff(namespace string) (ContainerHandoff, func() error, error) {
+	return s.issueContainerHandoff(namespace, nil)
+}
+
+func (s *Store) IssueContainerHandoffForPrivateInputs(namespace string, names []string) (ContainerHandoff, func() error, error) {
+	if len(names) == 0 {
+		return ContainerHandoff{}, nil, errors.New("at least one private input name is required")
+	}
+	return s.issueContainerHandoff(namespace, names)
+}
+
+func (s *Store) issueContainerHandoff(namespace string, privateInputs []string) (ContainerHandoff, func() error, error) {
 	if err := s.EnsureContainerAPIReachable(); err != nil {
 		return ContainerHandoff{}, nil, err
 	}
@@ -333,7 +365,13 @@ func (s *Store) IssueContainerHandoff(namespace string) (ContainerHandoff, func(
 	controlToken := append([]byte(nil), s.controlToken...)
 	s.mu.Unlock()
 	defer clear(controlToken)
-	token, err := IssueContainerToken(info, controlToken, namespace)
+	var token string
+	var err error
+	if len(privateInputs) > 0 {
+		token, err = IssueContainerPrivateInputToken(info, controlToken, namespace, privateInputs)
+	} else {
+		token, err = IssueContainerToken(info, controlToken, namespace)
+	}
 	if err != nil {
 		return ContainerHandoff{}, nil, err
 	}
@@ -393,6 +431,22 @@ func (s *Store) RevokeContainerHandoff(namespace, containerID string) error {
 	s.mu.Unlock()
 	defer clear(controlToken)
 	return RevokeContainerTokens(info, controlToken, namespace, containerID)
+}
+
+func (s *Store) RevokeContainerHandoffByContainer(containerID string) error {
+	if containerID == "" || strings.Contains(containerID, "/") {
+		return errors.New("invalid container ID")
+	}
+	s.mu.Lock()
+	if s.daemonInfo == nil || len(s.controlToken) == 0 {
+		s.mu.Unlock()
+		return errors.New("vault daemon is not configured for container handoff")
+	}
+	info := *s.daemonInfo
+	controlToken := append([]byte(nil), s.controlToken...)
+	s.mu.Unlock()
+	defer clear(controlToken)
+	return RevokeContainerTokensByID(info, controlToken, containerID)
 }
 
 func RunDetached(parent context.Context, in io.Reader) error {
@@ -770,6 +824,21 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]string{"token": issued})
+		case r.URL.Path == "/tokens/private-inputs" && r.Method == http.MethodPost:
+			var request struct {
+				Namespace string   `json:"namespace"`
+				Inputs    []string `json:"inputs"`
+			}
+			if err := decodeControlJSON(w, r, &request); err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			issued, err := api.IssuePrivateInputToken(request.Namespace, request.Inputs)
+			if err != nil {
+				http.Error(w, "cannot issue scoped token", http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]string{"token": issued})
 		case strings.HasPrefix(r.URL.Path, "/tokens/instances/") && r.Method == http.MethodDelete:
 			namespace := strings.TrimPrefix(r.URL.Path, "/tokens/instances/")
 			if err := api.RevokeTokensForInstance(namespace); err != nil {
@@ -778,6 +847,19 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(r.URL.Path, "/tokens/containers/") && r.Method == http.MethodDelete:
+			if strings.HasSuffix(r.URL.Path, "/all") {
+				containerID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/tokens/containers/"), "/all")
+				if containerID == "" || strings.Contains(containerID, "/") {
+					http.Error(w, "invalid container ID", http.StatusBadRequest)
+					return
+				}
+				if err := api.RevokeTokensByContainerID(containerID); err != nil {
+					http.Error(w, "cannot revoke container token", http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			containerID := strings.TrimPrefix(r.URL.Path, "/tokens/containers/")
 			var request struct {
 				Namespace string `json:"namespace"`

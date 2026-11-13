@@ -31,7 +31,7 @@ func TestLoadVaultSecretsUsesSavedParentProfileInputsAndRejectsChildNamespace(t 
 	}
 
 	api := vault.NewAPI(vaultStore, nil)
-	parentToken, err := api.IssueToken(parent.ID())
+	parentToken, err := api.IssuePrivateInputToken(parent.ID(), []string{"github_token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestLoadVaultSecretsUsesSavedParentProfileInputsAndRejectsChildNamespace(t 
 		t.Fatalf("loaded secret = %q, want saved parent input", secrets["GITHUB_PERSONAL_ACCESS_TOKEN"])
 	}
 
-	childToken, err := api.IssueToken(child.ID())
+	childToken, err := api.IssuePrivateInputToken(child.ID(), []string{"github_token"})
 	if err != nil {
 		t.Fatal(err)
 	}

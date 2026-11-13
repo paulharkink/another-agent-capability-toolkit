@@ -310,6 +310,18 @@ func (i *dockerFixtureVaultIssuer) IssueContainerHandoff(namespace string) (vaul
 	}
 	return handoff, func() error { return i.api.RevokeToken(token) }, nil
 }
+func (i *dockerFixtureVaultIssuer) IssueContainerHandoffForPrivateInputs(namespace string, names []string) (vault.ContainerHandoff, func() error, error) {
+	token, err := i.api.IssuePrivateInputToken(namespace, names)
+	if err != nil {
+		return vault.ContainerHandoff{}, nil, err
+	}
+	handoff, err := vault.NewContainerHandoff(i.info, token)
+	if err != nil {
+		_ = i.api.RevokeToken(token)
+		return vault.ContainerHandoff{}, nil, err
+	}
+	return handoff, func() error { return i.api.RevokeToken(token) }, nil
+}
 func (i *dockerFixtureVaultIssuer) BindContainerHandoff(containerID, token string) error {
 	return i.api.BindTokenContainer(token, containerID)
 }

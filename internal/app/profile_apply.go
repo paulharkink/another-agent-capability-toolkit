@@ -383,7 +383,11 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 				continue
 			}
 			for _, source := range []string{mcpDefinition.TokenFileInput, mcpDefinition.TokenEnvInput} {
-				if value, ok := saved[source].(string); ok && strings.TrimSpace(value) != "" {
+				value, exists := q.Inputs[source]
+				if !exists {
+					value = saved[source]
+				}
+				if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
 					selectedExternalSource = true
 				}
 			}

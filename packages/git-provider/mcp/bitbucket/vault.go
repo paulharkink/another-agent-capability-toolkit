@@ -61,40 +61,27 @@ func loadVaultSecrets(environ []string, handoffPath string) (map[string]string, 
 		return nil, errors.New("vault address is invalid")
 	}
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: apiURL.Hostname(), MinVersion: tls.VersionTLS12}}}
-	request, err := http.NewRequest(http.MethodGet, strings.TrimRight(handoff.APIAddress, "/")+"/v1/secrets/aact-private-inputs-v1", nil)
-	if err != nil {
-		return nil, errors.New("request vault private inputs")
-	}
-	request.Header.Set("Authorization", "Bearer "+handoff.Token)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, errors.New("vault request failed")
-	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	_ = response.Body.Close()
-	if readErr != nil || response.StatusCode != http.StatusOK {
-		return nil, errors.New("vault private inputs are unavailable")
-	}
-	var envelope struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, errors.New("vault private inputs are invalid")
-	}
-	var record struct {
-		Version int            `json:"version"`
-		Values  map[string]any `json:"values"`
-	}
-	if err := json.Unmarshal([]byte(envelope.Value), &record); err != nil || record.Version != 1 {
-		return nil, errors.New("vault private inputs are invalid")
-	}
 	secrets := make(map[string]string, len(requested))
 	for target, input := range requested {
-		value, ok := record.Values[input].(string)
-		if !ok || value == "" {
+		requestURL := strings.TrimRight(handoff.APIAddress, "/") + "/v1/private-inputs/" + url.PathEscape(input)
+		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, errors.New("request vault private input")
+		}
+		request.Header.Set("Authorization", "Bearer "+handoff.Token)
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, errors.New("vault request failed")
+		}
+		var envelope struct {
+			Value string `json:"value"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope)
+		_ = response.Body.Close()
+		if decodeErr != nil || response.StatusCode != http.StatusOK || envelope.Value == "" {
 			return nil, fmt.Errorf("vault input %q is empty or unavailable", input)
 		}
-		secrets[target] = value
+		secrets[target] = envelope.Value
 	}
 	return secrets, nil
 }

@@ -11,6 +11,52 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/vault"
 )
 
+func TestInstanceInputSwitchFromRawTokenToFileOrEnvironmentUsesSubmittedSource(t *testing.T) {
+	svc, _, _ := fixture(t)
+	vaultStore, err := vault.Open(filepath.Join(t.TempDir(), "credentials.kdbx"), []byte("test-master-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Store.SetSecretBackend(vaultStore)
+	key := state.Key{Source: svc.Source.ID, Package: "fixture", Target: "work"}
+	if err := svc.Store.SaveSecretInputs(key, map[string]any{"token": "old-raw-token"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "provider-token")
+	if err := os.WriteFile(file, []byte("file-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pkg := catalog.Package{ID: key.Package, Inputs: []catalog.Input{
+		{Name: "token", Type: "secret"}, {Name: "token_file", Type: "file"}, {Name: "token_env", Type: "string"},
+	}, MCP: &catalog.MCP{Name: "provider", TokenInput: "token", TokenFileInput: "token_file", TokenEnvInput: "token_env", VaultSecretEnvInputs: map[string]string{"PROVIDER_TOKEN": "token"}, VaultAuthEnv: "PROVIDER_TOKEN"}}
+	profile := config.Instance{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+	_, _, values, _, err := svc.instanceValuesForPreview(pkg, profile, key, InstanceRequest{Inputs: map[string]any{"token_file": file}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := resolveProfileToken(*pkg.MCP, values)
+	if err != nil || token != "file-token" {
+		t.Fatalf("selected external token = %q err=%v, want file token", token, err)
+	}
+	t.Run("environment", func(t *testing.T) {
+		envKey := key
+		envKey.Target = "work-environment"
+		if err := svc.Store.SaveSecretInputs(envKey, map[string]any{"token": "old-raw-token"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AACT_TEST_RAW_TO_ENV_TOKEN", "environment-token")
+		profile := config.Instance{Ref: config.InstanceRef{PackID: envKey.Source, CapabilityID: envKey.Package, Name: envKey.Target}}
+		_, _, values, _, err := svc.instanceValuesForPreview(pkg, profile, envKey, InstanceRequest{Inputs: map[string]any{"token_env": "AACT_TEST_RAW_TO_ENV_TOKEN"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := resolveProfileToken(*pkg.MCP, values)
+		if err != nil || token != "environment-token" {
+			t.Fatalf("selected environment token = %q err=%v, want environment token", token, err)
+		}
+	})
+}
+
 func TestVaultProviderSourcesMigrateAndRefreshRawFileAndEnvironmentValues(t *testing.T) {
 	svc, _, _ := fixture(t)
 	vaultStore, err := vault.Open(filepath.Join(t.TempDir(), "credentials.kdbx"), []byte("test-master-password"))

@@ -174,6 +174,29 @@ func (r *Runtime) revokeKnownVaultHandoff(containerID, namespace string) error {
 	}
 	return nil
 }
+
+func (r *Runtime) revokeVaultHandoffByContainer(containerID string) error {
+	if issuer, ok := r.VaultTokenIssuer.(vault.ContainerHandoffContainerRevoker); ok {
+		if err := issuer.RevokeContainerHandoffByContainer(containerID); err != nil {
+			return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+		}
+		if r.vaultRevokers != nil {
+			r.vaultRevokers.Delete(containerID)
+		}
+		return nil
+	}
+	if r.VaultTokenIssuer != nil {
+		return errors.New("vault token issuer cannot revoke by exact container ID")
+	}
+	if r.vaultRevokers != nil {
+		if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
+			if err := revoker.(func() error)(); err != nil {
+				return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+			}
+		}
+	}
+	return nil
+}
 func containerName(k state.Key) string { return "aact-" + k.ID()[:24] }
 
 // containerNameForRegistration produces a readable, deterministic Docker name.
@@ -498,7 +521,32 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	if len(s.VaultSecretInputs) > 0 {
 		s.VaultHandoffEnabled = true
 	}
-	if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
+	if len(s.VaultSecretInputs) > 0 {
+		if s.VaultHandoff != nil {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault handoff")
+		}
+		scopedIssuer, ok := r.VaultTokenIssuer.(vault.ScopedContainerHandoffIssuer)
+		if !ok {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault token issuer")
+		}
+		namespace := s.VaultNamespaceID
+		if namespace == "" {
+			namespace = k.ID()
+		}
+		inputNames := make([]string, 0, len(s.VaultSecretInputs))
+		for _, inputName := range s.VaultSecretInputs {
+			inputNames = append(inputNames, inputName)
+		}
+		handoff, revoke, err := scopedIssuer.IssueContainerHandoffForPrivateInputs(namespace, inputNames)
+		if err != nil {
+			return Instance{}, fmt.Errorf("issue scoped vault token: %w", err)
+		}
+		s.VaultHandoff = &handoff
+		issuedByRuntime = true
+		if s.VaultHandoffRevoke == nil {
+			s.VaultHandoffRevoke = revoke
+		}
+	} else if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
 		namespace := s.VaultNamespaceID
 		if namespace == "" {
 			namespace = k.ID()
@@ -1036,6 +1084,9 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	info, err := r.inspect(ctx, id)
 	if err != nil {
 		if isDockerNotFound(err) {
+			if err := r.revokeVaultHandoffByContainer(id); err != nil {
+				return fmt.Errorf("missing container %s token revocation failed: %w", id, err)
+			}
 			if recorded {
 				return r.Store.Remove(record)
 			}
@@ -1057,7 +1108,11 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
 		return err
 	}
-	if err := r.revokeVaultHandoff(id, k.ID()); err != nil {
+	namespace := info.Config.Labels["aact.vault_namespace"]
+	if namespace == "" {
+		namespace = k.ID()
+	}
+	if err := r.revokeVaultHandoff(id, namespace); err != nil {
 		return fmt.Errorf("container %s was removed but token revocation failed: %w", id, err)
 	}
 	if recorded {
