@@ -530,7 +530,7 @@ func daemonHealthy(info DaemonInfo) bool {
 	if err != nil {
 		return false
 	}
-	response, err := controlHTTPClient.Do(request)
+	response, err := daemonHealthHTTPClient.Do(request)
 	if err != nil {
 		return false
 	}
@@ -691,7 +691,8 @@ func readDaemonInfo(path string) (DaemonInfo, error) {
 	return info, nil
 }
 
-var controlHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+var controlHTTPClient = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+var daemonHealthHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 func validateDaemonInfo(info DaemonInfo) error {
 	api, err := url.Parse(info.APIAddress)
