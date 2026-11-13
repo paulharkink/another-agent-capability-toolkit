@@ -102,7 +102,9 @@ archives:
       - LICENSE
       - THIRD_PARTY_NOTICES.md
       - packages/**
-      - dist/helpers/aact-vault-handoff-linux-*
+      - src: build/vault-handoff-helpers/aact-vault-handoff-linux-*
+        dst: dist/helpers
+        strip_parent: true
 
 checksum:
   name_template: checksums.txt
