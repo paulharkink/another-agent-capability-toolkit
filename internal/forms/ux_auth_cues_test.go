@@ -38,7 +38,7 @@ func TestUXAuthSwitchCueRetainsImportedNotLiveMeaning(t *testing.T) {
 	m.Update(key(tea.KeyDown, ""))
 
 	view := m.View().Content
-	for _, want := range []string{"Type a value to switch to Source kubeconfig", "Import source", "not a live path", "old-token"} {
+	for _, want := range []string{"Type a value to switch to Source kubeconfig", "Import source", "not a live path", "*********"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("editing alternate credential omitted %q:\n%s", want, view)
 		}

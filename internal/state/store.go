@@ -86,9 +86,29 @@ type Installation struct {
 	LastActionAt         time.Time `json:"last_action_at,omitempty"`
 }
 type Store struct {
-	root     string
-	mu       sync.Mutex
-	readonly bool
+	root          string
+	mu            sync.Mutex
+	readonly      bool
+	secretBackend SecretBackend
+}
+
+// SecretBackend stores per-instance encrypted secret records.
+type SecretBackend interface {
+	Get(namespace, name string) ([]byte, bool, error)
+	Put(namespace, name string, value []byte) error
+	Delete(namespace, name string) error
+}
+
+func (s *Store) SetSecretBackend(backend SecretBackend) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.secretBackend = backend
+}
+
+func (s *Store) ConfiguredSecretBackend() SecretBackend {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.secretBackend
 }
 
 var ErrReadOnly = errors.New("state store is read-only")
@@ -119,7 +139,7 @@ func DefaultRoot(goos, home string, getenv func(string) string) string {
 	if base == "" {
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "agent-skills")
+	return filepath.Join(base, "aact")
 }
 func Open(root string) (*Store, error) {
 	return open(root, false)
@@ -130,6 +150,7 @@ func open(root string, readonly bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	defaultPath := root == "" && os.Getenv("AACT_STATE_DIR") == ""
 	if root == "" {
 		root = DefaultRoot(runtime.GOOS, home, os.Getenv)
 	}
@@ -142,12 +163,110 @@ func open(root string, readonly bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if defaultPath && runtime.GOOS != "windows" {
+		legacy := filepath.Join(filepath.Dir(root), "agent-skills")
+		root, err = resolveLegacyDefaultRoot(root, legacy, readonly)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if !readonly {
 		if err = os.MkdirAll(filepath.Join(root, "manager"), 0700); err != nil {
 			return nil, err
 		}
 	}
 	return &Store{root: root, readonly: readonly}, nil
+}
+
+// resolveLegacyDefaultRoot moves the historical default state directory to
+// the AACT-named directory. Explicit state-directory overrides bypass this.
+// Read-only opens inspect the legacy root in place rather than mutating it.
+func resolveLegacyDefaultRoot(root, legacy string, readonly bool) (string, error) {
+	return resolveLegacyDefaultRootWithRename(root, legacy, readonly, os.Rename)
+}
+
+func resolveLegacyDefaultRootWithRename(root, legacy string, readonly bool, rename func(string, string) error) (string, error) {
+	legacyInfo, err := os.Lstat(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return root, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect legacy state directory %s: %w", legacy, err)
+	}
+	if !legacyInfo.IsDir() {
+		return "", fmt.Errorf("legacy state path %s is not a directory", legacy)
+	}
+
+	rootInfo, rootErr := os.Lstat(root)
+	rootExists := rootErr == nil
+	if rootErr != nil && !errors.Is(rootErr, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect AACT state directory %s: %w", root, rootErr)
+	}
+	if rootExists {
+		if !rootInfo.IsDir() {
+			return "", fmt.Errorf("cannot migrate legacy state from %s: AACT state path %s is not a directory", legacy, root)
+		}
+		entries, readErr := os.ReadDir(root)
+		if readErr != nil {
+			return "", fmt.Errorf("inspect AACT state directory %s: %w", root, readErr)
+		}
+		if len(entries) != 0 {
+			return "", fmt.Errorf("both legacy state directory %s and AACT state directory %s contain data; choose which directory to keep, move or archive the other, then relaunch", legacy, root)
+		}
+	}
+	if readonly {
+		return legacy, nil
+	}
+	if rootExists {
+		if err := os.Remove(root); err != nil {
+			return "", fmt.Errorf("prepare AACT state directory %s for migration: %w", root, err)
+		}
+	}
+	if err := rename(legacy, root); err != nil {
+		return "", fmt.Errorf("migrate state directory %s to %s: %w", legacy, root, err)
+	}
+	if err := rewriteLegacyAuthAliases(root, legacy); err != nil {
+		if rollbackErr := rename(root, legacy); rollbackErr != nil {
+			return "", errors.Join(fmt.Errorf("rewrite authentication aliases after migrating state: %w", err), fmt.Errorf("restore legacy state directory: %w", rollbackErr))
+		}
+		return "", fmt.Errorf("rewrite authentication aliases after migrating state: %w", err)
+	}
+	return root, nil
+}
+
+func rewriteLegacyAuthAliases(root, legacy string) error {
+	path := filepath.Join(root, "manager", "auth-aliases.json")
+	aliases := map[string]string{}
+	if err := readJSON(path, &aliases); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	legacyRoot, err := filepath.Abs(legacy)
+	if err != nil {
+		return err
+	}
+	newRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for id, aliasedPath := range aliases {
+		absolute, err := filepath.Abs(aliasedPath)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(legacyRoot, absolute)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		aliases[id] = filepath.Join(newRoot, relative)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return WriteJSON(path, aliases)
 }
 func (s *Store) Root() string              { return s.root }
 func (s *Store) KeyDir(k Key) string       { return filepath.Join(s.root, "instances", k.ID()) }

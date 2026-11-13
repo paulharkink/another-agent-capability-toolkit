@@ -427,10 +427,14 @@ func TestActiveCredentialMethodSurvivesFailedApplyAndProfileReopen(t *testing.T)
 	if err != nil || preview.ActiveInputGroups["access_method"] != "access_key" {
 		t.Fatalf("reopened preview lost selected method: %#v, %v", preview.ActiveInputGroups, err)
 	}
+	restoredSecret := false
 	for _, input := range preview.Inputs {
-		if input.Definition.Name == "access_key" && input.HasValue {
-			t.Fatalf("reopened preview synthesized a secret value: %#v", input)
+		if input.Definition.Name == "access_key" {
+			restoredSecret = input.HasValue && input.Value == secret
 		}
+	}
+	if !restoredSecret {
+		t.Fatalf("reopened preview did not restore the vault-backed secret: %#v", preview.Inputs)
 	}
 	exec.failOn = ""
 	result, err = svc.ApplyProfile(context.Background(), ProfileRequest{

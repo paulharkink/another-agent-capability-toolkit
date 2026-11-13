@@ -11,13 +11,17 @@ import (
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/vault"
 	"io"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -53,7 +57,10 @@ type RunSpec struct {
 	DeferProtocolHealth bool          `json:"-"`
 	// SkipProtocolHealthForExisting skips only the repeat probe for an exact
 	// running instance with the same spec. New or replaced instances still check readiness.
-	SkipProtocolHealthForExisting bool `json:"-"`
+	SkipProtocolHealthForExisting bool                    `json:"-"`
+	VaultHandoff                  *vault.ContainerHandoff `json:"-"`
+	VaultHandoffEnabled           bool                    `json:"-"`
+	VaultHandoffRevoke            func() error            `json:"-"`
 }
 type Instance struct {
 	Key              state.Key `json:"key"`
@@ -67,16 +74,102 @@ type Instance struct {
 	LastActionAt     time.Time `json:"last_action_at,omitempty"`
 }
 type Runtime struct {
-	Store      *state.Store
-	Executor   process.Executor
-	OnStderr   func([]byte)
-	SkipHealth bool
+	Store                  *state.Store
+	Executor               process.Executor
+	OnStderr               func([]byte)
+	SkipHealth             bool
+	VaultHandoffHelperPath string
+	VaultTokenIssuer       vault.ContainerHandoffIssuer
+	vaultRevokers          *sync.Map
 }
 
 var ErrRunningWithDifferentSettings = errors.New("MCP is running with different settings")
 
 func NewDockerRuntime(s *state.Store) *Runtime {
-	return &Runtime{Store: s, Executor: process.OSExecutor{}}
+	r := &Runtime{Store: s, Executor: process.OSExecutor{}, vaultRevokers: &sync.Map{}, VaultHandoffHelperPath: os.Getenv("AACT_VAULT_HANDOFF_HELPER")}
+	if s != nil {
+		if issuer, ok := s.ConfiguredSecretBackend().(vault.ContainerHandoffIssuer); ok {
+			r.VaultTokenIssuer = issuer
+		}
+	}
+	return r
+}
+func bundledVaultHandoffHelper(arch string) string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	name := "aact-vault-handoff-linux-" + arch
+	dir := filepath.Dir(executable)
+	candidates := []string{filepath.Join(dir, name), filepath.Join(dir, "..", "dist", "helpers", name)}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	return candidates[0]
+}
+
+func (r *Runtime) resolveVaultHandoffHelper(ctx context.Context, image string) (string, error) {
+	path := r.VaultHandoffHelperPath
+	if path == "" {
+		output, err := r.run(ctx, []string{"image", "inspect", "--format", "{{.Architecture}}", image})
+		if err != nil {
+			return "", fmt.Errorf("vault handoff requires image architecture inspection; pull the image first: %w", err)
+		}
+		arch := strings.TrimSpace(string(output))
+		if arch != "amd64" && arch != "arm64" {
+			return "", fmt.Errorf("vault handoff does not support Linux image architecture %q", arch)
+		}
+		path = bundledVaultHandoffHelper(arch)
+	}
+	if path == "" {
+		return "", errors.New("vault handoff helper is not bundled; set AACT_VAULT_HANDOFF_HELPER to a matching Linux helper")
+	}
+	if strings.Contains(path, ",") {
+		return "", errors.New("vault handoff helper path cannot contain commas")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect vault handoff helper: %w", err)
+	}
+	// On Unix the host mode must make the mounted Linux helper executable. On
+	// Windows, os.Stat's POSIX mode does not represent executable bits in the
+	// Linux VM; the container's docker exec is the authoritative check there.
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
+		return "", errors.New("vault handoff helper must be a regular executable file")
+	}
+	return path, nil
+}
+
+func (r *Runtime) revokeVaultHandoff(containerID, namespace string) error {
+	if r.VaultTokenIssuer != nil {
+		if err := r.VaultTokenIssuer.RevokeContainerHandoff(namespace, containerID); err != nil {
+			return fmt.Errorf("revoke container vault token: %w", err)
+		}
+		if r.vaultRevokers != nil {
+			r.vaultRevokers.Delete(containerID)
+		}
+		return nil
+	}
+	return r.revokeKnownVaultHandoff(containerID, namespace)
+}
+
+// revokeKnownVaultHandoff revokes only the token recorded for one container.
+// It is used after replacement so the new container's token stays active.
+func (r *Runtime) revokeKnownVaultHandoff(containerID, namespace string) error {
+	if r.VaultTokenIssuer != nil {
+		return r.VaultTokenIssuer.RevokeContainerHandoff(namespace, containerID)
+	}
+	if r.vaultRevokers == nil {
+		return nil
+	}
+	if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
+		if err := revoker.(func() error)(); err != nil {
+			return fmt.Errorf("revoke replaced container vault token: %w", err)
+		}
+	}
+	return nil
 }
 func containerName(k state.Key) string { return "aact-" + k.ID()[:24] }
 
@@ -386,12 +479,56 @@ func (r *Runtime) recordAction(k state.Key, i Instance, action string) (Instance
 	}
 	return i, nil
 }
+func vaultHandoffHostGatewayArgs(goos string) []string {
+	if goos != "linux" {
+		return nil
+	}
+	return []string{"--add-host", "host.docker.internal:host-gateway"}
+}
+
 func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
+	handoffCommitted := false
+	issuedByRuntime := false
+	if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
+		handoff, revoke, err := r.VaultTokenIssuer.IssueContainerHandoff(k.ID())
+		if err != nil {
+			return Instance{}, fmt.Errorf("issue instance-scoped vault token: %w", err)
+		}
+		s.VaultHandoff = &handoff
+		issuedByRuntime = true
+		if s.VaultHandoffRevoke == nil {
+			s.VaultHandoffRevoke = revoke
+		}
+	}
+	if s.VaultHandoffEnabled && s.VaultHandoff == nil {
+		return Instance{}, errors.New("vault handoff was requested but no token issuer is configured")
+	}
+	if s.VaultHandoffRevoke != nil {
+		defer func() {
+			if !handoffCommitted {
+				if revokeErr := s.VaultHandoffRevoke(); revokeErr != nil {
+					startErr = errors.Join(startErr, fmt.Errorf("revoke failed container vault token: %w", revokeErr))
+				}
+			}
+		}()
+	}
+	var handoffPayload []byte
+	if s.VaultHandoff != nil {
+		var payload bytes.Buffer
+		if err := vault.WriteContainerHandoff(&payload, *s.VaultHandoff); err != nil {
+			return Instance{}, err
+		}
+		handoffPayload = payload.Bytes()
+		defer clear(handoffPayload)
+	}
 	secretValues := []string{}
 	for _, v := range s.SecretEnv {
 		if v != "" {
 			secretValues = append(secretValues, v)
 		}
+	}
+	if s.VaultHandoff != nil && s.VaultHandoff.Token != "" {
+		secretValues = append(secretValues, s.VaultHandoff.Token)
 	}
 	local := *r
 	local.Executor = redactingExecutor{base: r.Executor, values: secretValues}
@@ -551,7 +688,19 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			return Instance{}, e
 		}
 	}
+	helperPath := ""
+	if s.VaultHandoff != nil {
+		helperPath, e = r.resolveVaultHandoffHelper(ctx, image)
+		if e != nil {
+			return Instance{}, e
+		}
+	}
 	a := []string{"run", "--detach", "--name", name}
+	if s.VaultHandoff != nil {
+		a = append(a, vaultHandoffHostGatewayArgs(runtime.GOOS)...)
+		a = append(a, "--tmpfs", vault.ContainerHandoffTmpfs)
+		a = append(a, "--mount", "type=bind,src="+helperPath+",dst=/run/aact-vault-handoff,readonly")
+	}
 	if s.User != "" {
 		a = append(a, "--user", s.User)
 	}
@@ -654,6 +803,26 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.BindIP, s.HostPort, e)
 	}
 	createdID = strings.TrimSpace(string(b))
+	if s.VaultHandoff != nil {
+		if issuedByRuntime {
+			if bindErr := r.VaultTokenIssuer.BindContainerHandoff(createdID, s.VaultHandoff.Token); bindErr != nil {
+				return Instance{}, fmt.Errorf("bind vault token to container: %w", bindErr)
+			}
+		}
+		args := []string{"docker", "exec", "--interactive", createdID, "/run/aact-vault-handoff"}
+		var diagnostics bytes.Buffer
+		_, handoffErr := r.Executor.Run(ctx, args, "", handoffPayload, nil, func(p []byte) {
+			if diagnostics.Len() < 8192 {
+				diagnostics.Write(p)
+			}
+			if r.OnStderr != nil {
+				r.OnStderr(p)
+			}
+		})
+		if handoffErr != nil {
+			return Instance{}, dockerCommandError("vault handoff", handoffErr, diagnostics.Bytes())
+		}
+	}
 	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
 	if !s.DeferProtocolHealth {
 		if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
@@ -664,6 +833,10 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		return out, fmt.Errorf("MCP state recording failed: %w", e)
 	}
 	committed = true
+	if s.VaultHandoffRevoke != nil {
+		r.vaultRevokers.Store(createdID, s.VaultHandoffRevoke)
+	}
+	handoffCommitted = true
 	if renamed {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -679,6 +852,9 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
 				}
 			}
+		}
+		if e = r.revokeKnownVaultHandoff(previous.ID, k.ID()); e != nil {
+			return out, fmt.Errorf("MCP replaced successfully but prior token revocation failed: %w", e)
 		}
 	}
 	return out, nil
@@ -801,6 +977,9 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	if e != nil {
 		return e
 	}
+	if err := r.revokeVaultHandoff(observed.ID, k.ID()); err != nil {
+		return fmt.Errorf("runtime %s was removed but token revocation failed: %w", observed.ID, err)
+	}
 	rows, err := r.Store.Installations()
 	if err != nil {
 		return fmt.Errorf("runtime %s was removed but its ledger could not be read: %w", observed.ID, err)
@@ -856,6 +1035,9 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	}
 	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
 		return err
+	}
+	if err := r.revokeVaultHandoff(id, k.ID()); err != nil {
+		return fmt.Errorf("container %s was removed but token revocation failed: %w", id, err)
 	}
 	if recorded {
 		if err := r.Store.Remove(record); err != nil {

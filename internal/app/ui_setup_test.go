@@ -140,6 +140,7 @@ func TestPublicSetupOperationsRequireInstanceReference(t *testing.T) {
 
 func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 	svc, _, store := fixture(t)
+	store.SetSecretBackend(&appTestSecretBackend{values: map[string][]byte{}})
 	runtimeSpy := &fakeRuntime{}
 	svc.Options.Runtime = runtimeSpy
 	const secret = "private-input-canary"
@@ -186,14 +187,8 @@ func TestUISaveInputsPersistsAnswersWithoutApplyingEffects(t *testing.T) {
 		t.Fatalf("write runtime-owned auth marker: %v", err)
 	}
 	secretPath := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
-	info, err := os.Stat(secretPath)
-	if err != nil {
-		t.Fatalf("private secret file missing: %v", err)
-	}
-	// Windows FileMode.Perm does not report ACL access; keep Unix mode checks
-	// on platforms where these bits describe the file's effective permissions.
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
-		t.Fatalf("private secret file mode = %v; want 0600", info.Mode().Perm())
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("vault-backed secret created a plaintext file: err=%v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(store.AuthDir(key), "inputs.json")); err != nil || string(got) != string(runtimeMarker) {
 		t.Fatalf("saving private inputs changed runtime-owned inputs.json: contentsPreserved=%t err=%v", string(got) == string(runtimeMarker), err)

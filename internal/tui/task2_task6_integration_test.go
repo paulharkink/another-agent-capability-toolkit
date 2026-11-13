@@ -127,6 +127,7 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 			if err != nil {
 				t.Fatal(err)
 			}
+			attachTestSecretBackend(store)
 			runtime := &integratedAuthRuntime{}
 			service := app.New(config.Source{
 				ID: "fixture-pack", Root: root, ProfileRoot: filepath.Join(root, "profiles"),
@@ -264,6 +265,7 @@ func TestTUISaveAndAgentInstallDoNotRunAuthenticationAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	executor := &capturedProfileAuthExecutor{}
 	service := app.New(config.Source{
 		ID: "fixture-pack", Root: root, ProfileRoot: profileRoot,
@@ -274,7 +276,10 @@ func TestTUISaveAndAgentInstallDoNotRunAuthenticationAction(t *testing.T) {
 	})
 	ref := config.InstanceRef{PackID: "fixture-pack", CapabilityID: "grafana", Name: "production"}
 	key := state.Key{Source: ref.PackID, Package: ref.CapabilityID, Target: ref.Name}
-	if err := store.SaveAnswers(key, map[string]any{"grafana_session": profileCookie, "session_expiry": profileExpiry}); err != nil {
+	if err := store.SaveAnswers(key, map[string]any{"session_expiry": profileExpiry}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSecretInputs(key, map[string]any{"grafana_session": profileCookie}, nil); err != nil {
 		t.Fatal(err)
 	}
 	model := NewContext(t.Context(), service)

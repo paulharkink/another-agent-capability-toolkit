@@ -66,6 +66,7 @@ func TestRealClusterInspectorTargetWorkspaceSaveApplyBuildsAndStarts(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	home := filepath.Join(stateRoot, "home")
 	configHome := filepath.Join(stateRoot, "config")
 	t.Setenv("HOME", home)

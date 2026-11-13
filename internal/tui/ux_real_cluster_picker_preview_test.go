@@ -26,6 +26,7 @@ func TestRealClusterInspectorPreviewExposesKubeconfigPicker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	source, err := config.Discover(root, filepath.Join(root, "aact.toml"), bundle, store.Root())
 	if err != nil {
 		t.Fatal(err)

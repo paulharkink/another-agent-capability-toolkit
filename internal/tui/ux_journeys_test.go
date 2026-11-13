@@ -286,6 +286,7 @@ func TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: "Observed inspector"}); err != nil {
 		t.Fatal(err)
 	}
@@ -693,8 +694,8 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 		t.Fatalf("keyboard paste/commit did not preserve the synthetic token fixture: %q\n%s", got, ansi.Strip(auth.View().Content))
 	}
 	assertInactiveAlternativeInANSI(t, tokenView, "Source kubeconfig")
-	if !strings.Contains(ansi.Strip(tokenView), fixtureToken) {
-		t.Fatalf("token-selected capture does not show its synthetic fixture value:\n%s", ansi.Strip(tokenView))
+	if !strings.Contains(ansi.Strip(tokenView), strings.Repeat("*", len([]rune(fixtureToken)))) || strings.Contains(ansi.Strip(tokenView), fixtureToken) {
+		t.Fatalf("token-selected capture does not mask its synthetic fixture value:\n%s", ansi.Strip(tokenView))
 	}
 	writeUXCapture(t, "Authentication token selected kubeconfig inactive", tokenView)
 
@@ -855,6 +856,7 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: "Fixture cluster"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1053,6 +1055,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# Demo\n"), 0o600); err != nil {
 		t.Fatal(err)

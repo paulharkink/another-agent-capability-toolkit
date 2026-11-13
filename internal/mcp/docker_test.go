@@ -17,13 +17,15 @@ import (
 
 type fakeExec struct {
 	calls         [][]string
+	inputs        [][]byte
 	f             func([]string) ([]byte, error)
 	stderr        string
 	contextErrors []error
 }
 
-func (f *fakeExec) Run(ctx context.Context, a []string, _ string, _ []byte, _ map[string]string, cb func([]byte)) ([]byte, error) {
+func (f *fakeExec) Run(ctx context.Context, a []string, _ string, stdin []byte, _ map[string]string, cb func([]byte)) ([]byte, error) {
 	f.calls = append(f.calls, append([]string{}, a...))
+	f.inputs = append(f.inputs, append([]byte(nil), stdin...))
 	f.contextErrors = append(f.contextErrors, ctx.Err())
 	var output []byte
 	var err error

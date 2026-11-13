@@ -281,7 +281,43 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 			}
 		}
 	}
+	secrets := map[string]any{}
+	for _, d := range p.Inputs {
+		if d.Type == "secret" {
+			if !reset[d.Name] {
+				if value, ok := values[d.Name]; ok {
+					secrets[d.Name] = value
+				}
+			}
+		}
+	}
+	previousSecrets, err := s.Store.SecretInputs(k)
+	if err != nil {
+		return err
+	}
+	if err := s.Store.SaveSecretInputs(k, secrets, resetInputs); err != nil {
+		return err
+	}
 	if err := s.Store.SaveAnswersWithActiveInputGroups(k, safe, activeGroups); err != nil {
+		rollbackValues := map[string]any{}
+		rollbackResets := []string{}
+		affectedNames := map[string]bool{}
+		for name := range secrets {
+			affectedNames[name] = true
+		}
+		for _, name := range resetInputs {
+			affectedNames[name] = true
+		}
+		for name := range affectedNames {
+			if value, ok := previousSecrets[name]; ok {
+				rollbackValues[name] = value
+			} else {
+				rollbackResets = append(rollbackResets, name)
+			}
+		}
+		if rollbackErr := s.Store.SaveSecretInputs(k, rollbackValues, rollbackResets); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore prior secret inputs: %w", rollbackErr))
+		}
 		return err
 	}
 	if p.HasMCP() && !skillsOnly {
@@ -292,6 +328,18 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 		}
 	}
 	return nil
+}
+
+func restoreSecretInputs(store *state.Store, key state.Key, defs []catalog.Input, previous map[string]any) error {
+	resetNames := []string{}
+	for _, def := range defs {
+		if def.Type == "secret" {
+			if _, existed := previous[def.Name]; !existed {
+				resetNames = append(resetNames, def.Name)
+			}
+		}
+	}
+	return store.SaveSecretInputs(key, previous, resetNames)
 }
 
 func hasSubmittedAuthentication(s *Service, p catalog.Package, k state.Key, submitted, previous map[string]any) bool {

@@ -126,6 +126,13 @@ func profileRegistrationHeaders(profile catalog.MCP, values map[string]any) (map
 	}
 	return map[string]string{profile.TokenHeader: profile.TokenPrefix + token}, nil
 }
+func validateAgentRegistrationCredentialSafety(profile catalog.MCP) error {
+	if profile.TokenHeader == "" {
+		return nil
+	}
+	return errors.New("cannot store provider credentials in agent MCP configuration; secret-aware vault gateway integration is pending")
+}
+
 
 func profileRegistrationName(profile catalog.MCP, key state.Key, values map[string]any) string {
 	// Kept as a separate helper so package authors can choose a stable readable

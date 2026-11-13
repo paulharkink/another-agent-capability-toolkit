@@ -152,20 +152,80 @@ func TestFramedFormFitsMinimumTerminalWithHintsAndEdit(t *testing.T) {
 		t.Fatalf("minimum form overflowed or hid controls/error (%d lines):\n%s", len(lines), m.View().Content)
 	}
 }
-func TestKeyboardFormShowsSecretsAndCancels(t *testing.T) {
-	m := NewForm(context.Background(), []catalog.Input{{Name: "token", Type: "secret"}}, map[string]any{"token": "very-private-test-value"})
+func TestSecretInputIsMaskedByDefaultAndTemporarilyRevealed(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "token", Type: "secret"}, {Name: "label", Type: "string"}}, map[string]any{"token": "very-private-test-value", "label": "visible-label"})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if !strings.Contains(m.View().Content, "very-private-test-value") {
-		t.Fatal("secret value was hidden despite the approved visible-input design")
+	view := ansi.Strip(m.View().Content)
+	masked := strings.Repeat("*", len([]rune("very-private-test-value")))
+	if strings.Contains(view, "very-private-test-value") || !strings.Contains(view, masked) {
+		t.Fatalf("secret was not masked by default:\n%s", view)
+	}
+	if !strings.Contains(view, "visible-label") || !strings.Contains(view, "v reveal secret") {
+		t.Fatalf("ordinary input or reveal hint was missing:\n%s", view)
 	}
 	m.Update(key(tea.KeyEnter, ""))
-	if !strings.Contains(m.View().Content, "Edit: very-private-test-value_") {
-		t.Fatal("secret edit buffer was hidden")
+	if view := ansi.Strip(m.View().Content); strings.Contains(view, "very-private-test-value") || !strings.Contains(view, "Edit: "+masked+"_") {
+		t.Fatalf("secret edit buffer was not masked by default:\n%s", m.View().Content)
 	}
 	m.Update(key(tea.KeyEscape, ""))
+	m.Update(key('v', "v"))
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "very-private-test-value") || !strings.Contains(view, "v hide secret") {
+		t.Fatalf("focused secret could not be revealed:\n%s", m.View().Content)
+	}
+	m.Update(key(tea.KeyDown, ""))
+	if strings.Contains(ansi.Strip(m.View().Content), "very-private-test-value") {
+		t.Fatalf("secret stayed visible after focus moved:\n%s", m.View().Content)
+	}
+	m.Update(key(tea.KeyUp, ""))
+	m.Update(key('v', "v"))
+	m.Update(key(tea.KeyEnter, ""))
+	if !strings.Contains(ansi.Strip(m.View().Content), "Edit: very-private-test-value_") {
+		t.Fatalf("revealed field did not stay visible while editing:\n%s", m.View().Content)
+	}
+	if m.Values()["token"] != "very-private-test-value" {
+		t.Fatal("reveal changed the stored secret value")
+	}
+	m.Update(key(tea.KeyEscape, ""))
+	m.Update(key(tea.KeyTab, ""))
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if strings.Contains(ansi.Strip(m.View().Content), "very-private-test-value") {
+		t.Fatal("secret remained revealed after leaving and returning to its field")
+	}
 	m.Update(key(tea.KeyEscape, ""))
 	if _, e := m.Result(); e != picker.ErrCancelled {
 		t.Fatal(e)
+	}
+}
+
+func TestSecretCollectionAddBufferIsMaskedUnlessRevealed(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "tokens", Type: "secret", Multiple: true}}, map[string]any{"tokens": []string{"old-token"}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if strings.Contains(ansi.Strip(m.View().Content), "old-token") {
+		t.Fatal("secret collection value was visible by default")
+	}
+	m.Update(key('a', "a"))
+	m.Update(key('n', "new-secret"))
+	view := ansi.Strip(m.View().Content)
+	if strings.Contains(view, "new-secret") || !strings.Contains(view, "Edit: **********") {
+		t.Fatalf("new secret collection item was not masked while editing:\n%s", view)
+	}
+	m.Update(key(tea.KeyEscape, ""))
+	m.Update(key('v', "v"))
+	m.Update(key('a', "a"))
+	m.Update(key('n', "new-secret"))
+	if !strings.Contains(ansi.Strip(m.View().Content), "Edit: new-secret") {
+		t.Fatal("revealing the focused secret did not also reveal its collection edit buffer")
+	}
+
+	split := NewForm(context.Background(), []catalog.Input{{Name: "tokens", Type: "secret", Multiple: true}}, nil)
+	split.SetSections(FormSection{Title: "Secrets", Fields: []string{"tokens"}})
+	split.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	split.Update(key(tea.KeyRight, ""))
+	split.Update(key('a', "a"))
+	split.Update(key('n', "split-secret"))
+	view = ansi.Strip(split.View().Content)
+	if strings.Contains(view, "split-secret") || !strings.Contains(view, "Edit: ************") {
+		t.Fatalf("split-pane secret collection add buffer was not masked:\n%s", view)
 	}
 }
 

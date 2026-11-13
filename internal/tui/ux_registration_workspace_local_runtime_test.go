@@ -161,6 +161,7 @@ func TestUXSavedLocalhostRegistrationDoesNotBlockLocalWorkspaceApply(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	key := state.Key{Source: "cluster-source", Package: pkg.ID, Target: "target-a"}
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: pkg.Name}); err != nil {
 		t.Fatal(err)

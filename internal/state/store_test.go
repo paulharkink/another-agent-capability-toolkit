@@ -317,11 +317,11 @@ func TestLockExcludesConcurrentStore(t *testing.T) {
 func TestDefaultRootsAndOverride(t *testing.T) {
 	env := map[string]string{"HOME": "/home/test", "XDG_STATE_HOME": "/custom", "LOCALAPPDATA": "C:\\Users\\test\\AppData\\Local"}
 	get := func(k string) string { return env[k] }
-	if got := DefaultRoot("linux", "/home/test", get); got != filepath.Join("/custom", "agent-skills") {
+	if got := DefaultRoot("linux", "/home/test", get); got != filepath.Join("/custom", "aact") {
 		t.Fatal(got)
 	}
 	delete(env, "XDG_STATE_HOME")
-	if got := DefaultRoot("darwin", "/home/test", get); got != filepath.Join("/home/test", ".local", "state", "agent-skills") {
+	if got := DefaultRoot("darwin", "/home/test", get); got != filepath.Join("/home/test", ".local", "state", "aact") {
 		t.Fatal(got)
 	}
 	if got := DefaultRoot("windows", "/home/test", get); got != filepath.Join(env["LOCALAPPDATA"], "aact", "state") {
