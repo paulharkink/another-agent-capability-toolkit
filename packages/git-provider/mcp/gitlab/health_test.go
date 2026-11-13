@@ -341,3 +341,52 @@ func TestWrapperShutdownStopsOwnedChildProcess(t *testing.T) {
 		t.Fatal("owned child was not reaped after wrapper shutdown")
 	}
 }
+
+func TestVaultBackedProviderCredentialAddsBearerToMCPForwardingAndHealth(t *testing.T) {
+	var mcpAuthorization, providerAuthorization string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+	handler := New(Config{Provider: "gitlab", UpstreamURL: upstream.URL, APIBaseURL: provider.URL, ProviderToken: "vault-token"})
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
+	request.Header.Set("Authorization", "Bearer stale-agent-value")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || mcpAuthorization != "Bearer vault-token" {
+		t.Fatalf("MCP response/auth = %d/%q", recorder.Code, mcpAuthorization)
+	}
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || !healthValue(health.Body.String(), true) || providerAuthorization != "Bearer vault-token" {
+		t.Fatalf("health = %d %q, provider auth %q", health.Code, health.Body.String(), providerAuthorization)
+	}
+}
+
+func TestGitLabVaultCredentialUsesNormalizedAPIBase(t *testing.T) {
+	for _, basePath := range []string{"", "/api/v4"} {
+		t.Run(basePath, func(t *testing.T) {
+			var gotPath, gotAuthorization string
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotAuthorization = r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer provider.Close()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+			defer upstream.Close()
+			handler := New(Config{Provider: "gitlab", UpstreamURL: upstream.URL, GitLabURL: provider.URL + basePath, ProviderToken: "vault-token"})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+			if !healthValue(recorder.Body.String(), true) || gotPath != "/api/v4/user" || gotAuthorization != "Bearer vault-token" {
+				t.Fatalf("health=%q path=%q auth=%q", recorder.Body.String(), gotPath, gotAuthorization)
+			}
+		})
+	}
+}

@@ -23,7 +23,12 @@ func Run() int {
 	if len(childArgs) == 0 {
 		return 1
 	}
-	child, childDone, err := startChild(childArgs)
+	vaultSecrets, err := waitForVaultSecrets(os.Environ(), vaultHandoffPath, 30*time.Second)
+	if err != nil {
+		return 1
+	}
+	providerToken := vaultSecrets[os.Getenv("AACT_VAULT_AUTH_ENV")]
+	child, childDone, err := startChildWithEnv(childArgs, vaultSecrets)
 	if err != nil {
 		return 1
 	}
@@ -33,8 +38,8 @@ func Run() int {
 	config := Config{
 		Provider: provider, UpstreamURL: os.Getenv("MCP_HEALTH_UPSTREAM"),
 		GitHubHost: os.Getenv("GITHUB_HOST"), GitLabURL: os.Getenv("GITLAB_API_URL"),
-		BitbucketURL: os.Getenv("BITBUCKET_URL"), BitbucketToken: os.Getenv("BITBUCKET_TOKEN"),
-		ChildReady: childAlive.Load,
+		BitbucketURL: os.Getenv("BITBUCKET_URL"), BitbucketToken: providerToken,
+		ProviderToken: providerToken, ChildReady: childAlive.Load,
 	}
 	server := &http.Server{Addr: listenAddress(), Handler: New(config), ReadHeaderTimeout: 5 * time.Second}
 	serveDone := make(chan error, 1)
@@ -95,9 +100,14 @@ func listenAddress() string {
 	return "0.0.0.0:8084"
 }
 
-func startChild(args []string) (*exec.Cmd, <-chan error, error) {
+func startChild(args []string) (*exec.Cmd, <-chan error, error) { return startChildWithEnv(args, nil) }
+
+func startChildWithEnv(args []string, additions map[string]string) (*exec.Cmd, <-chan error, error) {
 	child := exec.Command(args[0], args[1:]...)
 	child.Env = os.Environ()
+	for key, value := range additions {
+		child.Env = setEnvironment(child.Env, key, value)
+	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	configureWrapperChildProcessTree(child)
 	if err := child.Start(); err != nil {
@@ -119,4 +129,15 @@ func stopChild(child *exec.Cmd, childDone <-chan error) {
 		_ = signalWrapperChildProcessTree(child, true)
 		<-childDone
 	}
+}
+
+func setEnvironment(env []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }

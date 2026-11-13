@@ -30,6 +30,18 @@ type ContainerHandoffIssuer interface {
 	RevokeContainerHandoffs(namespace string) error
 }
 
+// ScopedContainerHandoffIssuer issues tokens restricted to read-only access to
+// the named private input values in one instance namespace.
+type ScopedContainerHandoffIssuer interface {
+	IssueContainerHandoffForPrivateInputs(namespace string, names []string) (ContainerHandoff, func() error, error)
+}
+
+// ContainerHandoffContainerRevoker revokes tokens by exact owner ID when the
+// container has disappeared and its namespace label can no longer be read.
+type ContainerHandoffContainerRevoker interface {
+	RevokeContainerHandoffByContainer(containerID string) error
+}
+
 func NewContainerHandoff(info DaemonInfo, token string) (ContainerHandoff, error) {
 	apiURL, err := url.Parse(info.APIAddress)
 	if err != nil || apiURL.Hostname() != "host.docker.internal" {

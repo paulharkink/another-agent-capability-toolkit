@@ -29,7 +29,12 @@ import (
 	"time"
 )
 
-const daemonInfoFilename = "vault-daemon.json"
+const (
+	daemonInfoFilename           = "vault-daemon.json"
+	detachedDaemonStartupTimeout = 30 * time.Second
+	detachedDaemonPollInterval   = 100 * time.Millisecond
+	detachedDaemonLogTailBytes   = 16 << 10
+)
 
 type DaemonInfo struct {
 	APIAddress     string `json:"api_address"`
@@ -160,18 +165,14 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 		return DaemonInfo{}, err
 	}
 	_ = logFile.Close()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if info, err := readDaemonInfo(infoPath); err == nil && daemonHealthy(info) {
-			_ = cmd.Process.Release()
-			return info, nil
-		}
-		time.Sleep(100 * time.Millisecond)
+	info, err := waitForDetachedDaemon(infoPath, filepath.Join(root, "vault-daemon.log"), detachedDaemonStartupTimeout)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return DaemonInfo{}, err
 	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
-	log, _ := os.ReadFile(filepath.Join(root, "vault-daemon.log"))
-	return DaemonInfo{}, fmt.Errorf("background vault daemon did not become ready: %s", strings.TrimSpace(string(log)))
+	_ = cmd.Process.Release()
+	return info, nil
 }
 
 func isLoopbackListenAddress(address string) bool {
@@ -212,6 +213,23 @@ func IssueContainerToken(info DaemonInfo, controlToken []byte, namespace string)
 	return result.Token, nil
 }
 
+func IssueContainerPrivateInputToken(info DaemonInfo, controlToken []byte, namespace string, names []string) (string, error) {
+	if err := validateInstanceNamespace(namespace); err != nil {
+		return "", err
+	}
+	var result struct {
+		Token string `json:"token"`
+	}
+	request := struct {
+		Namespace string   `json:"namespace"`
+		Inputs    []string `json:"inputs"`
+	}{Namespace: namespace, Inputs: names}
+	if err := controlRequest(info, string(controlToken), http.MethodPost, "/tokens/private-inputs", request, &result); err != nil {
+		return "", err
+	}
+	return result.Token, nil
+}
+
 func RevokeContainerToken(info DaemonInfo, controlToken []byte, token string) error {
 	return controlRequest(info, string(controlToken), http.MethodDelete, "/tokens/"+token, nil, nil)
 }
@@ -240,6 +258,10 @@ func EnsureContainerAPIReachable(info DaemonInfo, controlToken []byte) (DaemonIn
 		return DaemonInfo{}, errors.New("vault daemon did not prepare a host.docker.internal container route")
 	}
 	return updated, nil
+}
+
+func RevokeContainerTokensByID(info DaemonInfo, controlToken []byte, containerID string) error {
+	return controlRequest(info, string(controlToken), http.MethodDelete, "/tokens/containers/"+containerID+"/all", nil, nil)
 }
 
 func StopDetached(info DaemonInfo, controlToken []byte) error {
@@ -320,6 +342,17 @@ func (s *Store) EnsureContainerAPIReachable() error {
 }
 
 func (s *Store) IssueContainerHandoff(namespace string) (ContainerHandoff, func() error, error) {
+	return s.issueContainerHandoff(namespace, nil)
+}
+
+func (s *Store) IssueContainerHandoffForPrivateInputs(namespace string, names []string) (ContainerHandoff, func() error, error) {
+	if len(names) == 0 {
+		return ContainerHandoff{}, nil, errors.New("at least one private input name is required")
+	}
+	return s.issueContainerHandoff(namespace, names)
+}
+
+func (s *Store) issueContainerHandoff(namespace string, privateInputs []string) (ContainerHandoff, func() error, error) {
 	if err := s.EnsureContainerAPIReachable(); err != nil {
 		return ContainerHandoff{}, nil, err
 	}
@@ -332,7 +365,13 @@ func (s *Store) IssueContainerHandoff(namespace string) (ContainerHandoff, func(
 	controlToken := append([]byte(nil), s.controlToken...)
 	s.mu.Unlock()
 	defer clear(controlToken)
-	token, err := IssueContainerToken(info, controlToken, namespace)
+	var token string
+	var err error
+	if len(privateInputs) > 0 {
+		token, err = IssueContainerPrivateInputToken(info, controlToken, namespace, privateInputs)
+	} else {
+		token, err = IssueContainerToken(info, controlToken, namespace)
+	}
 	if err != nil {
 		return ContainerHandoff{}, nil, err
 	}
@@ -392,6 +431,22 @@ func (s *Store) RevokeContainerHandoff(namespace, containerID string) error {
 	s.mu.Unlock()
 	defer clear(controlToken)
 	return RevokeContainerTokens(info, controlToken, namespace, containerID)
+}
+
+func (s *Store) RevokeContainerHandoffByContainer(containerID string) error {
+	if containerID == "" || strings.Contains(containerID, "/") {
+		return errors.New("invalid container ID")
+	}
+	s.mu.Lock()
+	if s.daemonInfo == nil || len(s.controlToken) == 0 {
+		s.mu.Unlock()
+		return errors.New("vault daemon is not configured for container handoff")
+	}
+	info := *s.daemonInfo
+	controlToken := append([]byte(nil), s.controlToken...)
+	s.mu.Unlock()
+	defer clear(controlToken)
+	return RevokeContainerTokensByID(info, controlToken, containerID)
 }
 
 func RunDetached(parent context.Context, in io.Reader) error {
@@ -769,6 +824,21 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]string{"token": issued})
+		case r.URL.Path == "/tokens/private-inputs" && r.Method == http.MethodPost:
+			var request struct {
+				Namespace string   `json:"namespace"`
+				Inputs    []string `json:"inputs"`
+			}
+			if err := decodeControlJSON(w, r, &request); err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			issued, err := api.IssuePrivateInputToken(request.Namespace, request.Inputs)
+			if err != nil {
+				http.Error(w, "cannot issue scoped token", http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]string{"token": issued})
 		case strings.HasPrefix(r.URL.Path, "/tokens/instances/") && r.Method == http.MethodDelete:
 			namespace := strings.TrimPrefix(r.URL.Path, "/tokens/instances/")
 			if err := api.RevokeTokensForInstance(namespace); err != nil {
@@ -777,6 +847,19 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(r.URL.Path, "/tokens/containers/") && r.Method == http.MethodDelete:
+			if strings.HasSuffix(r.URL.Path, "/all") {
+				containerID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/tokens/containers/"), "/all")
+				if containerID == "" || strings.Contains(containerID, "/") {
+					http.Error(w, "invalid container ID", http.StatusBadRequest)
+					return
+				}
+				if err := api.RevokeTokensByContainerID(containerID); err != nil {
+					http.Error(w, "cannot revoke container token", http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			containerID := strings.TrimPrefix(r.URL.Path, "/tokens/containers/")
 			var request struct {
 				Namespace string `json:"namespace"`
@@ -836,20 +919,85 @@ func decodeControlJSON(w http.ResponseWriter, r *http.Request, destination any) 
 	return nil
 }
 
-func daemonHealthy(info DaemonInfo) bool {
-	if validateDaemonInfo(info) != nil {
-		return false
+func daemonHealthy(info DaemonInfo) bool { return daemonHealthError(info) == nil }
+
+func daemonHealthError(info DaemonInfo) error {
+	if err := validateDaemonInfo(info); err != nil {
+		return err
 	}
 	request, err := http.NewRequest(http.MethodGet, info.ControlAddress+"/health", nil)
 	if err != nil {
-		return false
+		return err
 	}
 	response, err := daemonHealthHTTPClient.Do(request)
 	if err != nil {
-		return false
+		return err
 	}
 	defer response.Body.Close()
-	return response.StatusCode == http.StatusNoContent
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func waitForDetachedDaemon(infoPath, logPath string, timeout time.Duration) (DaemonInfo, error) {
+	if timeout <= 0 {
+		timeout = detachedDaemonStartupTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	lastError := errors.New("daemon metadata is not available")
+	for {
+		info, err := readDaemonInfo(infoPath)
+		if err != nil {
+			lastError = fmt.Errorf("read daemon metadata: %w", err)
+		} else if err := daemonHealthError(info); err != nil {
+			lastError = fmt.Errorf("daemon health check: %w", err)
+		} else {
+			return info, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		delay := detachedDaemonPollInterval
+		if remaining < delay {
+			delay = remaining
+		}
+		time.Sleep(delay)
+	}
+	logText, err := readDetachedDaemonLogTail(logPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		logText = fmt.Sprintf("could not read daemon log: %v", err)
+	} else if strings.TrimSpace(logText) == "" {
+		logText = "daemon log is empty"
+	}
+	return DaemonInfo{}, fmt.Errorf("background vault daemon did not become ready within %s (%v): %s", timeout, lastError, logText)
+}
+
+func readDetachedDaemonLogTail(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	truncated := info.Size() > detachedDaemonLogTailBytes
+	if truncated {
+		if _, err := file.Seek(-detachedDaemonLogTailBytes, io.SeekEnd); err != nil {
+			return "", err
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(file, detachedDaemonLogTailBytes))
+	if err != nil {
+		return "", err
+	}
+	if truncated {
+		return "[earlier log lines truncated]\n" + string(data), nil
+	}
+	return string(data), nil
 }
 
 // NewContainerHTTPClient pins the daemon's public certificate for API calls

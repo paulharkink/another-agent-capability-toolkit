@@ -89,17 +89,23 @@ func containsArgPair(args []string, key, value string) bool {
 }
 
 type fixtureVaultIssuer struct {
-	issuedNamespace  string
-	revokedNamespace string
-	revoked          bool
-	boundContainer   string
-	revokedContainer string
+	issuedNamespace     string
+	issuedPrivateInputs []string
+	revokedByContainer  string
+	revokedNamespace    string
+	revoked             bool
+	boundContainer      string
+	revokedContainer    string
 }
 
 func (issuer *fixtureVaultIssuer) IssueContainerHandoff(namespace string) (vault.ContainerHandoff, func() error, error) {
 	issuer.issuedNamespace = namespace
 	handoff := vault.ContainerHandoff{APIAddress: "https://host.docker.internal:32123", Certificate: "fixture-cert", Token: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 	return handoff, func() error { issuer.revoked = true; return nil }, nil
+}
+func (issuer *fixtureVaultIssuer) IssueContainerHandoffForPrivateInputs(namespace string, names []string) (vault.ContainerHandoff, func() error, error) {
+	issuer.issuedPrivateInputs = append([]string(nil), names...)
+	return issuer.IssueContainerHandoff(namespace)
 }
 func (issuer *fixtureVaultIssuer) RevokeContainerHandoffs(namespace string) error {
 	issuer.revokedNamespace = namespace
@@ -111,6 +117,11 @@ func (issuer *fixtureVaultIssuer) BindContainerHandoff(containerID, _ string) er
 }
 func (issuer *fixtureVaultIssuer) RevokeContainerHandoff(namespace, containerID string) error {
 	issuer.revokedNamespace, issuer.revokedContainer = namespace, containerID
+	issuer.revoked = true
+	return nil
+}
+func (issuer *fixtureVaultIssuer) RevokeContainerHandoffByContainer(containerID string) error {
+	issuer.revokedByContainer = containerID
 	issuer.revoked = true
 	return nil
 }
@@ -139,6 +150,24 @@ func TestVaultHandoffIsExplicitOptInAndUsesExistingInstanceID(t *testing.T) {
 	}
 	if issuer.issuedNamespace != key.ID() {
 		t.Fatalf("issuer namespace=%q, want existing Key.ID() %q", issuer.issuedNamespace, key.ID())
+	}
+	parentNamespace := strings.Repeat("b", 64)
+	r, executor, key = testRuntime(t)
+	executor.f = absent
+	r.VaultTokenIssuer = issuer
+	helper = filepath.Join(t.TempDir(), "helper-parent")
+	if err := os.WriteFile(helper, []byte("helper fixture"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r.VaultHandoffHelperPath = helper
+	if _, err := r.Start(context.Background(), key, RunSpec{Image: "fixture", HostPort: 8767, ContainerPort: 80, VaultSecretInputs: map[string]string{"PROVIDER_TOKEN": "token"}, VaultNamespaceID: parentNamespace}); err != nil {
+		t.Fatal(err)
+	}
+	if issuer.issuedNamespace != parentNamespace {
+		t.Fatalf("generic vault secret mapping issued namespace %q, want parent profile %q", issuer.issuedNamespace, parentNamespace)
+	}
+	if len(issuer.issuedPrivateInputs) != 1 || issuer.issuedPrivateInputs[0] != "token" {
+		t.Fatalf("scoped private input names = %v, want [token]", issuer.issuedPrivateInputs)
 	}
 	if err := r.revokeVaultHandoff("cid", key.ID()); err != nil {
 		t.Fatal(err)

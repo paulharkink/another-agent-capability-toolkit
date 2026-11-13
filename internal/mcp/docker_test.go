@@ -195,6 +195,62 @@ func TestStopExactRemovesOnlyMatchingLocallyOwnedContainerAndLedger(t *testing.T
 	}
 }
 
+func TestStopExactRevokesVaultHandoffUsingContainerNamespace(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "github"
+	parentNamespace := strings.Repeat("a", 64)
+	spec := RunSpec{Image: "fixture", HostPort: 8765, ContainerPort: 80, EndpointPath: "/mcp"}
+	labels := locallyOwnedLabels(t, r, key, spec)
+	labels["aact.vault_namespace"] = parentNamespace
+	container := dockerInfo{ID: "container-vault", Name: "/aact-github", Config: dockerConfig{Labels: labels}, State: dockerState{Running: true, Status: "running"}}
+	issuer := &fixtureVaultIssuer{}
+	r.VaultTokenIssuer = issuer
+	f.f = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "inspect":
+			return json.Marshal([]dockerInfo{container})
+		case "rm":
+			return nil, nil
+		default:
+			t.Fatalf("unexpected Docker action: %v", args)
+			return nil, nil
+		}
+	}
+	if err := r.StopExact(context.Background(), key, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if issuer.revokedNamespace != parentNamespace || issuer.revokedContainer != container.ID {
+		t.Fatalf("revoked namespace/container = %q/%q, want %q/%q", issuer.revokedNamespace, issuer.revokedContainer, parentNamespace, container.ID)
+	}
+}
+
+func TestStopExactRevokesVaultHandoffWhenDockerContainerIsAlreadyMissing(t *testing.T) {
+	r, f, key := testRuntime(t)
+	key.MCP = "github"
+	issuer := &fixtureVaultIssuer{}
+	r.VaultTokenIssuer = issuer
+	record := state.Installation{Key: key, AgentID: "docker", Component: "runtime", Mode: "docker", Destination: "aact-github", SourcePath: "container-gone"}
+	if err := r.Store.Record(record); err != nil {
+		t.Fatal(err)
+	}
+	f.f = func(args []string) ([]byte, error) {
+		if args[1] != "inspect" || args[2] != "container-gone" {
+			t.Fatalf("unexpected Docker call: %v", args)
+		}
+		return nil, errors.New("No such container: container-gone")
+	}
+	if err := r.StopExact(context.Background(), key, "container-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if issuer.revokedByContainer != "container-gone" {
+		t.Fatalf("revoked container ID = %q, want container-gone", issuer.revokedByContainer)
+	}
+	rows, err := r.Store.Installations()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("stale runtime ledger = %+v err=%v", rows, err)
+	}
+}
+
 func TestStopExactRefusesUnknownOwnerWithoutRemovingContainer(t *testing.T) {
 	r, f, key := testRuntime(t)
 	key.MCP = "grafana"

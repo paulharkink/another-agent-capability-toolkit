@@ -17,7 +17,7 @@ RUN printf '%s  %s\n' \
 
 FROM golang:1.27.1-alpine AS wrapper-build
 WORKDIR /src
-COPY handler.go main.go entrypoint.go child_process_unix.go child_process_windows.go ./
+COPY handler.go main.go entrypoint.go vault.go child_process_unix.go child_process_windows.go ./
 RUN mkdir -p /out && CGO_ENABLED=0 GO111MODULE=off go build -trimpath -ldflags="-s -w" -o /out/git-mcp-wrapper .
 
 FROM bitbucket-upstream

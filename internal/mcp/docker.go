@@ -61,6 +61,9 @@ type RunSpec struct {
 	VaultHandoff                  *vault.ContainerHandoff `json:"-"`
 	VaultHandoffEnabled           bool                    `json:"-"`
 	VaultHandoffRevoke            func() error            `json:"-"`
+	VaultSecretInputs             map[string]string       `json:"-"`
+	VaultSecretRevision           string                  `json:"vault_secret_revision,omitempty"`
+	VaultNamespaceID              string                  `json:"vault_namespace,omitempty"`
 }
 type Instance struct {
 	Key              state.Key `json:"key"`
@@ -167,6 +170,29 @@ func (r *Runtime) revokeKnownVaultHandoff(containerID, namespace string) error {
 	if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
 		if err := revoker.(func() error)(); err != nil {
 			return fmt.Errorf("revoke replaced container vault token: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) revokeVaultHandoffByContainer(containerID string) error {
+	if issuer, ok := r.VaultTokenIssuer.(vault.ContainerHandoffContainerRevoker); ok {
+		if err := issuer.RevokeContainerHandoffByContainer(containerID); err != nil {
+			return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+		}
+		if r.vaultRevokers != nil {
+			r.vaultRevokers.Delete(containerID)
+		}
+		return nil
+	}
+	if r.VaultTokenIssuer != nil {
+		return errors.New("vault token issuer cannot revoke by exact container ID")
+	}
+	if r.vaultRevokers != nil {
+		if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
+			if err := revoker.(func() error)(); err != nil {
+				return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+			}
 		}
 	}
 	return nil
@@ -297,6 +323,9 @@ func labels(k state.Key, s RunSpec) map[string]string {
 	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
 	if s.RegistrationName != "" {
 		result["aact.registration_name"] = s.RegistrationName
+	}
+	if s.VaultNamespaceID != "" {
+		result["aact.vault_namespace"] = s.VaultNamespaceID
 	}
 	if k.MCPDefinition != "" {
 		result["aact.mcp_definition"] = k.MCPDefinition
@@ -489,8 +518,40 @@ func vaultHandoffHostGatewayArgs(goos string) []string {
 func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
 	handoffCommitted := false
 	issuedByRuntime := false
-	if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
-		handoff, revoke, err := r.VaultTokenIssuer.IssueContainerHandoff(k.ID())
+	if len(s.VaultSecretInputs) > 0 {
+		s.VaultHandoffEnabled = true
+	}
+	if len(s.VaultSecretInputs) > 0 {
+		if s.VaultHandoff != nil {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault handoff")
+		}
+		scopedIssuer, ok := r.VaultTokenIssuer.(vault.ScopedContainerHandoffIssuer)
+		if !ok {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault token issuer")
+		}
+		namespace := s.VaultNamespaceID
+		if namespace == "" {
+			namespace = k.ID()
+		}
+		inputNames := make([]string, 0, len(s.VaultSecretInputs))
+		for _, inputName := range s.VaultSecretInputs {
+			inputNames = append(inputNames, inputName)
+		}
+		handoff, revoke, err := scopedIssuer.IssueContainerHandoffForPrivateInputs(namespace, inputNames)
+		if err != nil {
+			return Instance{}, fmt.Errorf("issue scoped vault token: %w", err)
+		}
+		s.VaultHandoff = &handoff
+		issuedByRuntime = true
+		if s.VaultHandoffRevoke == nil {
+			s.VaultHandoffRevoke = revoke
+		}
+	} else if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
+		namespace := s.VaultNamespaceID
+		if namespace == "" {
+			namespace = k.ID()
+		}
+		handoff, revoke, err := r.VaultTokenIssuer.IssueContainerHandoff(namespace)
 		if err != nil {
 			return Instance{}, fmt.Errorf("issue instance-scoped vault token: %w", err)
 		}
@@ -853,7 +914,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 				}
 			}
 		}
-		if e = r.revokeKnownVaultHandoff(previous.ID, k.ID()); e != nil {
+		previousNamespace := previous.Config.Labels["aact.vault_namespace"]
+		if previousNamespace == "" {
+			previousNamespace = k.ID()
+		}
+		if e = r.revokeKnownVaultHandoff(previous.ID, previousNamespace); e != nil {
 			return out, fmt.Errorf("MCP replaced successfully but prior token revocation failed: %w", e)
 		}
 	}
@@ -973,11 +1038,15 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	if err != nil {
 		return err
 	}
+	namespace := k.ID()
+	if info, inspectErr := r.inspect(ctx, observed.ID); inspectErr == nil && info.Config.Labels["aact.vault_namespace"] != "" {
+		namespace = info.Config.Labels["aact.vault_namespace"]
+	}
 	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
 	if e != nil {
 		return e
 	}
-	if err := r.revokeVaultHandoff(observed.ID, k.ID()); err != nil {
+	if err := r.revokeVaultHandoff(observed.ID, namespace); err != nil {
 		return fmt.Errorf("runtime %s was removed but token revocation failed: %w", observed.ID, err)
 	}
 	rows, err := r.Store.Installations()
@@ -1015,6 +1084,9 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	info, err := r.inspect(ctx, id)
 	if err != nil {
 		if isDockerNotFound(err) {
+			if err := r.revokeVaultHandoffByContainer(id); err != nil {
+				return fmt.Errorf("missing container %s token revocation failed: %w", id, err)
+			}
 			if recorded {
 				return r.Store.Remove(record)
 			}
@@ -1036,7 +1108,11 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
 		return err
 	}
-	if err := r.revokeVaultHandoff(id, k.ID()); err != nil {
+	namespace := info.Config.Labels["aact.vault_namespace"]
+	if namespace == "" {
+		namespace = k.ID()
+	}
+	if err := r.revokeVaultHandoff(id, namespace); err != nil {
 		return fmt.Errorf("container %s was removed but token revocation failed: %w", id, err)
 	}
 	if recorded {
