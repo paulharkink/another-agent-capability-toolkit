@@ -71,7 +71,7 @@ func TestContainerPrivateInputTokenCanOnlyReadItsDeclaredInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := NewAPI(store, nil)
-	control := controlHandler(api, "control-token", func() {})
+	control := controlHandler(api, "control-token", func() {}, nil)
 	issue := func(name string) string {
 		t.Helper()
 		body, _ := json.Marshal(map[string]any{"namespace": namespace, "inputs": []string{name}})
@@ -182,7 +182,7 @@ func TestContainerTokenCanBeRevokedByExactIDWithoutNamespace(t *testing.T) {
 	if err := api.BindTokenContainer(second, "container-gitlab"); err != nil {
 		t.Fatal(err)
 	}
-	control := controlHandler(api, "control-token", func() {})
+	control := controlHandler(api, "control-token", func() {}, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/tokens/containers/container-github/all", nil)
 	req.Header.Set("Authorization", "Bearer control-token")
 	res := httptest.NewRecorder()
