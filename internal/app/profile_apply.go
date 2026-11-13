@@ -365,14 +365,40 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 	if err != nil {
 		return p, pr, nil, nil, err
 	}
+	hasSecretInput := false
+	for _, def := range p.Inputs {
+		if def.Type == "secret" {
+			hasSecretInput = true
+			break
+		}
+	}
+	if hasSecretInput && s.Store.ConfiguredSecretBackend() == nil {
+		return p, pr, nil, nil, invalid(errors.New("secret inputs require an unlocked KeePass vault"))
+	}
 	privateSecrets, err := s.Store.SecretInputs(key)
 	if err != nil {
 		return p, pr, nil, nil, err
 	}
+	resetInputs := make(map[string]bool, len(q.ResetInputs))
+	for _, name := range q.ResetInputs {
+		resetInputs[name] = true
+	}
 	for _, definition := range p.Inputs {
-		if definition.Type == "secret" {
-			if value, exists := privateSecrets[definition.Name]; exists {
-				saved[definition.Name] = value
+		if definition.Type != "secret" {
+			continue
+		}
+		if value, exists := privateSecrets[definition.Name]; exists {
+			saved[definition.Name] = value
+		}
+		if !resetInputs[definition.Name] && blankSecretValue(q.Inputs[definition.Name]) {
+			// A blank password field means leave the saved credential alone.
+			if _, submitted := q.Inputs[definition.Name]; submitted {
+				copyInputs := make(map[string]any, len(q.Inputs))
+				for name, value := range q.Inputs {
+					copyInputs[name] = value
+				}
+				delete(copyInputs, definition.Name)
+				q.Inputs = copyInputs
 			}
 		}
 	}
@@ -499,6 +525,14 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 	}
 	p = resolvedPackage
 	return p, pr, values, inherited, nil
+}
+
+func blankSecretValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) == ""
 }
 
 func withoutInputExpressions(defs []catalog.Input, values map[string]any) map[string]any {
@@ -1341,10 +1375,15 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 	}
 	previousAnswers := map[string]any{}
+	previousSecrets := map[string]any{}
 	if !q.InstallOnly {
 		out.Step = "save"
 		reportOperationStep(ctx, out.Step)
 		previousAnswers, err = s.Store.Answers(key)
+		if err != nil {
+			return out, err
+		}
+		previousSecrets, err = s.Store.SecretInputs(key)
 		if err != nil {
 			return out, err
 		}
@@ -1363,7 +1402,12 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 				return e
 			}
-			return s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}})
+			if e := s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); e != nil {
+				answersErr := s.Store.SaveAnswersWithActiveInputGroups(key, previousAnswers, previousGroups)
+				secretsErr := restoreSecretInputs(s.Store, key, p.Inputs, previousSecrets)
+				return errors.Join(e, answersErr, secretsErr)
+			}
+			return nil
 		}()
 		if err != nil {
 			return out, err

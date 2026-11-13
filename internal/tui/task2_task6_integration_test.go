@@ -127,6 +127,7 @@ func TestIntegratedUIInstallAuthRequiredFeedbackSeparatesEffectsAndRedactsDiagno
 			if err != nil {
 				t.Fatal(err)
 			}
+			attachTestSecretBackend(store)
 			runtime := &integratedAuthRuntime{}
 			service := app.New(config.Source{
 				ID: "fixture-pack", Root: root, ProfileRoot: filepath.Join(root, "profiles"),

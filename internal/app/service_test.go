@@ -16,8 +16,36 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
+
+type appTestSecretBackend struct {
+	mu     sync.Mutex
+	values map[string][]byte
+}
+
+func (b *appTestSecretBackend) Get(namespace, name string) ([]byte, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	value, ok := b.values[namespace+"/"+name]
+	return append([]byte(nil), value...), ok, nil
+}
+func (b *appTestSecretBackend) Put(namespace, name string, value []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.values == nil {
+		b.values = map[string][]byte{}
+	}
+	b.values[namespace+"/"+name] = append([]byte(nil), value...)
+	return nil
+}
+func (b *appTestSecretBackend) Delete(namespace, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.values, namespace+"/"+name)
+	return nil
+}
 
 func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	t.Helper()
@@ -39,6 +67,7 @@ func fixture(t *testing.T) (*Service, agents.Environment, *state.Store) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	s.SetSecretBackend(&appTestSecretBackend{values: map[string][]byte{}})
 	env, e := agents.ResolveEnvironment("codex", "codex", filepath.Join(root, "home"))
 	if e != nil {
 		t.Fatal(e)

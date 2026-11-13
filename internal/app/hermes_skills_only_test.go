@@ -37,6 +37,7 @@ func TestSkillsOnlyInstallsBundledClusterInspectorWithoutMCPEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	store.SetSecretBackend(&appTestSecretBackend{values: map[string][]byte{}})
 	hermesHome := filepath.Join(root, "hermes-home")
 	service := New(config.Source{
 		ID:              "bundled",

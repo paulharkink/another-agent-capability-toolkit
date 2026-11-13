@@ -286,6 +286,7 @@ func TestUXObservedForeignProfileWithoutSelectedPackIsNotBrowseable(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: "Observed inspector"}); err != nil {
 		t.Fatal(err)
 	}
@@ -855,6 +856,7 @@ func actualClusterWorkspace(t *testing.T, size tea.WindowSizeMsg) (*Model, *app.
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	if err := store.RecordProfile(state.ProfileRecord{Key: key, Name: "Fixture cluster"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1053,6 +1055,7 @@ func TestUXSaveErrorRecoveryPreservesActualAchievements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachTestSecretBackend(store)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# Demo\n"), 0o600); err != nil {
 		t.Fatal(err)

@@ -48,19 +48,19 @@ type RunSpec struct {
 	RegistrationName string            `json:"registration_name,omitempty"`
 	// Host is retained for actions and saved specs written before bind and
 	// advertised endpoint addressing were separated.
-	Host                string                  `json:"host"`
-	HostPort            int                     `json:"host_port"`
-	ContainerPort       int                     `json:"container_port"`
-	AdditionalPorts     []PortMapping           `json:"additional_ports,omitempty"`
-	Transport           string                  `json:"transport"`
-	EndpointPath        string                  `json:"endpoint_path"`
-	DeferProtocolHealth bool                    `json:"-"`
+	Host                string        `json:"host"`
+	HostPort            int           `json:"host_port"`
+	ContainerPort       int           `json:"container_port"`
+	AdditionalPorts     []PortMapping `json:"additional_ports,omitempty"`
+	Transport           string        `json:"transport"`
+	EndpointPath        string        `json:"endpoint_path"`
+	DeferProtocolHealth bool          `json:"-"`
 	// SkipProtocolHealthForExisting skips only the repeat probe for an exact
 	// running instance with the same spec. New or replaced instances still check readiness.
-	SkipProtocolHealthForExisting bool          `json:"-"`
-	VaultHandoff        *vault.ContainerHandoff `json:"-"`
-	VaultHandoffEnabled bool                    `json:"-"`
-	VaultHandoffRevoke  func() error            `json:"-"`
+	SkipProtocolHealthForExisting bool                    `json:"-"`
+	VaultHandoff                  *vault.ContainerHandoff `json:"-"`
+	VaultHandoffEnabled           bool                    `json:"-"`
+	VaultHandoffRevoke            func() error            `json:"-"`
 }
 type Instance struct {
 	Key              state.Key `json:"key"`
@@ -992,6 +992,8 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 			return fmt.Errorf("runtime %s was removed but its ledger record could not be cleared: %w", observed.ID, err)
 		}
 	}
+	return nil
+}
 
 // StopExact removes one container only after verifying its exact state key,
 // exact container ID, and AACT ownership. A matching local ledger row is
