@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -109,7 +112,7 @@ func TestStartDetachedOwnsIndependentPortableProcess(t *testing.T) {
 		t.Fatalf("persisted bind IP=%q", info.APIListenIP)
 	}
 	t.Setenv("AACT_VAULT_API_BIND_IP", "192.0.2.10")
-	if _, err := StartDetached(script, root, password); err == nil || !strings.Contains(err.Error(), "API bind IP") {
+	if _, err := StartDetached(script, root, password); err == nil || !strings.Contains(err.Error(), "broader than the requested") {
 		t.Fatalf("wildcard listener reused for narrower bind: %v", err)
 	}
 	t.Setenv("AACT_VAULT_API_BIND_IP", "0.0.0.0")
@@ -253,8 +256,18 @@ func TestDetachedDaemonControlIssuesScopedTokenAndStops(t *testing.T) {
 func TestVaultAPIListenerDefaultsToLoopbackAndRequiresExplicitIPOverride(t *testing.T) {
 	t.Setenv("AACT_VAULT_API_BIND_IP", "")
 	address, err := vaultAPIListenAddress()
-	if err != nil || address != "127.0.0.1:0" {
-		t.Fatalf("default bind=%q err=%v", address, err)
+	want := "127.0.0.1:0"
+	if runtime.GOOS == "linux" {
+		gateway, available, gatewayErr := dockerBridgeGatewayIP()
+		if gatewayErr != nil {
+			t.Fatal(gatewayErr)
+		}
+		if available {
+			want = net.JoinHostPort(gateway.String(), "0")
+		}
+	}
+	if err != nil || address != want {
+		t.Fatalf("default bind=%q want=%q err=%v", address, want, err)
 	}
 	t.Setenv("AACT_VAULT_API_BIND_IP", "192.0.2.10")
 	address, err = vaultAPIListenAddress()
@@ -266,6 +279,262 @@ func TestVaultAPIListenerDefaultsToLoopbackAndRequiresExplicitIPOverride(t *test
 		t.Fatal("invalid bind override accepted")
 	}
 }
+
+func TestDefaultVaultAPIListenIPSeparatesDesktopAndNativeLinux(t *testing.T) {
+	gateway := net.ParseIP("172.17.0.1")
+	cases := []struct {
+		name, goos      string
+		desktop, active bool
+		gateway         net.IP
+		want            string
+	}{
+		{name: "mac desktop", goos: "darwin", desktop: true, active: true, gateway: gateway, want: "127.0.0.1"},
+		{name: "windows desktop", goos: "windows", desktop: true, active: true, gateway: gateway, want: "127.0.0.1"},
+		{name: "linux desktop proxy", goos: "linux", desktop: true, active: true, gateway: gateway, want: "127.0.0.1"},
+		{name: "linux engine bridge", goos: "linux", active: true, gateway: gateway, want: "172.17.0.1"},
+		{name: "engine unavailable", goos: "linux", want: "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := defaultVaultAPIListenIP(tc.goos, tc.desktop, tc.active, tc.gateway).String(); got != tc.want {
+				t.Fatalf("automatic bind=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDockerEndpointDetectionRejectsRemoteContext(t *testing.T) {
+	for _, endpoint := range []string{"unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine", "tcp://127.0.0.1:2375", "tcp://192.0.2.20:2375", "ssh://docker.example"} {
+		got := localDockerEndpoint(endpoint)
+		want := endpoint == "unix:///var/run/docker.sock" || endpoint == "npipe:////./pipe/docker_engine" || endpoint == "tcp://127.0.0.1:2375"
+		if got != want {
+			t.Errorf("localDockerEndpoint(%q)=%v, want %v", endpoint, got, want)
+		}
+	}
+}
+
+func TestStartDetachedAdvertisesContainerReachableHostWithoutConfiguration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("detached process helper is currently Unix-only")
+	}
+	t.Setenv("AACT_VAULT_API_BIND_IP", "")
+	root := t.TempDir()
+	password := []byte("automatic-container-route-password")
+	if _, err := Open(filepath.Join(root, "credentials.kdbx"), password); err != nil {
+		t.Fatal(err)
+	}
+	controlToken, err := ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(controlToken)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "aact-test-daemon")
+	quotedExecutable := "'" + strings.ReplaceAll(executable, "'", "'\\''") + "'"
+	body := "#!/bin/sh\nAACT_TEST_DAEMON_CHILD=1 exec " + quotedExecutable + " -test.run=^TestVaultDaemonChildHelper$\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := StartDetached(script, root, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = StopDetached(info, controlToken) }()
+	if !strings.Contains(info.APIAddress, "host.docker.internal") {
+		t.Fatalf("default API address is not container-reachable: %s", info.APIAddress)
+	}
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	if _, err := NewContainerHandoff(info, token); err != nil {
+		t.Fatalf("default daemon cannot issue a container handoff: %v", err)
+	}
+}
+
+func TestStartDetachedUpgradesExistingLoopbackDaemonForContainers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("detached process helper is currently Unix-only")
+	}
+	root := t.TempDir()
+	password := []byte("automatic-container-upgrade-password")
+	if _, err := Open(filepath.Join(root, "credentials.kdbx"), password); err != nil {
+		t.Fatal(err)
+	}
+	controlToken, err := ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(controlToken)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "aact-test-daemon")
+	quotedExecutable := "'" + strings.ReplaceAll(executable, "'", "'\\''") + "'"
+	body := "#!/bin/sh\nAACT_TEST_DAEMON_CHILD=1 exec " + quotedExecutable + " -test.run=^TestVaultDaemonChildHelper$\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_VAULT_API_BIND_IP", "127.0.0.1")
+	oldInfo, err := StartDetached(script, root, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_VAULT_API_BIND_IP", "")
+	newInfo, err := StartDetached(script, root, password)
+	if err != nil {
+		t.Fatalf("existing loopback daemon was not upgraded automatically: %v", err)
+	}
+	defer func() { _ = StopDetached(newInfo, controlToken) }()
+	if newInfo.ControlAddress != oldInfo.ControlAddress {
+		t.Fatalf("upgrade replaced the daemon process: old=%s new=%s", oldInfo.ControlAddress, newInfo.ControlAddress)
+	}
+	if !strings.Contains(newInfo.APIAddress, "host.docker.internal") {
+		t.Fatalf("upgraded API address is not container-reachable: %s", newInfo.APIAddress)
+	}
+	wantAddress, err := vaultAPIListenAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIP, _, _ := net.SplitHostPort(wantAddress)
+	if newInfo.APIListenIP != strings.Trim(wantIP, "[]") {
+		t.Fatalf("upgraded daemon bind=%q, want automatic route %q", newInfo.APIListenIP, wantIP)
+	}
+}
+
+func TestStartDetachedReplacesPreRouteDaemonAutomatically(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("detached process helper is currently Unix-only")
+	}
+	root := t.TempDir()
+	password := []byte("upgrade-pre-route-daemon-password")
+	if _, err := Open(filepath.Join(root, "credentials.kdbx"), password); err != nil {
+		t.Fatal(err)
+	}
+	controlToken, err := ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(controlToken)
+	var stopped atomic.Bool
+	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && r.Header.Get("Authorization") != "Bearer "+string(controlToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/health":
+			if stopped.Load() {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/container-network":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/shutdown":
+			stopped.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer legacy.Close()
+	legacyInfo := DaemonInfo{APIAddress: "https://localhost:12345", APIListenIP: "127.0.0.1", APICertificate: "legacy certificate", ControlAddress: legacy.URL}
+	if err := writeDaemonInfo(filepath.Join(root, daemonInfoFilename), legacyInfo); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "aact-test-daemon")
+	quotedExecutable := "'" + strings.ReplaceAll(executable, "'", "'\\''") + "'"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nAACT_TEST_DAEMON_CHILD=1 exec "+quotedExecutable+" -test.run=^TestVaultDaemonChildHelper$\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_VAULT_API_BIND_IP", "127.0.0.1")
+	info, err := StartDetached(script, root, password)
+	if err != nil {
+		t.Fatalf("old daemon did not upgrade without manual stop: %v", err)
+	}
+	defer func() { _ = StopDetached(info, controlToken) }()
+	if !stopped.Load() {
+		t.Fatal("pre-route daemon was not shut down through its authenticated control endpoint")
+	}
+	if info.ControlAddress == legacyInfo.ControlAddress {
+		t.Fatal("pre-route daemon control endpoint was reused")
+	}
+	if !strings.Contains(info.APIAddress, "host.docker.internal") {
+		t.Fatalf("new daemon API address is not container reachable: %s", info.APIAddress)
+	}
+	if _, err := os.Stat(filepath.Join(root, "credentials.kdbx")); err != nil {
+		t.Fatalf("replacing daemon lost the KeePass vault: %v", err)
+	}
+}
+
+func TestStartDetachedClosesPreviousSpecificAPIListenerAfterRouteMove(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		desktop, available, err := dockerDesktopEngine()
+		if err != nil || !desktop || !available {
+			t.Skip("loopback route movement is only valid with Docker Desktop on Linux")
+		}
+	}
+	oldListener := newTrackedListener("127.0.0.1:32123")
+	newListener := newTrackedListener("127.0.0.2:32123")
+	t.Cleanup(func() { _ = newListener.Close() })
+	listenCalls := 0
+	manager := &apiListenerManager{
+		server:    &http.Server{},
+		info:      DaemonInfo{APIAddress: "https://host.docker.internal:32123", APIListenIP: "127.0.0.1", APICertificate: "test-cert"},
+		infoPath:  filepath.Join(t.TempDir(), daemonInfoFilename),
+		listeners: map[string]net.Listener{"127.0.0.1": oldListener},
+		serveErr:  make(chan error, 2),
+		listen: func(network, address string) (net.Listener, error) {
+			listenCalls++
+			if network != "tcp" || address != "127.0.0.2:32123" {
+				t.Fatalf("unexpected replacement listener request: %s %s", network, address)
+			}
+			return newListener, nil
+		},
+	}
+	updated, err := manager.ensureContainerReachable("127.0.0.2:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listenCalls != 1 || updated.APIListenIP != "127.0.0.2" {
+		t.Fatalf("listener update calls=%d metadata=%+v", listenCalls, updated)
+	}
+	select {
+	case <-oldListener.closed:
+	default:
+		t.Fatal("old specific listener remained open after successful route move")
+	}
+	if manager.listeners["127.0.0.2"] != newListener {
+		t.Fatal("new specific listener was not retained")
+	}
+}
+
+type trackedListener struct {
+	address net.Addr
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newTrackedListener(address string) *trackedListener {
+	addr, _ := net.ResolveTCPAddr("tcp", address)
+	return &trackedListener{address: addr, closed: make(chan struct{})}
+}
+
+func (l *trackedListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+func (l *trackedListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+func (l *trackedListener) Addr() net.Addr { return l.address }
 
 func TestDaemonMetadataCannotRedirectControlBearerOffLoopback(t *testing.T) {
 	forwarded := false
@@ -284,5 +553,31 @@ func TestDaemonMetadataCannotRedirectControlBearerOffLoopback(t *testing.T) {
 	info.ControlAddress = "http://attacker.example:12345"
 	if DaemonRunning(info) {
 		t.Fatal("remote control host was trusted")
+	}
+}
+
+func TestUnavailableDockerReusesOnlyMatchingLoopbackDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name, bind string
+		want       bool
+	}{
+		{name: "same loopback", bind: "127.0.0.1:0", want: true},
+		{name: "different loopback", bind: "127.0.0.2:0", want: false},
+		{name: "ipv4 wildcard", bind: "127.0.0.1:0", want: false},
+		{name: "ipv6 wildcard", bind: "127.0.0.1:0", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ip := "127.0.0.1"
+			if tc.name == "ipv4 wildcard" {
+				ip = "0.0.0.0"
+			}
+			if tc.name == "ipv6 wildcard" {
+				ip = "::"
+			}
+			info := DaemonInfo{APIListenIP: ip}
+			if got := canReuseLoopbackDaemon(info, tc.bind); got != tc.want {
+				t.Fatalf("canReuseLoopbackDaemon(%q, %q)=%v, want %v", ip, tc.bind, got, tc.want)
+			}
+		})
 	}
 }

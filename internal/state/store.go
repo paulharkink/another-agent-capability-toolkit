@@ -225,7 +225,48 @@ func resolveLegacyDefaultRootWithRename(root, legacy string, readonly bool, rena
 	if err := rename(legacy, root); err != nil {
 		return "", fmt.Errorf("migrate state directory %s to %s: %w", legacy, root, err)
 	}
+	if err := rewriteLegacyAuthAliases(root, legacy); err != nil {
+		if rollbackErr := rename(root, legacy); rollbackErr != nil {
+			return "", errors.Join(fmt.Errorf("rewrite authentication aliases after migrating state: %w", err), fmt.Errorf("restore legacy state directory: %w", rollbackErr))
+		}
+		return "", fmt.Errorf("rewrite authentication aliases after migrating state: %w", err)
+	}
 	return root, nil
+}
+
+func rewriteLegacyAuthAliases(root, legacy string) error {
+	path := filepath.Join(root, "manager", "auth-aliases.json")
+	aliases := map[string]string{}
+	if err := readJSON(path, &aliases); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	legacyRoot, err := filepath.Abs(legacy)
+	if err != nil {
+		return err
+	}
+	newRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for id, aliasedPath := range aliases {
+		absolute, err := filepath.Abs(aliasedPath)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(legacyRoot, absolute)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		aliases[id] = filepath.Join(newRoot, relative)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return WriteJSON(path, aliases)
 }
 func (s *Store) Root() string              { return s.root }
 func (s *Store) KeyDir(k Key) string       { return filepath.Join(s.root, "instances", k.ID()) }

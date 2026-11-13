@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -55,6 +56,61 @@ func TestLegacyDefaultRootMigrationPreservesIdentityAndState(t *testing.T) {
 	}
 	if _, err := os.Stat(legacyRoot); !os.IsNotExist(err) {
 		t.Fatalf("legacy root remains after migration: err=%v", err)
+	}
+}
+
+func TestLegacyDefaultRootMigrationRewritesAuthAliasPathsForVaultMigration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows already uses the AACT state directory name")
+	}
+	stateHome := t.TempDir()
+	legacyRoot := filepath.Join(stateHome, "agent-skills")
+	newRoot := filepath.Join(stateHome, "aact")
+	key := Key{Source: "pack", Package: "aliased-capability", Target: "default", MCPDefinition: "server"}
+	legacyAuth := filepath.Join(legacyRoot, "profiles", "shared-auth")
+	secretPath := filepath.Join(legacyAuth, "aact-private-inputs.json")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte(`{"version":1,"values":{"token":"legacy-alias-token"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "manager"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := json.Marshal(map[string]string{key.ID(): legacyAuth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "manager", "auth-aliases.json"), aliases, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("AACT_STATE_DIR", "")
+
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &testSecretBackend{values: map[string][]byte{}}
+	store.SetSecretBackend(backend)
+	if err := store.MigrateLegacySecretInputs(); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := backend.Get(key.ID(), secretInputsVaultKey)
+	if err != nil || !found {
+		t.Fatalf("aliased secret not migrated: found=%v err=%v", found, err)
+	}
+	var record secretInputRecord
+	if err := json.Unmarshal(got, &record); err != nil || record.Values["token"] != "legacy-alias-token" {
+		t.Fatalf("migrated alias secret=%s err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, "profiles", "shared-auth", "aact-private-inputs.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("aliased plaintext secret remains after successful vault write: %v", err)
+	}
+	if authDir := store.AuthDir(key); authDir != filepath.Join(newRoot, "profiles", "shared-auth") {
+		t.Fatalf("auth alias path=%q, want migrated path under %q", authDir, newRoot)
 	}
 }
 
