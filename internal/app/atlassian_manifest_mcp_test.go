@@ -27,6 +27,7 @@ func TestManifestAtlassianEndpointAndTokenModesRegisterWithoutExternalURLOverrid
 			mode:         "service_account",
 			wantEndpoint: endpoint,
 			wantAuth:     "Bearer fixture-token",
+			wantError:    "cannot store provider credentials in agent MCP configuration",
 		},
 		{
 			name:         "personal basic",
@@ -34,6 +35,7 @@ func TestManifestAtlassianEndpointAndTokenModesRegisterWithoutExternalURLOverrid
 			email:        "dev@example.invalid",
 			wantEndpoint: endpoint,
 			wantAuth:     "Basic ZGV2QGV4YW1wbGUuaW52YWxpZDpmaXh0dXJlLXRva2Vu",
+			wantError:    "cannot store provider credentials in agent MCP configuration",
 		},
 		{
 			name:         "explicit url overrides manifest",
@@ -41,6 +43,7 @@ func TestManifestAtlassianEndpointAndTokenModesRegisterWithoutExternalURLOverrid
 			externalURL:  "https://override.example.invalid/mcp",
 			wantEndpoint: "https://override.example.invalid/mcp",
 			wantAuth:     "Bearer fixture-token",
+			wantError:    "cannot store provider credentials in agent MCP configuration",
 		},
 		{
 			name:      "personal mode requires email",

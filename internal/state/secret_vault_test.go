@@ -35,7 +35,7 @@ func TestSecretInputsMigratesLegacyJSONOnlyAfterVaultWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "source", Package: "pack", Target: "target", Profile: "mcp"}
+	key := Key{Source: "source", Package: "pack", Target: "target", MCPDefinition: "mcp"}
 	legacy := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestSecretInputsRetainsLegacyJSONWhenVaultMigrationFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "source", Package: "pack", Target: "target", Profile: "mcp"}
+	key := Key{Source: "source", Package: "pack", Target: "target", MCPDefinition: "mcp"}
 	legacy := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestMigrateLegacySecretInputsAtVaultUnlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "source", Package: "pack", Target: "target", Profile: "mcp"}
+	key := Key{Source: "source", Package: "pack", Target: "target", MCPDefinition: "mcp"}
 	path := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestMigrateLegacySecretInputsPreservesExistingVaultValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{Source: "source", Package: "pack", Target: "target", Profile: "mcp"}
+	key := Key{Source: "source", Package: "pack", Target: "target", MCPDefinition: "mcp"}
 	path := filepath.Join(store.AuthDir(key), "aact-private-inputs.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)

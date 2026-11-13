@@ -17,7 +17,13 @@ import (
 func TestApplyProfilePersistsSecretInputInKeePassAndReloadsIt(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
-	if err := os.WriteFile(filepath.Join(s.Source.ProfileRoot, "demo", "ota.toml"), nil, 0600); err != nil {
+	instanceRoot := filepath.Join(t.TempDir(), "instances")
+	s.Source.InstanceRoot = instanceRoot
+	s.Source.ProfileRoot = instanceRoot
+	if err := os.MkdirAll(filepath.Join(instanceRoot, "demo"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instanceRoot, "demo", "ota.toml"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	p.MCPs = nil
@@ -26,7 +32,7 @@ func TestApplyProfilePersistsSecretInputInKeePassAndReloadsIt(t *testing.T) {
 	q.ItemIDs = []string{"set:core"}
 	q.Inputs = map[string]any{"credential": "fixture-secret-value"}
 
-	key, err := s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +69,11 @@ func TestApplyProfilePersistsSecretInputInKeePassAndReloadsIt(t *testing.T) {
 	}
 	freshState.SetSecretBackend(freshVault)
 	freshService := New(s.Source, freshState, s.Options)
-	freshPackage, freshProfile, freshKey, err := freshService.loadProfile(q.Ref)
+	freshPackage, freshInstance, freshKey, err := freshService.loadInstance(q.Ref)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("reload instance: %v", err)
 	}
-	_, _, values, _, err := freshService.profileValues(freshPackage, freshProfile, freshKey, ProfileRequest{Ref: q.Ref})
+	_, _, values, _, err := freshService.instanceValues(freshPackage, freshInstance, freshKey, InstanceRequest{Ref: q.Ref})
 	if err != nil {
 		t.Fatalf("reload profile values: %v", err)
 	}

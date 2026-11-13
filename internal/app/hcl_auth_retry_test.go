@@ -185,7 +185,7 @@ func TestInteractiveApplyBlocksCredentialPrepareBeforeAction(t *testing.T) {
 	if len(adapter.calls) != 0 {
 		t.Fatalf("agent effects occurred before guard: calls=%#v", adapter.calls)
 	}
-	key := state.Key{Source: s.Source.ID, Package: "demo", Target: "default", Profile: "ota"}
+	key := state.Key{Source: s.Source.ID, Package: "demo", Target: "ota"}
 	answers, err := s.Store.Answers(key)
 	if err != nil {
 		t.Fatal(err)

@@ -365,16 +365,6 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 	if err != nil {
 		return p, pr, nil, nil, err
 	}
-	hasSecretInput := false
-	for _, def := range p.Inputs {
-		if def.Type == "secret" {
-			hasSecretInput = true
-			break
-		}
-	}
-	if hasSecretInput && s.Store.ConfiguredSecretBackend() == nil {
-		return p, pr, nil, nil, invalid(errors.New("secret inputs require an unlocked KeePass vault"))
-	}
 	privateSecrets, err := s.Store.SecretInputs(key)
 	if err != nil {
 		return p, pr, nil, nil, err
@@ -509,6 +499,16 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 	values, err := forms.ResolvePartial(p.Inputs, inherited, input, fixed)
 	if err != nil {
 		return p, pr, values, inherited, invalid(err)
+	}
+	if s.Store.ConfiguredSecretBackend() == nil {
+		for _, definition := range p.Inputs {
+			if definition.Type != "secret" {
+				continue
+			}
+			if hasSecretValue(values[definition.Name]) || resetInputs[definition.Name] && hasSecretValue(privateSecrets[definition.Name]) {
+				return p, pr, nil, nil, invalid(errors.New("secret inputs require an unlocked KeePass vault"))
+			}
+		}
 	}
 	pr, err = config.ResolveExpressions(pr, values, p.Inputs)
 	if err != nil {

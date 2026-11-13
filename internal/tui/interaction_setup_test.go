@@ -159,7 +159,7 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	setupKey(m, tea.KeyRight, "")
 	view := m.View().Content
-	for _, want := range []string{"Token", "Source kubeconfig", "Import source", "*********"} {
+	for _, want := range []string{"Token", "Source kubeconfig", "*********"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("authentication field %q missing before edit:\n%s", want, view)
 		}
@@ -169,8 +169,8 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	if got := m.form.Values()["token"]; got != "old-token" {
 		t.Fatal("merely focusing Source kubeconfig cleared the active Token value")
 	}
-	if !strings.Contains(view, "*********") {
-		t.Fatalf("unfocused authentication secret was not masked:\n%s", view)
+	if strings.Contains(view, "old-token") {
+		t.Fatalf("unfocused authentication secret was shown in plaintext:\n%s", view)
 	}
 	if !strings.Contains(view, "Import source") {
 		t.Fatalf("scrolling to Source kubeconfig did not reveal its field hint:\n%s", view)

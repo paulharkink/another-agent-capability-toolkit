@@ -2017,6 +2017,41 @@ func (m *FormModel) displayBuffer(def catalog.Input, focused bool) string {
 	return m.buffer
 }
 
+func (m *FormModel) setError(e error) {
+	m.message = ""
+	if e != nil {
+		m.message = e.Error()
+	}
+}
+
+func textValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprint(value)
+}
+
+func inputDisplayValue(def catalog.Input, value any) string {
+	if def.Type == "boolean" && !def.Multiple {
+		if enabled, ok := value.(bool); ok && enabled {
+			return "[x]"
+		}
+		return "[ ]"
+	}
+	return textValue(value)
+}
+
+func (m *FormModel) secretVisible(def catalog.Input, focused bool) bool {
+	return def.Type != "secret" || focused && m.revealedSecret == def.Name
+}
+
+func maskSecret(value string) string {
+	return strings.Repeat("*", utf8.RuneCountInString(value))
+}
+
 func editViewport(buffer string, cursor, width int) string {
 	runes := []rune(buffer)
 	cursor = max(0, min(cursor, len(runes)))

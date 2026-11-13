@@ -23,7 +23,7 @@ func TestProfileApplyRegistersWithDeclaredHealthPathFalseAndSkipsProtocolInitial
 	s, a, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
 	p.Skills, p.Skill, p.MCP = nil, nil, nil
-	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}}
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health"}}
 	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
 	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
 	q.ItemIDs = []string{"set:alpha-only"}
@@ -31,9 +31,6 @@ func TestProfileApplyRegistersWithDeclaredHealthPathFalseAndSkipsProtocolInitial
 
 	checks, initializes := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
-			t.Errorf("Authorization header = %q, want Bearer fixture-token", got)
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/health":
 			checks++
@@ -108,7 +105,7 @@ func TestProfileApplyContinuesWithFalseHealthAfterHostAuthenticationAction(t *te
 	s, a, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
 	p.Skills, p.Skill, p.MCP = nil, nil, nil
-	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer ", Actions: map[string]catalog.Command{
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", Actions: map[string]catalog.Command{
 		"authenticate": {Argv: []string{"auth", "authenticate"}, Target: "host"},
 	}}}
 	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
@@ -118,9 +115,6 @@ func TestProfileApplyContinuesWithFalseHealthAfterHostAuthenticationAction(t *te
 
 	checks, initializes := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
-			t.Errorf("request authorization = %q", got)
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/health":
 			checks++
@@ -231,7 +225,7 @@ func TestProfileApplyExternalURLSkipsLocalActionsAndStarts(t *testing.T) {
 			s, a, q := profileApplyFixture(t)
 			p := &s.Source.Catalog[0]
 			p.Skills, p.Skill, p.MCP = nil, nil, nil
-			definition := catalog.MCP{Name: "alpha", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}
+			definition := catalog.MCP{Name: "alpha", Transport: "streamable-http", HealthPath: "/health"}
 			if target != "none" {
 				definition.Actions = map[string]catalog.Command{
 					"prepare":      {Argv: []string{"prepare"}, Target: target},
@@ -250,9 +244,6 @@ func TestProfileApplyExternalURLSkipsLocalActionsAndStarts(t *testing.T) {
 
 			healthChecks, initializes, actionCalls := 0, 0, 0
 			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if got := r.Header.Get("Authorization"); got != "Bearer fixture-token" {
-					t.Errorf("external request authorization = %q", got)
-				}
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/health":
 					healthChecks++
@@ -752,18 +743,14 @@ func TestProfileApplyKeepsUnauthenticatedHealthEnabledMCPRegisteredWithoutInitia
 	p.Skills, p.Skill, p.MCP = nil, nil, nil
 	p.MCPs = []catalog.MCP{{
 		Name: "alpha", Image: "fixture", Transport: "streamable-http",
-		HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer ",
+		HealthPath: "/health",
 	}}
-	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
 	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
 	q.ItemIDs = []string{"set:alpha-only"}
-	q.Inputs = map[string]any{"label": "company", "enabled": true, "token": "invalid-token"}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
 
 	healthSeen, initializeSeen := false, false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer invalid-token" {
-			t.Errorf("Authorization = %q, want bearer credential", got)
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/health":
 			healthSeen = true
@@ -816,15 +803,11 @@ func TestRunInstanceMCPStartKeepsHealthFalseAsRunning(t *testing.T) {
 	s, _, q := profileApplyFixture(t)
 	p := &s.Source.Catalog[0]
 	p.Skills, p.Skill, p.MCP = nil, nil, nil
-	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health", TokenInput: "token", TokenHeader: "Authorization", TokenPrefix: "Bearer "}}
-	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret"})
-	q.Inputs["token"] = "invalid-token"
+	p.MCPs = []catalog.MCP{{Name: "alpha", Image: "fixture", Transport: "streamable-http", HealthPath: "/health"}}
+	q.Inputs = map[string]any{"label": "company", "enabled": true}
 
 	checks, initializes := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer invalid-token" {
-			t.Errorf("authorization header = %q", got)
-		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/health":
 			checks++
