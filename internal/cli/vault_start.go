@@ -88,6 +88,21 @@ func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, 
 	if err != nil {
 		return err
 	}
+	return attachSharedVault(store, stateRoot, vaultStore, masterPassword)
+}
+
+func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte) error {
+	if len(password) == 0 {
+		return errors.New("vault master password must not be empty")
+	}
+	vaultStore, err := vault.Open(filepath.Join(stateRoot, "credentials.kdbx"), password)
+	if err != nil {
+		return err
+	}
+	return attachSharedVault(store, stateRoot, vaultStore, password)
+}
+
+func attachSharedVault(store *state.Store, stateRoot string, vaultStore *vault.Store, masterPassword []byte) error {
 	store.SetSecretBackend(vaultStore)
 	if err := store.MigrateLegacySecretInputs(); err != nil {
 		return err

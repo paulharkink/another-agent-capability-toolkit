@@ -38,6 +38,7 @@ type FormModel struct {
 	submitLabel                 string
 	contextLine                 string
 	selected, width, height     int
+	revealedSecret              string
 	editing                     bool
 	buffer, editAction, message string
 	editOriginal                string
@@ -1019,6 +1020,7 @@ func (m *FormModel) moveSection(delta int) {
 	if len(m.sections) == 0 {
 		return
 	}
+	m.revealedSecret = ""
 	m.sectionIndex = (m.sectionIndex + len(m.sections) + delta) % len(m.sections)
 	m.sectionOffset = 0
 	m.detailOffset = 0
@@ -1028,6 +1030,7 @@ func (m *FormModel) moveSection(delta int) {
 }
 
 func (m *FormModel) moveSplitControl(delta int) {
+	m.revealedSecret = ""
 	m.detailOffset = 0
 	m.detailScrolled = false
 	indices := m.splitFieldIndices(m.sectionIndex)
@@ -1253,6 +1256,7 @@ func (m *FormModel) disabledReason(name string) string {
 	return "inactive for the selected options"
 }
 func (m *FormModel) moveFocus(delta int) {
+	m.revealedSecret = ""
 	count := len(m.defs) + 1
 	if !m.hideCancel {
 		count++
@@ -1287,6 +1291,7 @@ func isEditableCollection(def catalog.Input) bool {
 }
 
 func (m *FormModel) moveControl(delta int) {
+	m.revealedSecret = ""
 	if m.selected < len(m.defs) {
 		def := m.defs[m.selected]
 		if isChoiceList(def) || isScalarChoice(def) {
@@ -1380,9 +1385,22 @@ func (m *FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pickedMsg:
 		m.applyPicked(msg)
 	case tea.MouseMsg:
+		m.revealedSecret = ""
 		return m.mouseUpdate(msg)
 	case tea.KeyPressMsg:
 		stroke := msg.String()
+		if !m.editing && (stroke == "tab" || stroke == "shift+tab" || stroke == "left" || stroke == "right" || stroke == "esc") {
+			m.revealedSecret = ""
+		}
+		if stroke == "v" && !m.editing && !m.readOnly && m.selected >= 0 && m.selected < len(m.defs) && m.defs[m.selected].Type == "secret" && (len(m.sections) == 0 || m.area == 1) {
+			name := m.defs[m.selected].Name
+			if m.revealedSecret == name {
+				m.revealedSecret = ""
+			} else {
+				m.revealedSecret = name
+			}
+			return m, nil
+		}
 		if m.tabThroughControls && !m.readOnly && (stroke == "tab" || stroke == "shift+tab") {
 			if err := m.CommitPendingInput(); err != nil {
 				return m, nil
@@ -1758,6 +1776,7 @@ func (m *FormModel) cancel() (tea.Model, tea.Cmd) {
 }
 
 func (m *FormModel) discard() (tea.Model, tea.Cmd) {
+	m.revealedSecret = ""
 	m.editor.Cancel()
 	m.done = true
 	m.err = picker.ErrCancelled
@@ -1774,6 +1793,7 @@ func (m *FormModel) Submit() (tea.Model, tea.Cmd) {
 }
 
 func (m *FormModel) save() (tea.Model, tea.Cmd) {
+	m.revealedSecret = ""
 	values, err := m.editor.Commit()
 	if err != nil {
 		m.message = err.Error()
@@ -1962,7 +1982,7 @@ func cloneHiddenChoices(hidden map[string][]string) map[string][]string {
 	return result
 }
 
-func (m *FormModel) displayValue(def catalog.Input, value any) string {
+func (m *FormModel) displayChoiceValue(def catalog.Input, value any) string {
 	if len(m.hiddenChoices[def.Name]) == 0 {
 		return inputDisplayValue(def, value)
 	}
@@ -1981,30 +2001,20 @@ func (m *FormModel) displayValue(def catalog.Input, value any) string {
 	}
 	return inputDisplayValue(def, visible)
 }
-func (m *FormModel) setError(e error) {
-	m.message = ""
-	if e != nil {
-		m.message = e.Error()
+
+func (m *FormModel) displayValue(def catalog.Input, value any, focused bool) string {
+	shown := m.displayChoiceValue(def, value)
+	if def.Type == "secret" && !m.secretVisible(def, focused) {
+		return maskSecret(shown)
 	}
-}
-func textValue(value any) string {
-	if value == nil {
-		return ""
-	}
-	if text, ok := value.(string); ok {
-		return text
-	}
-	return fmt.Sprint(value)
+	return shown
 }
 
-func inputDisplayValue(def catalog.Input, value any) string {
-	if def.Type == "boolean" && !def.Multiple {
-		if enabled, ok := value.(bool); ok && enabled {
-			return "[x]"
-		}
-		return "[ ]"
+func (m *FormModel) displayBuffer(def catalog.Input, focused bool) string {
+	if def.Type == "secret" && !m.secretVisible(def, focused) {
+		return maskSecret(m.buffer)
 	}
-	return textValue(value)
+	return m.buffer
 }
 
 func editViewport(buffer string, cursor, width int) string {
@@ -2263,7 +2273,7 @@ func (m *FormModel) layout() formLayout {
 			label += " *"
 		}
 		value := values[def.Name]
-		display := m.displayValue(def, value)
+		display := m.displayValue(def, value, i == m.selected && (len(m.sections) == 0 || m.area == 1))
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
 			display = m.emptyChoicesText(def)
 		} else if def.OptionsFrom != "" && len(def.Options) > 0 {
@@ -2285,8 +2295,11 @@ func (m *FormModel) layout() formLayout {
 					mark = ">"
 				}
 				row := textValue(path)
+				if def.Type == "secret" && !m.secretVisible(def, i == m.selected && (len(m.sections) == 0 || m.area == 1)) {
+					row = maskSecret(row)
+				}
 				if m.editing && i == m.selected && index == m.rowIndex[def.Name] && m.editAction == "edit" {
-					row = "Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-30))
+					row = "Edit: " + editViewport(m.displayBuffer(def, i == m.selected && (len(m.sections) == 0 || m.area == 1)), m.cursor, max(8, m.width-30))
 				}
 				if def.Type == "directory" || def.Type == "file" {
 					display += "\n    " + mark + " " + row + "  [Edit] [Remove]"
@@ -2299,7 +2312,7 @@ func (m *FormModel) layout() formLayout {
 			}
 		}
 		if m.editing && i == m.selected && !scalarDefinition(def).Multiple && def.OptionsFrom == "" {
-			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-lipgloss.Width(label)-14))
+			display = "Edit: " + editViewport(m.displayBuffer(def, i == m.selected && (len(m.sections) == 0 || m.area == 1)), m.cursor, max(8, m.width-lipgloss.Width(label)-14))
 		}
 		if validation := m.fieldErrors[def.Name]; validation != "" {
 			display += "\n    ! " + validation
@@ -2408,6 +2421,13 @@ func (m *FormModel) layout() formLayout {
 		shortcutLine = escapeAction
 	}
 	footer := actionsControl + "\nTab/↑↓ field · Enter edit · ←→ choice · Space toggle\n" + shortcutLine
+	if m.selected >= 0 && m.selected < len(m.defs) && m.defs[m.selected].Type == "secret" {
+		if m.revealedSecret == m.defs[m.selected].Name {
+			footer += " · v hide secret"
+		} else {
+			footer += " · v reveal secret"
+		}
+	}
 	if len(m.defs) > 0 && m.selected < len(m.defs) {
 		def := m.defs[m.selected]
 		if isChoiceList(def) {
@@ -2570,7 +2590,7 @@ func (m *FormModel) splitLayout() formLayout {
 		if index == m.selected && m.area == 1 {
 			prefix = "> "
 		}
-		display := m.displayValue(def, values[def.Name])
+		display := m.displayValue(def, values[def.Name], index == m.selected && (len(m.sections) == 0 || m.area == 1))
 		choiceRows := []string{}
 		choiceRowIndexes := []int{}
 		if def.OptionsFrom != "" && len(def.Options) == 0 {
@@ -2589,8 +2609,11 @@ func (m *FormModel) splitLayout() formLayout {
 					cursor = ">"
 				}
 				shown := textValue(value)
+				if def.Type == "secret" && !m.secretVisible(def, index == m.selected && m.area == 1) {
+					shown = maskSecret(shown)
+				}
 				if index == m.selected && m.editing && m.editAction == "edit" && m.rowIndex[def.Name] == row {
-					shown = "Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-27))
+					shown = "Edit: " + editViewport(m.displayBuffer(def, index == m.selected && m.area == 1), m.cursor, max(8, rightWidth-27))
 				}
 				limit := max(8, rightWidth-30)
 				if !m.editing && lipgloss.Width(shown) > limit {
@@ -2609,13 +2632,13 @@ func (m *FormModel) splitLayout() formLayout {
 				cursor = ">"
 			}
 			if m.editing && index == m.selected && m.editAction == "add" {
-				display += "\n  > + Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-20))
+				display += "\n  > + Edit: " + editViewport(m.displayBuffer(def, index == m.selected && m.area == 1), m.cursor, max(8, rightWidth-20))
 			} else {
 				display += "\n  " + cursor + " + " + addLabel
 			}
 		}
 		if m.editing && index == m.selected && !isEditableCollection(def) && def.OptionsFrom == "" {
-			display = "Edit: " + editViewport(m.buffer, m.cursor, max(8, rightWidth-lipgloss.Width(label)-14))
+			display = "Edit: " + editViewport(m.displayBuffer(def, index == m.selected && m.area == 1), m.cursor, max(8, rightWidth-lipgloss.Width(label)-14))
 		}
 		if validation := m.fieldErrors[def.Name]; validation != "" {
 			display += "\n    ! " + validation
@@ -2766,6 +2789,13 @@ func (m *FormModel) splitLayout() formLayout {
 		tabHint = "Tab Controls"
 	}
 	controls := "↑↓ Controls · ←→ Panes · " + tabHint + " · Ctrl-S Save · " + escapeAction
+	if m.selected >= 0 && m.selected < len(m.defs) && m.defs[m.selected].Type == "secret" {
+		if m.revealedSecret == m.defs[m.selected].Name {
+			controls += " · v hide secret"
+		} else {
+			controls += " · v reveal secret"
+		}
+	}
 	if m.readOnly {
 		controls = "↑↓ Navigate · ←→ Panes · Tab Areas · Esc Back"
 	}

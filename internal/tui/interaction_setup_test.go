@@ -159,7 +159,7 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	m, _ := openSetupInteraction(t)
 	setupKey(m, tea.KeyRight, "")
 	view := m.View().Content
-	for _, want := range []string{"Token", "Source kubeconfig", "old-token"} {
+	for _, want := range []string{"Token", "Source kubeconfig", "Import source", "*********"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("authentication field %q missing before edit:\n%s", want, view)
 		}
@@ -169,9 +169,13 @@ func TestInteractionSetupAuthFieldsStayVisibleAndSwitchOnTyping(t *testing.T) {
 	if got := m.form.Values()["token"]; got != "old-token" {
 		t.Fatal("merely focusing Source kubeconfig cleared the active Token value")
 	}
+	if !strings.Contains(view, "*********") {
+		t.Fatalf("unfocused authentication secret was not masked:\n%s", view)
+	}
 	if !strings.Contains(view, "Import source") {
 		t.Fatalf("scrolling to Source kubeconfig did not reveal its field hint:\n%s", view)
 	}
+
 	setupKey(m, 'm', "m") // Manually edit a file path without opening the native picker.
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: 'x', Text: "/tmp/source-kubeconfig"})
 	_, _ = m.form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

@@ -182,14 +182,34 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			fmt.Fprintln(errOut, "this command needs the shared vault; run it from an interactive terminal to enter the vault master password")
 			return 2
 		}
-		readPassword := func(string) ([]byte, error) {
-			password, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(errOut)
-			return password, err
-		}
-		if err := initializeSharedVault(store, store.Root(), errOut, readPassword); err != nil {
-			fmt.Fprintln(errOut, err)
-			return 1
+		if len(f.args) == 0 {
+			vaultPath := filepath.Join(store.Root(), "credentials.kdbx")
+			_, statErr := os.Stat(vaultPath)
+			creating := os.IsNotExist(statErr)
+			if statErr != nil && !creating {
+				fmt.Fprintln(errOut, fmt.Errorf("inspect shared vault: %w", statErr))
+				return 1
+			}
+			err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte) error {
+				return initializeSharedVaultWithPassword(store, store.Root(), password)
+			})
+			if errors.Is(err, tui.ErrVaultUnlockCanceled) {
+				return 0
+			}
+			if err != nil {
+				fmt.Fprintln(errOut, err)
+				return 1
+			}
+		} else {
+			readPassword := func(string) ([]byte, error) {
+				password, err := term.ReadPassword(int(os.Stdin.Fd()))
+				fmt.Fprintln(errOut)
+				return password, err
+			}
+			if err := initializeSharedVault(store, store.Root(), errOut, readPassword); err != nil {
+				fmt.Fprintln(errOut, err)
+				return 1
+			}
 		}
 	}
 	svc := app.New(src, store, options)

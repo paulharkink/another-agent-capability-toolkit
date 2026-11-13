@@ -694,8 +694,8 @@ func TestUXCaptureProductionViewsForReview(t *testing.T) {
 		t.Fatalf("keyboard paste/commit did not preserve the synthetic token fixture: %q\n%s", got, ansi.Strip(auth.View().Content))
 	}
 	assertInactiveAlternativeInANSI(t, tokenView, "Source kubeconfig")
-	if !strings.Contains(ansi.Strip(tokenView), fixtureToken) {
-		t.Fatalf("token-selected capture does not show its synthetic fixture value:\n%s", ansi.Strip(tokenView))
+	if !strings.Contains(ansi.Strip(tokenView), strings.Repeat("*", len([]rune(fixtureToken)))) || strings.Contains(ansi.Strip(tokenView), fixtureToken) {
+		t.Fatalf("token-selected capture does not mask its synthetic fixture value:\n%s", ansi.Strip(tokenView))
 	}
 	writeUXCapture(t, "Authentication token selected kubeconfig inactive", tokenView)
 

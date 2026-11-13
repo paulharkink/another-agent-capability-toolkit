@@ -119,7 +119,7 @@ func TestUXExclusiveAlternativeSwitchIsVisible(t *testing.T) {
 	m.SetExclusiveFields("token", "source")
 	m.Update(key(tea.KeyDown, ""))
 	m.Update(key(tea.KeyEnter, ""))
-	if !strings.Contains(m.View().Content, "Source kubeconfig") || !strings.Contains(m.View().Content, "secret-value") {
+	if !strings.Contains(m.View().Content, "Source kubeconfig") || !strings.Contains(m.View().Content, "************") {
 		t.Fatalf("editing inactive alternative hid existing credential or label:\n%s", m.View().Content)
 	}
 	m.Update(tea.PasteMsg{Content: source})
