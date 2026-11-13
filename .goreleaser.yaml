@@ -3,7 +3,7 @@ project_name: aact
 
 before:
   hooks:
-    - cmd: ./scripts/build-vault-handoff-helpers.sh
+    - ./scripts/build-vault-handoff-helpers.sh
 
 builds:
   - id: aact

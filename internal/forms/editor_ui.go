@@ -2308,7 +2308,7 @@ func (m *FormModel) layout() formLayout {
 				}
 			}
 			if m.editing && i == m.selected && m.editAction == "add" {
-				display += "\n    > + Edit: " + editViewport(m.buffer, m.cursor, max(8, m.width-30))
+				display += "\n    > + Edit: " + editViewport(m.displayBuffer(def, i == m.selected && (len(m.sections) == 0 || m.area == 1)), m.cursor, max(8, m.width-30))
 			}
 		}
 		if m.editing && i == m.selected && !scalarDefinition(def).Multiple && def.OptionsFrom == "" {

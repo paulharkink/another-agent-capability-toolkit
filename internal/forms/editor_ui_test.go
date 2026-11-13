@@ -197,6 +197,38 @@ func TestSecretInputIsMaskedByDefaultAndTemporarilyRevealed(t *testing.T) {
 	}
 }
 
+func TestSecretCollectionAddBufferIsMaskedUnlessRevealed(t *testing.T) {
+	m := NewForm(context.Background(), []catalog.Input{{Name: "tokens", Type: "secret", Multiple: true}}, map[string]any{"tokens": []string{"old-token"}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if strings.Contains(ansi.Strip(m.View().Content), "old-token") {
+		t.Fatal("secret collection value was visible by default")
+	}
+	m.Update(key('a', "a"))
+	m.Update(key('n', "new-secret"))
+	view := ansi.Strip(m.View().Content)
+	if strings.Contains(view, "new-secret") || !strings.Contains(view, "Edit: **********") {
+		t.Fatalf("new secret collection item was not masked while editing:\n%s", view)
+	}
+	m.Update(key(tea.KeyEscape, ""))
+	m.Update(key('v', "v"))
+	m.Update(key('a', "a"))
+	m.Update(key('n', "new-secret"))
+	if !strings.Contains(ansi.Strip(m.View().Content), "Edit: new-secret") {
+		t.Fatal("revealing the focused secret did not also reveal its collection edit buffer")
+	}
+
+	split := NewForm(context.Background(), []catalog.Input{{Name: "tokens", Type: "secret", Multiple: true}}, nil)
+	split.SetSections(FormSection{Title: "Secrets", Fields: []string{"tokens"}})
+	split.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	split.Update(key(tea.KeyRight, ""))
+	split.Update(key('a', "a"))
+	split.Update(key('n', "split-secret"))
+	view = ansi.Strip(split.View().Content)
+	if strings.Contains(view, "split-secret") || !strings.Contains(view, "Edit: ************") {
+		t.Fatalf("split-pane secret collection add buffer was not masked:\n%s", view)
+	}
+}
+
 func TestExclusiveCredentialFormExplainsAutomaticClear(t *testing.T) {
 	m := NewForm(context.Background(), []catalog.Input{
 		{Name: "token", Label: "Token", Type: "secret", ExclusiveGroup: "cluster_credentials"},
