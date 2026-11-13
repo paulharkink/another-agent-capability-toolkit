@@ -1197,3 +1197,33 @@ func TestArgoFixedClientChecksumVerifierDoesNotParseBinaryPathFromHashOutput(t *
 		t.Fatalf("checksum verifier rejected an existing binary whose path requires sha256sum escaping: %v: %s", err, output)
 	}
 }
+
+func TestVaultSecretEnvInputsRequireDeclaredSecretAndAuthMapping(t *testing.T) {
+	base := `schema_version = 1
+id = "vaulted"
+name = "Vaulted"
+[[inputs]]
+name = "token"
+type = "secret"
+[[mcps]]
+name = "provider"
+runtime = "docker"
+image = "fixture"
+container_port = 80
+vault_secret_env_inputs = { PROVIDER_TOKEN = "token" }
+vault_auth_env = "PROVIDER_TOKEN"
+`
+	if _, err := Load(writeManifest(t, base)); err != nil {
+		t.Fatalf("valid vault secret mapping: %v", err)
+	}
+	for _, test := range []struct{ name, body string }{
+		{"unknown secret", strings.Replace(base, `"token" }`, `"missing" }`, 1)},
+		{"auth env missing", strings.Replace(base, `vault_auth_env = "PROVIDER_TOKEN"`, `vault_auth_env = "OTHER"`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Load(writeManifest(t, test.body)); err == nil {
+				t.Fatal("invalid vault secret mapping was accepted")
+			}
+		})
+	}
+}

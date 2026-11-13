@@ -643,6 +643,24 @@ func Validate(p Package) error {
 				return fmt.Errorf("mcp %s env_inputs %s must reference a declared non-secret scalar input", mcp.Name, name)
 			}
 		}
+		for name, inputName := range mcp.VaultSecretEnvInputs {
+			if !environmentName.MatchString(name) || usedEnvironment[name] {
+				return fmt.Errorf("mcp %s vault_secret_env_inputs has invalid or duplicate environment variable %q", mcp.Name, name)
+			}
+			usedEnvironment[name] = true
+			input, ok := inputsByName[inputName]
+			if !ok || input.Type != "secret" {
+				return fmt.Errorf("mcp %s vault_secret_env_inputs %s must reference a declared secret input", mcp.Name, name)
+			}
+		}
+		if mcp.VaultAuthEnv != "" {
+			if !environmentName.MatchString(mcp.VaultAuthEnv) {
+				return fmt.Errorf("mcp %s vault_auth_env has invalid environment variable name %q", mcp.Name, mcp.VaultAuthEnv)
+			}
+			if _, ok := mcp.VaultSecretEnvInputs[mcp.VaultAuthEnv]; !ok {
+				return fmt.Errorf("mcp %s vault_auth_env must name an environment in vault_secret_env_inputs", mcp.Name)
+			}
+		}
 		for name, inputName := range mcp.SecretEnvInputs {
 			if !environmentName.MatchString(name) || usedEnvironment[name] {
 				return fmt.Errorf("mcp %s secret_env_inputs has invalid or duplicate environment variable %q", mcp.Name, name)

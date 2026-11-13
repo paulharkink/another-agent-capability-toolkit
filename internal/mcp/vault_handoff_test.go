@@ -140,6 +140,21 @@ func TestVaultHandoffIsExplicitOptInAndUsesExistingInstanceID(t *testing.T) {
 	if issuer.issuedNamespace != key.ID() {
 		t.Fatalf("issuer namespace=%q, want existing Key.ID() %q", issuer.issuedNamespace, key.ID())
 	}
+	parentNamespace := strings.Repeat("b", 64)
+	r, executor, key = testRuntime(t)
+	executor.f = absent
+	r.VaultTokenIssuer = issuer
+	helper = filepath.Join(t.TempDir(), "helper-parent")
+	if err := os.WriteFile(helper, []byte("helper fixture"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r.VaultHandoffHelperPath = helper
+	if _, err := r.Start(context.Background(), key, RunSpec{Image: "fixture", HostPort: 8767, ContainerPort: 80, VaultSecretInputs: map[string]string{"PROVIDER_TOKEN": "token"}, VaultNamespaceID: parentNamespace}); err != nil {
+		t.Fatal(err)
+	}
+	if issuer.issuedNamespace != parentNamespace {
+		t.Fatalf("generic vault secret mapping issued namespace %q, want parent profile %q", issuer.issuedNamespace, parentNamespace)
+	}
 	if err := r.revokeVaultHandoff("cid", key.ID()); err != nil {
 		t.Fatal(err)
 	}

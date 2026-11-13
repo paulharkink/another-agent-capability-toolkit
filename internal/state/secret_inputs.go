@@ -1,12 +1,14 @@
 package state
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -101,8 +103,9 @@ func validSecretNamespace(namespace string) bool {
 }
 
 type secretInputRecord struct {
-	Version int            `json:"version"`
-	Values  map[string]any `json:"values"`
+	Version  int            `json:"version"`
+	Revision string         `json:"revision,omitempty"`
+	Values   map[string]any `json:"values"`
 }
 
 // SecretInputs returns secret form inputs stored separately from ordinary
@@ -132,6 +135,58 @@ func (s *Store) SecretInputs(k Key) (map[string]any, error) {
 	return record.Values, nil
 }
 
+// SecretInputsRevision returns an opaque, non-secret revision that changes
+// when the saved private input values change. Runtime specs can use it to
+// restart consumers after credential rotation without exposing credentials or
+// credential hashes in Docker configuration.
+func (s *Store) SecretInputsRevision(k Key) (string, error) {
+	path := filepath.Join(s.AuthDir(k), "aact-private-inputs.json")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.secretInputsRevisionLocked(k, path)
+}
+
+func (s *Store) secretInputsRevisionLocked(k Key, path string) (string, error) {
+	var record secretInputRecord
+	if s.secretBackend != nil {
+		encoded, found, err := s.secretBackend.Get(k.ID(), secretInputsVaultKey)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if err := json.Unmarshal(encoded, &record); err != nil {
+				return "", fmt.Errorf("decode encrypted private input state: %w", err)
+			}
+		} else {
+			if err := readJSON(path, &record); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
+		}
+	} else if err := readJSON(path, &record); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if record.Version != 0 && record.Version != 1 {
+		return "", fmt.Errorf("unsupported private input state version %d", record.Version)
+	}
+	return record.Revision, nil
+}
+
+func newSecretInputsRevision() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("create private input revision: %w", err)
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func copySecretInputValues(values map[string]any) map[string]any {
+	copy := make(map[string]any, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
 // SaveSecretInputs merges the submitted secret fields into this instance's
 // private input store. Omitted and blank values preserve existing credentials;
 // callers clear a value explicitly through resetNames.
@@ -146,10 +201,15 @@ func (s *Store) SaveSecretInputs(k Key, submitted map[string]any, resetNames []s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.secretBackend != nil {
+		revision, err := s.secretInputsRevisionLocked(k, path)
+		if err != nil {
+			return err
+		}
 		values, err := s.secretInputsFromVaultLocked(k, path)
 		if err != nil {
 			return err
 		}
+		original := copySecretInputValues(values)
 		for name, value := range submitted {
 			if !blankSecretInput(value) {
 				values[name] = value
@@ -163,7 +223,13 @@ func (s *Store) SaveSecretInputs(k Key, submitted map[string]any, resetNames []s
 				return err
 			}
 		} else {
-			encoded, err := json.Marshal(secretInputRecord{Version: 1, Values: values})
+			if revision == "" || !reflect.DeepEqual(original, values) {
+				revision, err = newSecretInputsRevision()
+				if err != nil {
+					return err
+				}
+			}
+			encoded, err := json.Marshal(secretInputRecord{Version: 1, Revision: revision, Values: values})
 			if err != nil {
 				return err
 			}
@@ -190,6 +256,7 @@ func (s *Store) SaveSecretInputs(k Key, submitted map[string]any, resetNames []s
 			values[name] = value
 		}
 	}
+	original := copySecretInputValues(values)
 	for name, value := range submitted {
 		if blankSecretInput(value) {
 			continue
@@ -205,7 +272,13 @@ func (s *Store) SaveSecretInputs(k Key, submitted map[string]any, resetNames []s
 		}
 		return nil
 	}
-	return WriteJSON(path, secretInputRecord{Version: 1, Values: values})
+	if record.Revision == "" || !reflect.DeepEqual(original, values) {
+		record.Revision, err = newSecretInputsRevision()
+		if err != nil {
+			return err
+		}
+	}
+	return WriteJSON(path, secretInputRecord{Version: 1, Revision: record.Revision, Values: values})
 }
 
 func (s *Store) secretInputsFromVaultLocked(k Key, legacyPath string) (map[string]any, error) {

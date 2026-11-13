@@ -377,7 +377,18 @@ func (s *Service) instanceValuesWithIncompleteInputs(p catalog.Package, pr confi
 		if definition.Type != "secret" {
 			continue
 		}
-		if value, exists := privateSecrets[definition.Name]; exists {
+		selectedExternalSource := false
+		for _, mcpDefinition := range p.MCPDefinitions() {
+			if mcpDefinition.VaultAuthEnv == "" || mcpDefinition.VaultSecretEnvInputs[mcpDefinition.VaultAuthEnv] != definition.Name {
+				continue
+			}
+			for _, source := range []string{mcpDefinition.TokenFileInput, mcpDefinition.TokenEnvInput} {
+				if value, ok := saved[source].(string); ok && strings.TrimSpace(value) != "" {
+					selectedExternalSource = true
+				}
+			}
+		}
+		if value, exists := privateSecrets[definition.Name]; exists && !selectedExternalSource {
 			saved[definition.Name] = value
 		}
 		if !resetInputs[definition.Name] && blankSecretValue(q.Inputs[definition.Name]) {

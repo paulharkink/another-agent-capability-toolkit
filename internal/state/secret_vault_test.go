@@ -144,3 +144,36 @@ func TestMigrateLegacySecretInputsPreservesExistingVaultValue(t *testing.T) {
 		t.Fatalf("legacy plaintext remains: %v", err)
 	}
 }
+
+func TestSecretInputRevisionChangesOnlyWhenSavedValuesChange(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Source: "source", Package: "pack", Target: "target", MCPDefinition: "mcp"}
+	store.SetSecretBackend(&testSecretBackend{values: map[string][]byte{}})
+	if err := store.SaveSecretInputs(key, map[string]any{"token": "first"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.SecretInputsRevision(key)
+	if err != nil || first == "" {
+		t.Fatalf("initial revision=%q err=%v", first, err)
+	}
+	if first == "first" || first == "second" {
+		t.Fatalf("revision exposed credential value: %q", first)
+	}
+	if err := store.SaveSecretInputs(key, map[string]any{"token": "first"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := store.SecretInputsRevision(key)
+	if err != nil || unchanged != first {
+		t.Fatalf("unchanged revision=%q err=%v, want %q", unchanged, err, first)
+	}
+	if err := store.SaveSecretInputs(key, map[string]any{"token": "second"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := store.SecretInputsRevision(key)
+	if err != nil || rotated == "" || rotated == first || rotated == "second" {
+		t.Fatalf("rotated revision=%q err=%v, previous=%q", rotated, err, first)
+	}
+}

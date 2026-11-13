@@ -291,11 +291,39 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 			}
 		}
 	}
+	secretResets := append([]string(nil), resetInputs...)
+	for _, definition := range p.MCPDefinitions() {
+		if definition.VaultAuthEnv == "" {
+			continue
+		}
+		secretName := definition.VaultSecretEnvInputs[definition.VaultAuthEnv]
+		if secretName == "" {
+			continue
+		}
+		selected := false
+		for _, source := range []string{definition.TokenInput, definition.TokenFileInput, definition.TokenEnvInput} {
+			if value, ok := values[source].(string); ok && strings.TrimSpace(value) != "" {
+				selected = true
+			}
+		}
+		resetSource := reset[definition.TokenInput] || reset[definition.TokenFileInput] || reset[definition.TokenEnvInput]
+		if resetSource {
+			secretResets = append(secretResets, secretName)
+			continue
+		}
+		if selected {
+			token, err := resolveProfileToken(definition, values)
+			if err != nil {
+				return err
+			}
+			secrets[secretName] = token
+		}
+	}
 	previousSecrets, err := s.Store.SecretInputs(k)
 	if err != nil {
 		return err
 	}
-	if err := s.Store.SaveSecretInputs(k, secrets, resetInputs); err != nil {
+	if err := s.Store.SaveSecretInputs(k, secrets, secretResets); err != nil {
 		return err
 	}
 	if err := s.Store.SaveAnswersWithActiveInputGroups(k, safe, activeGroups); err != nil {
@@ -305,7 +333,7 @@ func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, va
 		for name := range secrets {
 			affectedNames[name] = true
 		}
-		for _, name := range resetInputs {
+		for _, name := range secretResets {
 			affectedNames[name] = true
 		}
 		for name := range affectedNames {
@@ -492,6 +520,24 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	if p.MCP == nil {
 		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
 	}
+	if p.MCP.VaultAuthEnv != "" {
+		secretName := p.MCP.VaultSecretEnvInputs[p.MCP.VaultAuthEnv]
+		if secretName != "" {
+			token, err := resolveProfileToken(*p.MCP, values)
+			if err != nil {
+				return mcp.Instance{}, invalid(err)
+			}
+			if token != "" {
+				parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+				if err != nil {
+					return mcp.Instance{}, err
+				}
+				if err := s.Store.SaveSecretInputs(parentKey, map[string]any{secretName: token}, nil); err != nil {
+					return mcp.Instance{}, err
+				}
+			}
+		}
+	}
 	resolvedRegistrationName, nameErr := declaredRegistrationName(*p.MCP, k, values)
 	if nameErr != nil {
 		return mcp.Instance{}, invalid(nameErr)
@@ -536,6 +582,32 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 				spec.SecretEnv = map[string]string{}
 			}
 			spec.SecretEnv[name] = value
+		}
+	}
+	if len(p.MCP.VaultSecretEnvInputs) > 0 {
+		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.VaultNamespaceID = parentKey.ID()
+		spec.VaultHandoffEnabled = true
+		spec.VaultSecretInputs = p.MCP.VaultSecretEnvInputs
+		revision, err := s.Store.SecretInputsRevision(parentKey)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.VaultSecretRevision = revision
+		for envName, inputName := range p.MCP.VaultSecretEnvInputs {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env["AACT_VAULT_SECRET_INPUT_"+envName] = inputName
+		}
+		if p.MCP.VaultAuthEnv != "" {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env["AACT_VAULT_AUTH_ENV"] = p.MCP.VaultAuthEnv
 		}
 	}
 	if p.MCP.TokenContainerEnv != "" {

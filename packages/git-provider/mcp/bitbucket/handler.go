@@ -35,6 +35,7 @@ type Config struct {
 	GitLabURL      string
 	BitbucketURL   string
 	BitbucketToken string
+	ProviderToken  string
 	ProbeTimeout   time.Duration
 	ChildReady     func() bool
 }
@@ -89,6 +90,13 @@ func New(config Config) http.Handler {
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.FlushInterval = -1
+	if config.ProviderToken != "" {
+		originalDirector := proxy.Director
+		proxy.Director = func(request *http.Request) {
+			originalDirector(request)
+			request.Header.Set("Authorization", "Bearer "+config.ProviderToken)
+		}
+	}
 	proxy.ModifyResponse = func(response *http.Response) error {
 		if config.Provider != "bitbucket" {
 			return nil
@@ -251,7 +259,11 @@ func identityTarget(config Config, incoming *http.Request) (*url.URL, string, st
 	var suffix, headerName, headerValue string
 	switch strings.ToLower(config.Provider) {
 	case "github":
-		headerValue = incoming.Header.Get("Authorization")
+		if config.ProviderToken != "" {
+			headerValue = "Bearer " + config.ProviderToken
+		} else {
+			headerValue = incoming.Header.Get("Authorization")
+		}
 		if headerValue == "" {
 			return nil, "", "", false
 		}
@@ -261,6 +273,8 @@ func identityTarget(config Config, incoming *http.Request) (*url.URL, string, st
 		}
 	case "gitlab":
 		switch {
+		case config.ProviderToken != "":
+			headerName, headerValue, suffix = "Authorization", "Bearer "+config.ProviderToken, "user"
 		case incoming.Header.Get("Private-Token") != "":
 			headerName, headerValue, suffix = "Private-Token", incoming.Header.Get("Private-Token"), "user"
 		case incoming.Header.Get("JOB-TOKEN") != "":
@@ -271,8 +285,12 @@ func identityTarget(config Config, incoming *http.Request) (*url.URL, string, st
 			return nil, "", "", false
 		}
 	case "bitbucket":
-		headerName, headerValue, suffix = "Authorization", "Bearer "+config.BitbucketToken, "rest/api/latest/dashboard/pull-requests?limit=1"
-		if config.BitbucketToken == "" {
+		token := config.ProviderToken
+		if token == "" {
+			token = config.BitbucketToken
+		}
+		headerName, headerValue, suffix = "Authorization", "Bearer "+token, "rest/api/latest/dashboard/pull-requests?limit=1"
+		if token == "" {
 			return nil, "", "", false
 		}
 	default:

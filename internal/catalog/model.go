@@ -115,6 +115,8 @@ type MCP struct {
 	Env                   map[string]string  `toml:"env" json:"env,omitempty"`
 	EnvInputs             map[string]string  `toml:"env_inputs" json:"env_inputs,omitempty"`
 	SecretEnvInputs       map[string]string  `toml:"secret_env_inputs" json:"secret_env_inputs,omitempty"`
+	VaultSecretEnvInputs  map[string]string  `toml:"vault_secret_env_inputs" json:"vault_secret_env_inputs,omitempty"`
+	VaultAuthEnv          string             `toml:"vault_auth_env" json:"vault_auth_env,omitempty"`
 	Runtime               string             `toml:"runtime" json:"runtime"`
 	BuildContext          string             `toml:"build_context" json:"build_context"`
 	Image                 string             `toml:"image" json:"image"`
