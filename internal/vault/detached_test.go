@@ -581,3 +581,72 @@ func TestUnavailableDockerReusesOnlyMatchingLoopbackDaemon(t *testing.T) {
 		})
 	}
 }
+
+func TestWaitForDetachedDaemonWaitsForDelayedReadinessAndReportsDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	infoPath := filepath.Join(root, daemonInfoFilename)
+	logPath := filepath.Join(root, "vault-daemon.log")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	info := DaemonInfo{APIAddress: "https://localhost:12345", APICertificate: "fixture-certificate", ControlAddress: server.URL}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = writeDaemonInfo(infoPath, info)
+	}()
+	got, err := waitForDetachedDaemon(infoPath, logPath, 500*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ControlAddress != info.ControlAddress {
+		t.Fatalf("ready daemon info = %#v, want %#v", got, info)
+	}
+}
+
+func TestWaitForDetachedDaemonIncludesHealthAndLogOnTimeout(t *testing.T) {
+	root := t.TempDir()
+	infoPath := filepath.Join(root, daemonInfoFilename)
+	logPath := filepath.Join(root, "vault-daemon.log")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	info := DaemonInfo{APIAddress: "https://localhost:12345", APICertificate: "fixture-certificate", ControlAddress: server.URL}
+	if err := writeDaemonInfo(infoPath, info); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("fixture startup failure"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := waitForDetachedDaemon(infoPath, logPath, 80*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") || !strings.Contains(err.Error(), "fixture startup failure") {
+		t.Fatalf("timeout diagnostic = %v", err)
+	}
+}
+
+func TestWaitForDetachedDaemonExplainsEmptyLogTimeout(t *testing.T) {
+	root := t.TempDir()
+	_, err := waitForDetachedDaemon(filepath.Join(root, daemonInfoFilename), filepath.Join(root, "vault-daemon.log"), 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "daemon log is empty") {
+		t.Fatalf("empty-log diagnostic = %v", err)
+	}
+}
+
+func TestDetachedDaemonLogDiagnosticUsesBoundedTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault-daemon.log")
+	content := strings.Repeat("x", detachedDaemonLogTailBytes+20) + "final-diagnostic"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readDetachedDaemonLogTail(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "earlier log lines truncated") || !strings.Contains(got, "final-diagnostic") {
+		t.Fatalf("log tail missing truncation marker or final content: %q", got)
+	}
+	if len(got) > detachedDaemonLogTailBytes+64 {
+		t.Fatalf("log tail length = %d, want bounded near %d", len(got), detachedDaemonLogTailBytes)
+	}
+}

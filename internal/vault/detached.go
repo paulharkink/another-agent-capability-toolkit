@@ -29,7 +29,12 @@ import (
 	"time"
 )
 
-const daemonInfoFilename = "vault-daemon.json"
+const (
+	daemonInfoFilename           = "vault-daemon.json"
+	detachedDaemonStartupTimeout = 30 * time.Second
+	detachedDaemonPollInterval   = 100 * time.Millisecond
+	detachedDaemonLogTailBytes   = 16 << 10
+)
 
 type DaemonInfo struct {
 	APIAddress     string `json:"api_address"`
@@ -160,18 +165,14 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 		return DaemonInfo{}, err
 	}
 	_ = logFile.Close()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if info, err := readDaemonInfo(infoPath); err == nil && daemonHealthy(info) {
-			_ = cmd.Process.Release()
-			return info, nil
-		}
-		time.Sleep(100 * time.Millisecond)
+	info, err := waitForDetachedDaemon(infoPath, filepath.Join(root, "vault-daemon.log"), detachedDaemonStartupTimeout)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return DaemonInfo{}, err
 	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
-	log, _ := os.ReadFile(filepath.Join(root, "vault-daemon.log"))
-	return DaemonInfo{}, fmt.Errorf("background vault daemon did not become ready: %s", strings.TrimSpace(string(log)))
+	_ = cmd.Process.Release()
+	return info, nil
 }
 
 func isLoopbackListenAddress(address string) bool {
@@ -836,20 +837,85 @@ func decodeControlJSON(w http.ResponseWriter, r *http.Request, destination any) 
 	return nil
 }
 
-func daemonHealthy(info DaemonInfo) bool {
-	if validateDaemonInfo(info) != nil {
-		return false
+func daemonHealthy(info DaemonInfo) bool { return daemonHealthError(info) == nil }
+
+func daemonHealthError(info DaemonInfo) error {
+	if err := validateDaemonInfo(info); err != nil {
+		return err
 	}
 	request, err := http.NewRequest(http.MethodGet, info.ControlAddress+"/health", nil)
 	if err != nil {
-		return false
+		return err
 	}
 	response, err := daemonHealthHTTPClient.Do(request)
 	if err != nil {
-		return false
+		return err
 	}
 	defer response.Body.Close()
-	return response.StatusCode == http.StatusNoContent
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func waitForDetachedDaemon(infoPath, logPath string, timeout time.Duration) (DaemonInfo, error) {
+	if timeout <= 0 {
+		timeout = detachedDaemonStartupTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	lastError := errors.New("daemon metadata is not available")
+	for {
+		info, err := readDaemonInfo(infoPath)
+		if err != nil {
+			lastError = fmt.Errorf("read daemon metadata: %w", err)
+		} else if err := daemonHealthError(info); err != nil {
+			lastError = fmt.Errorf("daemon health check: %w", err)
+		} else {
+			return info, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		delay := detachedDaemonPollInterval
+		if remaining < delay {
+			delay = remaining
+		}
+		time.Sleep(delay)
+	}
+	logText, err := readDetachedDaemonLogTail(logPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		logText = fmt.Sprintf("could not read daemon log: %v", err)
+	} else if strings.TrimSpace(logText) == "" {
+		logText = "daemon log is empty"
+	}
+	return DaemonInfo{}, fmt.Errorf("background vault daemon did not become ready within %s (%v): %s", timeout, lastError, logText)
+}
+
+func readDetachedDaemonLogTail(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	truncated := info.Size() > detachedDaemonLogTailBytes
+	if truncated {
+		if _, err := file.Seek(-detachedDaemonLogTailBytes, io.SeekEnd); err != nil {
+			return "", err
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(file, detachedDaemonLogTailBytes))
+	if err != nil {
+		return "", err
+	}
+	if truncated {
+		return "[earlier log lines truncated]\n" + string(data), nil
+	}
+	return string(data), nil
 }
 
 // NewContainerHTTPClient pins the daemon's public certificate for API calls
