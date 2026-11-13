@@ -1133,6 +1133,11 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			}
 			prepare = localPrepare
 		}
+		for _, definition := range prepare {
+			if e := validateAgentRegistrationCredentialSafety(definition); e != nil {
+				return out, invalid(e)
+			}
+		}
 		seedInputs := append([]catalog.Input(nil), p.Inputs...)
 		if len(prepare) > 0 {
 			for i := range seedInputs {
@@ -1325,6 +1330,9 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			if e := validateEndpointURL(endpoint); e != nil {
 				return out, invalid(e)
 			}
+		}
+		if e := validateAgentRegistrationCredentialSafety(definition); e != nil {
+			return out, invalid(e)
 		}
 	}
 	for name := range q.ExternalURLs {

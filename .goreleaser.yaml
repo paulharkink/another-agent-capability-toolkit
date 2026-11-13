@@ -1,6 +1,10 @@
 version: 2
 project_name: aact
 
+before:
+  hooks:
+    - cmd: ./scripts/build-vault-handoff-helpers.sh
+
 builds:
   - id: aact
     main: ./cmd/aact
@@ -98,6 +102,7 @@ archives:
       - LICENSE
       - THIRD_PARTY_NOTICES.md
       - packages/**
+      - dist/helpers/aact-vault-handoff-linux-*
 
 checksum:
   name_template: checksums.txt

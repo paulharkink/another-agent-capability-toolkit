@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
@@ -62,7 +63,6 @@ name = "service"
 image = "fixture/image"
 transport = "streamable-http"
 token_input = "token"
-token_header = "${ base64encode(inputs.token) }"
 credential_files = ["managed.bin"]
 [mcp.actions.authenticate]
 command = ["fixture-auth", "${ base64encode(inputs.token) }"]
@@ -156,5 +156,48 @@ command = ["fixture-auth", "${ base64encode(inputs.token) }"]
 	}
 	if _, persisted := record.Values["token"]; persisted {
 		t.Fatalf("declared secret input key was persisted: %#v", record.Values)
+	}
+
+}
+
+func TestInteractiveApplyBlocksCredentialPrepareBeforeAction(t *testing.T) {
+	s, adapter, request := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skill, p.Skills = nil, nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", TokenInput: "token", TokenHeader: "Authorization", Actions: map[string]catalog.Command{"prepare": {Argv: []string{"prepare"}}}}}
+	p.Inputs = append(p.Inputs, catalog.Input{Name: "token", Type: "secret", Required: true})
+	p.Sets = []catalog.ComponentSet{{Name: "alpha-only", MCPs: []string{"alpha"}}}
+	request.ItemIDs = []string{"set:alpha-only"}
+	request.Inputs = map[string]any{"label": "company", "enabled": true, "token": "secret-test-value"}
+	request.Interactive = true
+	s.Options.Editor = func(_ context.Context, _ []catalog.Input, values map[string]any) (map[string]any, error) {
+		return values, nil
+	}
+	executor := &hclAuthRetryExecutor{}
+	s.Options.Runner = executor
+	_, err := s.ApplyProfile(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "cannot store provider credentials in agent MCP configuration") {
+		t.Fatalf("ApplyProfile error=%v, want fail-closed credential error", err)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("credential prepare action ran before guard: %#v", executor.calls)
+	}
+	if len(adapter.calls) != 0 {
+		t.Fatalf("agent effects occurred before guard: calls=%#v", adapter.calls)
+	}
+	key := state.Key{Source: s.Source.ID, Package: "demo", Target: "default", Profile: "ota"}
+	answers, err := s.Store.Answers(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := answers["token"]; ok {
+		t.Fatal("secret token was persisted as ordinary profile answers")
+	}
+	secretInputs, err := s.Store.SecretInputs(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := secretInputs["token"]; ok {
+		t.Fatal("secret token was persisted before the fail-closed guard")
 	}
 }

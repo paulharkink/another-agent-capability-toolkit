@@ -13,7 +13,9 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/tui"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/vault"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"golang.org/x/term"
 	"io"
 	"net/url"
 	"os"
@@ -97,6 +99,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if errOut == nil {
 		errOut = io.Discard
 	}
+	if len(args) > 0 && args[0] == "__vault-daemon" {
+		if err := vault.RunDetached(ctx, in); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == "vault" {
+		return runVaultCommand(args[1:], out, errOut)
+	}
 	f, e := parse(args)
 	if e != nil {
 		fmt.Fprintln(errOut, e)
@@ -165,6 +177,21 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return runMigration(ctx, src, store, f.apply, f.json, out, errOut)
 	}
 	options := appOptions(errOut, bundle, len(f.args) == 0)
+	if in == os.Stdin && needsSharedVault(f.args) {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintln(errOut, "this command needs the shared vault; run it from an interactive terminal to enter the vault master password")
+			return 2
+		}
+		readPassword := func(string) ([]byte, error) {
+			password, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(errOut)
+			return password, err
+		}
+		if err := initializeSharedVault(store, store.Root(), errOut, readPassword); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+	}
 	svc := app.New(src, store, options)
 	if len(f.args) == 0 {
 		uiCtx, cancelUI := context.WithCancel(ctx)

@@ -95,6 +95,20 @@ func TestResolveProviderTokenFromRawFileOrEnvironment(t *testing.T) {
 		t.Fatal("multiple token sources should be rejected")
 	}
 }
+func TestAgentRegistrationCredentialSafetyBlocksEveryTokenSource(t *testing.T) {
+	for _, profile := range []catalog.MCP{
+		{TokenInput: "raw", TokenHeader: "Authorization"},
+		{TokenFileInput: "file", TokenHeader: "Authorization"},
+		{TokenEnvInput: "env", TokenHeader: "Authorization"},
+	} {
+		if err := validateAgentRegistrationCredentialSafety(profile); err == nil || !strings.Contains(err.Error(), "secret-aware vault gateway integration is pending") {
+			t.Fatalf("credential-bearing profile accepted: %#v; err=%v", profile, err)
+		}
+	}
+	if err := validateAgentRegistrationCredentialSafety(catalog.MCP{Name: "no-auth"}); err != nil {
+		t.Fatalf("headerless MCP blocked: %v", err)
+	}
+}
 
 func TestRunProfileMCPStartAppliesContainerArgsEnvironmentAndSecret(t *testing.T) {
 	svc, _, _ := fixture(t)
