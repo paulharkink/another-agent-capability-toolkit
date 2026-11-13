@@ -47,4 +47,8 @@ jobs:
             public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
       - run: go test -tags integration ./tests/integration -run TestDockerMCP -count=1
       - run: go test -tags docker_integration ./internal/mcp ./internal/packagehelpers ./internal/sessionsearch ./tests/packages -count=1
+      - name: Verify automatic vault route from Linux containers
+        run: go test -tags docker_integration ./internal/vault -run '^TestDockerContainerReachesDefaultVaultRouteWithPinnedTLS$' -count=1
+        env:
+          AACT_TEST_DOCKER: "1"
       - run: sh tools/test-containers.sh
