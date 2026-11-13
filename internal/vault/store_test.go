@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -79,15 +80,19 @@ func TestStoreCRUDAndPrivateFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fileInfo.Mode().Perm(); got != 0600 {
-		t.Fatalf("vault mode = %04o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		if got := fileInfo.Mode().Perm(); got != 0600 {
+			t.Fatalf("vault mode = %04o, want 0600", got)
+		}
 	}
 	dirInfo, err := os.Stat(filepath.Dir(path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dirInfo.Mode().Perm(); got != 0700 {
-		t.Fatalf("vault directory mode = %04o, want 0700", got)
+	if runtime.GOOS != "windows" {
+		if got := dirInfo.Mode().Perm(); got != 0700 {
+			t.Fatalf("vault directory mode = %04o, want 0700", got)
+		}
 	}
 }
 
@@ -307,6 +312,9 @@ func TestDuplicateTitlesUseConsistentFirstValueAndNormalizeOnWrite(t *testing.T)
 }
 
 func TestOpenSecuresExistingParentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ACLs are not represented by Go's Unix permission bits; the vault does not set an explicit DACL")
+	}
 	parent := filepath.Join(t.TempDir(), "permissive")
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		t.Fatal(err)

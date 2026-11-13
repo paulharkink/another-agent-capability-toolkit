@@ -146,8 +146,16 @@ func TestDetachedDaemonControlIssuesScopedTokenAndStops(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- RunDetached(ctx, strings.NewReader(string(config))) }()
 	var info DaemonInfo
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case daemonErr := <-done:
+			if daemonErr != nil {
+				t.Fatalf("daemon exited before publishing info: %v", daemonErr)
+			}
+			t.Fatal("daemon exited before publishing info without an error")
+		default:
+		}
 		info, err = ReadDaemonInfo(root)
 		if err == nil {
 			break

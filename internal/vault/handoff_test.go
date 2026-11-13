@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -32,8 +33,10 @@ func TestContainerHandoffArrivesOnStdinAndMaterializesPrivateTmpfsFile(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := infoOnDisk.Mode().Perm(); got != 0400 {
-		t.Fatalf("handoff file mode=%04o, want 0400", got)
+	if runtime.GOOS != "windows" {
+		if got := infoOnDisk.Mode().Perm(); got != 0400 {
+			t.Fatalf("handoff file mode=%04o, want 0400", got)
+		}
 	}
 	if !strings.Contains(strings.TrimSpace(stdin.String()), handoff.Token) {
 		t.Fatal("test setup failed to include stdin token")
