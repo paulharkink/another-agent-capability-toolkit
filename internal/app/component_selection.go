@@ -13,6 +13,9 @@ func componentSelection(p catalog.Package, values map[string]any, ids []string, 
 	if err != nil {
 		return nil, nil, err
 	}
+	if ids != nil {
+		ids = normalizeExplicitSingletonAliases(items, ids)
+	}
 	enabled := map[string]bool{}
 	for _, m := range packageMCPProfiles(p, values) {
 		enabled[m.Name] = true
@@ -68,6 +71,33 @@ func componentSelection(p catalog.Package, values map[string]any, ids []string, 
 	return result, normalized, nil
 }
 
+func normalizeExplicitSingletonAliases(items []catalog.InstallationItem, ids []string) []string {
+	aliases := map[string]string{}
+	for _, item := range items {
+		if !strings.HasPrefix(item.ID, "default:") || len(item.Skills)+len(item.MCPs)+len(item.Plugins) != 1 {
+			continue
+		}
+		for _, name := range item.Skills {
+			aliases["skill:"+name] = item.ID
+		}
+		for _, name := range item.MCPs {
+			aliases["mcp:"+name] = item.ID
+		}
+	}
+	result := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if alias := aliases[id]; alias != "" {
+			id = alias
+		}
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
 // normalizePersistedItemIDs keeps saved selections usable when a catalog starts
 // exposing a selected component only through a linked installation set.
 func normalizePersistedItemIDs(p catalog.Package, ids []string) []string {
@@ -82,11 +112,14 @@ func normalizePersistedItemIDs(p catalog.Package, ids []string) []string {
 	linkedByMember := map[string][]string{}
 	for _, item := range items {
 		selectable[item.ID] = true
-		if !strings.HasPrefix(item.ID, "set:") {
+		if !strings.HasPrefix(item.ID, "set:") && !strings.HasPrefix(item.ID, "default:") {
 			continue
 		}
 		for _, name := range item.Skills {
 			linkedByMember["skill:"+name] = append(linkedByMember["skill:"+name], item.ID)
+			if strings.HasPrefix(item.ID, "default:") {
+				linkedByMember["set:"+name] = append(linkedByMember["set:"+name], item.ID)
+			}
 		}
 		for _, name := range item.MCPs {
 			linkedByMember["mcp:"+name] = append(linkedByMember["mcp:"+name], item.ID)

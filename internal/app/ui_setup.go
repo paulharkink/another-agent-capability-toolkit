@@ -255,7 +255,7 @@ func (s *Service) UIInstall(ctx context.Context, q viewmodel.SetupInstallRequest
 	}
 	return s.ApplyInstance(ctx, InstanceRequest{
 		Ref: q.Ref, Inputs: q.Inputs, ActiveInputGroups: q.ActiveInputGroups,
-		ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		ResetInputs: q.ResetInputs, ItemIDs: q.ItemIDs, DefaultSelection: q.DefaultSelection, DestinationIDs: q.DestinationIDs,
 		Uninstall: q.Uninstall, ExternalURLs: q.ExternalURLs,
 	})
 }
@@ -315,7 +315,7 @@ func (s *Service) UIInstallAgents(ctx context.Context, q viewmodel.SetupInstallR
 	}
 	return s.ApplyInstance(ctx, InstanceRequest{
 		Ref: q.Ref, Inputs: secrets, ActiveInputGroups: groups,
-		ItemIDs: q.ItemIDs, DestinationIDs: q.DestinationIDs,
+		ItemIDs: q.ItemIDs, DefaultSelection: q.DefaultSelection, DestinationIDs: q.DestinationIDs,
 		Uninstall: q.Uninstall, ExternalURLs: externalURLs, InstallOnly: true,
 	})
 }

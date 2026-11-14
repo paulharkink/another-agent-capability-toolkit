@@ -44,6 +44,44 @@ func TestInstallationItemsLegacyAndSameNamedKinds(t *testing.T) {
 	}
 }
 
+func TestDefaultLinkedItemIdentityDoesNotDependOnSkillName(t *testing.T) {
+	mcpOnly := Package{ID: "atlassian", MCPs: []MCP{{Name: "atlassian"}}}
+	oldPackage := Package{
+		ID:    "atlassian",
+		Skill: &Skill{Name: "atlassian-confluence"},
+		MCPs:  []MCP{{Name: "atlassian"}},
+	}
+	newPackage := Package{
+		ID:    "atlassian",
+		Skill: &Skill{Name: "confluence-guidance"},
+		MCPs:  []MCP{{Name: "atlassian"}, {Name: "jira"}},
+	}
+	removedSkill := Package{ID: "atlassian", MCPs: []MCP{{Name: "atlassian"}}}
+
+	mcpOnlyItems, err := InstallationItems(mcpOnly, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldItems, err := InstallationItems(oldPackage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newItems, err := InstallationItems(newPackage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldItems) != 1 || len(newItems) != 1 {
+		t.Fatalf("default linked items = old %v, new %v; want one linked item each", oldItems, newItems)
+	}
+	removedItems, err := InstallationItems(removedSkill, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcpOnlyItems) != 1 || len(removedItems) != 1 || mcpOnlyItems[0].ID != "default:atlassian" || oldItems[0].ID != mcpOnlyItems[0].ID || newItems[0].ID != oldItems[0].ID || removedItems[0].ID != oldItems[0].ID {
+		t.Fatalf("default linked identity changed as skill content changed: MCP-only %v, linked %v, evolved %v, skill removed %v", mcpOnlyItems, oldItems, newItems, removedItems)
+	}
+}
+
 // Rejecting a declared skill list would prevent a whole capability's skills
 // from being available to the installer.
 func TestLoadMultipleSkillsWithIndependentRoots(t *testing.T) {

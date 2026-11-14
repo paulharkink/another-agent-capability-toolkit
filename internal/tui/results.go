@@ -76,6 +76,7 @@ func (m *Model) returnToConfiguration() {
 	}
 	m.view = draft.origin
 	m.openSetupFormWithValues(draft.preview, values)
+	m.pendingSetupItemsTouched = draft.itemsTouched
 	if m.form != nil {
 		for _, name := range draft.resetInputs {
 			for _, input := range draft.preview.Inputs {

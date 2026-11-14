@@ -11,8 +11,9 @@ import (
 // InstanceSelection records the selected components and destinations for an
 // instance before its MCP has been started or registered with an agent.
 type InstanceSelection struct {
-	ItemIDs        []string `json:"item_ids"`
-	DestinationIDs []string `json:"destination_ids"`
+	ItemIDs          []string `json:"item_ids"`
+	DestinationIDs   []string `json:"destination_ids"`
+	DefaultSelection bool     `json:"default_selection,omitempty"`
 }
 
 // InstanceRecord keeps a configured instance visible even before runtime

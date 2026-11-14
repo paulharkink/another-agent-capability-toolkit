@@ -49,12 +49,18 @@ func InstallationItems(p Package, sets []ComponentSet) ([]InstallationItem, erro
 	for _, plugin := range p.Plugins {
 		known["plugin:"+plugin.Name] = true
 	}
+	defaultLink := false
 	if len(sets) == 0 && p.Skill != nil && p.HasMCP() {
 		set := ComponentSet{Name: p.Skill.Name, Skills: []string{p.Skill.Name}}
 		for _, m := range p.MCPDefinitions() {
 			set.MCPs = append(set.MCPs, m.Name)
 		}
 		sets = []ComponentSet{set}
+		defaultLink = true
+	} else if len(sets) == 0 && p.Skill == nil && len(p.MCPDefinitions()) == 1 {
+		mcp := p.MCPDefinitions()[0]
+		sets = []ComponentSet{{Name: "default", MCPs: []string{mcp.Name}}}
+		defaultLink = true
 	}
 	items := []InstallationItem{}
 	used := map[string]bool{}
@@ -79,7 +85,12 @@ func InstallationItems(p Package, sets []ComponentSet) ([]InstallationItem, erro
 				used[id] = true
 			}
 		}
-		items = append(items, InstallationItem{ID: "set:" + set.Name, Label: set.Name, Skills: append([]string(nil), set.Skills...), MCPs: append([]string(nil), set.MCPs...)})
+		id := "set:" + set.Name
+		if defaultLink {
+			id = "default:" + p.ID
+		}
+		items = append(items, InstallationItem{ID: id, Label: set.Name, Skills: append([]string(nil), set.Skills...), MCPs: append([]string(nil), set.MCPs...)})
+		defaultLink = false
 	}
 	for _, s := range p.SkillDefinitions() {
 		if !used["skill:"+s.Name] {

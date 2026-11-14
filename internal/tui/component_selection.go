@@ -80,6 +80,7 @@ func (m *Model) selectAllComponents() {
 	if m.pendingSetup == nil || m.form == nil || m.pendingSetupItemsField == "" {
 		return
 	}
+	m.pendingSetupItemsTouched = true
 	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
 	ids := append([]string{}, selected...)
 	for _, item := range m.pendingSetup.Items {

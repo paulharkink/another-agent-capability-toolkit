@@ -2,6 +2,7 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"errors"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
@@ -74,6 +75,69 @@ func TestComponentSelectionApplyPreservesEmptyIntent(t *testing.T) {
 		t.Fatalf("empty intent or profile was lost: %+v", b.installRequest)
 	}
 }
+
+func TestExplicitSelectAllDoesNotBecomeEvolvingDefaultIntent(t *testing.T) {
+	m := componentForm(t)
+	preview := *m.pendingSetup
+	preview.DefaultSelection = true
+	preview.SelectedItemIDs = []string{"skill:one", "skill:two", "set:api", "plugin:native"}
+	m.openSetupForm(preview)
+	m.selectAllComponents()
+	cmd := m.applySetup(m.form.Values())
+	if cmd == nil {
+		t.Fatalf("apply unavailable: %s", m.output)
+	}
+	runTeaCmd(t, m, cmd)
+	request := m.backend.(*packProfileBackend).installRequest
+	if request.DefaultSelection {
+		t.Fatal("an explicit Select all action was saved as evolving default intent")
+	}
+	if !slices.Equal(request.ItemIDs, preview.SelectedItemIDs) {
+		t.Fatalf("explicit selected items = %v, want %v", request.ItemIDs, preview.SelectedItemIDs)
+	}
+}
+
+func TestComponentSelectionTouchSurvivesFailedApplyRetry(t *testing.T) {
+	m := componentForm(t)
+	backend := m.backend.(*packProfileBackend)
+	backend.installErr = errors.New("fixture registration failure")
+	preview := *m.pendingSetup
+	preview.DefaultSelection = true
+	preview.SelectedItemIDs = []string{"skill:one", "skill:two", "set:api"}
+	m.openSetupForm(preview)
+	m.form.SelectSectionID(sectionComponentsID)
+	m.form.FocusSection()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	selected, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+	if slices.Equal(selected, preview.SelectedItemIDs) {
+		t.Fatal("test did not change the explicit component selection")
+	}
+	cmd := m.applySetup(m.form.Values())
+	if cmd == nil {
+		t.Fatalf("apply unavailable: %s", m.output)
+	}
+	m.Update(runTeaCmd(t, m, cmd))
+	if !m.canEditResultAnswers() || m.setupRetry == nil {
+		t.Fatalf("failed apply did not open retry flow: result=%+v", m.result)
+	}
+	m.returnToConfiguration()
+	if !m.pendingSetupItemsTouched {
+		t.Fatal("retry lost the explicit component interaction")
+	}
+	backend.installErr = nil
+	retry := m.applySetup(m.form.Values())
+	if retry == nil {
+		t.Fatalf("retry unavailable: %s", m.output)
+	}
+	runTeaCmd(t, m, retry)
+	if backend.installRequest.DefaultSelection {
+		t.Fatal("retry replaced the explicit selection with current defaults")
+	}
+	if !slices.Equal(backend.installRequest.ItemIDs, selected) {
+		t.Fatalf("retry selected items = %v, want preserved %v", backend.installRequest.ItemIDs, selected)
+	}
+}
 func TestComponentSelectionRequiresEverySkillForCheckedDestination(t *testing.T) {
 	m := componentForm(t)
 	draft := &setupRetryDraft{preview: *m.pendingSetup, values: m.form.Values(), destinationField: m.pendingSetupField, itemField: m.pendingSetupItemsField}
@@ -95,6 +159,7 @@ func TestSingleSelectableBundleWithSkillAndMCPIsAutoSelectedAndHidden(t *testing
 	preview := *m.pendingSetup
 	preview.Items = []catalog.InstallationItem{{ID: "bundle:server", Label: "Server", Skills: []string{"server-skill"}, MCPs: []string{"server-mcp"}}}
 	preview.SelectedItemIDs = nil
+	preview.DefaultSelection = true
 	m.openSetupForm(preview)
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("one selectable bundle rendered a redundant Components section")
@@ -109,11 +174,37 @@ func TestSingleComponentIsAutoSelectedAndHidden(t *testing.T) {
 	preview := *m.pendingSetup
 	preview.Items = preview.Items[:1]
 	preview.SelectedItemIDs = nil
+	preview.DefaultSelection = true
 	m.openSetupForm(preview)
 	if m.form.HasSectionID(sectionComponentsID) {
 		t.Fatal("single component still has a redundant Components section")
 	}
 	if len(m.pendingSetup.SelectedItemIDs) != 1 || m.pendingSetup.SelectedItemIDs[0] != "skill:one" {
 		t.Fatalf("single component was not selected automatically: %v", m.pendingSetup.SelectedItemIDs)
+	}
+}
+
+func TestSingleExplicitlyEmptyComponentSelectionCanBeAppliedAsEmpty(t *testing.T) {
+	m := componentForm(t)
+	preview := *m.pendingSetup
+	preview.Items = preview.Items[:1]
+	preview.SelectedItemIDs = []string{}
+	preview.DefaultSelection = false
+	m.openSetupForm(preview)
+	if m.pendingSetupItemsField == "" {
+		t.Fatal("explicit empty selection hid the only component choice")
+	}
+	ids, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+	if len(ids) != 0 {
+		t.Fatalf("explicit empty selection was auto-filled: %v", ids)
+	}
+	cmd := m.applySetup(m.form.Values())
+	if cmd == nil {
+		t.Fatalf("apply unavailable: %s", m.output)
+	}
+	runTeaCmd(t, m, cmd)
+	request := m.backend.(*packProfileBackend).installRequest
+	if request.ItemIDs == nil || len(request.ItemIDs) != 0 || request.DefaultSelection {
+		t.Fatalf("single explicit empty selection changed on apply: %+v", request)
 	}
 }

@@ -36,6 +36,7 @@ type InstanceRequest struct {
 	Inputs                               map[string]any
 	ActiveInputGroups                    map[string]string
 	ResetInputs, ItemIDs, DestinationIDs []string
+	DefaultSelection                     bool
 	Interactive, SkillsOnly              bool
 	InstallOnly                          bool
 	Uninstall                            bool
@@ -848,16 +849,27 @@ func (s *Service) PreviewInstance(ctx context.Context, q InstanceRequest) (viewm
 	}
 	records, _ := s.Store.Instances()
 	ids := q.ItemIDs
+	defaultSelection := q.DefaultSelection
 	for _, r := range records {
 		if r.Key == key && r.Selection != nil && ids == nil {
-			ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
+			defaultSelection = r.Selection.DefaultSelection
+			if !defaultSelection {
+				ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
+			}
 		}
+	}
+	if ids == nil {
+		defaultSelection = true
+	}
+	if defaultSelection {
+		ids = nil
 	}
 	selectedItems, selectedItemIDs, err := componentSelection(p, values, ids, q.SkillsOnly)
 	if err != nil {
 		return preview, invalid(err)
 	}
 	preview.SelectedItemIDs = selectedItemIDs
+	preview.DefaultSelection = defaultSelection
 	selectedNeedsMCP := false
 	selectedNeedsPlugin := false
 	for _, item := range selectedItems {
@@ -1134,6 +1146,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	}
 	ids := q.ItemIDs
 	destIDs := q.DestinationIDs
+	defaultSelection := q.DefaultSelection
 	local := pr.Path == ""
 	for _, r := range records {
 		if q.observedForeign != nil {
@@ -1141,12 +1154,21 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 		if r.Key == key && r.Selection != nil {
 			if ids == nil {
-				ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
+				defaultSelection = r.Selection.DefaultSelection
+				if !defaultSelection {
+					ids = normalizePersistedItemIDs(p, r.Selection.ItemIDs)
+				}
 			}
 			if destIDs == nil {
 				destIDs = r.Selection.DestinationIDs
 			}
 		}
+	}
+	if ids == nil {
+		defaultSelection = true
+	}
+	if defaultSelection {
+		ids = nil
 	}
 	items, selected, err := componentSelection(p, values, ids, q.SkillsOnly)
 	if err != nil {
@@ -1417,7 +1439,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			if e := s.saveAnswersWithActiveGroups(key, p, values, q.SkillsOnly, q.ResetInputs, activeGroups); e != nil {
 				return e
 			}
-			if e := s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); e != nil {
+			if e := s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs, DefaultSelection: defaultSelection}}); e != nil {
 				answersErr := s.Store.SaveAnswersWithActiveInputGroups(key, previousAnswers, previousGroups)
 				secretsErr := restoreSecretInputs(s.Store, key, p.Inputs, previousSecrets)
 				return errors.Join(e, answersErr, secretsErr)
@@ -1429,7 +1451,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		}
 		out.Saved = true
 	} else if q.observedForeign == nil {
-		if err = s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs}}); err != nil {
+		if err = s.Store.RecordInstance(state.ProfileRecord{Key: key, Name: pr.Ref.Name, Local: local, Selection: &state.ProfileSelection{ItemIDs: selected, DestinationIDs: destIDs, DefaultSelection: defaultSelection}}); err != nil {
 			return out, err
 		}
 	}

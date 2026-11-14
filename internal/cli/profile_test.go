@@ -84,7 +84,7 @@ func TestCLIInstallKeepsLegacyMCPSelectionAfterAddingLinkedSkill(t *testing.T) {
 	}
 	for _, record := range records {
 		if record.Key == key && record.Selection != nil {
-			if len(record.Selection.ItemIDs) != 1 || record.Selection.ItemIDs[0] != "set:atlassian-confluence" {
+			if len(record.Selection.ItemIDs) != 1 || record.Selection.ItemIDs[0] != "default:atlassian" {
 				t.Fatalf("CLI did not persist normalized selection: %v", record.Selection.ItemIDs)
 			}
 			if len(record.Selection.DestinationIDs) != 1 || record.Selection.DestinationIDs[0] != "generic" {

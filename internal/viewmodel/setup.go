@@ -49,6 +49,7 @@ type SetupPreview struct {
 	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
 	Items                                             []catalog.InstallationItem
 	SelectedItemIDs, ValidationIssues                 []string
+	DefaultSelection                                  bool
 	Key                                               state.Key
 	PackageName                                       string
 	SourceRoot                                        string
@@ -68,7 +69,8 @@ type SetupPreview struct {
 }
 
 type SetupInstallRequest struct {
-	ItemIDs []string
+	ItemIDs          []string
+	DefaultSelection bool
 	SetupRequest
 	Inputs            map[string]any
 	ActiveInputGroups map[string]string

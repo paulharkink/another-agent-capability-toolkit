@@ -208,6 +208,170 @@ func TestNormalizePersistedItemIDsPreservesOrderAndDeduplicatesMappedSet(t *test
 	}
 }
 
+func TestNormalizePersistedMCPSelectionToStableDefaultLinkedIdentity(t *testing.T) {
+	p := catalog.Package{
+		ID:    "atlassian",
+		Skill: &catalog.Skill{Name: "confluence-guidance"},
+		MCPs:  []catalog.MCP{{Name: "atlassian"}, {Name: "jira"}},
+	}
+	got := normalizePersistedItemIDs(p, []string{"mcp:atlassian"})
+	if !reflect.DeepEqual(got, []string{"default:atlassian"}) {
+		t.Fatalf("normalized saved selection = %v, want current default link identity", got)
+	}
+}
+
+func TestNormalizePersistedDefaultAliasAndPreserveCurrentExplicitSet(t *testing.T) {
+	defaultPackage := catalog.Package{
+		ID:    "demo",
+		Skill: &catalog.Skill{Name: "guide"},
+		MCPs:  []catalog.MCP{{Name: "server"}},
+	}
+	got := normalizePersistedItemIDs(defaultPackage, []string{"set:guide"})
+	if !reflect.DeepEqual(got, []string{"default:demo"}) {
+		t.Fatalf("historical default alias = %v; want concrete default:demo item", got)
+	}
+	defaultPackage.Plugins = []catalog.Plugin{{Name: "custom", Format: "claude-code"}}
+	got = normalizePersistedItemIDs(defaultPackage, []string{"mcp:server", "plugin:custom"})
+	if !reflect.DeepEqual(got, []string{"default:demo", "plugin:custom"}) {
+		t.Fatalf("mixed historical explicit selection = %v; want linked item plus plugin", got)
+	}
+	explicitPackage := defaultPackage
+	explicitPackage.Sets = []catalog.ComponentSet{{Name: "guide", Skills: []string{"guide"}, MCPs: []string{"server"}}}
+	got = normalizePersistedItemIDs(explicitPackage, []string{"set:guide"})
+	if !reflect.DeepEqual(got, []string{"set:guide"}) {
+		t.Fatalf("current explicit set = %v; want concrete set:guide", got)
+	}
+}
+
+func TestPreviewResolvesSavedDefaultIntentAgainstCurrentCapabilityContents(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	p := &s.Source.Catalog[0]
+	p.Skill = nil
+	p.Skills = nil
+	p.Sets = nil
+	p.MCPs = []catalog.MCP{{Name: "alpha", ExternalURL: "https://fixture.invalid/mcp"}}
+	q.ItemIDs = nil
+	q.Inputs = nil
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.RecordInstance(state.InstanceRecord{
+		Key: key, Name: q.Ref.Name,
+		Selection: &state.InstanceSelection{ItemIDs: []string{"mcp:alpha"}, DefaultSelection: true, DestinationIDs: []string{"test-agent"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, evolution := range []struct {
+		name   string
+		update func()
+		want   []string
+	}{
+		{name: "skill added and linked", update: func() {
+			p.Skill = &catalog.Skill{Name: "guide", Source: p.Dir}
+		}, want: []string{"default:demo"}},
+		{name: "skill removed and MCPs become independent", update: func() {
+			p.Skill = nil
+			p.MCPs = []catalog.MCP{{Name: "alpha", ExternalURL: "https://fixture.invalid/mcp"}, {Name: "beta", ExternalURL: "https://fixture.invalid/beta"}}
+		}, want: []string{"mcp:alpha", "mcp:beta"}},
+	} {
+		t.Run(evolution.name, func(t *testing.T) {
+			evolution.update()
+			preview, err := s.PreviewProfile(context.Background(), q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !preview.DefaultSelection {
+				t.Fatal("preview lost the saved default selection intent")
+			}
+			if !reflect.DeepEqual(preview.SelectedItemIDs, evolution.want) {
+				t.Fatalf("selected current items = %v, want %v", preview.SelectedItemIDs, evolution.want)
+			}
+		})
+	}
+}
+
+func TestApplyPersistsDefaultIntentWithoutChangingExplicitEmptySelection(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		itemIDs     []string
+		wantDefault bool
+	}{
+		{name: "omitted selection", itemIDs: nil, wantDefault: true},
+		{name: "explicit empty selection", itemIDs: []string{}, wantDefault: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, _, q := profileApplyFixture(t)
+			q.ItemIDs = test.itemIDs
+			q.DestinationIDs = []string{"test-agent"}
+			q.Inputs = nil
+			if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+				t.Fatal(err)
+			}
+			key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := s.Store.Instances()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, record := range records {
+				if record.Key == key && record.Selection != nil {
+					if record.Selection.DefaultSelection != test.wantDefault {
+						t.Fatalf("saved default intent = %t, want %t", record.Selection.DefaultSelection, test.wantDefault)
+					}
+					return
+				}
+			}
+			t.Fatal("apply did not save selection")
+		})
+	}
+}
+
+func TestSkillsOnlyApplyRetainsDefaultIntentAsContentsEvolve(t *testing.T) {
+	s, _, q := profileApplyFixture(t)
+	q.ItemIDs = nil
+	q.DestinationIDs = []string{"test-agent"}
+	q.Inputs = nil
+	q.SkillsOnly = true
+	if _, err := s.ApplyProfile(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.Store.ResolveInstanceKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.Store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDefault := false
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			foundDefault = record.Selection.DefaultSelection
+		}
+	}
+	if !foundDefault {
+		t.Fatal("skills-only apply replaced the saved default intent with its filtered effects")
+	}
+
+	p := &s.Source.Catalog[0]
+	p.Skills = append(p.Skills, catalog.Skill{Name: "new-skill", Source: p.Dir})
+	q.SkillsOnly = false
+	preview, err := s.PreviewProfile(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.DefaultSelection {
+		t.Fatal("preview lost default intent after skills-only apply")
+	}
+	if !reflect.DeepEqual(preview.SelectedItemIDs, []string{"set:core", "skill:optional", "skill:new-skill"}) {
+		t.Fatalf("next preview selection = %v, want current default contents", preview.SelectedItemIDs)
+	}
+}
+
 func TestApplyInstanceUsesPersistedLegacyMCPSelectionWithoutItemIDs(t *testing.T) {
 	s, a, q := profileApplyFixture(t)
 	configureLinkedAtlassianFixture(s)
