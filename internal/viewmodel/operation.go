@@ -65,6 +65,14 @@ const (
 // OperationProgress contains only information reported by a running operation.
 // Output is already passed through the operation's redaction path.
 type OperationProgress struct {
-	Step   string
-	Output string
+	Step             string
+	Output           string
+	ProfileName      string
+	MemberName       string
+	MemberStatus     string
+	MemberError      string
+	MemberNeedsInput bool
+	InstanceRef      config.InstanceRef
+	Acknowledged     chan struct{}
+	Attempt          int
 }

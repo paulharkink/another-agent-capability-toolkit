@@ -21,6 +21,7 @@ type Source struct {
 	EnvironmentRoot string                    `json:"environment_root,omitempty"`
 	ProfileRoot     string                    `json:"profile_root,omitempty"`
 	Catalog         []catalog.Package         `json:"catalog"`
+	GroupProfiles   []GroupProfile            `json:"group_profiles,omitempty"`
 	PackageDefaults map[string]map[string]any `json:"package_defaults"`
 	PackageUI       map[string]PackageUI      `json:"package_ui,omitempty"`
 }
@@ -48,6 +49,7 @@ type sourceManifest struct {
 		Inputs map[string]any `toml:"inputs"`
 		UI     PackageUI      `toml:"ui"`
 	} `toml:"packages"`
+	GroupProfiles []groupProfileDeclaration `toml:"profiles"`
 }
 
 var safeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -195,6 +197,7 @@ func discover(cwd, explicitConfig, bundledRoot, stateRoot string, preview bool) 
 	for _, entry := range entries {
 		s.Catalog = append(s.Catalog, entry.Package)
 	}
+	s.GroupProfiles = resolveGroupProfiles(s, m.GroupProfiles)
 	if !preview && explicitConfig == "" {
 		if err := rememberDefaultPack(stateRoot, manifest); err != nil {
 			return Source{}, err

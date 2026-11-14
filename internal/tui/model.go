@@ -43,64 +43,88 @@ type instanceRunBackend interface {
 type profileRunBackend interface {
 	UIProfileRun(context.Context, string, state.Key) (string, error)
 }
+type groupProfilesBackend interface {
+	UIGroupProfileSnapshot(context.Context) (viewmodel.GroupProfileSnapshot, error)
+	UISetGroupProfile(context.Context, viewmodel.GroupProfileUpdate) error
+	UIDeleteGroupProfile(context.Context, string) error
+	UIGroupProfileLaunch(context.Context, string) ([]viewmodel.GroupProfileLaunchResult, error)
+	UIGroupProfileRetry(context.Context, string, config.InstanceRef) ([]viewmodel.GroupProfileLaunchResult, error)
+}
+type groupProfileEdit struct {
+	Name    string
+	Members []config.InstanceRef
+}
 type Model struct {
-	pendingSetupItemsField     string
-	capabilityInstances        map[string]viewmodel.CapabilityInstanceSnapshot
-	creatingInstance           *config.InstanceRef
-	deletingInstance           *config.InstanceRef
-	home                       homeState
-	backend                    Backend
-	ctx                        context.Context
-	view                       string
-	selected, width, height    int
-	catalog                    []catalog.Package
-	inventory                  []state.Installation
-	mcps                       []mcp.Instance
-	instanceSnapshot           *viewmodel.InstanceSnapshot
-	instanceError              error
-	inventoryError             error
-	environmentSnapshot        *viewmodel.EnvironmentSnapshot
-	environmentError           error
-	pendingRegistration        *viewmodel.RegistrationRequest
-	pendingRegistrationRemoval bool
-	registration               *registrationState
-	pendingSetup               *viewmodel.SetupPreview
-	pendingSetupField          string
-	uninstallingAgents         bool
-	workspace                  *workspaceState
-	setupRetry                 *setupRetryDraft
-	setupInformation           bool
-	setupInfoOffset            int
-	setupOperationPending      bool
-	setupOperationID           uint64
-	progressStep               string
-	progressOutput             string
-	progressStarted            time.Time
-	progressFrame              int
-	progressOffset             int
-	progressLastOutput         time.Time
-	setupProgressEvents        <-chan viewmodel.OperationProgress
-	setupProgressDone          <-chan struct{}
-	logSession                 uint64
-	logCancel                  context.CancelFunc
-	logProfile                 state.Key
-	logLabel                   string
-	pendingDefaultAgents       bool
-	pendingMCPImageSource      bool
-	agents                     []string
-	agentManagement            []viewmodel.AgentManagementRow
-	settings, sourceLabels     map[string]string
-	busy                       bool
-	output, action             string
-	result                     *resultState
-	retryOperation             func() tea.Cmd
-	form                       *forms.FormModel
-	unsavedExit                *unsavedExitState
-	unsavedExitApplying        bool
-	unsavedExitIntent          *unsavedExitState
-	unsavedExitFailure         bool
-	pending                    operation
-	management                 managementState
+	pendingSetupItemsField        string
+	capabilityInstances           map[string]viewmodel.CapabilityInstanceSnapshot
+	groupProfileSnapshot          *viewmodel.GroupProfileSnapshot
+	groupProfileResults           []viewmodel.GroupProfileLaunchResult
+	groupProfileMemberIndex       int
+	groupProfileEditing           *groupProfileEdit
+	groupProfileRefOptions        map[string]config.InstanceRef
+	groupProfileLaunchName        string
+	groupProfileAuthRef           *config.InstanceRef
+	groupProfileAuthPending       bool
+	groupProfileAuthQueue         []config.InstanceRef
+	groupProfileAuthPrompted      map[string]bool
+	groupProfileResultVersion     map[string]int
+	groupProfileRetryOperation    bool
+	groupProfileConcurrentRetries int
+	creatingInstance              *config.InstanceRef
+	deletingInstance              *config.InstanceRef
+	home                          homeState
+	backend                       Backend
+	ctx                           context.Context
+	view                          string
+	selected, width, height       int
+	catalog                       []catalog.Package
+	inventory                     []state.Installation
+	mcps                          []mcp.Instance
+	instanceSnapshot              *viewmodel.InstanceSnapshot
+	instanceError                 error
+	inventoryError                error
+	environmentSnapshot           *viewmodel.EnvironmentSnapshot
+	environmentError              error
+	pendingRegistration           *viewmodel.RegistrationRequest
+	pendingRegistrationRemoval    bool
+	registration                  *registrationState
+	pendingSetup                  *viewmodel.SetupPreview
+	pendingSetupField             string
+	uninstallingAgents            bool
+	workspace                     *workspaceState
+	setupRetry                    *setupRetryDraft
+	setupInformation              bool
+	setupInfoOffset               int
+	setupOperationPending         bool
+	setupOperationID              uint64
+	progressStep                  string
+	progressOutput                string
+	progressStarted               time.Time
+	progressFrame                 int
+	progressOffset                int
+	progressLastOutput            time.Time
+	setupProgressEvents           <-chan viewmodel.OperationProgress
+	setupProgressDone             <-chan struct{}
+	logSession                    uint64
+	logCancel                     context.CancelFunc
+	logProfile                    state.Key
+	logLabel                      string
+	pendingDefaultAgents          bool
+	pendingMCPImageSource         bool
+	agents                        []string
+	agentManagement               []viewmodel.AgentManagementRow
+	settings, sourceLabels        map[string]string
+	busy                          bool
+	output, action                string
+	result                        *resultState
+	retryOperation                func() tea.Cmd
+	form                          *forms.FormModel
+	unsavedExit                   *unsavedExitState
+	unsavedExitApplying           bool
+	unsavedExitIntent             *unsavedExitState
+	unsavedExitFailure            bool
+	pending                       operation
+	management                    managementState
 }
 type operation struct{ action, source, packageID, agent, environment, target, mcp, profile string }
 type loadedMsg struct {
@@ -137,6 +161,29 @@ type setupProgressMsg struct {
 type setupProgressClosedMsg struct{ setupID uint64 }
 type setupProgressTickMsg struct{ setupID uint64 }
 type settingsSavedMsg struct{ err error }
+type groupProfilesLoadedMsg struct {
+	snapshot viewmodel.GroupProfileSnapshot
+	err      error
+}
+type groupProfileLaunchMsg struct {
+	results []viewmodel.GroupProfileLaunchResult
+	err     error
+	attempt int
+}
+type groupProfileRetryMsg struct {
+	results []viewmodel.GroupProfileLaunchResult
+	err     error
+	attempt int
+}
+type groupProfileAuthPreviewMsg struct {
+	preview viewmodel.SetupPreview
+	ref     config.InstanceRef
+	err     error
+}
+type groupProfileAuthSavedMsg struct {
+	ref config.InstanceRef
+	err error
+}
 
 func New(backend Backend) tea.Model { return NewContext(context.Background(), backend) }
 func NewContext(ctx context.Context, backend Backend) *Model {
@@ -273,11 +320,24 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
 	case setupProgressMsg:
+		if progress.progress.Acknowledged != nil {
+			defer close(progress.progress.Acknowledged)
+		}
 		if progress.setupID != m.setupOperationID || !m.setupOperationPending {
 			return m, nil
 		}
 		if progress.progress.Step != "" {
 			m.progressStep = progress.progress.Step
+			if m.groupProfileAuthPending && m.form != nil {
+				m.form.SetContext("Launch continues · " + progress.progress.Step)
+			}
+		}
+		if progress.progress.MemberStatus != "" {
+			m.recordGroupProfileProgress(progress.progress)
+			if progress.progress.MemberNeedsInput && m.enqueueGroupAuthPrompt(progress.progress.InstanceRef) {
+				m.busy = false
+				return m, tea.Batch(m.openNextGroupAuthPrompt(), waitSetupProgress(progress.setupID, m.setupProgressEvents, m.setupProgressDone, m.ctx))
+			}
 		}
 		m.progressOutput += m.cleanOutput(progress.progress.Output)
 		if progress.progress.Output != "" {
@@ -366,6 +426,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if request, ok := msg.(forms.ExitRequestMsg); ok && m.form != nil {
+		if m.groupProfileAuthPending {
+			m.form = nil
+			m.groupProfileAuthPending = false
+			m.groupProfileAuthRef = nil
+			m.output = "Skipped authentication input; other instances continue launching."
+			return m, m.openNextGroupAuthPrompt()
+		}
 		m.unsavedExit = m.newUnsavedExit(request.Reason)
 		return m, nil
 	}
@@ -795,6 +862,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+		if m.groupProfileAuthPending && errors.Is(e, picker.ErrCancelled) {
+			m.form = nil
+			m.groupProfileAuthPending = false
+			m.groupProfileAuthRef = nil
+			m.output = "Skipped authentication input; other instances continue launching."
+			return m, m.openNextGroupAuthPrompt()
+		}
+		if m.groupProfileEditing != nil && e == nil {
+			return m, m.saveGroupProfile(values)
+		}
+		if m.groupProfileAuthPending && e == nil {
+			return m, m.saveGroupProfileAuth(values)
+		}
 		if m.unsavedExitApplying && e == nil && m.pendingSetup != nil {
 			cmd := m.applySetup(values)
 			if cmd == nil && m.unsavedExitApplying {
@@ -1013,6 +1093,73 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.management.Modal = "viewer"
 	case operationMsg:
 		return m, m.handleOperationResult(msg)
+	case groupProfilesLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.output = "Could not load Profiles: " + msg.err.Error()
+		} else {
+			m.groupProfileSnapshot = &msg.snapshot
+		}
+		return m, nil
+	case groupProfileLaunchMsg:
+		m.busy = false
+		m.setupOperationPending = false
+		for _, result := range msg.results {
+			m.recordGroupProfileResult(result, msg.attempt)
+		}
+		if msg.err != nil {
+			m.output = msg.err.Error()
+		} else {
+			m.output = "Profile launch finished; inspect each member's status."
+		}
+		if m.groupProfileRetryOperation {
+			m.groupProfileRetryOperation = false
+			if cmd := m.openNextGroupAuthPrompt(); cmd != nil {
+				return m, cmd
+			}
+			return m, m.loadGroupProfiles()
+		}
+		if cmd := m.openNextGroupAuthPrompt(); cmd != nil {
+			return m, cmd
+		}
+		return m, m.loadGroupProfiles()
+	case groupProfileAuthPreviewMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.groupProfileAuthPending = false
+			m.groupProfileAuthRef = nil
+			m.output = "Could not load authentication inputs: " + msg.err.Error()
+			return m, m.openNextGroupAuthPrompt()
+		}
+		m.openMinimalGroupProfileAuthForm(msg.preview, msg.ref)
+		if !m.groupProfileAuthPending && m.form == nil {
+			return m, m.openNextGroupAuthPrompt()
+		}
+		return m, nil
+	case groupProfileAuthSavedMsg:
+		m.busy = false
+		m.groupProfileAuthPending = false
+		m.groupProfileAuthRef = nil
+		if msg.err != nil {
+			m.output = "Could not save authentication inputs: " + msg.err.Error()
+			return m, nil
+		}
+		m.output = "Authentication inputs saved. Other instances continue launching."
+		return m, tea.Batch(m.retryGroupProfileMemberConcurrent(msg.ref), m.openNextGroupAuthPrompt())
+	case groupProfileRetryMsg:
+		m.groupProfileConcurrentRetries = max(0, m.groupProfileConcurrentRetries-1)
+		if msg.err != nil {
+			m.output = "Retry failed: " + msg.err.Error()
+		} else {
+			for _, result := range msg.results {
+				m.recordGroupProfileResult(result, msg.attempt)
+			}
+			m.output = "Retried the affected Capability Instance."
+		}
+		if !m.setupOperationPending {
+			return m, m.loadGroupProfiles()
+		}
+		return m, nil
 	case settingsSavedMsg:
 		m.busy = false
 		if msg.err != nil {

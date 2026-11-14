@@ -68,12 +68,14 @@ config_key = "grafana.datasource_uid"
 name = "token"
 type = "secret"
 label = "Token"
+auth_required = true
 visible_when = { auth_mode = "api_token" }
 
 [[inputs]]
 name = "grafana_session"
 type = "secret"
 label = "Grafana session"
+auth_required = true
 visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
@@ -86,6 +88,7 @@ visible_when = { auth_mode = "session_cookie" }
 name = "session_expiry"
 type = "secret"
 label = "Session expiry"
+auth_prompt = true
 visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
