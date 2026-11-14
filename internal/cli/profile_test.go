@@ -35,6 +35,67 @@ func TestCLIProfileInstallAndInference(t *testing.T) {
 		t.Fatalf("inference %d %s", code, errout.String())
 	}
 }
+
+func TestCLIInstallKeepsLegacyMCPSelectionAfterAddingLinkedSkill(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "atlassian")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version = 1\nid = \"atlassian\"\nname = \"Atlassian\"\n[skill]\nname = \"atlassian-confluence\"\n[mcp]\nname = \"atlassian\"\nexternal_url = \"https://fixture.invalid/mcp\"\ntransport = \"streamable-http\"\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "SKILL.md"), []byte("---\nname: atlassian-confluence\ndescription: fixture\n---\nUse Atlassian MCP.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(root, "aact.toml")
+	if err := os.WriteFile(cfg, []byte("schema_version = 1\nsource_id = \"fixture\"\n[[catalog]]\nid = \"atlassian\"\nsource = \"./atlassian\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	store, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := store.ResolveInstanceKey("fixture", "atlassian", "atlassian-dso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordInstance(state.ProfileRecord{
+		Key: key, Name: "atlassian-dso", Local: true,
+		Selection: &state.ProfileSelection{ItemIDs: []string{"mcp:atlassian"}, DestinationIDs: []string{"generic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "agent-home")
+	var out, errout bytes.Buffer
+	args := []string{"install", "atlassian", "--config", cfg, "--state-dir", stateDir, "--instance", "atlassian-dso", "--agent", "generic", "--agent-home", home, "--skills-only"}
+	if code := Run(context.Background(), args, nil, &out, &errout); code != 0 {
+		t.Fatalf("install without --item failed (%d): %s", code, errout.String())
+	}
+	installed, err := os.ReadFile(filepath.Join(home, ".agents", "skills", "atlassian-confluence", "SKILL.md"))
+	if err != nil || !strings.Contains(string(installed), "Use Atlassian MCP.") {
+		t.Fatalf("installed skill = %q, %v", installed, err)
+	}
+	records, err := store.Instances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Key == key && record.Selection != nil {
+			if len(record.Selection.ItemIDs) != 1 || record.Selection.ItemIDs[0] != "default:atlassian" {
+				t.Fatalf("CLI did not persist normalized selection: %v", record.Selection.ItemIDs)
+			}
+			if len(record.Selection.DestinationIDs) != 1 || record.Selection.DestinationIDs[0] != "generic" {
+				t.Fatalf("CLI changed selected agent destinations: %v", record.Selection.DestinationIDs)
+			}
+			return
+		}
+	}
+	t.Fatal("CLI install removed the saved instance selection")
+}
+
 func TestCLIInstanceChoicesAndLegacyEnvironmentSelectors(t *testing.T) {
 	cfg, st, home := namedProfileFixture(t)
 	os.WriteFile(filepath.Join(filepath.Dir(cfg), "environments", "demo", "prod.toml"), []byte("[inputs]\nlabel='prod'"), 0600)

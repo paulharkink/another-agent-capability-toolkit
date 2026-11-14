@@ -450,6 +450,7 @@ func copyInstanceSnapshot(snapshot *viewmodel.InstanceSnapshot) *viewmodel.Insta
 
 type setupRetryDraft struct {
 	itemField        string
+	itemsTouched     bool
 	preview          viewmodel.SetupPreview
 	values           map[string]any
 	resetInputs      []string
@@ -540,7 +541,7 @@ func (m *Model) openSetupForm(preview viewmodel.SetupPreview) {
 }
 
 func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, overrides map[string]any) {
-	if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 {
+	if len(preview.Items) == 1 && len(preview.SelectedItemIDs) == 0 && preview.DefaultSelection {
 		preview.SelectedItemIDs = []string{preview.Items[0].ID}
 	}
 	defs := make([]catalog.Input, 0, len(preview.Inputs)+1)
@@ -641,7 +642,8 @@ func (m *Model) openSetupFormWithValues(preview viewmodel.SetupPreview, override
 		destinationField = ""
 	}
 	m.pendingSetupItemsField = ""
-	if len(preview.Items) > 1 {
+	m.pendingSetupItemsTouched = false
+	if len(preview.Items) > 1 || (len(preview.Items) == 1 && !preview.DefaultSelection) {
 		field := "__aact_components"
 		for {
 			collision := false
@@ -1050,7 +1052,7 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	m.pendingSetup = nil
 	destinations, _ := values[destinationField].([]string)
 	m.pendingSetupField = ""
-	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, itemField: m.pendingSetupItemsField, origin: origin, section: section, uninstall: uninstallingAgents}
+	m.setupRetry = &setupRetryDraft{preview: preview, values: cloneSetupValues(values), resetInputs: append([]string(nil), resetInputs...), destinationField: destinationField, itemField: m.pendingSetupItemsField, itemsTouched: m.pendingSetupItemsTouched, origin: origin, section: section, uninstall: uninstallingAgents}
 	m.setupOperationPending = true
 	inputs := make(map[string]any, len(preview.Inputs))
 	for _, input := range preview.Inputs {
@@ -1064,11 +1066,13 @@ func (m *Model) applySetupWithReset(values map[string]any, resetInputs []string)
 	request := viewmodel.SetupInstallRequest{
 		SetupRequest: m.packInstanceRequest(preview.Key),
 		Inputs:       inputs, ActiveInputGroups: activeGroups, ResetInputs: append([]string(nil), resetInputs...), DestinationIDs: destinations, Uninstall: uninstallingAgents,
+		DefaultSelection: preview.DefaultSelection,
 	}
 	if m.pendingSetupItemsField != "" {
 		items, _ := values[m.pendingSetupItemsField].([]string)
 		request.ItemIDs = make([]string, len(items))
 		copy(request.ItemIDs, items)
+		request.DefaultSelection = preview.DefaultSelection && !m.pendingSetupItemsTouched
 	}
 	if workspace := m.workspace; workspace != nil && workspace.Active && workspace.Key == preview.Key {
 		var profiles []viewmodel.Instance

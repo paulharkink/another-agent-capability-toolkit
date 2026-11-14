@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 )
@@ -11,6 +12,9 @@ func componentSelection(p catalog.Package, values map[string]any, ids []string, 
 	items, err := catalog.InstallationItems(p, p.Sets)
 	if err != nil {
 		return nil, nil, err
+	}
+	if ids != nil {
+		ids = normalizeExplicitSingletonAliases(items, ids)
 	}
 	enabled := map[string]bool{}
 	for _, m := range packageMCPProfiles(p, values) {
@@ -65,4 +69,76 @@ func componentSelection(p catalog.Package, values map[string]any, ids []string, 
 		return nil, nil, fmt.Errorf("no skill components are available to install")
 	}
 	return result, normalized, nil
+}
+
+func normalizeExplicitSingletonAliases(items []catalog.InstallationItem, ids []string) []string {
+	aliases := map[string]string{}
+	for _, item := range items {
+		if !strings.HasPrefix(item.ID, "default:") || len(item.Skills)+len(item.MCPs)+len(item.Plugins) != 1 {
+			continue
+		}
+		for _, name := range item.Skills {
+			aliases["skill:"+name] = item.ID
+		}
+		for _, name := range item.MCPs {
+			aliases["mcp:"+name] = item.ID
+		}
+	}
+	result := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if alias := aliases[id]; alias != "" {
+			id = alias
+		}
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+// normalizePersistedItemIDs keeps saved selections usable when a catalog starts
+// exposing a selected component only through a linked installation set.
+func normalizePersistedItemIDs(p catalog.Package, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	items, err := catalog.InstallationItems(p, p.Sets)
+	if err != nil {
+		return ids
+	}
+	selectable := make(map[string]bool, len(items))
+	linkedByMember := map[string][]string{}
+	for _, item := range items {
+		selectable[item.ID] = true
+		if !strings.HasPrefix(item.ID, "set:") && !strings.HasPrefix(item.ID, "default:") {
+			continue
+		}
+		for _, name := range item.Skills {
+			linkedByMember["skill:"+name] = append(linkedByMember["skill:"+name], item.ID)
+			if strings.HasPrefix(item.ID, "default:") {
+				linkedByMember["set:"+name] = append(linkedByMember["set:"+name], item.ID)
+			}
+		}
+		for _, name := range item.MCPs {
+			linkedByMember["mcp:"+name] = append(linkedByMember["mcp:"+name], item.ID)
+		}
+	}
+
+	result := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		current := id
+		if !selectable[id] {
+			if candidates := linkedByMember[id]; len(candidates) == 1 {
+				current = candidates[0]
+			}
+		}
+		if !seen[current] {
+			result = append(result, current)
+			seen[current] = true
+		}
+	}
+	return result
 }

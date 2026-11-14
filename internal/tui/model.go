@@ -14,6 +14,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/picker"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/viewmodel"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ type profileRunBackend interface {
 }
 type Model struct {
 	pendingSetupItemsField     string
+	pendingSetupItemsTouched   bool
 	capabilityInstances        map[string]viewmodel.CapabilityInstanceSnapshot
 	creatingInstance           *config.InstanceRef
 	deletingInstance           *config.InstanceRef
@@ -771,8 +773,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the submitting stage before updating it. Inputs Save must persist only
 		// answers and leave installation to the separate Agent access action.
 		submittedSectionID := m.form.SectionID()
+		var previousItems []string
+		trackItems := m.pendingSetupItemsField != ""
+		if trackItems {
+			previousItems, _ = m.form.Values()[m.pendingSetupItemsField].([]string)
+		}
 		next, cmd := m.form.Update(msg)
 		m.form = next.(*forms.FormModel)
+		if trackItems {
+			currentItems, _ := m.form.Values()[m.pendingSetupItemsField].([]string)
+			if !slices.Equal(previousItems, currentItems) {
+				m.pendingSetupItemsTouched = true
+			}
+		}
 		if m.workspace != nil && m.workspace.Active {
 			if m.hasUnsavedSetupInputs() || m.form.HasUnsavedChanges() {
 				m.workspace.SaveNotice = ""
