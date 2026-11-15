@@ -4,7 +4,8 @@ The browser-authentication-helper image wraps the verified Kasm Chromium
 `1.18.0` image. It runs Chromium in Docker and streams its desktop to a regular
 browser through KasmVNC.
 
-Build it from the repository root:
+Build it once from the repository or extracted AACT release root. AACT uses
+this local image and does not build it automatically:
 
 ```sh
 docker build --pull --tag aact/browser-authentication-helper:1.18.0 images/browser-authentication-helper

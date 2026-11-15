@@ -52,6 +52,25 @@ func TestBrowserAuthenticationHelperImageContract(t *testing.T) {
 	}
 }
 
+func TestBrowserHelperBuildContextShipsInReleaseArchive(t *testing.T) {
+	config, err := os.ReadFile("../../.goreleaser.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"images/browser-authentication-helper/Dockerfile",
+		"images/browser-authentication-helper/*.py",
+		"images/browser-authentication-helper/*.js",
+		"images/browser-authentication-helper/requirements.txt",
+		"images/browser-authentication-helper/browser-authentication-helper",
+		"images/browser-authentication-helper/custom_startup.sh",
+	} {
+		if !strings.Contains(string(config), required) {
+			t.Errorf("release archive is missing %q", required)
+		}
+	}
+}
+
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	contents, err := os.ReadFile(path)

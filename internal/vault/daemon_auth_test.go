@@ -57,3 +57,22 @@ func TestDaemonHostUsesExistingScopedCredentialForMultipleServices(t *testing.T)
 		t.Fatalf("revoked status %d", got)
 	}
 }
+
+func TestRevokedScopedTokenCannotFallBackToUnrestrictedAccess(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "credentials.kdbx"), []byte("synthetic-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := strings.Repeat("a", 64)
+	api := NewAPI(store, nil)
+	token, err := api.IssuePrivateInputToken(instance, []string{"allowed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := api.RevokeToken(token); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, valid := api.tokenScope(token, instance, "allowed"); valid {
+		t.Fatal("revoked token was treated as valid")
+	}
+}

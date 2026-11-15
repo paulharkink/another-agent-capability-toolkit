@@ -297,9 +297,11 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.servePrivateInput(w, r, namespace, token)
 		return
 	}
-	a.mu.RLock()
-	_, restricted := a.privateInputScopes[token]
-	a.mu.RUnlock()
+	restricted, _, valid := a.tokenScope(token, namespace, "")
+	if !valid {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	if restricted && strings.HasPrefix(r.URL.Path, "/v1/secrets") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -393,10 +395,11 @@ func (a *API) servePrivateInput(w http.ResponseWriter, r *http.Request, namespac
 		http.Error(w, "invalid private input name", http.StatusBadRequest)
 		return
 	}
-	a.mu.RLock()
-	scope, restricted := a.privateInputScopes[token]
-	_, allowed := scope[name]
-	a.mu.RUnlock()
+	restricted, allowed, valid := a.tokenScope(token, namespace, name)
+	if !valid {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	if !restricted || !allowed {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -424,6 +427,20 @@ func (a *API) servePrivateInput(w http.ResponseWriter, r *http.Request, namespac
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"value": value})
+}
+
+// tokenScope checks membership and scope together so a concurrent revocation
+// cannot turn a restricted token into an apparently unrestricted one.
+func (a *API) tokenScope(token, namespace, name string) (restricted, allowed, valid bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	bound, exists := a.tokens[token]
+	if !exists || bound != namespace {
+		return false, false, false
+	}
+	scope, restricted := a.privateInputScopes[token]
+	_, allowed = scope[name]
+	return restricted, allowed, true
 }
 
 func (a *API) authenticate(header string) (string, bool) {

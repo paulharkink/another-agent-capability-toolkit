@@ -6,6 +6,7 @@ on:
       - 'internal/**'
       - 'cmd/**'
       - 'packages/**'
+      - 'images/browser-authentication-helper/**'
       - 'tools/**'
       - 'scripts/snapshot-release.sh'
       - '.goreleaser.yaml'
