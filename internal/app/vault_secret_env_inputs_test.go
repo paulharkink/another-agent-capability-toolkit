@@ -59,3 +59,20 @@ func TestVaultSecretEnvInputsUseParentProfileNamespaceWithoutDockerSecrets(t *te
 		t.Fatalf("rotated revision = %q, previous=%q", rotated.VaultSecretRevision, firstRevision)
 	}
 }
+
+func TestBrowserControllerUsesParentVaultNamespace(t *testing.T) {
+	svc, _, _ := fixture(t)
+	runtime := &providerTestRuntime{}
+	svc.Options.Runtime = runtime
+	pkg := catalog.Package{ID: "fixture", Dir: t.TempDir(), MCP: &catalog.MCP{Name: "fixture", Image: "fixture", Transport: "streamable-http", HostPortInput: "port", ContainerPort: 80, BrowserController: &catalog.BrowserController{ProfileVolumeInput: "volume"}}}
+	parent := state.Key{Source: "fixture-pack", Package: "fixture", Target: "workspace"}
+	child := parent
+	child.MCP = "fixture"
+	profile := config.Profile{Ref: config.ProfileRef{PackID: parent.Source, CapabilityID: parent.Package, Name: parent.Target}}
+	if _, err := svc.startConfigurationProfile(context.Background(), pkg, profile, child, map[string]any{"port": int64(8765), "volume": "fixture-profile"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.specs) != 1 || runtime.specs[0].BrowserVaultKey == nil || runtime.specs[0].BrowserVaultKey.ID() != parent.ID() {
+		t.Fatal("browser controller did not use parent vault namespace")
+	}
+}

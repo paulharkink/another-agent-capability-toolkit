@@ -14,6 +14,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/browsercontroller"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/daemon"
 )
 
 const maxAPIRequestBytes = 1 << 20
@@ -43,6 +46,7 @@ type API struct {
 	tokens             map[string]string              // bearer token -> capability-instance ID
 	owners             map[string]string              // bearer token -> container ID
 	privateInputScopes map[string]map[string]struct{} // bearer token -> readable private input names
+	browserService     *browsercontroller.Service
 }
 
 func (a *API) RevokeTokensForInstance(namespace string) error {
@@ -381,6 +385,10 @@ func (a *API) servePrivateInput(w http.ResponseWriter, r *http.Request, namespac
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/v1/private-inputs/")
+	if name == BrowserOnlyPrivateInputScope {
+		http.NotFound(w, r)
+		return
+	}
 	if name == "" || strings.Contains(name, "/") {
 		http.Error(w, "invalid private input name", http.StatusBadRequest)
 		return
@@ -421,6 +429,21 @@ func (a *API) servePrivateInput(w http.ResponseWriter, r *http.Request, namespac
 func (a *API) authenticate(header string) (string, bool) {
 	namespace, _, ok := a.authenticateToken(header)
 	return namespace, ok
+}
+
+// AuthenticateDaemonRequest identifies a daemon client using its existing
+// instance-scoped bearer credential.
+func (a *API) AuthenticateDaemonRequest(header string) (daemon.ClientIdentity, bool) {
+	namespace, token, ok := a.authenticateToken(header)
+	if !ok {
+		return daemon.ClientIdentity{}, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if current, exists := a.tokens[token]; !exists || current != namespace {
+		return daemon.ClientIdentity{}, false
+	}
+	return daemon.ClientIdentity{Instance: namespace, ContainerID: a.owners[token]}, true
 }
 
 func (a *API) authenticateToken(header string) (string, string, bool) {

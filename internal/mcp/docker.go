@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/browsercontroller"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/vault"
@@ -36,16 +37,18 @@ type PortMapping struct {
 	ContainerPort int `json:"container_port"`
 }
 type RunSpec struct {
-	User             string            `json:"user,omitempty"`
-	Image            string            `json:"image"`
-	BuildContext     string            `json:"build_context,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	SecretEnv        map[string]string `json:"secret_env,omitempty"`
-	Mounts           []Mount           `json:"mounts,omitempty"`
-	BindIP           string            `json:"bind_ip,omitempty"`
-	AdvertisedHost   string            `json:"advertised_host,omitempty"`
-	RegistrationName string            `json:"registration_name,omitempty"`
+	BrowserController *BrowserControllerSpec `json:"browser_controller,omitempty"`
+	BrowserVaultKey   *state.Key             `json:"-"`
+	User              string                 `json:"user,omitempty"`
+	Image             string                 `json:"image"`
+	BuildContext      string                 `json:"build_context,omitempty"`
+	Args              []string               `json:"args,omitempty"`
+	Env               map[string]string      `json:"env,omitempty"`
+	SecretEnv         map[string]string      `json:"secret_env,omitempty"`
+	Mounts            []Mount                `json:"mounts,omitempty"`
+	BindIP            string                 `json:"bind_ip,omitempty"`
+	AdvertisedHost    string                 `json:"advertised_host,omitempty"`
+	RegistrationName  string                 `json:"registration_name,omitempty"`
 	// Host is retained for actions and saved specs written before bind and
 	// advertised endpoint addressing were separated.
 	Host                string        `json:"host"`
@@ -65,6 +68,13 @@ type RunSpec struct {
 	VaultSecretRevision           string                  `json:"vault_secret_revision,omitempty"`
 	VaultNamespaceID              string                  `json:"vault_namespace,omitempty"`
 }
+type BrowserControllerSpec struct {
+	AdapterSource    string `json:"adapter_source,omitempty"`
+	ProfileVolume    string `json:"profile_volume"`
+	AccessConfigJSON string `json:"access_config_json,omitempty"`
+	StartupURL       string `json:"startup_url,omitempty"`
+}
+
 type Instance struct {
 	Key              state.Key `json:"key"`
 	ID               string    `json:"id"`
@@ -327,6 +337,9 @@ func labels(k state.Key, s RunSpec) map[string]string {
 	if s.VaultNamespaceID != "" {
 		result["aact.vault_namespace"] = s.VaultNamespaceID
 	}
+	if s.BrowserController != nil {
+		result["aact.browser_auth"] = "1"
+	}
 	if k.MCPDefinition != "" {
 		result["aact.mcp_definition"] = k.MCPDefinition
 	}
@@ -516,12 +529,41 @@ func vaultHandoffHostGatewayArgs(goos string) []string {
 }
 
 func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
+	if s.BrowserController != nil {
+		if strings.TrimSpace(s.BrowserController.ProfileVolume) == "" {
+			return Instance{}, errors.New("browser controller profile volume is required")
+		}
+		if err := browsercontroller.ValidateAccessConfig(s.BrowserController.AccessConfigJSON); err != nil {
+			return Instance{}, err
+		}
+		if err := browsercontroller.ValidateStartupURLAgainstAccessConfig(s.BrowserController.StartupURL, s.BrowserController.AccessConfigJSON); err != nil {
+			return Instance{}, errors.New("browser controller startup URL is invalid or blocked by browser access policy")
+		}
+		if r.Store == nil {
+			return Instance{}, errors.New("browser controller requires AACT runtime state")
+		}
+		browserKey := k
+		if s.BrowserVaultKey != nil {
+			browserKey = *s.BrowserVaultKey
+		}
+		if s.VaultNamespaceID != "" && s.VaultNamespaceID != browserKey.ID() {
+			return Instance{}, errors.New("browser controller and MCP vault namespaces differ")
+		}
+		s.VaultNamespaceID = browserKey.ID()
+		s.VaultHandoffEnabled = true
+		var err error
+		s.VaultSecretRevision, err = r.Store.SecretInputsRevision(browserKey)
+		if err != nil {
+			return Instance{}, errors.New("could not read browser vault revision")
+		}
+
+	}
 	handoffCommitted := false
 	issuedByRuntime := false
-	if len(s.VaultSecretInputs) > 0 {
+	if len(s.VaultSecretInputs) > 0 || s.BrowserController != nil {
 		s.VaultHandoffEnabled = true
 	}
-	if len(s.VaultSecretInputs) > 0 {
+	if len(s.VaultSecretInputs) > 0 || s.BrowserController != nil {
 		if s.VaultHandoff != nil {
 			return Instance{}, errors.New("mapped private inputs require a scoped vault handoff")
 		}
@@ -536,6 +578,9 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		inputNames := make([]string, 0, len(s.VaultSecretInputs))
 		for _, inputName := range s.VaultSecretInputs {
 			inputNames = append(inputNames, inputName)
+		}
+		if len(inputNames) == 0 {
+			inputNames = append(inputNames, vault.BrowserOnlyPrivateInputScope)
 		}
 		handoff, revoke, err := scopedIssuer.IssueContainerHandoffForPrivateInputs(namespace, inputNames)
 		if err != nil {
@@ -582,6 +627,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		handoffPayload = payload.Bytes()
 		defer clear(handoffPayload)
 	}
+
 	secretValues := []string{}
 	for _, v := range s.SecretEnv {
 		if v != "" {
@@ -828,6 +874,7 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 	a = append(a, s.Args...)
 	committed, renamed := false, false
 	createdID := ""
+	browserRegistered := false
 	defer func() {
 		if committed {
 			return
@@ -841,7 +888,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			}
 		}
 		if createdID != "" {
-			_, cleanupErr = r.run(cleanupCtx, []string{"rm", "--force", createdID})
+			if browserRegistered {
+				cleanupErr = r.unregisterBrowserWithDaemon(createdID)
+			}
+			_, removeErr := r.run(cleanupCtx, []string{"rm", "--force", createdID})
+			cleanupErr = errors.Join(cleanupErr, removeErr)
 		}
 		if cleanupErr != nil {
 			startErr = errors.Join(startErr, fmt.Errorf("MCP startup cleanup failed: %w", cleanupErr))
@@ -851,6 +902,11 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		if previous.State.Running && replacingRegistrationName {
 			if _, e := r.run(ctx, []string{"stop", previous.ID}); e != nil {
 				return Instance{}, fmt.Errorf("stop prior MCP runtime before registration-name replacement: %w", e)
+			}
+		}
+		if previous.Config.Labels["aact.browser_auth"] == "1" {
+			if err := r.pauseBrowserWithDaemon(previous.ID); err != nil {
+				return Instance{}, fmt.Errorf("pause prior browser: %w", err)
 			}
 		}
 		backupName := "aact-previous-" + previous.ID[:min(12, len(previous.ID))] + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -868,6 +924,14 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		if issuedByRuntime {
 			if bindErr := r.VaultTokenIssuer.BindContainerHandoff(createdID, s.VaultHandoff.Token); bindErr != nil {
 				return Instance{}, fmt.Errorf("bind vault token to container: %w", bindErr)
+			}
+		}
+		if s.BrowserController != nil {
+			// Registration may succeed even when its response is lost; cleanup
+			// must try to remove it on every subsequent startup failure.
+			browserRegistered = true
+			if err := r.registerBrowserWithDaemon(k, s, createdID); err != nil {
+				return Instance{}, fmt.Errorf("register browser with daemon: %w", err)
 			}
 		}
 		args := []string{"docker", "exec", "--interactive", createdID, "/run/aact-vault-handoff"}
@@ -904,6 +968,18 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		if _, e = r.run(cleanupCtx, []string{"rm", previous.ID}); e != nil {
 			return out, fmt.Errorf("MCP started but prior stopped container cleanup failed: %w", e)
 		}
+		previousNamespace := previous.Config.Labels["aact.vault_namespace"]
+		if previousNamespace == "" {
+			previousNamespace = k.ID()
+		}
+		if e = r.revokeKnownVaultHandoff(previous.ID, previousNamespace); e != nil {
+			return out, fmt.Errorf("MCP replaced successfully but prior token revocation failed: %w", e)
+		}
+		if previous.Config.Labels["aact.browser_auth"] == "1" {
+			if e = r.unregisterBrowserWithDaemon(previous.ID); e != nil {
+				return out, fmt.Errorf("MCP started but prior browser cleanup failed: %w", e)
+			}
+		}
 		for _, row := range rows {
 			if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath == previous.ID {
 				// The old runtime remains a distinct ledger record until the
@@ -913,13 +989,6 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
 				}
 			}
-		}
-		previousNamespace := previous.Config.Labels["aact.vault_namespace"]
-		if previousNamespace == "" {
-			previousNamespace = k.ID()
-		}
-		if e = r.revokeKnownVaultHandoff(previous.ID, previousNamespace); e != nil {
-			return out, fmt.Errorf("MCP replaced successfully but prior token revocation failed: %w", e)
 		}
 	}
 	return out, nil
@@ -1036,11 +1105,42 @@ func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	observed, err := r.observedContainer(ctx, k)
 	if err != nil {
-		return err
+		if err.Error() != "no current Docker runtime observation matches this MCP profile" {
+			return err
+		}
+		rows, rowsErr := r.Store.Installations()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		var stale *state.Installation
+		for i := range rows {
+			row := &rows[i]
+			if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.Mode != "docker" || row.SourcePath == "" {
+				continue
+			}
+			if stale != nil {
+				return errors.New("multiple stale Docker runtime records match this MCP profile; refusing ambiguous cleanup")
+			}
+			stale = row
+		}
+		if stale == nil {
+			return err
+		}
+		if revokeErr := r.revokeVaultHandoffByContainer(stale.SourcePath); revokeErr != nil {
+			return fmt.Errorf("stale runtime vault token revocation failed: %w", revokeErr)
+		}
+		if removeErr := r.Store.Remove(*stale); removeErr != nil {
+			return fmt.Errorf("stale runtime record could not be cleared: %w", removeErr)
+		}
+		return nil
 	}
 	namespace := k.ID()
-	if info, inspectErr := r.inspect(ctx, observed.ID); inspectErr == nil && info.Config.Labels["aact.vault_namespace"] != "" {
-		namespace = info.Config.Labels["aact.vault_namespace"]
+	browserEnabled := false
+	if info, inspectErr := r.inspect(ctx, observed.ID); inspectErr == nil {
+		if info.Config.Labels["aact.vault_namespace"] != "" {
+			namespace = info.Config.Labels["aact.vault_namespace"]
+		}
+		browserEnabled = info.Config.Labels["aact.browser_auth"] == "1"
 	}
 	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
 	if e != nil {
@@ -1048,6 +1148,11 @@ func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
 	}
 	if err := r.revokeVaultHandoff(observed.ID, namespace); err != nil {
 		return fmt.Errorf("runtime %s was removed but token revocation failed: %w", observed.ID, err)
+	}
+	if browserEnabled {
+		if err := r.unregisterBrowserWithDaemon(observed.ID); err != nil {
+			return fmt.Errorf("runtime was removed but browser cleanup failed: %w", err)
+		}
 	}
 	rows, err := r.Store.Installations()
 	if err != nil {
@@ -1114,6 +1219,11 @@ func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
 	}
 	if err := r.revokeVaultHandoff(id, namespace); err != nil {
 		return fmt.Errorf("container %s was removed but token revocation failed: %w", id, err)
+	}
+	if info.Config.Labels["aact.browser_auth"] == "1" {
+		if err := r.unregisterBrowserWithDaemon(id); err != nil {
+			return fmt.Errorf("container was removed but browser cleanup failed: %w", err)
+		}
 	}
 	if recorded {
 		if err := r.Store.Remove(record); err != nil {

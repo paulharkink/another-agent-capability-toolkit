@@ -1227,3 +1227,138 @@ vault_auth_env = "PROVIDER_TOKEN"
 		})
 	}
 }
+
+func TestBrowserControllerStartupURLRejectsCredentialBearingOrUnsafeURLs(t *testing.T) {
+	manifest := `schema_version = 1
+id = "browser-capability"
+name = "Browser Capability"
+[[inputs]]
+name = "profile_volume"
+type = "string"
+label = "Browser profile volume"
+config_key = "browser.profile_volume"
+required = true
+[mcp]
+name = "browser-capability"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "port"
+[[inputs]]
+name = "port"
+type = "integer"
+label = "Port"
+default = 8765
+[mcp.browser_controller]
+profile_volume_input = "profile_volume"
+startup_url = "https://example.test/start"
+`
+	if _, err := Load(writeManifest(t, manifest)); err != nil {
+		t.Fatalf("valid startup URL rejected: %v", err)
+	}
+	for _, value := range []string{
+		"javascript:alert(1)", "https://user:pass@example.test/", "https://example.test/?access_token=secret",
+		"https://example.test/#secret", "https://example.test/\r\nKASM_URL=evil", "https://example.test\\@evil.test/",
+	} {
+		t.Run(value, func(t *testing.T) {
+			bad := strings.Replace(manifest, `startup_url = "https://example.test/start"`, "startup_url = "+strconv.Quote(value), 1)
+			if _, err := Load(writeManifest(t, bad)); err == nil || !strings.Contains(err.Error(), "startup_url") {
+				t.Fatalf("unsafe startup URL %q accepted or misdiagnosed: %v", value, err)
+			}
+		})
+	}
+}
+
+func TestMCPBrowserControllerReferencesStringInput(t *testing.T) {
+	manifest := `schema_version = 1
+id = "browser-capability"
+name = "Browser Capability"
+[[inputs]]
+name = "profile_volume"
+type = "string"
+label = "Browser profile volume"
+config_key = "browser.profile_volume"
+required = true
+[mcp]
+name = "browser-capability"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "port"
+[[inputs]]
+name = "port"
+type = "integer"
+label = "Port"
+default = 8765
+[mcp.browser_controller]
+profile_volume_input = "profile_volume"
+access_config_input = "browser_access_config"
+[[inputs]]
+name = "browser_access_config"
+type = "string"
+label = "Browser access policy"
+config_key = "browser.access_config"
+required = false
+`
+	pkg, err := Load(writeManifest(t, manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.MCP == nil || pkg.MCP.BrowserController == nil || pkg.MCP.BrowserController.ProfileVolumeInput != "profile_volume" {
+		t.Fatalf("browser controller declaration = %#v", pkg.MCP)
+	}
+	if pkg.MCP.BrowserController.AccessConfigInput != "browser_access_config" {
+		t.Fatalf("browser access config input = %q", pkg.MCP.BrowserController.AccessConfigInput)
+	}
+	bad := strings.Replace(manifest, `type = "string"`, `type = "integer"`, 1)
+	if _, err := Load(writeManifest(t, bad)); err == nil || !strings.Contains(err.Error(), "profile_volume_input") {
+		t.Fatalf("invalid browser profile input accepted: %v", err)
+	}
+}
+
+func TestMCPBrowserControllerAccessConfigRequiresOptionalVisibleStringInput(t *testing.T) {
+	manifest := `schema_version = 1
+id = "browser-capability"
+name = "Browser Capability"
+[[inputs]]
+name = "profile_volume"
+type = "string"
+label = "Browser profile volume"
+config_key = "browser.profile_volume"
+required = true
+[[inputs]]
+name = "browser_access_config"
+type = "string"
+label = "Browser access policy"
+config_key = "browser.access_config"
+required = false
+[mcp]
+name = "browser-capability"
+runtime = "docker"
+transport = "streamable-http"
+container_port = 8765
+endpoint_path = "/mcp"
+host_port_input = "port"
+[[inputs]]
+name = "port"
+type = "integer"
+label = "Port"
+default = 8765
+[mcp.browser_controller]
+profile_volume_input = "profile_volume"
+access_config_input = "browser_access_config"
+`
+	if _, err := Load(writeManifest(t, manifest)); err != nil {
+		t.Fatalf("valid optional access config input rejected: %v", err)
+	}
+	badRequired := strings.Replace(manifest, `required = false`, `required = true`, 1)
+	if _, err := Load(writeManifest(t, badRequired)); err == nil || !strings.Contains(err.Error(), "access_config_input") {
+		t.Fatalf("required access config input accepted: %v", err)
+	}
+	badType := strings.Replace(manifest, "name = \"browser_access_config\"\ntype = \"string\"", "name = \"browser_access_config\"\ntype = \"secret\"", 1)
+	if _, err := Load(writeManifest(t, badType)); err == nil || !strings.Contains(err.Error(), "access_config_input") {
+		t.Fatalf("non-string access config input accepted: %v", err)
+	}
+}

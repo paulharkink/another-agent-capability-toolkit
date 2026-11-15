@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	ContainerHandoffPath  = "/run/aact/vault.json"
-	ContainerHandoffTmpfs = "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777"
+	// BrowserOnlyPrivateInputScope marks a scoped credential with no readable inputs.
+	BrowserOnlyPrivateInputScope = "__aact_browser_only__"
+	ContainerHandoffPath         = "/run/aact/vault.json"
+	ContainerHandoffTmpfs        = "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777"
 )
 
 // ContainerHandoff is sent only over the container process stdin. Token is

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/browsercontroller"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
@@ -675,6 +676,37 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.RegistrationName = resolvedRegistrationName
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
+	}
+	if p.MCP.BrowserController != nil {
+		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.BrowserVaultKey = &parentKey
+		profileVolume, ok := values[p.MCP.BrowserController.ProfileVolumeInput].(string)
+		if !ok || strings.TrimSpace(profileVolume) == "" {
+			return mcp.Instance{}, invalid(fmt.Errorf("%s must name an existing Docker profile volume", p.MCP.BrowserController.ProfileVolumeInput))
+		}
+		accessConfig := ""
+		if inputName := p.MCP.BrowserController.AccessConfigInput; inputName != "" {
+			accessConfig, _ = values[inputName].(string)
+			mergedConfig, mergeErr := browsercontroller.ApplyDefaultPopupAllowedURLs(accessConfig, p.MCP.BrowserController.DefaultPopupAllowedURLs)
+			if mergeErr != nil {
+				return mcp.Instance{}, invalid(fmt.Errorf("%s is invalid: %w", inputName, mergeErr))
+			}
+			accessConfig = mergedConfig
+			if err := browsercontroller.ValidateAccessConfig(accessConfig); err != nil {
+				return mcp.Instance{}, invalid(fmt.Errorf("%s is invalid: %w", inputName, err))
+			}
+		}
+		if err := browsercontroller.ValidateStartupURLAgainstAccessConfig(p.MCP.BrowserController.StartupURL, accessConfig); err != nil {
+			return mcp.Instance{}, invalid(fmt.Errorf("browser_controller startup_url is invalid: %w", err))
+		}
+		adapter, err := readBrowserAdapter(p.Dir, p.MCP.BrowserController.AdapterPath)
+		if err != nil {
+			return mcp.Instance{}, invalid(err)
+		}
+		spec.BrowserController = &mcp.BrowserControllerSpec{ProfileVolume: profileVolume, AccessConfigJSON: accessConfig, StartupURL: p.MCP.BrowserController.StartupURL, AdapterSource: adapter}
 	}
 	if len(options) > 0 && p.MCP.HealthPath != "" {
 		spec.DeferProtocolHealth = options[0].deferProtocolHealth

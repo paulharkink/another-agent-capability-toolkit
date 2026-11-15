@@ -1,0 +1,4 @@
+Brotli==1.2.1
+zstd==1.5.7.2
+ccl_simplesnappy @ https://github.com/cclgroupltd/ccl_simplesnappy/archive/3d085230baa8c46cf2090ebba29bf6e8eab31087.zip
+cryptography==50.0.2
