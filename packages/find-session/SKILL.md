@@ -52,5 +52,6 @@ supports this, while Docker VMM does not mount paths under `/home`.
 
 - Release launchers run the matching pre-published GHCR image; development builds without a release image version build locally.
 - It adds Docker interactive/TTY flags only for an interactive terminal; noninteractive searches work without them.
-- Missing agent-history directories are skipped; existing history is mounted read-only.
+- Missing agent-history directories are skipped. The launcher requests read-only history mounts; a compatible runtime may expose a staged copy as writable.
+- POSIX history paths containing a colon use Docker's `--mount` syntax to keep the source unambiguous. Some compatible runtimes support only `-v`, so those unusual paths may not work there. A POSIX path containing both a colon and comma is rejected because neither Docker syntax can represent it safely.
 - Do not reimplement session search logic in the agent when this wrapper already exists.
