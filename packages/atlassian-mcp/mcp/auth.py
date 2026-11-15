@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from mcp.client.auth import OAuthClientProvider
-from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken
 
 OAUTH_SCOPES = (
     "read:me read:account offline_access email "
@@ -111,7 +111,17 @@ class OAuthTokenStore:
         value = self._read()
         value["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
         value["expires_at"] = time.time() + tokens.expires_in if tokens.expires_in is not None else None
+        context = getattr(self, "oauth_context", None)
+        metadata = getattr(context, "oauth_metadata", None)
+        if metadata is not None:
+            value["oauth_metadata"] = metadata.model_dump(mode="json", exclude_none=True)
         self._write(value)
+
+    def get_oauth_metadata(self):
+        item = self._read().get("oauth_metadata")
+        if not item:
+            return None
+        return OAuthMetadata.model_validate(item)
 
     def get_expiry_time(self) -> float | None:
         return self._read().get("expires_at")
@@ -144,7 +154,14 @@ def create_oauth_provider(
         scope=OAUTH_SCOPES,
         client_name="AACT Atlassian MCP",
     )
-    provider = OAuthClientProvider(
+    class AtlassianOAuthProvider(OAuthClientProvider):
+        async def _initialize(self) -> None:
+            await super()._initialize()
+            metadata = store.get_oauth_metadata()
+            if metadata is not None:
+                self.context.oauth_metadata = metadata
+
+    provider = AtlassianOAuthProvider(
         server_url="https://mcp.atlassian.com/v2/mcp",
         client_metadata=metadata,
         storage=store,
@@ -153,6 +170,17 @@ def create_oauth_provider(
         timeout=timeout,
         client_metadata_url=client_metadata_url,
     )
+    store.oauth_context = provider.context
+    provider.context.oauth_metadata = store.get_oauth_metadata()
+    if provider.context.oauth_metadata is None and store._read().get("tokens"):
+        # Older AACT state files predate metadata persistence. Atlassian's
+        # published OAuth endpoints are stable and prevent SDK fallback to
+        # the MCP resource origin's /token endpoint on refresh.
+        provider.context.oauth_metadata = OAuthMetadata(
+            issuer="https://auth.atlassian.com",
+            authorization_endpoint="https://auth.atlassian.com/authorize",
+            token_endpoint="https://auth.atlassian.com/oauth/token",
+        )
     # mcp 1.30 restores tokens but not the expiry timestamp needed to refresh them.
     provider.context.token_expiry_time = store.get_expiry_time()
     return provider
