@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/browsercontroller"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -568,6 +569,28 @@ func Validate(p Package) error {
 			}
 			if input.Type != "boolean" {
 				return fmt.Errorf("mcp %s enabled_input %q must be boolean", mcp.Name, mcp.EnabledInput)
+			}
+		}
+		if mcp.BrowserController != nil {
+			if err := browsercontroller.ValidateStartupURL(mcp.BrowserController.StartupURL); err != nil {
+				return fmt.Errorf("mcp %s browser_controller startup_url is invalid: %w", mcp.Name, err)
+			}
+			inputName := mcp.BrowserController.ProfileVolumeInput
+			input, ok := inputsByName[inputName]
+			if !ok || input.Type != "string" || !input.Required || len(input.VisibleWhen) > 0 {
+				return fmt.Errorf("mcp %s browser_controller profile_volume_input %q must reference a required, unconditionally visible string input", mcp.Name, inputName)
+			}
+			if inputName := mcp.BrowserController.AccessConfigInput; inputName != "" {
+				input, ok := inputsByName[inputName]
+				if !ok || input.Type != "string" || input.Required || len(input.VisibleWhen) > 0 {
+					return fmt.Errorf("mcp %s browser_controller access_config_input %q must reference an optional, unconditionally visible string input", mcp.Name, inputName)
+				}
+			}
+			if len(mcp.BrowserController.DefaultPopupAllowedURLs) > 0 && mcp.BrowserController.AccessConfigInput == "" {
+				return fmt.Errorf("mcp %s browser_controller default_popup_allowed_urls requires access_config_input", mcp.Name)
+			}
+			if mcp.Runtime != "docker" {
+				return fmt.Errorf("mcp %s browser_controller requires the docker runtime", mcp.Name)
 			}
 		}
 		for _, ref := range []struct{ field, name, wantType string }{

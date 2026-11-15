@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/browsercontroller"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/daemon"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
@@ -489,7 +490,7 @@ func runVaultService(parent context.Context, config daemonBootstrap) error {
 		APIListenIP:    bindIP,
 		APICertificate: publicCert,
 		ControlAddress: "http://" + controlListener.Addr().String(),
-		Services:       []string{"vault"},
+		Services:       []string{"vault", "browser"},
 	}
 	if err := writeDaemonInfo(filepath.Join(config.StateRoot, daemonInfoFilename), info); err != nil {
 		_ = apiListener.Close()
@@ -498,13 +499,21 @@ func runVaultService(parent context.Context, config daemonBootstrap) error {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	host := daemon.NewHost()
+	host := daemon.NewAuthenticatedHost(api.AuthenticateDaemonRequest)
 	if err := host.Register("vault", "/", api); err != nil {
 		_ = apiListener.Close()
 		_ = controlListener.Close()
 		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
 		return err
 	}
+	api.browserService = browsercontroller.NewDockerService(api.BrowserConfiguration)
+	if err := host.Register("browser", "/v1/browser/", api.browserService); err != nil {
+		_ = apiListener.Close()
+		_ = controlListener.Close()
+		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		return err
+	}
+	go runBrowserReaper(ctx, api)
 	apiServer, err := daemon.StartServer(ctx, tls.NewListener(apiListener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}), host)
 	if err != nil {
 		_ = apiListener.Close()
@@ -802,6 +811,31 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 			return
 		}
 		switch {
+		case r.URL.Path == "/browser/configurations" && r.Method == http.MethodPost:
+			var request browserRegistration
+			if err := decodeControlJSONLimit(w, r, &request, 256*1024); err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if err := api.RegisterBrowser(request.Instance, request.ContainerID, request.Config); err != nil {
+				http.Error(w, "cannot register browser configuration", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/browser/configurations/") && r.Method == http.MethodDelete:
+			container := strings.TrimPrefix(r.URL.Path, "/browser/configurations/")
+			if err := api.UnregisterBrowser(r.Context(), container); err != nil {
+				http.Error(w, "cannot stop or unregister browser", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/browser/configurations/") && strings.HasSuffix(r.URL.Path, "/stop") && r.Method == http.MethodPost:
+			container := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/browser/configurations/"), "/stop")
+			if err := api.stopBrowserRegistration(r.Context(), container, false); err != nil {
+				http.Error(w, "cannot pause browser", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/container-network" && r.Method == http.MethodPost:
 			var request struct {
 				APIListenAddress string `json:"api_listen_address"`
@@ -915,7 +949,11 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 }
 
 func decodeControlJSON(w http.ResponseWriter, r *http.Request, destination any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	return decodeControlJSONLimit(w, r, destination, 4096)
+}
+
+func decodeControlJSONLimit(w http.ResponseWriter, r *http.Request, destination any, limit int64) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err

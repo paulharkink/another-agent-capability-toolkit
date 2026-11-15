@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,9 +11,33 @@ import (
 // Host composes HTTP APIs provided by services running inside the AACT daemon.
 // The first hosted service is the shared-secret vault.
 type Host struct {
-	mux      *http.ServeMux
-	services map[string]string
-	routes   map[string]struct{}
+	mux                   *http.ServeMux
+	services              map[string]string
+	routes                map[string]struct{}
+	authenticate          func(string) (ClientIdentity, bool)
+	requireAuthentication bool
+}
+
+type clientContextKey struct{}
+
+// ClientIdentity describes the instance and container bound to a credential.
+type ClientIdentity struct {
+	Instance    string
+	ContainerID string
+}
+
+// ClientFromContext returns the client authenticated by the daemon host.
+func ClientFromContext(ctx context.Context) (ClientIdentity, bool) {
+	client, ok := ctx.Value(clientContextKey{}).(ClientIdentity)
+	return client, ok && client.Instance != ""
+}
+
+// NewAuthenticatedHost authenticates callers before routing to any service.
+func NewAuthenticatedHost(authenticate func(string) (ClientIdentity, bool)) *Host {
+	h := NewHost()
+	h.authenticate = authenticate
+	h.requireAuthentication = true
+	return h
 }
 
 func NewHost() *Host {
@@ -51,6 +76,18 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.mux == nil {
 		http.Error(w, "AACT daemon is unavailable", http.StatusServiceUnavailable)
 		return
+	}
+	if h.requireAuthentication {
+		client, ok := ClientIdentity{}, false
+		if h.authenticate != nil {
+			client, ok = h.authenticate(r.Header.Get("Authorization"))
+		}
+		if !ok || client.Instance == "" {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), clientContextKey{}, client))
 	}
 	h.mux.ServeHTTP(w, r)
 }

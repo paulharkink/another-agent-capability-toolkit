@@ -101,6 +101,7 @@ type ConditionalPort struct {
 	When               map[string]any `toml:"when" json:"when"`
 }
 type MCP struct {
+	BrowserController     *BrowserController `toml:"browser_controller" json:"browser_controller,omitempty"`
 	CredentialFiles       []string           `toml:"credential_files" json:"credential_files,omitempty"`
 	Name                  string             `toml:"name" json:"name"`
 	EnabledInput          string             `toml:"enabled_input" json:"enabled_input,omitempty"`
@@ -135,6 +136,14 @@ type MCP struct {
 	RegistrationTimeoutMS int                `toml:"registration_timeout_ms" json:"registration_timeout_ms"`
 	Actions               map[string]Command `toml:"actions" json:"actions"`
 	AdditionalPorts       []ConditionalPort  `toml:"additional_ports" json:"additional_ports,omitempty"`
+}
+
+type BrowserController struct {
+	AdapterPath             string   `toml:"adapter_path" json:"adapter_path,omitempty"`
+	ProfileVolumeInput      string   `toml:"profile_volume_input" json:"profile_volume_input"`
+	AccessConfigInput       string   `toml:"access_config_input" json:"access_config_input,omitempty"`
+	StartupURL              string   `toml:"startup_url" json:"startup_url,omitempty"`
+	DefaultPopupAllowedURLs []string `toml:"default_popup_allowed_urls" json:"default_popup_allowed_urls,omitempty"`
 }
 
 // ShouldAuthenticateOnApply preserves the historical behavior when the

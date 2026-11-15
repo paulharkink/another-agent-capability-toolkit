@@ -102,6 +102,13 @@ archives:
       - LICENSE
       - THIRD_PARTY_NOTICES.md
       - packages/**
+      - images/browser-authentication-helper/Dockerfile
+      - images/browser-authentication-helper/README.md
+      - images/browser-authentication-helper/*.py
+      - images/browser-authentication-helper/*.js
+      - images/browser-authentication-helper/requirements.txt
+      - images/browser-authentication-helper/browser-authentication-helper
+      - images/browser-authentication-helper/custom_startup.sh
       - src: build/vault-handoff-helpers/aact-vault-handoff-linux-*
         dst: dist/helpers
         strip_parent: true
