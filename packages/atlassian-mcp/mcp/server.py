@@ -34,6 +34,7 @@ PORT = int(os.environ.get("AACT_ATLASSIAN_LOCAL_PORT", "8765"))
 CALLBACK_PORT = int(os.environ.get("AACT_ATLASSIAN_CALLBACK_PORT", str(PORT)))
 REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
 HEALTH_CACHE_SECONDS = 15
+LOGIN_URL_DISCOVERY_TIMEOUT_SECONDS = 60
 
 
 async def protected_health(
@@ -103,7 +104,25 @@ class AtlassianUpstream:
         return code, state
 
     def proxy_client(self) -> ProxyClient:
+        if self._login_task is not None and not self._login_task.done():
+            raise RuntimeError(
+                "Atlassian OAuth login is pending. Complete browser authorization, then retry."
+            )
         return ProxyClient(UPSTREAM_URL, auth=self._client)
+
+    def login_status(self) -> dict[str, object]:
+        task = self._login_task
+        if task is None:
+            status = "complete" if self._authenticated else "not_started"
+        elif not task.done():
+            status = "pending"
+        elif task.cancelled():
+            status = "cancelled"
+        elif task.exception() is not None:
+            status = "failed"
+        else:
+            status = "complete" if self._authenticated else "failed"
+        return {"login_status": status, "authenticated": self._authenticated}
 
     async def identity(self) -> object:
         async with Client(UPSTREAM_URL, auth=self._client, timeout=30) as client:
@@ -146,16 +165,28 @@ class AtlassianUpstream:
         self._login_task = asyncio.create_task(self._login.run(begin))
         self._login_task.add_done_callback(observe_login_task)
         url_waiter = asyncio.create_task(self._login.wait_for_url(timeout=3600))
-        done, _ = await asyncio.wait(
-            {url_waiter, self._login_task}, timeout=60, return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {url_waiter, self._login_task},
+                timeout=LOGIN_URL_DISCOVERY_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            url_waiter.cancel()
+            self._login_task.cancel()
+            await asyncio.gather(url_waiter, self._login_task, return_exceptions=True)
+            raise
         if url_waiter in done:
             return url_waiter.result()
         if self._login_task in done:
             url_waiter.cancel()
+            await asyncio.gather(url_waiter, return_exceptions=True)
             await self._login_task
             raise RuntimeError("Atlassian OAuth login ended before creating an authorization URL")
         url_waiter.cancel()
+        await asyncio.gather(url_waiter, return_exceptions=True)
+        self._login_task.cancel()
+        await asyncio.gather(self._login_task, return_exceptions=True)
         raise TimeoutError("Atlassian OAuth discovery did not produce an authorization URL in time")
 
     async def finish_callback(self, code: str | None, state: str | None, error: str | None = None) -> bool:
@@ -172,11 +203,19 @@ mcp = FastMCP(
     instructions="Transparent, authenticated proxy to Atlassian's official MCP service.",
     providers=[ProxyProvider(upstream.proxy_client, cache_ttl=60)],
 )
+# This server has one upstream provider. Surface its auth failures to MCP clients
+# instead of returning a misleading successful response with an empty tool list.
+mcp.provider_error_strategy = "raise"
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     return JSONResponse({"authenticated": await upstream.authenticated()})
+
+
+@mcp.custom_route("/auth/status", methods=["GET"])
+async def auth_status(_: Request) -> JSONResponse:
+    return JSONResponse(upstream.login_status())
 
 
 @mcp.custom_route("/auth/login", methods=["POST"])
@@ -185,7 +224,11 @@ async def login(_: Request) -> JSONResponse:
         authorization_url = await upstream.start_login()
         if authorization_url is None:
             return JSONResponse({"authenticated": True})
-        return JSONResponse({"authorization_url": authorization_url})
+        return JSONResponse({
+            "authorization_url": authorization_url,
+            "login_status": "pending",
+            "authenticated": False,
+        })
     except Exception as error:
         logging.getLogger(__name__).warning("Atlassian OAuth login could not start: %s", type(error).__name__)
         return JSONResponse({"error": "Atlassian OAuth login could not start"}, status_code=502)
@@ -248,7 +291,11 @@ def authenticate_action() -> int:
             "diagnostic": "Atlassian OAuth login did not return an authorization URL.",
         }, separators=(",", ":")))
         return 0
-    print(json.dumps({"login_url": authorization_url}, separators=(",", ":")))
+    print(json.dumps({
+        "auth_required": True,
+        "login_url": authorization_url,
+        "diagnostic": "Atlassian OAuth authorization is pending; complete it in the browser, then retry.",
+    }, separators=(",", ":")))
     return 0
 
 

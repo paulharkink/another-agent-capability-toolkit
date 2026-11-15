@@ -130,7 +130,9 @@ def test_container_authenticate_action_returns_oauth_url_as_action_json(monkeypa
 
     assert server.authenticate_action() == 0
     assert json.loads(capsys.readouterr().out) == {
-        "login_url": "https://auth.example/authorize?state=opaque"
+        "auth_required": True,
+        "login_url": "https://auth.example/authorize?state=opaque",
+        "diagnostic": "Atlassian OAuth authorization is pending; complete it in the browser, then retry.",
     }
 
 
@@ -184,3 +186,89 @@ def test_background_login_failure_is_consumed_without_logging_exception_text(cap
 
     assert "RuntimeError" in caplog.text
     assert "private token material" not in caplog.text
+
+
+def test_tools_list_fails_promptly_when_oauth_login_is_pending(monkeypatch):
+    async def exercise():
+        gate = asyncio.Event()
+        pending = asyncio.create_task(gate.wait())
+        monkeypatch.setattr(server.upstream, "_login_task", pending)
+
+        def unexpected_proxy_client(*_args, **_kwargs):
+            raise AssertionError("tools/list waited instead of rejecting pending OAuth")
+
+        monkeypatch.setattr(server, "ProxyClient", unexpected_proxy_client)
+        try:
+            with pytest.raises(RuntimeError, match="Atlassian OAuth login is pending"):
+                await asyncio.wait_for(server.mcp.list_tools(), timeout=0.2)
+        finally:
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(exercise())
+
+
+def test_login_url_discovery_timeout_cancels_task_and_releases_oauth_lock(monkeypatch):
+    async def exercise():
+        upstream = server.AtlassianUpstream()
+        monkeypatch.setattr(server, "AUTH_MODE", "oauth")
+        monkeypatch.setattr(server, "LOGIN_URL_DISCOVERY_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(upstream, "authenticated", lambda: asyncio.sleep(0, result=False))
+
+        async def block_inside_oauth_lock(operation):
+            async with upstream._client.context.lock:
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(upstream._login, "run", block_inside_oauth_lock)
+        with pytest.raises(TimeoutError, match="did not produce an authorization URL"):
+            await upstream.start_login()
+        assert upstream._login_task.done()
+        assert upstream._login_task.cancelled()
+        assert not upstream._client.context.lock.locked()
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_login_request_cancels_task_and_releases_oauth_lock(monkeypatch):
+    async def exercise():
+        upstream = server.AtlassianUpstream()
+        monkeypatch.setattr(server, "AUTH_MODE", "oauth")
+        monkeypatch.setattr(upstream, "authenticated", lambda: asyncio.sleep(0, result=False))
+        entered = asyncio.Event()
+
+        async def block_inside_oauth_lock(operation):
+            async with upstream._client.context.lock:
+                entered.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(upstream._login, "run", block_inside_oauth_lock)
+        request = asyncio.create_task(upstream.start_login())
+        await entered.wait()
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert upstream._login_task.cancelled()
+        assert not upstream._client.context.lock.locked()
+
+    asyncio.run(exercise())
+
+
+def test_auth_status_reports_failure_without_exception_details(monkeypatch):
+    async def exercise():
+        task = asyncio.create_task(fail_login())
+        await asyncio.sleep(0)
+        monkeypatch.setattr(server, "upstream", server.AtlassianUpstream())
+        server.upstream._login_task = task
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://test") as client:
+            response = await client.get("/auth/status")
+        return response
+
+    async def fail_login():
+        raise RuntimeError("secret token and callback state")
+
+    response = asyncio.run(exercise())
+    assert response.json() == {"login_status": "failed", "authenticated": False}
+    assert "secret" not in response.text

@@ -101,7 +101,7 @@ def test_parallel_expired_requests_refresh_once_and_persist_rotated_token(tmp_pa
         calls = {"refresh": 0, "resource": 0}
 
         async def respond(request):
-            if request.url.path == "/token":
+            if str(request.url) == "https://auth.atlassian.com/oauth/token":
                 calls["refresh"] += 1
                 await asyncio.sleep(0.02)
                 return httpx.Response(
@@ -277,3 +277,100 @@ def test_upstream_token_modes_preserve_bearer_and_basic_auth(mode, email, expect
         assert authorization == "Bearer fixture-token"
     else:
         assert authorization == "Basic cGVyc29uQGV4YW1wbGUuaW52YWxpZDpmaXh0dXJlLXRva2Vu"
+
+
+def test_provider_restart_restores_oauth_metadata_for_refresh(tmp_path):
+    async def exercise():
+        path = tmp_path / "oauth-state.json"
+        metadata = OAuthMetadata(
+            issuer="https://auth.example",
+            authorization_endpoint="https://auth.example/authorize",
+            token_endpoint="https://auth.example/oauth/token",
+        )
+        token = OAuthToken(
+            access_token="expired-fixture-token",
+            token_type="Bearer",
+            expires_in=-1,
+            refresh_token="fixture-refresh-token",
+            scope=OAUTH_SCOPES,
+        )
+        client_info = OAuthClientInformationFull(
+            client_id=CLIENT_METADATA_URL,
+            token_endpoint_auth_method="none",
+            redirect_uris=["http://127.0.0.1:8765/callback"],
+        )
+        path.write_text(
+            json.dumps(
+                {
+                    "tokens": token.model_dump(mode="json", exclude_none=True),
+                    "client_info": client_info.model_dump(mode="json", exclude_none=True),
+                    "expires_at": time.time() - 10,
+                    "oauth_metadata": metadata.model_dump(mode="json", exclude_none=True),
+                }
+            )
+        )
+        store = OAuthTokenStore(path)
+        provider = create_oauth_provider(
+            store=store,
+            client_metadata_url=CLIENT_METADATA_URL,
+            redirect_uri="http://127.0.0.1:8765/callback",
+            redirect_handler=None,
+            callback_handler=None,
+        )
+        assert provider.context.oauth_metadata == metadata
+
+        calls = []
+
+        async def respond(request):
+            calls.append((request.method, str(request.url)))
+            if str(request.url) == "https://auth.example/oauth/token":
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "rotated-fixture-token",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "refresh_token": "rotated-fixture-refresh",
+                        "scope": OAUTH_SCOPES,
+                    },
+                    request=request,
+                )
+            return httpx.Response(200, request=request)
+
+        async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(respond)) as client:
+            response = await client.get("https://mcp.atlassian.com/v2/mcp")
+        return calls, response.status_code
+
+    calls, status = asyncio.run(exercise())
+    assert status == 200
+    assert ("POST", "https://auth.example/oauth/token") in calls
+    assert not any(url == "https://mcp.atlassian.com/token" for _, url in calls)
+
+
+def test_legacy_atlassian_state_uses_published_refresh_endpoint(tmp_path):
+    async def exercise():
+        path = tmp_path / "oauth-state.json"
+        path.write_text(json.dumps({
+            "tokens": {"access_token": "old", "token_type": "Bearer", "refresh_token": "refresh", "scope": OAUTH_SCOPES},
+            "client_info": {"client_id": CLIENT_METADATA_URL, "token_endpoint_auth_method": "none",
+                            "redirect_uris": ["http://127.0.0.1:8765/callback"]},
+            "expires_at": time.time() - 10,
+        }))
+        provider = create_oauth_provider(
+            store=OAuthTokenStore(path), client_metadata_url=CLIENT_METADATA_URL,
+            redirect_uri="http://127.0.0.1:8765/callback", redirect_handler=None, callback_handler=None,
+        )
+        calls = []
+
+        async def respond(request):
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"access_token": "renewed", "token_type": "Bearer",
+                "expires_in": 3600, "refresh_token": "next", "scope": OAUTH_SCOPES}, request=request)
+
+        async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(respond)) as client:
+            await client.get("https://mcp.atlassian.com/v2/mcp")
+        return calls
+
+    assert asyncio.run(exercise()) == [
+        "https://auth.atlassian.com/oauth/token", "https://mcp.atlassian.com/v2/mcp"
+    ]
