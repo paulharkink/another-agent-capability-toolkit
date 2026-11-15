@@ -12,34 +12,53 @@ import (
 	"golang.org/x/term"
 )
 
-func runVaultCommand(args []string, out, errOut io.Writer) int {
+func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) int {
 	if len(args) != 1 || (args[0] != "status" && args[0] != "stop") {
-		fmt.Fprintln(errOut, "usage: aact vault status|stop")
+		if legacyVault {
+			fmt.Fprintln(errOut, "usage: aact vault status|stop")
+		} else {
+			fmt.Fprintln(errOut, "usage: aact daemon status|stop")
+		}
 		return 2
+	}
+	name := "AACT daemon"
+	if legacyVault {
+		name = "Vault daemon"
 	}
 	root := state.DefaultRoot(runtime.GOOS, homeDirectory(), os.Getenv)
 	if args[0] == "stop" {
 		info, err := vault.ReadDaemonInfo(root)
 		if os.IsNotExist(err) {
-			fmt.Fprintln(out, "Vault daemon is not running")
+			fmt.Fprintln(out, name+" is not running")
 			return 0
 		}
 		if err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprintln(errOut, "stopping the vault daemon requires an interactive terminal to unlock the vault")
-			return 2
-		}
-		fmt.Fprint(errOut, "Vault master password: ")
-		password, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(errOut)
+		password, configured, err := configuredVaultPassword()
 		if err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
+		if !configured && !term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintln(errOut, "stopping the AACT daemon requires an interactive terminal to unlock the vault")
+			return 2
+		}
+		if !configured {
+			fmt.Fprint(errOut, "Vault master password: ")
+			password, err = term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(errOut)
+			if err != nil {
+				fmt.Fprintln(errOut, err)
+				return 1
+			}
+		}
 		defer clear(password)
+		if len(password) == 0 {
+			fmt.Fprintln(errOut, "vault master password must not be empty")
+			return 1
+		}
 		controlToken, err := vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
 		if err != nil {
 			fmt.Fprintln(errOut, err)
@@ -50,19 +69,19 @@ func runVaultCommand(args []string, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
-		fmt.Fprintln(out, "Vault daemon stopped")
+		fmt.Fprintln(out, name+" stopped")
 		return 0
 	}
 	info, err := vault.ReadDaemonInfo(root)
 	if err != nil {
-		fmt.Fprintln(errOut, "Vault daemon is not running")
+		fmt.Fprintln(errOut, name+" is not running")
 		return 1
 	}
 	if !vault.DaemonRunning(info) {
-		fmt.Fprintln(errOut, "Vault daemon is not running")
+		fmt.Fprintln(errOut, name+" is not running")
 		return 1
 	}
-	fmt.Fprintf(out, "Vault daemon running at %s\n", info.APIAddress)
+	fmt.Fprintf(out, "%s running at %s\n", name, info.APIAddress)
 	return 0
 }
 

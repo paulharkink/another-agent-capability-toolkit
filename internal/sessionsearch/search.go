@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
 )
 
@@ -24,6 +25,7 @@ type OSRunner struct{}
 
 func (OSRunner) Run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer) error {
 	command := exec.CommandContext(ctx, args[0], args[1:]...)
+	command.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
 	command.Stdin = in
 	command.Stdout = out
 	command.Stderr = diagnostics

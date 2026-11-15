@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,20 @@ type Executor interface {
 	Run(context.Context, []string, string, []byte, map[string]string, func([]byte)) ([]byte, error)
 }
 type OSExecutor struct{}
+
+// EnvironmentWithoutVaultPassword prevents AACT's optional master-password
+// inputs from propagating to subprocesses launched by AACT.
+func EnvironmentWithoutVaultPassword(environment []string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, "AACT_VAULT_PASSWORD") || strings.EqualFold(name, "AACT_VAULT_PASSWORD_FILE") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
 
 // ConfigureChildProcessTree prepares cmd so SignalChildProcessTree can target
 // its descendants as well as the command itself.
@@ -72,8 +87,11 @@ func Run(ctx context.Context, argv []string, cwd string, stdin []byte, env map[s
 func runCommand(ctx context.Context, cmd *exec.Cmd, cwd string, stdin []byte, env map[string]string, onStderr func([]byte)) ([]byte, error) {
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Env = os.Environ()
+	cmd.Env = EnvironmentWithoutVaultPassword(os.Environ())
 	for k, v := range env {
+		if strings.EqualFold(k, "AACT_VAULT_PASSWORD") || strings.EqualFold(k, "AACT_VAULT_PASSWORD_FILE") {
+			continue
+		}
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.WaitDelay = 2 * time.Second

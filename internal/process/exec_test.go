@@ -32,8 +32,30 @@ func TestProcessFixture(t *testing.T) {
 		time.Sleep(30 * time.Second)
 	case "large":
 		fmt.Print(strings.Repeat("x", 17<<20))
+	case "vault-env":
+		fmt.Fprintf(os.Stdout, "%s|%s", os.Getenv("AACT_VAULT_PASSWORD"), os.Getenv("AACT_VAULT_PASSWORD_FILE"))
+		fmt.Fprintf(os.Stderr, "%s|%s", os.Getenv("AACT_VAULT_PASSWORD"), os.Getenv("AACT_VAULT_PASSWORD_FILE"))
 	}
 	os.Exit(0)
+}
+
+func TestRunFiltersVaultPasswordsFromInheritedAndExplicitEnvironment(t *testing.T) {
+	t.Setenv("AACT_VAULT_PASSWORD", "parent-password")
+	t.Setenv("AACT_VAULT_PASSWORD_FILE", "/run/secrets/parent-password")
+	env := fixtureEnv("vault-env")
+	env["AACT_VAULT_PASSWORD"] = "explicit-child-password"
+	env["AACT_VAULT_PASSWORD_FILE"] = "/tmp/child-password"
+	var diagnostics strings.Builder
+	output, err := Run(context.Background(), fixtureArgv(), t.TempDir(), nil, env, func(data []byte) { diagnostics.Write(data) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "|" {
+		t.Fatalf("child received AACT vault password environment: %q", output)
+	}
+	if diagnostics.String() != "|" {
+		t.Fatalf("child diagnostics received AACT vault password environment: %q", diagnostics.String())
+	}
 }
 
 func fixtureEnv(mode string) map[string]string {

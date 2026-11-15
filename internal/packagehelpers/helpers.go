@@ -587,6 +587,7 @@ func (h *Helper) azure(ctx context.Context, q mcp.ActionRequest, raw map[string]
 		argv := append(append([]string{"docker"}, base...), "login", "--use-device-code", "--tenant", tenant, "--output", "none")
 		if h.Executor == nil {
 			command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+			command.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
 			command.Stdin = os.Stdin
 			command.Stdout = callbackProgress{h.OnStderr}
 			command.Stderr = callbackProgress{h.OnStderr}

@@ -170,6 +170,16 @@ Windows. Override with `--state-dir` or `AACT_STATE_DIR`. Installed releases and
 manager state are separate: updating the launcher retains resources that existing
 managed skill links still reference.
 
+AACT's daemon hosts the KeePass-backed secret service. The daemon continues
+running after the manager exits; use `aact daemon status` and `aact daemon stop`
+to inspect or stop it. The older `aact vault` commands remain available.
+
+AACT normally asks for the vault master password interactively. To supply it
+without a prompt, set either `AACT_VAULT_PASSWORD_FILE` to a readable file path
+or `AACT_VAULT_PASSWORD` to the password. Set only one. AACT removes one final
+newline from a password file and does not pass these variables to capability
+subprocesses. The same password must be used to open an existing vault.
+
 ## Build and verify from source
 
 Development uses the Go version pinned in go.mod. Go is needed to develop or
