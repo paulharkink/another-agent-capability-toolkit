@@ -1,7 +1,9 @@
 # Guidance for agents working on AACT
 
 AACT installs agent skills and configures MCP servers. Read `README.md` and
-`CONTRIBUTING.md` for project context and contribution requirements.
+`CONTRIBUTING.md` for project context and contribution requirements. Use the
+[project vocabulary](docs/project-vocabulary.md) for the agreed meaning of
+Capability Instance and Profile.
 
 ## Repository layout
 
