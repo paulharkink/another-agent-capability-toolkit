@@ -97,6 +97,10 @@ def test_streamable_http_tools_list_does_not_wait_for_pending_oauth_and_recovers
                     request=request,
                 )
             if str(request.url) == "https://auth.example/oauth/token":
+                form = dict(parse_qs(request.content.decode()))
+                assert form["grant_type"] == ["authorization_code"]
+                assert form["code"] == ["fixture-code"]
+                assert form["code_verifier"][0]
                 return httpx.Response(
                     200,
                     json={
@@ -169,6 +173,8 @@ def test_streamable_http_tools_list_does_not_wait_for_pending_oauth_and_recovers
                 await asyncio.wait_for(upstream._login_task, timeout=2)
                 assert upstream._authenticated is True
                 assert not upstream._client.context.lock.locked()
+                saved_state = json.loads((tmp_path / "oauth-state.json").read_text())
+                assert saved_state["oauth_metadata"]["token_endpoint"] == "https://auth.example/oauth/token"
 
                 tools = await list_local_tools(timeout=2)
                 assert [tool.name for tool in tools.tools] == ["fixture_search"]
