@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,14 +28,13 @@ func TestFindSessionReadOnlyMounts(t *testing.T) {
 	if err := s.Run(context.Background(), []string{"-g", "fixture"}, home, false); err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(r.Args[1], " ")
-	for _, p := range []string{".claude", ".codex", ".local/share/opencode"} {
-		if !strings.Contains(args, "src="+filepath.Join(home, filepath.FromSlash(p))) {
-			t.Fatal(args)
-		}
+	want := []string{
+		filepath.Join(home, ".claude") + ":/root/.claude:ro",
+		filepath.Join(home, ".codex") + ":/root/.codex:ro",
+		filepath.Join(home, ".local", "share", "opencode") + ":/root/.local/share/opencode:ro",
 	}
-	if strings.Count(args, ",readonly") != 3 {
-		t.Fatal(args)
+	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
+		t.Fatalf("volume specs = %#v, want %#v (argv %#v)", got, want, r.Args[1])
 	}
 }
 func TestMissingAgentHistorySkipped(t *testing.T) {
@@ -45,11 +45,74 @@ func TestMissingAgentHistorySkipped(t *testing.T) {
 	if err := s.Run(context.Background(), nil, home, false); err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(r.Args[1], " ")
-	if strings.Count(args, "--mount") != 1 || strings.Contains(args, ".claude") || strings.Contains(args, "opencode") {
-		t.Fatal(args)
+	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) || containsArg(r.Args[1], ".claude") || containsArg(r.Args[1], "opencode") {
+		t.Fatalf("unexpected docker mount args: %#v", r.Args[1])
 	}
 }
+
+func TestVolumeMountPreservesCommaAndSpaceInPath(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home, with spaces")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: t.TempDir()}
+	if err := s.Run(context.Background(), nil, home, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
+		t.Fatalf("volume specs = %#v, want %#v", got, want)
+	}
+}
+
+func TestColonPathUsesMountSyntaxToPreserveSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths only permit a drive-letter colon")
+	}
+	home := filepath.Join(t.TempDir(), "home:with-colon")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: t.TempDir()}
+	if err := s.Run(context.Background(), nil, home, false); err != nil {
+		t.Fatal(err)
+	}
+	argv := r.Args[1]
+	want := "type=bind,src=" + filepath.Join(home, ".codex") + ",dst=/root/.codex,readonly"
+	if !containsValueAfter(argv, "--mount", want) {
+		t.Fatalf("colon path was not preserved with mount syntax: %#v", argv)
+	}
+}
+
+func TestColonAndCommaPathIsRejectedBeforeRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths cannot contain colons outside the drive prefix")
+	}
+	home := filepath.Join(t.TempDir(), "home:with,colon")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: t.TempDir()}
+	if err := s.Run(context.Background(), nil, home, false); err == nil {
+		t.Fatal("ambiguous volume path should fail before docker run")
+	}
+	if len(r.Args) != 1 || r.Args[0][1] != "build" {
+		t.Fatalf("docker run was invoked for an ambiguous path: %#v", r.Args)
+	}
+}
+
+func TestWindowsVolumeSyntaxKeepsDriveLetterColon(t *testing.T) {
+	got := mountArgs(`C:\Users\Alice\.codex`, "/root/.codex", "windows")
+	want := []string{"-v", `C:\Users\Alice\.codex:/root/.codex:ro`}
+	if !equalStrings(got, want) {
+		t.Fatalf("Windows volume args = %#v, want %#v", got, want)
+	}
+}
+
 func TestTTYOnlyWhenInteractive(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
 		r := &commandRecorder{}
@@ -75,9 +138,50 @@ func TestWindowsLauncherPaths(t *testing.T) {
 	if r.Args[0][len(r.Args[0])-1] != filepath.Join(packageDir, "container") {
 		t.Fatal(r.Args)
 	}
-	if !strings.Contains(strings.Join(r.Args[1], " "), "src="+filepath.Join(home, ".codex")) {
-		t.Fatal(r.Args)
+	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
+		t.Fatalf("volume specs = %#v, want %#v", got, want)
 	}
+}
+
+func volumeSpecs(argv []string) []string {
+	var specs []string
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "-v" {
+			specs = append(specs, argv[i+1])
+		}
+	}
+	return specs
+}
+
+func containsArg(argv []string, want string) bool {
+	for _, arg := range argv {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsValueAfter(argv []string, flag, want string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestReleaseBuildUsesVersionedPublishedImageWithoutBuilding(t *testing.T) {

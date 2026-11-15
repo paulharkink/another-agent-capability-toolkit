@@ -1,16 +1,17 @@
 // Package sessionsearch launches the bundled Docker session search without
-// requiring a host interpreter, while mounting existing history read-only.
+// requiring a host interpreter, while requesting read-only history mounts.
 package sessionsearch
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo"
@@ -108,10 +109,10 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 		if !info.IsDir() {
 			continue
 		}
-		if strings.Contains(source, ",") {
-			return errors.New("Docker history mount path cannot contain a comma")
+		if runtime.GOOS != "windows" && strings.Contains(source, ":") && strings.Contains(source, ",") {
+			return fmt.Errorf("Docker cannot represent history path %q containing both ':' and ','", source)
 		}
-		argv = append(argv, "--mount", "type=bind,src="+source+",dst="+mapping.destination+",readonly")
+		argv = append(argv, mountArgs(source, mapping.destination, runtime.GOOS)...)
 	}
 	if interactive {
 		argv = append(argv, "--interactive", "--tty")
@@ -120,6 +121,18 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 	argv = append(argv, args...)
 	return runner.Run(ctx, argv, stdin, stdout, stderr)
 }
+
+func mountArgs(source, destination, goos string) []string {
+	// The volume syntax works with Docker-compatible runtimes such as
+	// Kubedock. A colon in a POSIX source path is ambiguous in that syntax, so
+	// retain --mount for that uncommon path shape. Windows drive-letter colons
+	// are a recognized part of Windows volume paths.
+	if goos != "windows" && strings.Contains(source, ":") {
+		return []string{"--mount", "type=bind,src=" + source + ",dst=" + destination + ",readonly"}
+	}
+	return []string{"-v", source + ":" + destination + ":ro"}
+}
+
 func Run(ctx context.Context, args []string, home string, interactive bool) error {
 	return (&Search{}).Run(ctx, args, home, interactive)
 }

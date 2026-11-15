@@ -4,3 +4,4 @@ name = "Find Session"
 
 [skill]
 name = "find-session"
+files = ["bin", "container"]

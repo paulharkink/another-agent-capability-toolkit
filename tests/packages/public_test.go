@@ -1,8 +1,11 @@
 package packages_test
 
 import (
+	"context"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/render"
 	"github.com/pelletier/go-toml/v2"
 	"os"
 	"path/filepath"
@@ -255,5 +258,46 @@ func TestStrictShippedPublicCatalog(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// A release archive contains the native helper; installation must carry it
+// into the staged skill instead of publishing only SKILL.md.
+func TestFindSessionStagesReleaseLauncher(t *testing.T) {
+	_, source := loadPublic(t, "find-session")
+	dir := t.TempDir()
+	for _, name := range []string{"package.toml", "SKILL.md", "container/Dockerfile"} {
+		data, err := os.ReadFile(filepath.Join(source, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"find-session", "find-session.exe"} {
+		if err := os.WriteFile(filepath.Join(dir, "bin", name), []byte("release launcher"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := catalog.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := render.Stage(context.Background(), p, nil, config.Target{}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"find-session", "find-session.exe"} {
+		if _, err := os.Stat(filepath.Join(stage, "bin", name)); err != nil {
+			t.Fatalf("staged launcher %s missing: %v", name, err)
+		}
 	}
 }

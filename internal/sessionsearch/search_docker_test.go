@@ -12,7 +12,7 @@ import (
 )
 
 func TestSearchSyntheticHistoryInActualContainer(t *testing.T) {
-	home := t.TempDir()
+	home := filepath.Join(t.TempDir(), "synthetic, home with spaces")
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "30")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
