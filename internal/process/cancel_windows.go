@@ -30,5 +30,7 @@ func signalChildProcessTree(cmd *exec.Cmd, force bool) error {
 	args = append(args, "/PID", strconv.Itoa(cmd.Process.Pid))
 	// taskkill /T targets descendants as well as the wrapper process. Keep the
 	// error if it cannot run; falling back to Process.Kill would orphan children.
-	return exec.Command("taskkill", args...).Run()
+	command := exec.Command("taskkill", args...)
+	command.Env = EnvironmentWithoutVaultPassword(os.Environ())
+	return command.Run()
 }

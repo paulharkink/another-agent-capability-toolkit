@@ -10,6 +10,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/app"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/daemon"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/internal/tui"
@@ -47,6 +48,8 @@ aact agents | settings                   Show supported agents / configuration
 aact config set-instance-directory PATH  Save a default instance configuration directory
 aact config set-image-source release|local  Select MCP image source
 aact migrate --dry-run | --apply         Inspect or adopt legacy owned state
+aact daemon status|stop                 Show or stop the AACT background daemon
+       (legacy alias: aact vault status|stop)
 
 Flags: --config PATH --state-dir PATH --instance-directory PATH
        (legacy alias: --environment-root PATH)
@@ -106,8 +109,15 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	}
-	if len(args) > 0 && args[0] == "vault" {
-		return runVaultCommand(args[1:], out, errOut)
+	if len(args) > 0 && args[0] == "__aact-daemon" {
+		if err := daemon.Run(ctx, in, daemon.Registry{"vault": vault.RunService}); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && (args[0] == "vault" || args[0] == "daemon") {
+		return runDaemonCommand(args[1:], args[0] == "vault", out, errOut)
 	}
 	f, e := parse(args)
 	if e != nil {
@@ -178,33 +188,45 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	}
 	options := appOptions(errOut, bundle, len(f.args) == 0)
 	if in == os.Stdin && needsSharedVault(f.args) {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
+		terminal := term.IsTerminal(int(os.Stdin.Fd()))
+		passwordConfigured := hasConfiguredVaultPassword()
+		if !terminal && !passwordConfigured {
 			fmt.Fprintln(errOut, "this command needs the shared vault; run it from an interactive terminal to enter the vault master password")
 			return 2
 		}
 		if len(f.args) == 0 {
-			vaultPath := filepath.Join(store.Root(), "credentials.kdbx")
-			_, statErr := os.Stat(vaultPath)
-			creating := os.IsNotExist(statErr)
-			if statErr != nil && !creating {
-				fmt.Fprintln(errOut, fmt.Errorf("inspect shared vault: %w", statErr))
-				return 1
-			}
-			err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte) error {
-				return initializeSharedVaultWithPassword(store, store.Root(), password)
-			})
-			if errors.Is(err, tui.ErrVaultUnlockCanceled) {
-				return 0
-			}
-			if err != nil {
-				fmt.Fprintln(errOut, err)
-				return 1
+			if passwordConfigured {
+				if err := initializeSharedVault(store, store.Root(), errOut, nil); err != nil {
+					fmt.Fprintln(errOut, err)
+					return 1
+				}
+			} else {
+				vaultPath := filepath.Join(store.Root(), "credentials.kdbx")
+				_, statErr := os.Stat(vaultPath)
+				creating := os.IsNotExist(statErr)
+				if statErr != nil && !creating {
+					fmt.Fprintln(errOut, fmt.Errorf("inspect shared vault: %w", statErr))
+					return 1
+				}
+				err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte) error {
+					return initializeSharedVaultWithPassword(store, store.Root(), password)
+				})
+				if errors.Is(err, tui.ErrVaultUnlockCanceled) {
+					return 0
+				}
+				if err != nil {
+					fmt.Fprintln(errOut, err)
+					return 1
+				}
 			}
 		} else {
-			readPassword := func(string) ([]byte, error) {
-				password, err := term.ReadPassword(int(os.Stdin.Fd()))
-				fmt.Fprintln(errOut)
-				return password, err
+			var readPassword passwordReader
+			if terminal {
+				readPassword = func(string) ([]byte, error) {
+					password, err := term.ReadPassword(int(os.Stdin.Fd()))
+					fmt.Fprintln(errOut)
+					return password, err
+				}
 			}
 			if err := initializeSharedVault(store, store.Root(), errOut, readPassword); err != nil {
 				fmt.Fprintln(errOut, err)

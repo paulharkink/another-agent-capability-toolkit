@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/daemon"
 )
 
 func TestDaemonCertificatePairStoredAsOneRecordAndRepairsLegacyPartial(t *testing.T) {
@@ -44,11 +46,49 @@ func TestDaemonCertificatePairStoredAsOneRecordAndRepairsLegacyPartial(t *testin
 	}
 }
 
+func TestDaemonEnvironmentDoesNotForwardConfiguredVaultPassword(t *testing.T) {
+	got := daemonEnvironment([]string{
+		"PATH=/bin",
+		"AACT_VAULT_PASSWORD=do-not-forward",
+		"AACT_VAULT_PASSWORD_FILE=/run/secrets/password",
+		"AACT_OTHER=value",
+	})
+	if strings.Join(got, "|") != "PATH=/bin|AACT_OTHER=value" {
+		t.Fatalf("daemon environment=%q", got)
+	}
+}
+
+func TestReadDaemonInfoRejectsNonContainerAPIHost(t *testing.T) {
+	root := t.TempDir()
+	info := DaemonInfo{APIAddress: "https://example.com:8765", APIListenIP: "127.0.0.1", APICertificate: "certificate", ControlAddress: "http://127.0.0.1:8766"}
+	if err := daemon.WriteInfo(filepath.Join(root, daemon.InfoFilename), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDaemonInfo(root); err == nil || !strings.Contains(err.Error(), "invalid vault API address") {
+		t.Fatalf("ReadDaemonInfo error = %v, want vault host restriction", err)
+	}
+}
+
+func TestReadDaemonInfoFallsBackToLegacyMetadata(t *testing.T) {
+	root := t.TempDir()
+	info := DaemonInfo{APIAddress: "https://host.docker.internal:8765", APIListenIP: "127.0.0.1", APICertificate: "certificate", ControlAddress: "http://127.0.0.1:8766"}
+	if err := writeDaemonInfo(filepath.Join(root, daemon.LegacyInfoFilename), info); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadDaemonInfo(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIAddress != info.APIAddress {
+		t.Fatalf("API address = %q, want %q", got.APIAddress, info.APIAddress)
+	}
+}
+
 func TestVaultDaemonChildHelper(t *testing.T) {
 	if os.Getenv("AACT_TEST_DAEMON_CHILD") != "1" {
 		return
 	}
-	if err := RunDetached(context.Background(), os.Stdin); err != nil {
+	if err := daemon.Run(context.Background(), os.Stdin, daemon.Registry{"vault": RunService}); err != nil {
 		os.Exit(3)
 	}
 	os.Exit(0)
@@ -483,10 +523,15 @@ func TestStartDetachedClosesPreviousSpecificAPIListenerAfterRouteMove(t *testing
 	oldListener := newTrackedListener("127.0.0.1:32123")
 	newListener := newTrackedListener("127.0.0.2:32123")
 	t.Cleanup(func() { _ = newListener.Close() })
+	sharedServer, err := daemon.StartServer(context.Background(), oldListener, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sharedServer.Close() })
 	listenCalls := 0
 	manager := &apiListenerManager{
-		server:    &http.Server{},
-		info:      DaemonInfo{APIAddress: "https://host.docker.internal:32123", APIListenIP: "127.0.0.1", APICertificate: "test-cert"},
+		server:    sharedServer,
+		info:      DaemonInfo{APIAddress: "https://host.docker.internal:32123", APIListenIP: "127.0.0.1", APICertificate: "test-cert", ControlAddress: "http://127.0.0.1:32124"},
 		infoPath:  filepath.Join(t.TempDir(), daemonInfoFilename),
 		listeners: map[string]net.Listener{"127.0.0.1": oldListener},
 		serveErr:  make(chan error, 2),

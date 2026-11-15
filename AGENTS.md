@@ -5,6 +5,10 @@ AACT installs agent skills and configures MCP servers. Read `README.md` and
 [project vocabulary](docs/project-vocabulary.md) for the agreed meaning of
 Capability Instance and Profile.
 
+Use the documented [release procedure](docs/releasing.md). Merge the reviewed
+feature PRs first, then run the repository's **Request release** workflow. Do
+not create tags or start publication manually.
+
 ## Repository layout
 
 - `cmd/` contains executable entry points; `internal/` contains the manager,

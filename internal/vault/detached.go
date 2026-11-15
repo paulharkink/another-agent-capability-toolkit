@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -27,21 +28,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/daemon"
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
 
 const (
-	daemonInfoFilename           = "vault-daemon.json"
-	detachedDaemonStartupTimeout = 30 * time.Second
-	detachedDaemonPollInterval   = 100 * time.Millisecond
-	detachedDaemonLogTailBytes   = 16 << 10
+	daemonInfoFilename           = daemon.InfoFilename
+	detachedDaemonStartupTimeout = daemon.DefaultStartupTimeout
+	detachedDaemonPollInterval   = daemon.PollInterval
+	detachedDaemonLogTailBytes   = daemon.LogTailBytes
 )
 
-type DaemonInfo struct {
-	APIAddress     string `json:"api_address"`
-	APIListenIP    string `json:"api_listen_ip,omitempty"`
-	APICertificate string `json:"api_certificate"`
-	ControlAddress string `json:"control_address"`
-}
+type DaemonInfo = daemon.Info
 
 type daemonBootstrap struct {
 	StateRoot        string `json:"state_root"`
@@ -92,7 +91,7 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 	}
 	defer unlock()
 	infoPath := filepath.Join(root, daemonInfoFilename)
-	if info, err := readDaemonInfo(infoPath); err == nil {
+	if info, err := readDaemonInfoState(root); err == nil {
 		if daemonHealthy(info) {
 			updated, routeErr := EnsureContainerAPIReachable(info, controlToken)
 			if routeErr == nil {
@@ -118,61 +117,36 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 			}
 		}
 		_ = os.Remove(infoPath)
+		_ = os.Remove(filepath.Join(root, daemon.LegacyInfoFilename))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return DaemonInfo{}, err
 	}
-	bootstrap := daemonBootstrap{StateRoot: root, Password: append([]byte(nil), password...), ControlToken: append([]byte(nil), controlToken...), APIListenAddress: bindAddress}
-	payload, err := json.Marshal(bootstrap)
-	clear(bootstrap.Password)
-	clear(bootstrap.ControlToken)
+	serviceBootstrap := daemonBootstrap{StateRoot: root, Password: append([]byte(nil), password...), ControlToken: append([]byte(nil), controlToken...), APIListenAddress: bindAddress}
+	servicePayload, err := json.Marshal(serviceBootstrap)
+	clear(serviceBootstrap.Password)
+	clear(serviceBootstrap.ControlToken)
 	if err != nil {
 		return DaemonInfo{}, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(root, "vault-daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	bootstrap := daemon.Bootstrap{Services: []daemon.ServiceConfig{{Name: "vault", Configuration: servicePayload}}}
+	info, err := daemon.StartProcess(daemon.ProcessSpec{
+		Executable:  executable,
+		Args:        []string{"__aact-daemon"},
+		StateRoot:   root,
+		InfoPath:    infoPath,
+		LogPath:     filepath.Join(root, daemon.LogFilename),
+		Bootstrap:   bootstrap,
+		Environment: daemonEnvironment(os.Environ()),
+	})
+	clear(servicePayload)
 	if err != nil {
-		clear(payload)
 		return DaemonInfo{}, err
 	}
-	cmd := exec.Command(executable, "__vault-daemon")
-	configureDetachedProcess(cmd)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		_ = logFile.Close()
-		clear(payload)
-		return DaemonInfo{}, err
-	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = logFile.Close()
-		clear(payload)
-		return DaemonInfo{}, err
-	}
-	if _, err := stdin.Write(payload); err != nil {
-		_ = stdin.Close()
-		clear(payload)
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		_ = logFile.Close()
-		return DaemonInfo{}, err
-	}
-	clear(payload)
-	if err := stdin.Close(); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		_ = logFile.Close()
-		return DaemonInfo{}, err
-	}
-	_ = logFile.Close()
-	info, err := waitForDetachedDaemon(infoPath, filepath.Join(root, "vault-daemon.log"), detachedDaemonStartupTimeout)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return DaemonInfo{}, err
-	}
-	_ = cmd.Process.Release()
 	return info, nil
+}
+
+func daemonEnvironment(environment []string) []string {
+	return process.EnvironmentWithoutVaultPassword(environment)
 }
 
 func isLoopbackListenAddress(address string) bool {
@@ -195,10 +169,10 @@ func canReuseLoopbackDaemon(info DaemonInfo, requestedAddress string) bool {
 }
 
 func ReadDaemonInfo(stateRoot string) (DaemonInfo, error) {
-	return readDaemonInfo(filepath.Join(stateRoot, daemonInfoFilename))
+	return readDaemonInfoState(stateRoot)
 }
 
-func DaemonRunning(info DaemonInfo) bool { return daemonHealthy(info) }
+func DaemonRunning(info DaemonInfo) bool { return daemon.Running(info) }
 
 func IssueContainerToken(info DaemonInfo, controlToken []byte, namespace string) (string, error) {
 	if err := validateInstanceNamespace(namespace); err != nil {
@@ -265,20 +239,7 @@ func RevokeContainerTokensByID(info DaemonInfo, controlToken []byte, containerID
 }
 
 func StopDetached(info DaemonInfo, controlToken []byte) error {
-	if !daemonHealthy(info) {
-		return nil
-	}
-	if err := controlRequest(info, string(controlToken), http.MethodPost, "/shutdown", nil, nil); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for daemonHealthy(info) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if daemonHealthy(info) {
-		return errors.New("vault daemon did not stop before timeout")
-	}
-	return nil
+	return daemon.Stop(info, controlToken)
 }
 
 func ControlTokenForVault(path string, password []byte) ([]byte, error) {
@@ -451,10 +412,33 @@ func (s *Store) RevokeContainerHandoffByContainer(containerID string) error {
 
 func RunDetached(parent context.Context, in io.Reader) error {
 	var config daemonBootstrap
-	decoder := json.NewDecoder(io.LimitReader(in, 1<<20))
+	decoder := json.NewDecoder(io.LimitReader(in, maxVaultBootstrapBytes))
 	if err := decoder.Decode(&config); err != nil {
 		return fmt.Errorf("read vault daemon bootstrap: %w", err)
 	}
+	return runVaultService(parent, config)
+}
+
+func RunService(parent context.Context, raw json.RawMessage) error {
+	var config daemonBootstrap
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return fmt.Errorf("read vault service configuration: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected data after vault service configuration")
+		}
+		return fmt.Errorf("read vault service configuration trailer: %w", err)
+	}
+	return runVaultService(parent, config)
+}
+
+const maxVaultBootstrapBytes = 1 << 20
+
+func runVaultService(parent context.Context, config daemonBootstrap) error {
 	password := config.Password
 	config.Password = nil
 	defer clear(password)
@@ -505,6 +489,7 @@ func RunDetached(parent context.Context, in io.Reader) error {
 		APIListenIP:    bindIP,
 		APICertificate: publicCert,
 		ControlAddress: "http://" + controlListener.Addr().String(),
+		Services:       []string{"vault"},
 	}
 	if err := writeDaemonInfo(filepath.Join(config.StateRoot, daemonInfoFilename), info); err != nil {
 		_ = apiListener.Close()
@@ -513,11 +498,23 @@ func RunDetached(parent context.Context, in io.Reader) error {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	apiServer := &http.Server{Handler: api, ReadHeaderTimeout: 5 * time.Second}
+	host := daemon.NewHost()
+	if err := host.Register("vault", "/", api); err != nil {
+		_ = apiListener.Close()
+		_ = controlListener.Close()
+		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		return err
+	}
+	apiServer, err := daemon.StartServer(ctx, tls.NewListener(apiListener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}), host)
+	if err != nil {
+		_ = apiListener.Close()
+		_ = controlListener.Close()
+		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		return err
+	}
 	serveErr := make(chan error, 16)
 	network := &apiListenerManager{server: apiServer, certificate: certificate, info: info, infoPath: filepath.Join(config.StateRoot, daemonInfoFilename), listeners: map[string]net.Listener{bindIP: apiListener}, serveErr: serveErr}
 	controlServer := &http.Server{Handler: controlHandler(api, string(controlToken), cancel, network), ReadHeaderTimeout: 5 * time.Second}
-	serveAPILisener(apiServer, apiListener, certificate, serveErr)
 	go func() { serveErr <- controlServer.Serve(controlListener) }()
 	select {
 	case <-ctx.Done():
@@ -525,20 +522,27 @@ func RunDetached(parent context.Context, in io.Reader) error {
 		if !errors.Is(serveFailure, http.ErrServerClosed) && !errors.Is(serveFailure, net.ErrClosed) {
 			cancel()
 			_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+			_ = os.Remove(filepath.Join(config.StateRoot, daemon.LegacyInfoFilename))
 			return serveFailure
 		}
+	case serveFailure := <-apiServer.Errors():
+		cancel()
+		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		_ = os.Remove(filepath.Join(config.StateRoot, daemon.LegacyInfoFilename))
+		return serveFailure
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = apiServer.Shutdown(shutdownCtx)
 	_ = controlServer.Shutdown(shutdownCtx)
 	_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+	_ = os.Remove(filepath.Join(config.StateRoot, daemon.LegacyInfoFilename))
 	return nil
 }
 
 type apiListenerManager struct {
 	mu          sync.Mutex
-	server      *http.Server
+	server      *daemon.Server
 	certificate tls.Certificate
 	info        DaemonInfo
 	infoPath    string
@@ -624,16 +628,14 @@ func mustPort(address string) string {
 	return parsed.Port()
 }
 
-func serveAPILisener(server *http.Server, listener net.Listener, certificate tls.Certificate, errorsOut chan<- error) {
+func serveAPILisener(server *daemon.Server, listener net.Listener, certificate tls.Certificate, errorsOut chan<- error) {
 	tlsListener := tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
-	go func() {
-		if err := server.Serve(tlsListener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			select {
-			case errorsOut <- err:
-			default:
-			}
+	if err := server.AddListener(tlsListener); err != nil {
+		select {
+		case errorsOut <- err:
+		default:
 		}
-	}()
+	}
 }
 
 // vaultAPIListenAddress binds Docker Desktop clients through its host bridge to
@@ -687,13 +689,13 @@ func dockerDesktopEngine() (desktop, available bool, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.OperatingSystem}}").Output()
+	output, err := dockerCommand(ctx, "info", "--format", "{{.OperatingSystem}}").Output()
 	if err != nil {
 		return false, false, nil
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	endpointOutput, err := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
+	endpointOutput, err := dockerCommand(ctx, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
 	if err != nil {
 		return false, true, fmt.Errorf("inspect active Docker context before opening the vault route: %w", err)
 	}
@@ -702,6 +704,12 @@ func dockerDesktopEngine() (desktop, available bool, err error) {
 		return false, true, fmt.Errorf("active Docker endpoint %q is remote; automatic vault handoff requires a local Docker engine", endpoint)
 	}
 	return strings.Contains(strings.ToLower(string(output)), "docker desktop"), true, nil
+}
+
+func dockerCommand(ctx context.Context, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, "docker", args...)
+	command.Env = daemonEnvironment(os.Environ())
+	return command
 }
 
 func localDockerEndpoint(endpoint string) bool {
@@ -733,12 +741,12 @@ func dockerBridgeGatewayIP() (net.IP, bool, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").Run(); err != nil {
+	if err := dockerCommand(ctx, "info", "--format", "{{.ServerVersion}}").Run(); err != nil {
 		return nil, false, nil
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").Output()
+	output, err := dockerCommand(ctx, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").Output()
 	if err != nil {
 		return nil, true, fmt.Errorf("Docker Engine is running but its default bridge gateway could not be discovered: %w", err)
 	}
@@ -921,83 +929,14 @@ func decodeControlJSON(w http.ResponseWriter, r *http.Request, destination any) 
 
 func daemonHealthy(info DaemonInfo) bool { return daemonHealthError(info) == nil }
 
-func daemonHealthError(info DaemonInfo) error {
-	if err := validateDaemonInfo(info); err != nil {
-		return err
-	}
-	request, err := http.NewRequest(http.MethodGet, info.ControlAddress+"/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := daemonHealthHTTPClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
-	}
-	return nil
-}
+func daemonHealthError(info DaemonInfo) error { return daemon.Health(info) }
 
 func waitForDetachedDaemon(infoPath, logPath string, timeout time.Duration) (DaemonInfo, error) {
-	if timeout <= 0 {
-		timeout = detachedDaemonStartupTimeout
-	}
-	deadline := time.Now().Add(timeout)
-	lastError := errors.New("daemon metadata is not available")
-	for {
-		info, err := readDaemonInfo(infoPath)
-		if err != nil {
-			lastError = fmt.Errorf("read daemon metadata: %w", err)
-		} else if err := daemonHealthError(info); err != nil {
-			lastError = fmt.Errorf("daemon health check: %w", err)
-		} else {
-			return info, nil
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		delay := detachedDaemonPollInterval
-		if remaining < delay {
-			delay = remaining
-		}
-		time.Sleep(delay)
-	}
-	logText, err := readDetachedDaemonLogTail(logPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		logText = fmt.Sprintf("could not read daemon log: %v", err)
-	} else if strings.TrimSpace(logText) == "" {
-		logText = "daemon log is empty"
-	}
-	return DaemonInfo{}, fmt.Errorf("background vault daemon did not become ready within %s (%v): %s", timeout, lastError, logText)
+	return daemon.WaitReady(infoPath, logPath, timeout)
 }
 
 func readDetachedDaemonLogTail(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	truncated := info.Size() > detachedDaemonLogTailBytes
-	if truncated {
-		if _, err := file.Seek(-detachedDaemonLogTailBytes, io.SeekEnd); err != nil {
-			return "", err
-		}
-	}
-	data, err := io.ReadAll(io.LimitReader(file, detachedDaemonLogTailBytes))
-	if err != nil {
-		return "", err
-	}
-	if truncated {
-		return "[earlier log lines truncated]\n" + string(data), nil
-	}
-	return string(data), nil
+	return daemon.ReadLogTail(path)
 }
 
 // NewContainerHTTPClient pins the daemon's public certificate for API calls
@@ -1108,45 +1047,29 @@ func controlRequest(info DaemonInfo, controlToken, method, path string, body any
 	if len(controlToken) != 43 {
 		return errors.New("vault control token is invalid")
 	}
-	var encoded io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		encoded = strings.NewReader(string(raw))
+	err := daemon.ControlRequest(info, []byte(controlToken), method, path, body, result)
+	var statusErr *daemon.ControlStatusError
+	if errors.As(err, &statusErr) {
+		return fmt.Errorf("%w: %s", &controlStatusError{statusCode: statusErr.StatusCode}, statusErr.Message)
 	}
-	request, err := http.NewRequest(method, info.ControlAddress+path, encoded)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+controlToken)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, err := controlHTTPClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("%w: %s", &controlStatusError{statusCode: response.StatusCode}, strings.TrimSpace(string(message)))
-	}
-	if result != nil {
-		return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(result)
-	}
-	return nil
+	return err
 }
 
 func readDaemonInfo(path string) (DaemonInfo, error) {
-	var info DaemonInfo
-	data, err := os.ReadFile(path)
+	info, err := daemon.ReadInfo(path)
 	if err != nil {
-		return info, err
+		return DaemonInfo{}, err
 	}
-	if err := json.Unmarshal(data, &info); err != nil {
-		return info, err
+	if err := validateDaemonInfo(info); err != nil {
+		return DaemonInfo{}, err
+	}
+	return info, nil
+}
+
+func readDaemonInfoState(stateRoot string) (DaemonInfo, error) {
+	info, err := daemon.ReadStateInfo(stateRoot)
+	if err != nil {
+		return DaemonInfo{}, err
 	}
 	if err := validateDaemonInfo(info); err != nil {
 		return DaemonInfo{}, err
@@ -1158,6 +1081,9 @@ var controlHTTPClient = &http.Client{Timeout: 10 * time.Second, Transport: &http
 var daemonHealthHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 func validateDaemonInfo(info DaemonInfo) error {
+	if err := daemon.ValidateInfo(info); err != nil {
+		return fmt.Errorf("invalid AACT daemon metadata: %w", err)
+	}
 	api, err := url.Parse(info.APIAddress)
 	if err != nil || api.Scheme != "https" || (api.Hostname() != "host.docker.internal" && api.Hostname() != "localhost") || api.User != nil || api.Path != "" || api.RawQuery != "" || api.Fragment != "" || !validPort(api.Port()) {
 		return errors.New("invalid vault API address in daemon metadata")
@@ -1182,32 +1108,7 @@ func validPort(value string) bool {
 }
 
 func writeDaemonInfo(path string, info DaemonInfo) error {
-	data, err := json.Marshal(info)
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".vault-daemon-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return replaceFile(name, path)
+	return daemon.WriteInfo(path, info)
 }
 
 func portOf(addr net.Addr) string {

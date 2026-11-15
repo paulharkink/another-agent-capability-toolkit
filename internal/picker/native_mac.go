@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
 
 // macPickerScript runs as a temporary macOS applet. A plain osascript process
@@ -61,7 +63,9 @@ func selectMacNative(ctx context.Context, kind, initial string) (string, error) 
 	defer os.RemoveAll(dir)
 	app := filepath.Join(dir, "AACTPicker.app")
 	resultFile := filepath.Join(dir, "result.json")
-	output, err := exec.CommandContext(ctx, "osacompile", "-l", "JavaScript", "-o", app, "-e", macPickerScript).CombinedOutput()
+	compile := exec.CommandContext(ctx, "osacompile", "-l", "JavaScript", "-o", app, "-e", macPickerScript)
+	compile.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
+	output, err := compile.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -75,7 +79,9 @@ func selectMacNative(ctx context.Context, kind, initial string) (string, error) 
 	if initialDirectory == "." {
 		initialDirectory, _ = os.Getwd()
 	}
-	output, err = exec.CommandContext(ctx, "open", "-n", "-a", app, "--args", resultFile, kind, initialDirectory).CombinedOutput()
+	open := exec.CommandContext(ctx, "open", "-n", "-a", app, "--args", resultFile, kind, initialDirectory)
+	open.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
+	output, err = open.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

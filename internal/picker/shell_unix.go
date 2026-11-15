@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/internal/process"
 )
 
 func discoverPickerShell() (shellSpec, error) {
@@ -36,6 +38,7 @@ func discoverPickerShell() (shellSpec, error) {
 
 func unixParentProcess(pid int) (int, string, error) {
 	command := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=", "-o", "comm=")
+	command.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
 	output, err := command.Output()
 	if err != nil {
 		return 0, "", err
