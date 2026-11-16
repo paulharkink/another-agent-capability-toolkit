@@ -37,6 +37,27 @@ func TestFindSessionReadOnlyMounts(t *testing.T) {
 		t.Fatalf("volume specs = %#v, want %#v (argv %#v)", got, want, r.Args[1])
 	}
 }
+
+func TestKubedockResourceLimitsAreExplicitForSessionSearch(t *testing.T) {
+	previousVersion, previousOwner := versioninfo.ImageVersion, versioninfo.ImageOwner
+	versioninfo.ImageVersion, versioninfo.ImageOwner = "0.7.2", "exampleowner"
+	t.Cleanup(func() { versioninfo.ImageVersion, versioninfo.ImageOwner = previousVersion, previousOwner })
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: t.TempDir()}
+	if err := s.Run(context.Background(), nil, t.TempDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"docker", "run", "--rm",
+		"--label", "com.joyrex2001.kubedock.request-cpu=250m,2",
+		"--label", "com.joyrex2001.kubedock.request-memory=1Gi,2Gi",
+	}
+	argv := r.Args[0]
+	if len(argv) < len(want) || !equalStrings(argv[:len(want)], want) {
+		t.Fatalf("docker run resource labels = %#v, want prefix %#v", argv, want)
+	}
+}
+
 func TestMissingAgentHistorySkipped(t *testing.T) {
 	home := t.TempDir()
 	os.Mkdir(filepath.Join(home, ".codex"), 0700)
