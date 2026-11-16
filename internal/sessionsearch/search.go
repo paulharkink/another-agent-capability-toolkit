@@ -87,7 +87,11 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 			return err
 		}
 	}
-	argv := []string{"docker", "run", "--rm"}
+	argv := []string{
+		"docker", "run", "--rm",
+		"--label", "com.joyrex2001.kubedock.request-cpu=250m,2",
+		"--label", "com.joyrex2001.kubedock.request-memory=1Gi,2Gi",
+	}
 	for _, mapping := range []struct {
 		parts       []string
 		destination string
