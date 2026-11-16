@@ -624,6 +624,100 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 	}
 }
 
+func TestInstallerResumesCanonicalLauncherUpdateWhenBackupAlreadyMatches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix canonical launcher migration")
+	}
+	home := t.TempDir()
+	root := filepath.Join(home, ".local")
+	oldRelease := filepath.Join(root, "releases", "0.6.0-linux-amd64")
+	oldBinary := filepath.Join(oldRelease, "bin", "aact")
+	if err := os.MkdirAll(filepath.Dir(oldBinary), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldBinary, []byte("old AACT release"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRelease, ".archive-sha256"), []byte(strings.Repeat("0", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, "bin", "aact")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldBinary, canonical); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(root, "legacy", "bin", "aact-canonical-managed-0.6.0-linux-amd64")
+	if err := os.MkdirAll(filepath.Dir(backup), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldBinary, backup); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fixtureServer(t, false)
+	output, err := runInstaller(t, root, "1.2.3", server.URL)
+	if err != nil {
+		t.Fatalf("install did not recover from the existing matching backup: %s: %v", output, err)
+	}
+	want := filepath.Join(root, "releases", "1.2.3-linux-amd64", "bin", "aact")
+	if got, err := os.Readlink(canonical); err != nil || got != want {
+		t.Fatalf("canonical launcher target = %q, %v; want %q", got, err, want)
+	}
+	if got, err := os.Readlink(backup); err != nil || got != oldBinary {
+		t.Fatalf("existing canonical backup changed: target %q, %v", got, err)
+	}
+}
+
+func TestInstallerStillRejectsDifferentCanonicalLauncherBackup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix canonical launcher migration")
+	}
+	home := t.TempDir()
+	root := filepath.Join(home, ".local")
+	oldRelease := filepath.Join(root, "releases", "0.6.0-linux-amd64")
+	oldBinary := filepath.Join(oldRelease, "bin", "aact")
+	differentRelease := filepath.Join(root, "releases", "0.5.0-linux-amd64")
+	differentBinary := filepath.Join(differentRelease, "bin", "aact")
+	for _, binary := range []string{oldBinary, differentBinary} {
+		if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(binary, []byte(binary), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(filepath.Dir(filepath.Dir(binary)), ".archive-sha256"), []byte(strings.Repeat("0", 64)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	canonical := filepath.Join(root, "bin", "aact")
+	backup := filepath.Join(root, "legacy", "bin", "aact-canonical-managed-0.6.0-linux-amd64")
+	for _, link := range []string{canonical, backup} {
+		if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(oldBinary, canonical); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(differentBinary, backup); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fixtureServer(t, false)
+	output, err := runInstaller(t, root, "1.2.3", server.URL)
+	if err == nil || !strings.Contains(output, "Cannot update canonical launcher; backup already exists") {
+		t.Fatalf("installer should refuse a different existing backup: output %q, err %v", output, err)
+	}
+	if got, err := os.Readlink(canonical); err != nil || got != oldBinary {
+		t.Fatalf("canonical launcher changed after refusal: target %q, %v", got, err)
+	}
+	if got, err := os.Readlink(backup); err != nil || got != differentBinary {
+		t.Fatalf("existing different backup was overwritten: target %q, %v", got, err)
+	}
+}
+
 func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix launcher migration")
