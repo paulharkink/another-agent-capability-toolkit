@@ -183,8 +183,20 @@ if [ "$platform" != windows ]; then
     if [ "$canonical_target" = "$ROOT_PHYSICAL/releases/${VERSION}-${platform}-${arch}/bin/aact" ]; then
       :
     elif [ -e "$canonical_backup" ] || [ -L "$canonical_backup" ]; then
-      printf 'Cannot update canonical launcher; backup already exists: %s\n' "$canonical_backup" >&2
-      exit 1
+      backup_matches_current=0
+      if [ -n "$canonical_target" ] && [ -L "$canonical_backup" ]; then
+        backup_target=$(readlink -f "$canonical_backup" 2>/dev/null || true)
+        if [ -n "$backup_target" ] && [ "$backup_target" = "$canonical_target" ]; then
+          backup_matches_current=1
+        fi
+      elif [ -z "$canonical_target" ] && [ -f "$canonical" ] && [ -f "$canonical_backup" ] && cmp -s "$canonical" "$canonical_backup"; then
+        backup_matches_current=1
+      fi
+      if [ "$backup_matches_current" != 1 ]; then
+        printf 'Cannot update canonical launcher; backup already exists: %s\n' "$canonical_backup" >&2
+        exit 1
+      fi
+      printf 'Existing canonical launcher backup already matches the current target: %s\n' "$canonical_backup"
     else
       mkdir -p "$ROOT/legacy/bin"
       if ! cp -a "$canonical" "$canonical_backup"; then
