@@ -19,7 +19,7 @@ This skill is launcher-first:
 The wrapper mounts these read-only session locations into the container:
 
 - `~/.claude`
-- `~/.codex`
+- `~/.codex/sessions`
 - `~/.local/share/opencode`
 
 Use it to find a previous conversation, recall a past decision, or trace work done in another session.

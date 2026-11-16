@@ -20,7 +20,7 @@ func (r *commandRecorder) Run(_ context.Context, a []string, _ io.Reader, _ io.W
 }
 func TestFindSessionReadOnlyMounts(t *testing.T) {
 	home := t.TempDir()
-	for _, p := range []string{".claude", ".codex", ".local/share/opencode"} {
+	for _, p := range []string{".claude", ".codex/sessions", ".local/share/opencode"} {
 		os.MkdirAll(filepath.Join(home, filepath.FromSlash(p)), 0700)
 	}
 	r := &commandRecorder{}
@@ -30,7 +30,7 @@ func TestFindSessionReadOnlyMounts(t *testing.T) {
 	}
 	want := []string{
 		filepath.Join(home, ".claude") + ":/root/.claude:ro",
-		filepath.Join(home, ".codex") + ":/root/.codex:ro",
+		filepath.Join(home, ".codex", "sessions") + ":/root/.codex/sessions:ro",
 		filepath.Join(home, ".local", "share", "opencode") + ":/root/.local/share/opencode:ro",
 	}
 	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
@@ -45,15 +45,18 @@ func TestMissingAgentHistorySkipped(t *testing.T) {
 	if err := s.Run(context.Background(), nil, home, false); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	want := []string{}
 	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) || containsArg(r.Args[1], ".claude") || containsArg(r.Args[1], "opencode") {
 		t.Fatalf("unexpected docker mount args: %#v", r.Args[1])
 	}
 }
 
-func TestVolumeMountPreservesCommaAndSpaceInPath(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home, with spaces")
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+func TestCodexMountUsesOnlySessionHistory(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "plugins"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	r := &commandRecorder{}
@@ -61,7 +64,23 @@ func TestVolumeMountPreservesCommaAndSpaceInPath(t *testing.T) {
 	if err := s.Run(context.Background(), nil, home, false); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	want := []string{filepath.Join(home, ".codex", "sessions") + ":/root/.codex/sessions:ro"}
+	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
+		t.Fatalf("Codex volume specs = %#v, want %#v", got, want)
+	}
+}
+
+func TestVolumeMountPreservesCommaAndSpaceInPath(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home, with spaces")
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &commandRecorder{}
+	s := Search{Runner: r, PackageDir: t.TempDir()}
+	if err := s.Run(context.Background(), nil, home, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(home, ".codex", "sessions") + ":/root/.codex/sessions:ro"}
 	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
 		t.Fatalf("volume specs = %#v, want %#v", got, want)
 	}
@@ -72,7 +91,7 @@ func TestColonPathUsesMountSyntaxToPreserveSource(t *testing.T) {
 		t.Skip("Windows paths only permit a drive-letter colon")
 	}
 	home := filepath.Join(t.TempDir(), "home:with-colon")
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	r := &commandRecorder{}
@@ -81,7 +100,7 @@ func TestColonPathUsesMountSyntaxToPreserveSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := r.Args[1]
-	want := "type=bind,src=" + filepath.Join(home, ".codex") + ",dst=/root/.codex,readonly"
+	want := "type=bind,src=" + filepath.Join(home, ".codex", "sessions") + ",dst=/root/.codex/sessions,readonly"
 	if !containsValueAfter(argv, "--mount", want) {
 		t.Fatalf("colon path was not preserved with mount syntax: %#v", argv)
 	}
@@ -92,7 +111,7 @@ func TestColonAndCommaPathIsRejectedBeforeRun(t *testing.T) {
 		t.Skip("Windows paths cannot contain colons outside the drive prefix")
 	}
 	home := filepath.Join(t.TempDir(), "home:with,colon")
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	r := &commandRecorder{}
@@ -106,8 +125,8 @@ func TestColonAndCommaPathIsRejectedBeforeRun(t *testing.T) {
 }
 
 func TestWindowsVolumeSyntaxKeepsDriveLetterColon(t *testing.T) {
-	got := mountArgs(`C:\Users\Alice\.codex`, "/root/.codex", "windows")
-	want := []string{"-v", `C:\Users\Alice\.codex:/root/.codex:ro`}
+	got := mountArgs(`C:\Users\Alice\.codex\sessions`, "/root/.codex/sessions", "windows")
+	want := []string{"-v", `C:\Users\Alice\.codex\sessions:/root/.codex/sessions:ro`}
 	if !equalStrings(got, want) {
 		t.Fatalf("Windows volume args = %#v, want %#v", got, want)
 	}
@@ -128,7 +147,7 @@ func TestTTYOnlyWhenInteractive(t *testing.T) {
 }
 func TestWindowsLauncherPaths(t *testing.T) {
 	home := t.TempDir()
-	os.Mkdir(filepath.Join(home, ".codex"), 0700)
+	os.MkdirAll(filepath.Join(home, ".codex", "sessions"), 0700)
 	r := &commandRecorder{}
 	packageDir := filepath.Join(t.TempDir(), "release with spaces", "find-session")
 	s := Search{Runner: r, PackageDir: packageDir}
@@ -138,7 +157,7 @@ func TestWindowsLauncherPaths(t *testing.T) {
 	if r.Args[0][len(r.Args[0])-1] != filepath.Join(packageDir, "container") {
 		t.Fatal(r.Args)
 	}
-	want := []string{filepath.Join(home, ".codex") + ":/root/.codex:ro"}
+	want := []string{filepath.Join(home, ".codex", "sessions") + ":/root/.codex/sessions:ro"}
 	if got := volumeSpecs(r.Args[1]); !equalStrings(got, want) {
 		t.Fatalf("volume specs = %#v, want %#v", got, want)
 	}

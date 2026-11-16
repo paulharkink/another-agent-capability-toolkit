@@ -93,7 +93,7 @@ func (s *Search) Run(ctx context.Context, args []string, home string, interactiv
 		destination string
 	}{
 		{[]string{".claude"}, "/root/.claude"},
-		{[]string{".codex"}, "/root/.codex"},
+		{[]string{".codex", "sessions"}, "/root/.codex/sessions"},
 		{[]string{".local", "share", "opencode"}, "/root/.local/share/opencode"},
 	} {
 		source := filepath.Join(append([]string{home}, mapping.parts...)...)
