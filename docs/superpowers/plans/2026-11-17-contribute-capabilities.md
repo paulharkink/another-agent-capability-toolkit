@@ -1,4 +1,4 @@
-# Contribute Skills Implementation Plan
+# Contribute Capabilities Implementation Plan
 
 **Goal:** Ship a configurable skill that guides contributions to the pack's source repository.
 
@@ -6,7 +6,7 @@
 
 **Tech Stack:** AACT package TOML, Mustache, Markdown.
 
-**Spec:** docs/superpowers/specs/2026-11-17-contribute-skills-design.md
+**Spec:** docs/superpowers/specs/2026-11-17-contribute-capabilities-design.md
 
 ## Constraints and review focus
 
@@ -14,7 +14,7 @@ No runtime changes, machine-specific settings, or edits to the consuming pack. P
 
 ### Task 1: Add and verify the capability
 
-- Create `packages/contribute-skills/package.toml` and `packages/contribute-skills/SKILL.md.mustache`.
+- Create `packages/contribute-capabilities/package.toml` and `packages/contribute-capabilities/SKILL.md.mustache`.
 - Update `README.md` and `docs/capability-packs.md` with configuration and usage.
 - [ ] Demonstrate the missing capability in an isolated CLI catalog.
 - [ ] Add the package and documentation using existing template and input conventions.
