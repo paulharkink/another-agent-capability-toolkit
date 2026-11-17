@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,7 +204,12 @@ func TestStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestText := strings.Replace(string(manifest), "[mcp]\n", "[[inputs]]\nname = \"local_port\"\nlabel = \"Local port\"\ntype = \"integer\"\nrequired = true\ndefault = 18871\n[mcp]\n", 1)
+	// Model a Windows checkout's CRLF and normalize before fixture edits. Without
+	// normalization, the input table insertion misses while the later UI field
+	// replacement still succeeds, leaving an undeclared field.
+	manifestText := strings.ReplaceAll(string(manifest), "\n", "\r\n")
+	manifestText = strings.ReplaceAll(manifestText, "\r\n", "\n")
+	manifestText = strings.Replace(manifestText, "[mcp]\n", "[[inputs]]\nname = \"local_port\"\nlabel = \"Local port\"\ntype = \"integer\"\nrequired = true\ndefault = 18871\n[mcp]\n", 1)
 	manifestText = strings.Replace(manifestText, "container_port = 8080", "container_port = 8080\nhost_port_input = \"local_port\"", 1)
 	manifestText = strings.Replace(manifestText, "fields = [\"project\", \"enabled\"]", "fields = [\"project\", \"enabled\", \"local_port\"]", 1)
 	if err := os.WriteFile(packagePath, []byte(manifestText), 0600); err != nil {
@@ -434,11 +440,18 @@ func TestTUIInvokesHostAuthenticationWhenBrowserMCPIsStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "host-auth-invoked")
-	command := fmt.Sprintf("printf '{}'; touch %s", marker)
+	helperSource := filepath.Join(t.TempDir(), "host_auth.go")
+	if err := os.WriteFile(helperSource, []byte(fmt.Sprintf("package main\nimport (\"fmt\"; \"os\")\nfunc main() { if err := os.WriteFile(%q, []byte(\"invoked\"), 0600); err != nil { panic(err) }; fmt.Println(\"{}\") }\n", marker)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	goCommand, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifestText := strings.Replace(string(manifest), "[[ui.sections]]", "[[inputs]]\nname = \"browser_volume\"\nlabel = \"Browser profile volume\"\ntype = \"string\"\nrequired = true\ndefault = \"aact-login-fixture\"\n[[ui.sections]]", 1)
 	manifestText = strings.Replace(manifestText, "fields = [\"project\", \"enabled\"]", "fields = [\"project\", \"enabled\", \"browser_volume\"]", 1)
 	manifestText = strings.Replace(manifestText, "endpoint_path = \"/mcp\"", "endpoint_path = \"/mcp\"\n[mcp.browser_controller]\nprofile_volume_input = \"browser_volume\"\nstartup_url = \"https://example.test\"", 1)
-	manifestText += fmt.Sprintf("\n[mcp.actions.authenticate]\ncommand = [\"sh\", \"-c\", %q]\n", command)
+	manifestText += fmt.Sprintf("\n[mcp.actions.authenticate]\ncommand = [%q, %q, %q]\n", goCommand, "run", helperSource)
 	if err := os.WriteFile(packagePath, []byte(manifestText), 0600); err != nil {
 		t.Fatal(err)
 	}
