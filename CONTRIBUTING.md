@@ -31,11 +31,16 @@ the README documents `AACT_BUNDLED_ROOT` and the release archive layout.
 
 ## Tests and formatting
 
+Tests must check functionality through an observable public boundary. Unit tests
+that assert implementation details—private methods, internal state, call
+sequences, or literal source text—have no place in this project. Prefer no test
+over one coupled to how the code is written. Keep useful integration tests under
+`test/integration/`.
+
 Keep black-box tests in the separate `test/` module, grouped by the public
 command, service, or package behavior they cover. Use external test packages and
 assert exported behavior through command, HTTP, file-format, or other public
-boundaries; do not access unexported state. If no useful black-box assertion
-exists, do not add a test solely to cover implementation lines.
+boundaries; do not access unexported state.
 
 Run the black-box suite and source vet checks:
 

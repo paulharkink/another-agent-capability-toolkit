@@ -34,6 +34,11 @@ not create tags or start publication manually.
 
 ## Verification and delivery
 
+- Tests must check functionality through an observable public boundary. Unit
+  tests that assert implementation details—private methods, internal state,
+  call sequences, or literal source text—have no place in this project. Prefer
+  no test over one coupled to how the code is written. Keep useful integration
+  tests under `test/integration/`.
 - Keep Go tests in the separate `test/` module and make them black-box. Do not
   access unexported state or add tests solely to cover implementation lines.
   For Go changes, format changed files with `gofmt`; use

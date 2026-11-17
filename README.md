@@ -186,6 +186,12 @@ subprocesses. The same password must be used to open an existing vault.
 Development uses the Go version pinned in go.mod. Go is needed to develop or
 build releases, rather than to run an installed release.
 
+Tests in this project must check functionality through an observable public
+boundary. Unit tests that assert implementation details—such as private methods,
+internal state, call sequences, or literal source text—have no place here. Prefer
+no test over one coupled to how the code is written. Keep useful integration
+tests under `test/integration/`.
+
 ```sh
 go -C test test ./...
 go vet ./main/...
