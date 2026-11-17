@@ -144,10 +144,17 @@ func versionReleaseServer(t *testing.T, version, arch string, archive []byte, va
 }
 
 func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte) *httptest.Server {
-	return versionReleaseServerWithBootstrapInstaller(t, version, arch, archive, validChecksum, installer, "", nil)
+	return versionReleaseServerWithBootstrapInstallers(t, version, arch, archive, validChecksum, installer)
 }
 
-func versionReleaseServerWithBootstrapInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte, bootstrapVersion string, bootstrapInstaller []byte) *httptest.Server {
+type bootstrapInstallerFixture struct {
+	version       string
+	installer     []byte
+	omitInstaller bool
+	badDigest     bool
+}
+
+func versionReleaseServerWithBootstrapInstallers(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte, bootstraps ...bootstrapInstallerFixture) *httptest.Server {
 	t.Helper()
 	extension := "tar.gz"
 	if runtime.GOOS == "windows" {
@@ -163,6 +170,7 @@ func versionReleaseServerWithBootstrapInstaller(t *testing.T, version, arch stri
 		archiveSum = strings.Repeat("0", 64)
 	}
 	checksums := []byte(fmt.Sprintf("%s  %s\n", archiveSum, archiveName))
+	bootstrapAssets := make(map[string][]byte, len(bootstraps))
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
@@ -171,27 +179,37 @@ func versionReleaseServerWithBootstrapInstaller(t *testing.T, version, arch stri
 				map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
 				map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
 			}}}
-			if bootstrapVersion != "" {
-				releases = append(releases, map[string]any{"tag_name": "v" + bootstrapVersion, "assets": []any{
-					map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/bootstrap-installer"), "digest": "sha256:" + digestHex(bootstrapInstaller)},
-				}})
+			for _, bootstrap := range bootstraps {
+				assets := []any{map[string]any{"name": "notes.txt"}}
+				if !bootstrap.omitInstaller {
+					assetPath := "/assets/bootstrap-installer/" + bootstrap.version
+					digest := digestHex(bootstrap.installer)
+					if bootstrap.badDigest {
+						digest = strings.Repeat("0", 64)
+					}
+					assets = []any{map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, assetPath), "digest": "sha256:" + digest}}
+					bootstrapAssets[assetPath] = bootstrap.installer
+				}
+				releases = append(releases, map[string]any{"tag_name": "v" + bootstrap.version, "assets": assets})
 			}
 			_ = json.NewEncoder(w).Encode(releases)
 		case "/assets/installer":
 			_, _ = w.Write(installer)
-		case "/assets/bootstrap-installer":
-			_, _ = w.Write(bootstrapInstaller)
 		case "/assets/checksums":
 			_, _ = w.Write(checksums)
 		case "/assets/archive":
 			_, _ = w.Write(archive)
 		default:
+			if body, ok := bootstrapAssets[r.URL.Path]; ok {
+				_, _ = w.Write(body)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))
 }
 
-func TestVersionInstallUsesLatestInstallerForHistoricalV050Release(t *testing.T) {
+func TestVersionInstallFallsBackToVerifiedCompatibleInstallerForHistoricalV050Release(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("historical Unix installer fixture")
 	}
@@ -199,11 +217,14 @@ func TestVersionInstallUsesLatestInstallerForHistoricalV050Release(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootstrapInstaller, err := os.ReadFile("testdata/install-v0.7.4.sh")
+	bootstrapInstaller, err := os.ReadFile("testdata/install-v0.5.17.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := versionReleaseServerWithBootstrapInstaller(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer, "0.7.4", bootstrapInstaller)
+	server := versionReleaseServerWithBootstrapInstallers(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer,
+		bootstrapInstallerFixture{version: "0.7.4", omitInstaller: true},
+		bootstrapInstallerFixture{version: "0.6.1", installer: bootstrapInstaller, badDigest: true},
+		bootstrapInstallerFixture{version: "0.5.17", installer: bootstrapInstaller})
 	defer server.Close()
 	root, home := t.TempDir(), t.TempDir()
 	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
@@ -253,7 +274,7 @@ func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.
 	cmd.Dir = t.TempDir()
 	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "latest stable release v0.7.4") || !strings.Contains(string(output), "installer=false") {
+	if err == nil || !strings.Contains(string(output), "no SHA-256 verified local-archive installer") {
 		t.Fatalf("missing latest bootstrap installer was not rejected: %q, %v", output, err)
 	}
 	if got, readErr := os.ReadFile(sentinel); readErr != nil || string(got) != "preserve" {

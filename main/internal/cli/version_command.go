@@ -20,6 +20,8 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/releasecatalog"
 )
 
+const minimumLocalArchiveInstallerVersion = "0.5.1"
+
 func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(out, Version)
@@ -145,20 +147,7 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	if runtime.GOOS == "windows" {
 		installerName = "install.ps1"
 	}
-	if len(releases) == 0 {
-		return errors.New("no stable AACT release is available to provide a managed installer")
-	}
-	// Older tagged installers do not all support LocalArchive. Use the latest
-	// stable installer while keeping the requested version's release assets.
-	installerRelease := releases[0]
-	var installerAsset, archiveAsset, checksumsAsset *releasecatalog.Asset
-	for _, asset := range installerRelease.Assets {
-		asset := asset
-		if asset.Name == installerName {
-			installerAsset = &asset
-			break
-		}
-	}
+	var archiveAsset, checksumsAsset *releasecatalog.Asset
 	for _, asset := range selected.Assets {
 		asset := asset
 		switch asset.Name {
@@ -170,17 +159,17 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 			}
 		}
 	}
-	if installerAsset == nil || archiveAsset == nil || checksumsAsset == nil {
-		return fmt.Errorf("latest stable release %s or requested release %s is missing the required installer, platform archive, or checksums.txt for %s (installer=%t archive=%t checksums=%t)", installerRelease.Tag, version, target, installerAsset != nil, archiveAsset != nil, checksumsAsset != nil)
+	if archiveAsset == nil || checksumsAsset == nil {
+		return fmt.Errorf("requested release %s is missing the platform archive or checksums.txt for %s (archive=%t checksums=%t)", version, target, archiveAsset != nil, checksumsAsset != nil)
 	}
 	stage, err := os.MkdirTemp("", "aact-release-*")
 	if err != nil {
 		return fmt.Errorf("stage AACT release: %w", err)
 	}
 	defer os.RemoveAll(stage)
-	installerPath, err := downloadVerifiedAsset(ctx, *installerAsset, filepath.Join(stage, installerName), 2<<20)
+	installerPath, err := downloadBootstrapInstaller(ctx, releases, installerName, filepath.Join(stage, installerName))
 	if err != nil {
-		return fmt.Errorf("download verified release installer: %w", err)
+		return err
 	}
 	archivePath, err := downloadVerifiedAsset(ctx, *archiveAsset, filepath.Join(stage, archiveAsset.Name), 128<<20)
 	if err != nil {
@@ -210,6 +199,57 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 		return fmt.Errorf("install AACT %s: %w: %s", version, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func downloadBootstrapInstaller(ctx context.Context, releases []releasecatalog.Release, installerName, destination string) (string, error) {
+	var failures []string
+	for _, release := range releases {
+		version := strings.TrimPrefix(release.Tag, "v")
+		if !releasecatalog.StableVersion(release.Tag) || (version != minimumLocalArchiveInstallerVersion && !releasecatalog.NewerThan(version, minimumLocalArchiveInstallerVersion)) {
+			continue
+		}
+		var candidate *releasecatalog.Asset
+		for i := range release.Assets {
+			if release.Assets[i].Name == installerName {
+				candidate = &release.Assets[i]
+				break
+			}
+		}
+		if candidate == nil {
+			continue
+		}
+		if !hasSHA256ReleaseDigest(candidate.Digest) {
+			failures = append(failures, release.Tag+" has no valid SHA-256 installer digest")
+			continue
+		}
+		if _, err := releasecatalog.ValidateAssetURL(candidate.URL); err != nil {
+			failures = append(failures, release.Tag+" installer URL rejected: "+err.Error())
+			continue
+		}
+		path, err := downloadVerifiedAsset(ctx, *candidate, destination, 2<<20)
+		if err != nil {
+			failures = append(failures, release.Tag+" installer unavailable or failed digest verification: "+err.Error())
+			continue
+		}
+		return path, nil
+	}
+	message := "no SHA-256 verified local-archive installer found in stable releases at or above v" + minimumLocalArchiveInstallerVersion
+	if len(failures) > 0 {
+		message += ": " + strings.Join(failures, "; ")
+	}
+	return "", errors.New(message)
+}
+
+func hasSHA256ReleaseDigest(digest string) bool {
+	if !strings.HasPrefix(digest, "sha256:") {
+		return false
+	}
+	encoded := strings.TrimPrefix(digest, "sha256:")
+	if len(encoded) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(encoded)
+	return err == nil
 }
 
 func installerEnvironment() []string {
