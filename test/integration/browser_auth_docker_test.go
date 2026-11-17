@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/browsercontroller"
@@ -103,6 +106,9 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+foreignContainer+"/start", nil, &opened); err == nil {
 		t.Fatal("browser login opened a helper for an unregistered container")
 	}
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+container+"/stop", nil, nil); err != nil {
+		t.Fatalf("close login helper before the fixture's offline cookie read: %v", err)
+	}
 	handoff, err := vault.NewContainerHandoff(info, token)
 	if err != nil {
 		t.Fatal(err)
@@ -169,4 +175,207 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 		t.Fatal("browser container was not removed on unregister")
 	}
 	docker(nil, "volume", "inspect", volume)
+}
+
+func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("detached test helper uses a POSIX shell")
+	}
+	image := "aact/browser-authentication-helper:1.18.0"
+	docker := func(input []byte, args ...string) []byte {
+		t.Helper()
+		cmd := exec.Command("docker", args...)
+		cmd.Stdin = bytes.NewReader(input)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker %s failed: %v: %s", args[0], err, out)
+		}
+		return bytes.TrimSpace(out)
+	}
+	docker(nil, "image", "inspect", image)
+	volume := string(docker(nil, "volume", "create", "--label", "aact.test=browser-mcp-flow"))
+	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", volume).Run() })
+	fixturePath, err := filepath.Abs("../../testdata/browser-auth-mcp-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath = browserMCPFixtureWithPinnedPythonBase(t, fixturePath)
+	mcpImage := "aact-test/browser-auth-mcp:" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	docker(nil, "build", "--tag", mcpImage, fixturePath)
+	t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", mcpImage).Run() })
+
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signedIn atomic.Bool
+	upstream := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			if signedIn.Load() {
+				http.SetCookie(w, &http.Cookie{Name: "session", Value: "synthetic-signed-in-token", Path: "/", HttpOnly: true})
+			}
+			_, _ = fmt.Fprint(w, "synthetic capability sign-in fixture")
+			return
+		}
+		if r.URL.Path != "/projects" || r.Header.Get("Authorization") != "Bearer synthetic-signed-in-token" {
+			http.Error(w, "synthetic upstream rejected credentials", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"projects":["project-from-authenticated-upstream"]}`)
+	})}
+	go func() { _ = upstream.Serve(listener) }()
+	t.Cleanup(func() { _ = upstream.Close() })
+	upstreamURL := fmt.Sprintf("http://host.docker.internal:%d", listener.Addr().(*net.TCPAddr).Port)
+
+	mcpContainer := string(docker(nil, "run", "-d", "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777", "--env", "AACT_SYNTHETIC_UPSTREAM="+upstreamURL, mcpImage, "sleep", "3600"))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", mcpContainer).Run() })
+
+	root := t.TempDir()
+	password := []byte("synthetic-browser-mcp-password")
+	if _, err := vault.Open(filepath.Join(root, "credentials.kdbx"), password); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_VAULT_API_BIND_IP", "0.0.0.0")
+	control, err := vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "aact-test-daemon")
+	quoted := "'" + strings.ReplaceAll(executable, "'", "'\\''") + "'"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nAACT_TEST_DAEMON_CHILD=1 exec "+quoted+" -test.run=^TestVaultDaemonChildHelper$\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := vault.StartDetached(script, root, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = vault.StopDetached(info, control); wipeTestBytes(control) })
+	info, err = vault.EnsureContainerAPIReachable(info, control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespace := strings.Repeat("a", 64)
+	token, err := vault.IssueContainerPrivateInputToken(info, control, namespace, []string{vault.BrowserOnlyPrivateInputScope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.BindContainerToken(info, control, mcpContainer, token); err != nil {
+		t.Fatal(err)
+	}
+	config := browsercontroller.ServiceConfig{
+		Origin: upstreamURL, StartupURL: upstreamURL,
+		ProfileVolume: volume, ContainerName: "aact-test-login-" + mcpContainer[:16],
+		Adapter: browsercontroller.BrowserAuthAdapter{Source: "def run(credentials, config):\n    if not credentials:\n        return {'status': 'interaction_required'}\n    return {'status': 'refreshed', 'access_token': credentials[0]['value']}\n"},
+	}
+	register := func() {
+		t.Helper()
+		if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations", browserRegistration{Instance: namespace, ContainerID: mcpContainer, Config: config}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register()
+	handoff, err := vault.NewContainerHandoff(info, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(handoff)
+	install := `import os,sys; p='/run/aact/vault.json'; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400); os.write(fd,sys.stdin.buffer.read()); os.close(fd)`
+	docker(payload, "exec", "-i", mcpContainer, "python3", "-c", install)
+	docker(nil, "exec", "-d", mcpContainer, "python3", "/app/server.py")
+	docker(nil, "exec", mcpContainer, "python3", "-c", `import socket,time
+deadline=time.time()+20
+while time.time()<deadline:
+ s=socket.socket(); s.settimeout(.2)
+ try: s.connect(('127.0.0.1',8765)); s.close(); break
+ except OSError: time.sleep(.1)
+else: raise RuntimeError('synthetic MCP runtime did not start')`)
+
+	var opened struct {
+		ViewerURL string `json:"viewer_url"`
+	}
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+mcpContainer+"/start", nil, &opened); err != nil {
+		t.Fatalf("start generic browser login: %v", err)
+	}
+	if !strings.HasPrefix(opened.ViewerURL, "http://localhost:") {
+		t.Fatalf("invalid browser viewer URL %q", opened.ViewerURL)
+	}
+	client := `import json,sys,urllib.request
+def rpc(i,m,p=None):
+ d=json.dumps({'jsonrpc':'2.0','id':i,'method':m,'params':p or {}}).encode(); q=urllib.request.Request('http://127.0.0.1:8765/mcp',data=d,headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}); return json.load(urllib.request.urlopen(q,timeout=60))
+rpc(1,'initialize',{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'aact-integration','version':'1'}})
+q=urllib.request.Request('http://127.0.0.1:8765/mcp',data=b'{"jsonrpc":"2.0","method":"notifications/initialized"}',headers={'Content-Type':'application/json'}); urllib.request.urlopen(q,timeout=10).close()
+listed=rpc(2,'tools/list'); assert any(t['name']=='list_projects' for t in listed['result']['tools'])
+r=rpc(3,'tools/call',{'name':'list_projects','arguments':{}}); print(json.dumps(r))`
+	callTool := func() map[string]any {
+		t.Helper()
+		out := docker(nil, "exec", mcpContainer, "python3", "-c", client)
+		var result map[string]any
+		if err := json.Unmarshal(out, &result); err != nil {
+			t.Fatalf("decode MCP client result %q: %v", out, err)
+		}
+		return result
+	}
+	first := callTool()
+	if !strings.Contains(fmt.Sprint(first), opened.ViewerURL) {
+		t.Fatalf("initial MCP operation did not return the login URL %q: %v", opened.ViewerURL, first)
+	}
+	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "true" {
+		t.Fatalf("login helper stopped during initial interaction: %s", running)
+	}
+	retry := callTool()
+	if !strings.Contains(fmt.Sprint(retry), opened.ViewerURL) {
+		t.Fatalf("retry changed or lost login URL %q: %v", opened.ViewerURL, retry)
+	}
+	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "true" {
+		t.Fatalf("login helper stopped during retry: %s", running)
+	}
+	signedIn.Store(true)
+	authenticated := callTool()
+	if !strings.Contains(fmt.Sprint(authenticated), "project-from-authenticated-upstream") {
+		t.Fatalf("post-login MCP tool did not reach the authenticated upstream: %v", authenticated)
+	}
+	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "false" {
+		t.Fatalf("successful handoff left login helper running: %s", running)
+	}
+	if err := testDaemonControlRequest(info, control, "DELETE", "/browser/configurations/"+mcpContainer, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func browserMCPFixtureWithPinnedPythonBase(t *testing.T, source string) string {
+	t.Helper()
+	const ecr = "public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
+	const hub = "docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
+	selected := os.Getenv("AACT_PYTHON_BASE_IMAGE_3_14_ALPINE")
+	if selected == "" {
+		selected = ecr
+	}
+	if selected != ecr && selected != hub {
+		t.Fatalf("refusing unverified integration fixture Python base %q", selected)
+	}
+	data, err := os.ReadFile(filepath.Join(source, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultLine := "ARG PYTHON_BASE_IMAGE=" + ecr
+	if !strings.Contains(string(data), defaultLine) {
+		t.Fatal("synthetic browser MCP fixture lost its pinned Python base")
+	}
+	context := t.TempDir()
+	if err := os.WriteFile(filepath.Join(context, "Dockerfile"), []byte(strings.Replace(string(data), defaultLine, "ARG PYTHON_BASE_IMAGE="+selected, 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := os.ReadFile(filepath.Join(source, "server.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(context, "server.py"), server, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return context
 }

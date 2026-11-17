@@ -144,7 +144,7 @@ func (a *API) stopBrowserRegistration(ctx context.Context, container string, rem
 		return errors.New("browser service is unavailable")
 	}
 	record.Config.ContainerID = container
-	return a.browserService.StopConfiguration(ctx, record.Config, func() error {
+	return a.browserService.StopConfiguration(ctx, record.Config, remove, func() error {
 		if !remove {
 			return nil
 		}

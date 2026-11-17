@@ -49,6 +49,10 @@ type ServiceBrowser interface {
 	StopBrowser(context.Context) error
 }
 
+type runningBrowser interface {
+	BrowserRunning(context.Context) (bool, error)
+}
+
 type Service struct {
 	lookup     func(daemon.ClientIdentity) (ServiceConfig, bool)
 	newBrowser func(ServiceConfig) ServiceBrowser
@@ -71,7 +75,7 @@ func NewDockerBrowser(c ServiceConfig) DockerBrowser {
 
 // StopConfiguration is used by the trusted local control API, including after
 // a container credential has been revoked or its MCP has disappeared.
-func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, remove func() error) error {
+func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, removeBrowser bool, remove func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := config.Validate(); err != nil {
@@ -79,7 +83,7 @@ func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, r
 	}
 	browser := s.newBrowser(config)
 	var err error
-	if remover, ok := browser.(interface{ RemoveBrowser(context.Context) error }); ok {
+	if remover, ok := browser.(interface{ RemoveBrowser(context.Context) error }); ok && removeBrowser {
 		err = remover.RemoveBrowser(ctx)
 	} else {
 		err = browser.StopBrowser(ctx)
@@ -206,16 +210,24 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Close a helper that was opened explicitly from the TUI before reading its
-	// profile offline. Chromium may hold the cookie database open while running.
-	if err := browser.StopBrowser(r.Context()); err != nil {
-		http.Error(w, "browser could not be stopped", http.StatusServiceUnavailable)
-		return
+	interactive := false
+	var err error
+	var result json.RawMessage
+	if running, ok := browser.(runningBrowser); ok {
+		interactive, err = running.BrowserRunning(r.Context())
+		if err != nil {
+			http.Error(w, "browser state is unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
-	result, err := browser.ReadOffline(r.Context(), request)
-	if err == nil && adapterSucceeded(result) {
-		writeBrowserResult(w, http.StatusOK, result, "")
-		return
+	// Offline reads require an unmounted profile. Once a login helper is open,
+	// retries must keep it alive and use its active profile through the adapter.
+	if !interactive {
+		result, readErr := browser.ReadOffline(r.Context(), request)
+		if readErr == nil && adapterSucceeded(result) {
+			writeBrowserResult(w, http.StatusOK, result, "")
+			return
+		}
 	}
 	viewer, err := browser.EnsureStarted(r.Context())
 	if err != nil || validateViewerURL(viewer) != nil {

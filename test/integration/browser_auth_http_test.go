@@ -17,6 +17,8 @@ import (
 
 type integrationBrowser struct {
 	offline       json.RawMessage
+	adapterResult json.RawMessage
+	running       bool
 	starts, stops int
 }
 
@@ -24,16 +26,27 @@ func (b *integrationBrowser) ReadOffline(context.Context, browsercontroller.Brow
 	return b.offline, nil
 }
 func (b *integrationBrowser) EnsureStarted(context.Context) (string, error) {
-	b.starts++
+	if !b.running {
+		b.starts++
+		b.running = true
+	}
 	return "http://localhost:49001", nil
 }
 func (b *integrationBrowser) RunBrowserAuthAdapter(context.Context, browsercontroller.BrowserAuthRequest) (json.RawMessage, error) {
+	if len(b.adapterResult) != 0 {
+		return b.adapterResult, nil
+	}
 	return json.RawMessage(`{"status":"interaction_required"}`), nil
 }
 func (b *integrationBrowser) ReloadBrowserTab(context.Context, string) (string, int, error) {
 	return "reloaded", 1, nil
 }
-func (b *integrationBrowser) StopBrowser(context.Context) error { b.stops++; return nil }
+func (b *integrationBrowser) StopBrowser(context.Context) error {
+	b.stops++
+	b.running = false
+	return nil
+}
+func (b *integrationBrowser) BrowserRunning(context.Context) (bool, error) { return b.running, nil }
 
 func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing.T) {
 	store, err := vault.Open(filepath.Join(t.TempDir(), "credentials.kdbx"), []byte("synthetic-password"))
@@ -83,7 +96,7 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 		_, _ = data.ReadFrom(resp.Body)
 		return resp.StatusCode, data.String()
 	}
-	if status, body := request(first); status != 200 || !strings.Contains(body, "synthetic") || browser.starts != 0 {
+	if status, body := request(first); status != 200 || !strings.Contains(body, "synthetic") || browser.starts != 0 || browser.stops != 0 {
 		t.Fatalf("offline status %d body %s starts %d", status, body, browser.starts)
 	}
 	if status, _ := request(second); status != 403 {
@@ -93,12 +106,18 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 		t.Fatalf("invalid status %d", status)
 	}
 	browser.offline = json.RawMessage(`{"status":"interaction_required"}`)
-	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 2 {
+	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 {
 		t.Fatalf("interactive status %d body %s", status, body)
 	}
-	browser.offline = json.RawMessage(`{"status":"refreshed","access_token":"signed-in-session"}`)
+	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 || !browser.running {
+		t.Fatalf("interactive retry stopped or changed the helper: status %d body %s starts %d stops %d running %v", status, body, browser.starts, browser.stops, browser.running)
+	}
+	browser.adapterResult = json.RawMessage(`{"status":"refreshed","access_token":"signed-in-session"}`)
 	if status, body := request(first); status != 200 || !strings.Contains(body, "signed-in-session") || browser.starts != 1 {
 		t.Fatalf("signed-in session handoff status %d body %s starts %d", status, body, browser.starts)
+	}
+	if browser.running || browser.stops != 1 {
+		t.Fatalf("successful handoff left helper running=%v stops=%d", browser.running, browser.stops)
 	}
 	if err := api.RevokeToken(first); err != nil {
 		t.Fatal(err)
