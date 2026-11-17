@@ -76,15 +76,16 @@ type BrowserControllerSpec struct {
 }
 
 type Instance struct {
-	Key              state.Key `json:"key"`
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	RegistrationName string    `json:"registration_name,omitempty"`
-	Status           string    `json:"status"`
-	URL              string    `json:"url"`
-	Ownership        string    `json:"ownership"`
-	LastAction       string    `json:"last_action,omitempty"`
-	LastActionAt     time.Time `json:"last_action_at,omitempty"`
+	Key                state.Key `json:"key"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	RegistrationName   string    `json:"registration_name,omitempty"`
+	Status             string    `json:"status"`
+	URL                string    `json:"url"`
+	ConfiguredHostPort int       `json:"configured_host_port,omitempty"`
+	Ownership          string    `json:"ownership"`
+	LastAction         string    `json:"last_action,omitempty"`
+	LastActionAt       time.Time `json:"last_action_at,omitempty"`
 }
 type Runtime struct {
 	Store                  *state.Store
@@ -330,7 +331,7 @@ func canonicalRunSpec(s RunSpec) RunSpec {
 func labels(k state.Key, s RunSpec) map[string]string {
 	b, _ := json.Marshal(canonicalRunSpec(s))
 	h := sha256.Sum256(b)
-	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.configured_host_port": strconv.Itoa(s.HostPort), "aact.container_port": strconv.Itoa(s.ContainerPort), "aact.spec": hex.EncodeToString(h[:])}
 	if s.RegistrationName != "" {
 		result["aact.registration_name"] = s.RegistrationName
 	}
@@ -356,11 +357,19 @@ type dockerState struct {
 	Running bool   `json:"Running"`
 	Status  string `json:"Status"`
 }
+type dockerPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+type dockerNetworkSettings struct {
+	Ports map[string][]dockerPortBinding `json:"Ports"`
+}
 type dockerInfo struct {
-	ID     string       `json:"Id"`
-	Name   string       `json:"Name"`
-	Config dockerConfig `json:"Config"`
-	State  dockerState  `json:"State"`
+	ID              string                `json:"Id"`
+	Name            string                `json:"Name"`
+	Config          dockerConfig          `json:"Config"`
+	State           dockerState           `json:"State"`
+	NetworkSettings dockerNetworkSettings `json:"NetworkSettings"`
 }
 
 var errDockerObjectNotFound = errors.New("expected Docker object-not-found probe")
@@ -394,6 +403,13 @@ func (r *Runtime) runCapture(ctx context.Context, args []string, stream bool) ([
 }
 func dockerCommandError(operation string, commandErr error, diagnostics []byte) error {
 	return fmt.Errorf("Docker %s: %w: %s", operation, commandErr, strings.TrimSpace(string(diagnostics)))
+}
+func isHostPortConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "port is already allocated") || strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage of each socket address")
 }
 func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) {
 	// Inspect is a probe during first install. Keep its stderr buffered until
@@ -915,7 +931,29 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 		}
 		renamed = true
 	}
+	dynamicHostPort := false
 	b, e := r.run(ctx, a)
+	if e != nil && s.HostPort > 0 && isHostPortConflict(e) {
+		// Docker selects and binds an available host port atomically. Keep the
+		// capability's container port and all configured inputs unchanged.
+		// docker run can leave its container behind when binding fails. Remove
+		// only the exact labeled attempt before retrying under the same name.
+		candidate, inspectErr := r.inspect(ctx, name)
+		if inspectErr == nil && candidate.Config.Labels["aact.attempt"] == expected["aact.attempt"] && candidate.Config.Labels["aact.spec"] == expected["aact.spec"] && ownership(candidate, k, installationID, rows) == "local" {
+			if _, cleanupErr := r.run(ctx, []string{"rm", "--force", candidate.ID}); cleanupErr == nil {
+				fallback := append([]string(nil), a...)
+				publishArg := net.JoinHostPort(s.BindIP, strconv.Itoa(s.HostPort)) + ":" + strconv.Itoa(s.ContainerPort)
+				for i := 0; i+1 < len(fallback); i++ {
+					if fallback[i] == "--publish" && fallback[i+1] == publishArg {
+						fallback[i+1] = net.JoinHostPort(s.BindIP, "") + ":" + strconv.Itoa(s.ContainerPort)
+						break
+					}
+				}
+				b, e = r.run(ctx, fallback)
+				dynamicHostPort = e == nil
+			}
+		}
+	}
 	if e != nil {
 		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.BindIP, s.HostPort, e)
 	}
@@ -948,7 +986,22 @@ func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instan
 			return Instance{}, dockerCommandError("vault handoff", handoffErr, diagnostics.Bytes())
 		}
 	}
-	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
+	observed, inspectErr := r.inspect(ctx, createdID)
+	if inspectErr != nil {
+		return Instance{}, fmt.Errorf("inspect started MCP for its actual endpoint: %w", inspectErr)
+	}
+	out = instance(observed)
+	out.Ownership = "local"
+	if dynamicHostPort {
+		actualURL, parseErr := url.Parse(out.URL)
+		actualPort, portErr := 0, error(nil)
+		if parseErr == nil {
+			actualPort, portErr = strconv.Atoi(actualURL.Port())
+		}
+		if parseErr != nil || portErr != nil || actualPort < 1 || actualPort > 65535 || actualPort == s.HostPort {
+			return Instance{}, errors.New("Docker did not report the dynamically assigned MCP host port")
+		}
+	}
 	if !s.DeferProtocolHealth {
 		if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
 			return out, fmt.Errorf("MCP health check failed: %w", e)
@@ -1044,7 +1097,19 @@ func instance(d dockerInfo) Instance {
 	if s == "" && d.State.Running {
 		s = "running"
 	}
-	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), RegistrationName: l["aact.registration_name"], Status: s, URL: l["aact.url"]}
+	endpoint := l["aact.url"]
+	if containerPort := l["aact.container_port"]; containerPort != "" {
+		if bindings := d.NetworkSettings.Ports[containerPort+"/tcp"]; len(bindings) > 0 {
+			if port, err := strconv.Atoi(bindings[0].HostPort); err == nil && port > 0 {
+				if parsed, err := url.Parse(endpoint); err == nil && parsed.Hostname() != "" {
+					parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(port))
+					endpoint = parsed.String()
+				}
+			}
+		}
+	}
+	configuredPort, _ := strconv.Atoi(l["aact.configured_host_port"])
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), RegistrationName: l["aact.registration_name"], Status: s, URL: endpoint, ConfiguredHostPort: configuredPort}
 }
 func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
 	instances, err := r.List(ctx)
@@ -1100,6 +1165,29 @@ func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []
 		return out, dockerCommandError("exec", err, diagnostics.Bytes())
 	}
 	return out, nil
+}
+
+// StartBrowser opens the helper registered to one locally owned MCP runtime.
+func (r *Runtime) StartBrowser(ctx context.Context, k state.Key) (string, error) {
+	observed, err := r.observedContainer(ctx, k)
+	if err != nil {
+		return "", err
+	}
+	if observed.Status != "running" {
+		return "", errors.New("start this MCP before opening its browser login")
+	}
+	info, err := r.inspect(ctx, observed.ID)
+	if err != nil {
+		return "", err
+	}
+	if info.Config.Labels["aact.browser_auth"] != "1" {
+		return "", errors.New("this MCP does not have a browser login helper")
+	}
+	opener, ok := r.VaultTokenIssuer.(vault.BrowserConfigurationOpener)
+	if !ok {
+		return "", errors.New("daemon cannot open browser login")
+	}
+	return opener.StartBrowserConfiguration(observed.ID)
 }
 
 func (r *Runtime) Stop(ctx context.Context, k state.Key) error {

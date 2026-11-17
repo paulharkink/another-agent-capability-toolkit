@@ -786,7 +786,13 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 				startDisabled = foreignReason
 			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
-			if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
+			if definition.BrowserController != nil {
+				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
+				if foreignReason != "" {
+					authenticateDisabled = foreignReason
+				}
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "browser-login:" + definition.Name, Label: "Log in to " + definition.Name, Disabled: authenticateDisabled})
+			} else if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
 				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
 				if foreignReason != "" {
 					authenticateDisabled = foreignReason
@@ -1169,6 +1175,13 @@ func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRo
 	if definition == nil {
 		return "Refresh this target; its Login action is unavailable"
 	}
+	if definition.BrowserController != nil {
+		exactMCP := row.Key.MCP == mcpName || row.Key.MCPDefinition == mcpName || (row.Instance != nil && row.Instance.Name == mcpName)
+		if row.Instance == nil || !exactMCP || strings.ToLower(strings.TrimSpace(row.Status)) != "running" {
+			return "Start this MCP before logging in"
+		}
+		return ""
+	}
 	command, ok := mcpruntime.ResolveActionCommand(*definition, "authenticate", "")
 	if !ok {
 		return "This MCP does not declare a Login action"
@@ -1217,6 +1230,8 @@ func (m *Model) refreshRuntimeActionAvailability() {
 			prefix = "start:"
 		case strings.HasPrefix(actions[i].ID, "authenticate:"):
 			prefix = "authenticate:"
+		case strings.HasPrefix(actions[i].ID, "browser-login:"):
+			prefix = "browser-login:"
 		default:
 			continue
 		}

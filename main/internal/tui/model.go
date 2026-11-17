@@ -634,7 +634,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
-			if parts[0] == "authenticate" {
+			if parts[0] == "authenticate" || parts[0] == "browser-login" {
 				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
 					m.output = reason
 					return m, nil
@@ -654,9 +654,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.output = "The selected MCP no longer declares a Login action; refresh this target."
 					return m, nil
 				}
-				if _, supported := definition.Actions["authenticate"]; !supported {
-					m.output = "This MCP does not declare a Login action."
+				if parts[0] == "browser-login" && definition.BrowserController == nil {
+					m.output = "This capability does not declare a browser login helper; refresh this target."
 					return m, nil
+				}
+				if parts[0] == "authenticate" && definition.BrowserController == nil {
+					if _, supported := definition.Actions["authenticate"]; !supported {
+						m.output = "This MCP does not declare a Login action."
+						return m, nil
+					}
 				}
 				profile := m.instanceForMCPName(parts[1])
 				row := InstanceRow{}
@@ -668,7 +674,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.workspace.cacheDraft(m.form.Values())
-				return m, m.run(operation{action: "authenticate", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
 		}
 		return m, nil
@@ -1655,9 +1661,9 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate" || op.action == "browser-login") {
 			output, err = instanceBackend.UIConfigurationInstanceRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
-		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate" || op.action == "browser-login") {
 			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
 		} else if op.mcp != "" || op.profile != "" {
 			if instanceBackend, ok := backend.(instanceRunBackend); ok {

@@ -1498,6 +1498,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	}
 	urls := map[string]string{}
 	if q.InstallOnly {
+		observedRuntimes, observeErr := s.Options.Runtime.List(ctx)
+		if observeErr != nil {
+			return out, fmt.Errorf("refresh runtime observation before installing agent bindings: %w", observeErr)
+		}
 		for _, definition := range p.MCPDefinitions() {
 			if !mcps[definition.Name] {
 				continue
@@ -1515,6 +1519,25 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			// the registration it is creating.
 			if q.Uninstall && len(destIDs) == 0 {
 				continue
+			}
+			// A locally running runtime may have received a different actual host
+			// port after Docker resolved a conflict. Reuse that endpoint only when
+			// it was launched for the same configured port.
+			if definition.HostPortInput != "" {
+				configuredPort, portErr := resolvePortInputValue(definition.HostPortInput, values[definition.HostPortInput])
+				if portErr != nil {
+					return out, invalid(portErr)
+				}
+				child := mcpDefinitionKey(key, p, definition)
+				for _, runtime := range observedRuntimes {
+					if runtime.Key == child && runtime.Ownership == "local" && runtime.Status == "running" && runtime.ConfiguredHostPort == configuredPort && runtime.URL != "" {
+						urls[definition.Name] = runtime.URL
+						break
+					}
+				}
+				if urls[definition.Name] != "" {
+					continue
+				}
 			}
 			// Use the same declared host/port values as Start whenever the pack
 			// declares them. This keeps the registration current after an input

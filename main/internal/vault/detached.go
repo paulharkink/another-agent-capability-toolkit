@@ -836,6 +836,17 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/browser/configurations/") && strings.HasSuffix(r.URL.Path, "/start") && r.Method == http.MethodPost:
+			container := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/browser/configurations/"), "/start")
+			viewerURL, err := api.StartBrowser(r.Context(), container)
+			if err != nil {
+				http.Error(w, "cannot start browser", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(struct {
+				ViewerURL string `json:"viewer_url"`
+			}{ViewerURL: viewerURL})
 		case r.URL.Path == "/container-network" && r.Method == http.MethodPost:
 			var request struct {
 				APIListenAddress string `json:"api_listen_address"`

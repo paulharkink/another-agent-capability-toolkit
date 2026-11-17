@@ -13,8 +13,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -182,6 +185,79 @@ func TestDockerMCP(t *testing.T) {
 	if matching != 1 {
 		t.Fatalf("fresh inventory has %d runtimes after restart; want exactly one: %+v", matching, all)
 	}
+}
+
+func TestDockerMCPChoosesAndReportsFreePortWhenConfiguredPortIsOccupied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	s, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mcp.NewDockerRuntime(s)
+	k := state.Key{Source: fmt.Sprintf("integration-port-%d", time.Now().UnixNano()), Package: "fixture", Environment: "synthetic", Target: "occupied"}
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		_ = r.Stop(cleanup, k)
+	})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	occupiedPort := listener.Addr().(*net.TCPAddr).Port
+	build, err := filepath.Abs("../../testdata/mcp-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build = fixtureWithPrefetchedPythonBase(t, build)
+	mount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mount, "profile.txt"), []byte("port-fallback-fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := mcp.RunSpec{BuildContext: build, RegistrationName: fmt.Sprintf("port-fallback-%d", time.Now().UnixNano()), Host: "127.0.0.1", HostPort: occupiedPort, ContainerPort: 8765, Transport: "streamable-http", EndpointPath: "/mcp", DeferProtocolHealth: true, Mounts: []mcp.Mount{{Source: mount, Destination: "/fixture", ReadOnly: true}}}
+	started, err := r.Start(ctx, k, spec)
+	if err != nil {
+		t.Fatalf("start with occupied configured port: %v", err)
+	}
+	parsed, err := url.Parse(started.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Port() == strconv.Itoa(occupiedPort) || parsed.Port() == "" || parsed.Port() == "0" {
+		t.Fatalf("reported endpoint %q did not use a different assigned port", started.URL)
+	}
+	var healthErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		healthErr = mcp.Health(ctx, started.URL, spec.Transport)
+		if healthErr == nil {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if healthErr != nil {
+		logs, _ := exec.Command("docker", "logs", started.ID).CombinedOutput()
+		address := net.JoinHostPort(parsed.Hostname(), parsed.Port())
+		connection, dialErr := net.DialTimeout("tcp", address, time.Second)
+		if connection != nil {
+			connection.Close()
+		}
+		t.Fatalf("advertised endpoint %q is not usable: %v; dial: %v; logs: %s", started.URL, healthErr, dialErr, logs)
+	}
+	observed, err := r.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range observed {
+		if item.Key == k && item.Status == "running" {
+			if item.URL != started.URL {
+				t.Fatalf("inventory URL = %q, started URL = %q", item.URL, started.URL)
+			}
+			return
+		}
+	}
+	t.Fatal("started runtime was missing from inventory")
 }
 
 func fixtureWithPrefetchedPythonBase(t *testing.T, source string) string {

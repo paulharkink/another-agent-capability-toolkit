@@ -90,6 +90,21 @@ func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, r
 	return remove()
 }
 
+// StartConfiguration opens the registered authentication helper and returns
+// its actual loopback viewer URL to the local AACT UI.
+func (s *Service) StartConfiguration(ctx context.Context, config ServiceConfig) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
+	viewer, err := s.newBrowser(config).EnsureStarted(ctx)
+	if err != nil || validateViewerURL(viewer) != nil {
+		return "", errors.New("browser could not be started")
+	}
+	return viewer, nil
+}
+
 // ReapConfiguration checks owner state while holding the same lifecycle lock
 // used by requests. Stopped owners retain credentials for a later restart;
 // removed owners can never restart with the same container ID.
