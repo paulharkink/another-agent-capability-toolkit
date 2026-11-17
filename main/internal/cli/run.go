@@ -190,17 +190,30 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if in == os.Stdin && needsSharedVault(f.args) {
 		terminal := term.IsTerminal(int(os.Stdin.Fd()))
 		passwordConfigured := hasConfiguredVaultPassword()
-		if !terminal && !passwordConfigured {
+		var credentialPassword []byte
+		if !passwordConfigured {
+			if _, statErr := os.Stat(filepath.Join(store.Root(), "credentials.kdbx")); statErr == nil {
+				credentialPassword, _ = getVaultCredential(store.Root())
+			}
+		}
+		defer clear(credentialPassword)
+		credentialConfigured := len(credentialPassword) > 0
+		if !terminal && !passwordConfigured && !credentialConfigured {
 			fmt.Fprintln(errOut, "this command needs the shared vault; run it from an interactive terminal to enter the vault master password")
 			return 2
 		}
 		if len(f.args) == 0 {
 			if passwordConfigured {
-				if err := initializeSharedVault(store, store.Root(), errOut, nil); err != nil {
+				if err := initializeSharedVault(store, store.Root(), errOut, nil, nil, nil); err != nil {
 					fmt.Fprintln(errOut, err)
 					return 1
 				}
-			} else {
+			} else if credentialConfigured {
+				if err := initializeSharedVaultWithPassword(store, store.Root(), credentialPassword, false); err != nil {
+					credentialConfigured = false
+				}
+			}
+			if !passwordConfigured && !credentialConfigured {
 				vaultPath := filepath.Join(store.Root(), "credentials.kdbx")
 				_, statErr := os.Stat(vaultPath)
 				creating := os.IsNotExist(statErr)
@@ -208,8 +221,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					fmt.Fprintln(errOut, fmt.Errorf("inspect shared vault: %w", statErr))
 					return 1
 				}
-				err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte) error {
-					return initializeSharedVaultWithPassword(store, store.Root(), password)
+				err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte, saveCredential bool) error {
+					return initializeSharedVaultWithPassword(store, store.Root(), password, saveCredential)
 				})
 				if errors.Is(err, tui.ErrVaultUnlockCanceled) {
 					return 0
@@ -228,7 +241,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					return password, err
 				}
 			}
-			if err := initializeSharedVault(store, store.Root(), errOut, readPassword); err != nil {
+			var confirmSave func() bool
+			if terminal {
+				confirmSave = func() bool { return confirmVaultCredentialSave(in, errOut) }
+			}
+			if err := initializeSharedVault(store, store.Root(), errOut, readPassword, credentialPassword, confirmSave); err != nil {
 				fmt.Fprintln(errOut, err)
 				return 1
 			}

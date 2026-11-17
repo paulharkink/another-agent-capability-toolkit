@@ -41,6 +41,31 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
+		manualUnlock := !configured
+		fromCredentialStore := false
+		if !configured {
+			if _, statErr := os.Stat(filepath.Join(root, "credentials.kdbx")); statErr == nil {
+				if saved, keyringErr := getVaultCredential(root); keyringErr == nil && len(saved) > 0 {
+					password = saved
+					configured = true
+					manualUnlock = false
+					fromCredentialStore = true
+				}
+			}
+		}
+		var controlToken []byte
+		if configured {
+			controlToken, err = vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+			if err != nil && fromCredentialStore {
+				clear(password)
+				password = nil
+				configured = false
+				manualUnlock = true
+			} else if err != nil {
+				fmt.Fprintln(errOut, err)
+				return 1
+			}
+		}
 		if !configured && !term.IsTerminal(int(os.Stdin.Fd())) {
 			fmt.Fprintln(errOut, "stopping the AACT daemon requires an interactive terminal to unlock the vault")
 			return 2
@@ -59,12 +84,19 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 			fmt.Fprintln(errOut, "vault master password must not be empty")
 			return 1
 		}
-		controlToken, err := vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
-		if err != nil {
-			fmt.Fprintln(errOut, err)
-			return 1
+		if !configured {
+			controlToken, err = vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+			if err != nil {
+				fmt.Fprintln(errOut, err)
+				return 1
+			}
 		}
 		defer clear(controlToken)
+		if manualUnlock && term.IsTerminal(int(os.Stdin.Fd())) && confirmVaultCredentialSave(os.Stdin, errOut) {
+			if err := setVaultCredential(root, password); err != nil {
+				fmt.Fprintln(errOut, "Could not save the vault password to the OS credential store; the daemon remains available for this session.")
+			}
+		}
 		if err := vault.StopDetached(info, controlToken); err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1

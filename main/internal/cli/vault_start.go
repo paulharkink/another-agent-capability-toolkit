@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/subtle"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
@@ -36,12 +38,12 @@ func needsSharedVault(args []string) bool {
 }
 
 func openVaultWithPrompt(stateRoot string, out io.Writer, read passwordReader) (*vault.Store, error) {
-	store, password, err := openVaultWithPassword(stateRoot, out, read)
+	store, password, err := openVaultWithPassword(stateRoot, out, read, nil, nil)
 	clear(password)
 	return store, err
 }
 
-func openVaultWithPassword(stateRoot string, out io.Writer, read passwordReader) (*vault.Store, []byte, error) {
+func openVaultWithPassword(stateRoot string, out io.Writer, read passwordReader, preferred []byte, confirmSave func() bool) (*vault.Store, []byte, error) {
 	path := filepath.Join(stateRoot, "credentials.kdbx")
 	_, statErr := os.Stat(path)
 	creating := errors.Is(statErr, os.ErrNotExist)
@@ -51,6 +53,12 @@ func openVaultWithPassword(stateRoot string, out io.Writer, read passwordReader)
 	password, configured, err := configuredVaultPassword()
 	if err != nil {
 		return nil, nil, err
+	}
+	if !configured && !creating && len(preferred) > 0 {
+		store, openErr := vault.Open(path, preferred)
+		if openErr == nil {
+			return store, append([]byte(nil), preferred...), nil
+		}
 	}
 	label := "Vault master password: "
 	if creating {
@@ -93,6 +101,11 @@ func openVaultWithPassword(stateRoot string, out io.Writer, read passwordReader)
 	if err != nil {
 		clear(password)
 		return nil, nil, err
+	}
+	if !configured && confirmSave != nil && confirmSave() {
+		if err := setVaultCredential(stateRoot, password); err != nil && out != nil {
+			_, _ = fmt.Fprintln(out, "Could not save the vault password to the OS credential store; the vault remains available for this session.")
+		}
 	}
 	return store, password, nil
 }
@@ -155,8 +168,8 @@ func hasConfiguredVaultPassword() bool {
 
 // initializeSharedVault prompts without echo, then attaches the encrypted
 // backend used by state.SecretInputs and state.SaveSecretInputs.
-func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, read passwordReader) error {
-	vaultStore, masterPassword, err := openVaultWithPassword(stateRoot, out, read)
+func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, read passwordReader, preferred []byte, confirmSave func() bool) error {
+	vaultStore, masterPassword, err := openVaultWithPassword(stateRoot, out, read, preferred, confirmSave)
 	if err != nil {
 		return err
 	}
@@ -164,15 +177,33 @@ func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, 
 	return attachSharedVault(store, stateRoot, vaultStore, masterPassword)
 }
 
-func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte) error {
+func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte, saveCredential bool) error {
 	if len(password) == 0 {
 		return errors.New("vault master password must not be empty")
 	}
-	vaultStore, err := vault.Open(filepath.Join(stateRoot, "credentials.kdbx"), password)
+	path := filepath.Join(stateRoot, "credentials.kdbx")
+	vaultStore, err := vault.Open(path, password)
 	if err != nil {
 		return err
 	}
+	if saveCredential {
+		_ = setVaultCredential(stateRoot, password)
+	}
 	return attachSharedVault(store, stateRoot, vaultStore, password)
+}
+
+func confirmVaultCredentialSave(input io.Reader, output io.Writer) bool {
+	if input == nil || output == nil {
+		return false
+	}
+	if _, err := fmt.Fprint(output, "Save the vault password to the OS credential store for future unlocks? [y/N] "); err != nil {
+		return false
+	}
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && len(answer) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(answer), "y") || strings.EqualFold(strings.TrimSpace(answer), "yes")
 }
 
 func attachSharedVault(store *state.Store, stateRoot string, vaultStore *vault.Store, masterPassword []byte) error {

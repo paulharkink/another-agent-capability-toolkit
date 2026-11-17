@@ -12,13 +12,14 @@ import (
 
 var ErrVaultUnlockCanceled = errors.New("vault unlock canceled")
 
-type vaultUnlockFunc func([]byte) error
+type vaultUnlockFunc func([]byte, bool) error
 
 type vaultUnlockResultMsg struct{ err error }
 
 type vaultUnlockModel struct {
 	creating   bool
 	confirming bool
+	saveKey    bool
 	busy       bool
 	done       bool
 	cancelled  bool
@@ -58,6 +59,10 @@ func (m *vaultUnlockModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.busy || m.done || m.cancelled {
+			return m, nil
+		}
+		if message.Mod == tea.ModCtrl && message.Code == 's' {
+			m.saveKey = !m.saveKey
 			return m, nil
 		}
 		switch {
@@ -111,9 +116,10 @@ func (m *vaultUnlockModel) submit() (tea.Model, tea.Cmd) {
 	m.password = nil
 	m.busy = true
 	unlock := m.unlock
+	saveKey := m.saveKey
 	return m, func() tea.Msg {
 		defer clear(password)
-		return vaultUnlockResultMsg{err: unlock(password)}
+		return vaultUnlockResultMsg{err: unlock(password, saveKey)}
 	}
 }
 
@@ -131,6 +137,11 @@ func (m *vaultUnlockModel) View() tea.View {
 		mask = "Unlocking…"
 	}
 	content := fmt.Sprintf("%s\n\n%s\n  %s\n", title, label, mask)
+	choice := "No"
+	if m.saveKey {
+		choice = "Yes"
+	}
+	content += fmt.Sprintf("\nCtrl+S · Save password to OS credential store: %s\n", choice)
 	if m.message != "" {
 		content += "\n" + m.message + "\n"
 	}

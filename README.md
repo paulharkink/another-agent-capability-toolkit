@@ -181,6 +181,24 @@ or `AACT_VAULT_PASSWORD` to the password. Set only one. AACT removes one final
 newline from a password file and does not pass these variables to capability
 subprocesses. The same password must be used to open an existing vault.
 
+AACT can also use an OS credential store through a script hook. It looks for
+the bundled macOS Keychain, Windows Credential Manager, WSL Credential Manager,
+or Linux Secret Service script. If the store has no usable password, AACT asks
+for the master password as usual. After a successful manual unlock, the TUI
+offers an opt-in toggle (`Ctrl+S`) and interactive CLI commands ask whether to
+save the password. Declining leaves the KeePass vault unchanged. On later
+unlocks, a stored password is used subject to the operating system's own access
+controls; a missing, locked, or stale entry falls back to the manual prompt.
+Linux needs `secret-tool` and an available Secret Service session for this
+option; without it, manual unlock remains available.
+
+To use a custom connector, set `AACT_VAULT_CREDENTIAL_HOOK` to an absolute
+executable script path. AACT sends a versioned JSON request to the script's
+standard input and reads one JSON response from standard output. Passwords are
+carried only through these pipes, never as command-line arguments or
+environment variables. The connector protocol and bundled scripts are under
+`scripts/keyring/`.
+
 ## Build and verify from source
 
 Development uses the Go version pinned in go.mod. Go is needed to develop or

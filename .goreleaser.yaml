@@ -103,6 +103,7 @@ archives:
       - THIRD_PARTY_NOTICES.md
       - packages/**
       - main/packages/git-provider/mcp/**
+      - scripts/keyring/**
       - images/browser-authentication-helper/Dockerfile
       - images/browser-authentication-helper/README.md
       - images/browser-authentication-helper/*.py
