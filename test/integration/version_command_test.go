@@ -285,7 +285,11 @@ func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.
 func TestVersionInstallAvoidsProxyRequestsForVerifiedLocalArchive(t *testing.T) {
 	version, arch := "1.2.3", runtime.GOARCH
 	if runtime.GOOS == "windows" {
-		arch = "arm64"
+		if native := strings.ToUpper(os.Getenv("PROCESSOR_ARCHITECTURE")); native == "ARM64" || native == "AARCH64" {
+			arch = "arm64"
+		} else if native == "AMD64" || native == "X86_64" || native == "X64" {
+			arch = "amd64"
+		}
 	}
 	trustedArchive := installerArchiveWithMarker(t, "verified local archive")
 	server := versionReleaseServer(t, version, arch, trustedArchive, true)
