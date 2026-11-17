@@ -356,11 +356,15 @@ func TestVersionInstallAvoidsProxyRequestsForVerifiedLocalArchive(t *testing.T) 
 	}
 	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", version)
 	cmd.Dir = t.TempDir()
-	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_INSTALL_DIR="+root,
-		"AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1",
-		"HTTP_PROXY="+proxy.URL, "http_proxy="+proxy.URL, "HTTPS_PROXY="+proxy.URL,
-		"https_proxy="+proxy.URL, "ALL_PROXY="+proxy.URL, "all_proxy="+proxy.URL,
-		"NO_PROXY=", "no_proxy=")
+	environment := []string{"HOME=" + home, "AACT_INSTALL_DIR=" + root,
+		"AACT_RELEASE_API_URL=" + server.URL + "/releases", "AACT_INSTALLER_SKIP_USER_PATH=1",
+		"HTTP_PROXY=" + proxy.URL, "http_proxy=" + proxy.URL, "HTTPS_PROXY=" + proxy.URL,
+		"https_proxy=" + proxy.URL, "ALL_PROXY=" + proxy.URL, "all_proxy=" + proxy.URL,
+		"NO_PROXY=", "no_proxy="}
+	if runtime.GOOS == "windows" {
+		environment = append(environment, "PSModulePath="+t.TempDir())
+	}
+	cmd.Env = cleanTestEnvironment(os.Environ(), environment...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("version install failed: %s: %v", output, err)
