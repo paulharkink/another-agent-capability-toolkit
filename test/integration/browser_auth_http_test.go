@@ -19,6 +19,8 @@ type integrationBrowser struct {
 	offline       json.RawMessage
 	adapterResult json.RawMessage
 	running       bool
+	reloads       int
+	tabState      string
 	starts, stops int
 }
 
@@ -39,6 +41,8 @@ func (b *integrationBrowser) RunBrowserAuthAdapter(context.Context, browsercontr
 	return json.RawMessage(`{"status":"interaction_required"}`), nil
 }
 func (b *integrationBrowser) ReloadBrowserTab(context.Context, string) (string, int, error) {
+	b.reloads++
+	b.tabState = "login-form-state-" + strings.Repeat("x", b.reloads)
 	return "reloaded", 1, nil
 }
 func (b *integrationBrowser) StopBrowser(context.Context) error {
@@ -109,11 +113,12 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 {
 		t.Fatalf("interactive status %d body %s", status, body)
 	}
-	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 || !browser.running {
-		t.Fatalf("interactive retry stopped or changed the helper: status %d body %s starts %d stops %d running %v", status, body, browser.starts, browser.stops, browser.running)
+	activeTabState, reloads := browser.tabState, browser.reloads
+	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 || !browser.running || browser.tabState != activeTabState || browser.reloads != reloads {
+		t.Fatalf("interactive retry stopped or reloaded the active login tab: status %d body %s starts %d stops %d running %v tab_state=%q reloads=%d", status, body, browser.starts, browser.stops, browser.running, browser.tabState, browser.reloads)
 	}
 	browser.adapterResult = json.RawMessage(`{"status":"refreshed","access_token":"signed-in-session"}`)
-	if status, body := request(first); status != 200 || !strings.Contains(body, "signed-in-session") || browser.starts != 1 {
+	if status, body := request(first); status != 200 || !strings.Contains(body, "signed-in-session") || browser.starts != 1 || browser.tabState != activeTabState || browser.reloads != reloads {
 		t.Fatalf("signed-in session handoff status %d body %s starts %d", status, body, browser.starts)
 	}
 	if browser.running || browser.stops != 1 {

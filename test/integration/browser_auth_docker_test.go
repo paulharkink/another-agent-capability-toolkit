@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/browsercontroller"
 	vault "github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
@@ -200,36 +200,15 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixturePath = browserMCPFixtureWithPinnedPythonBase(t, fixturePath)
-	mcpImage := "aact-test/browser-auth-mcp:" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
-	docker(nil, "build", "--tag", mcpImage, fixturePath)
+	mcpImage := fmt.Sprintf("aact-test/browser-auth-mcp:%x", time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", mcpImage).Run() })
+	docker(nil, "build", "--tag", mcpImage, fixturePath)
 
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var signedIn atomic.Bool
-	upstream := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			if signedIn.Load() {
-				http.SetCookie(w, &http.Cookie{Name: "session", Value: "synthetic-signed-in-token", Path: "/", HttpOnly: true})
-			}
-			_, _ = fmt.Fprint(w, "synthetic capability sign-in fixture")
-			return
-		}
-		if r.URL.Path != "/projects" || r.Header.Get("Authorization") != "Bearer synthetic-signed-in-token" {
-			http.Error(w, "synthetic upstream rejected credentials", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"projects":["project-from-authenticated-upstream"]}`)
-	})}
-	go func() { _ = upstream.Serve(listener) }()
-	t.Cleanup(func() { _ = upstream.Close() })
-	upstreamURL := fmt.Sprintf("http://host.docker.internal:%d", listener.Addr().(*net.TCPAddr).Port)
-
-	mcpContainer := string(docker(nil, "run", "-d", "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777", "--env", "AACT_SYNTHETIC_UPSTREAM="+upstreamURL, mcpImage, "sleep", "3600"))
+	mcpUpstreamURL := "http://127.0.0.1:8766"
+	mcpContainer := string(docker(nil, "run", "-d", "--tmpfs", "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777", "--env", "AACT_SYNTHETIC_UPSTREAM="+mcpUpstreamURL, mcpImage, "sleep", "3600"))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", mcpContainer).Run() })
+	browserAddress := string(docker(nil, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", mcpContainer))
+	browserOrigin := fmt.Sprintf("http://%s:8766", browserAddress)
 
 	root := t.TempDir()
 	password := []byte("synthetic-browser-mcp-password")
@@ -267,11 +246,22 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 	if err := vault.BindContainerToken(info, control, mcpContainer, token); err != nil {
 		t.Fatal(err)
 	}
+	accessConfig, err := json.Marshal(map[string]any{"allowed_urls": []string{browserOrigin}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	config := browsercontroller.ServiceConfig{
-		Origin: upstreamURL, StartupURL: upstreamURL,
-		ProfileVolume: volume, ContainerName: "aact-test-login-" + mcpContainer[:16],
+		Origin: browserOrigin, StartupURL: browserOrigin,
+		AccessConfigJSON: string(accessConfig), ProfileVolume: volume, ContainerName: "aact-test-login-" + mcpContainer[:16],
 		Adapter: browsercontroller.BrowserAuthAdapter{Source: "def run(credentials, config):\n    if not credentials:\n        return {'status': 'interaction_required'}\n    return {'status': 'refreshed', 'access_token': credentials[0]['value']}\n"},
 	}
+	helperName := config.ContainerName
+	t.Cleanup(func() {
+		owner, err := exec.Command("docker", "inspect", "--format", `{{index .Config.Labels "aact.browser-controller"}} {{index .Config.Labels "aact.browser-controller.profile-volume"}}`, helperName).Output()
+		if err == nil && strings.TrimSpace(string(owner)) == "1 "+volume {
+			_ = exec.Command("docker", "rm", "-f", helperName).Run()
+		}
+	})
 	register := func() {
 		t.Helper()
 		if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations", browserRegistration{Instance: namespace, ContainerID: mcpContainer, Config: config}, nil); err != nil {
@@ -289,11 +279,12 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 	docker(nil, "exec", "-d", mcpContainer, "python3", "/app/server.py")
 	docker(nil, "exec", mcpContainer, "python3", "-c", `import socket,time
 deadline=time.time()+20
-while time.time()<deadline:
- s=socket.socket(); s.settimeout(.2)
- try: s.connect(('127.0.0.1',8765)); s.close(); break
- except OSError: time.sleep(.1)
-else: raise RuntimeError('synthetic MCP runtime did not start')`)
+for port in (8765,8766):
+ while time.time()<deadline:
+  s=socket.socket(); s.settimeout(.2)
+  try: s.connect(('127.0.0.1',port)); s.close(); break
+  except OSError: time.sleep(.1)
+ else: raise RuntimeError('synthetic capability runtime did not start')`)
 
 	var opened struct {
 		ViewerURL string `json:"viewer_url"`
@@ -304,6 +295,7 @@ else: raise RuntimeError('synthetic MCP runtime did not start')`)
 	if !strings.HasPrefix(opened.ViewerURL, "http://localhost:") {
 		t.Fatalf("invalid browser viewer URL %q", opened.ViewerURL)
 	}
+
 	client := `import json,sys,urllib.request
 def rpc(i,m,p=None):
  d=json.dumps({'jsonrpc':'2.0','id':i,'method':m,'params':p or {}}).encode(); q=urllib.request.Request('http://127.0.0.1:8765/mcp',data=d,headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}); return json.load(urllib.request.urlopen(q,timeout=60))
@@ -324,6 +316,7 @@ r=rpc(3,'tools/call',{'name':'list_projects','arguments':{}}); print(json.dumps(
 	if !strings.Contains(fmt.Sprint(first), opened.ViewerURL) {
 		t.Fatalf("initial MCP operation did not return the login URL %q: %v", opened.ViewerURL, first)
 	}
+
 	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "true" {
 		t.Fatalf("login helper stopped during initial interaction: %s", running)
 	}
@@ -331,16 +324,31 @@ r=rpc(3,'tools/call',{'name':'list_projects','arguments':{}}); print(json.dumps(
 	if !strings.Contains(fmt.Sprint(retry), opened.ViewerURL) {
 		t.Fatalf("retry changed or lost login URL %q: %v", opened.ViewerURL, retry)
 	}
+
 	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "true" {
 		t.Fatalf("login helper stopped during retry: %s", running)
 	}
-	signedIn.Store(true)
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+mcpContainer+"/stop", nil, nil); err != nil {
+		t.Fatalf("stop helper to simulate completed sign-in: %v", err)
+	}
+	fixture := `import pathlib,sqlite3,os; p=pathlib.Path('/profile/.config/chromium/Default/Network'); p.mkdir(parents=True); c=sqlite3.connect(str(p/'Cookies')); c.execute('CREATE TABLE cookies(host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER, is_secure INTEGER)'); c.execute('INSERT INTO cookies VALUES(?,?,?,?,?,?)',('` + browserAddress + `','session','synthetic-signed-in-token',b'',0,0)); c.commit(); c.close(); os.chmod(p/'Cookies',0o644); [(os.chown(root,1000,1000),[os.chown(os.path.join(root,n),1000,1000) for n in files if os.path.exists(os.path.join(root,n))]) for root,dirs,files in os.walk('/profile')]`
+	docker(nil, "run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "python3", "--mount", "source="+volume+",target=/profile", image, "-c", fixture)
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+mcpContainer+"/start", nil, &opened); err != nil {
+		t.Fatalf("reopen helper after synthetic sign-in: %v", err)
+	}
 	authenticated := callTool()
 	if !strings.Contains(fmt.Sprint(authenticated), "project-from-authenticated-upstream") {
 		t.Fatalf("post-login MCP tool did not reach the authenticated upstream: %v", authenticated)
 	}
 	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "false" {
 		t.Fatalf("successful handoff left login helper running: %s", running)
+	}
+	afterShutdown := callTool()
+	if !strings.Contains(fmt.Sprint(afterShutdown), "project-from-authenticated-upstream") {
+		t.Fatalf("post-shutdown MCP tool call did not use the offline session: %v", afterShutdown)
+	}
+	if running := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName); string(running) != "false" {
+		t.Fatalf("offline MCP call restarted the stopped helper: %s", running)
 	}
 	if err := testDaemonControlRequest(info, control, "DELETE", "/browser/configurations/"+mcpContainer, nil, nil); err != nil {
 		t.Fatal(err)

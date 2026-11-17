@@ -234,25 +234,27 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "browser could not be started", http.StatusServiceUnavailable)
 		return
 	}
-	// Chromium and its initial page may take a few seconds after the container
-	// starts. Retry an unavailable or not-yet-open tab without opening a host browser.
-	readyCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	for {
-		status, _, reloadErr := browser.ReloadBrowserTab(readyCtx, request.Origin)
-		if reloadErr == nil && status == "reloaded" {
-			break
+	if !interactive {
+		// Chromium and its initial page may take a few seconds after startup.
+		// Retry the initial tab lookup only for a newly opened login; reloading
+		// an active session would discard forms and other user progress.
+		readyCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		for {
+			status, _, reloadErr := browser.ReloadBrowserTab(readyCtx, request.Origin)
+			if reloadErr == nil && (status == "reloaded" || status == "ambiguous") {
+				break
+			}
+			select {
+			case <-readyCtx.Done():
+				break
+			case <-time.After(time.Second):
+			}
+			if readyCtx.Err() != nil {
+				break
+			}
 		}
-		if reloadErr == nil && status == "ambiguous" {
-			break
-		}
-		select {
-		case <-readyCtx.Done():
-			goto tryAdapter
-		case <-time.After(time.Second):
-		}
+		cancel()
 	}
-tryAdapter:
-	cancel()
 	result, err = browser.RunBrowserAuthAdapter(r.Context(), request)
 	if err == nil && adapterSucceeded(result) {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

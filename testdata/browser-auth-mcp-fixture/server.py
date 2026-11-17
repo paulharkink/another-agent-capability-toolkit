@@ -1,13 +1,12 @@
 import json
-import os
 import ssl
+import threading
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 with open('/run/aact/vault.json', 'r', encoding='utf-8') as f:
     handoff = json.load(f)
-
 
 def credential():
     context = ssl.create_default_context(cadata=handoff['certificate'])
@@ -25,7 +24,26 @@ def credential():
         return error.code, json.loads(error.read())
 
 
-class Handler(BaseHTTPRequestHandler):
+class SiteHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/projects':
+            if self.headers.get('Authorization') != 'Bearer synthetic-signed-in-token':
+                self.send_error(401, 'synthetic upstream rejected credentials')
+                return
+            body = json.dumps({'projects': ['project-from-authenticated-upstream']}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_error(404)
+
+    def log_message(self, *_args):
+        pass
+
+
+class MCPHandler(BaseHTTPRequestHandler):
     def respond(self, value, status=200):
         body = json.dumps(value).encode()
         self.send_response(status)
@@ -61,7 +79,7 @@ class Handler(BaseHTTPRequestHandler):
                 'isError': True, 'content': [{'type': 'text', 'text': 'authentication required ' + viewer}],
             }})
         access_token = auth.get('result', {}).get('access_token', '')
-        upstream = urllib.request.Request(os.environ['AACT_SYNTHETIC_UPSTREAM'] + '/projects', headers={'Authorization': 'Bearer ' + access_token})
+        upstream = urllib.request.Request('http://127.0.0.1:8766/projects', headers={'Authorization': 'Bearer ' + access_token})
         try:
             with urllib.request.urlopen(upstream, timeout=10) as response:
                 result = json.loads(response.read())
@@ -77,4 +95,5 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-ThreadingHTTPServer(('0.0.0.0', 8765), Handler).serve_forever()
+threading.Thread(target=ThreadingHTTPServer(('0.0.0.0', 8766), SiteHandler).serve_forever, daemon=True).start()
+ThreadingHTTPServer(('0.0.0.0', 8765), MCPHandler).serve_forever()
