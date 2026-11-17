@@ -266,9 +266,9 @@ Capability Pack.
 
 For an MCP that declares a browser login helper, start that MCP first, then
 choose **Log in to …** under Runtime actions. AACT starts its dedicated browser
-helper and provides its login URL for interactive sign-in. This action is
-separate from an MCP's declared Login command. No 15-minute login cooldown is
-currently enforced.
+helper and returns the helper's viewer URL for accessing the login session.
+This is separate from an MCP's declared Login command. No 15-minute login
+cooldown is currently enforced.
 
 ## Build and verify from source
 
