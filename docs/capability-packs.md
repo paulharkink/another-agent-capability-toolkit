@@ -173,8 +173,9 @@ default = false
 ```
 
 Every stage must produce `SKILL.md`. Templates receive `inputs` directly and
-the active pack's absolute manifest path as `context.pack_manifest`; use it
-when generated skill guidance needs to locate the consuming Capability Pack.
+the active pack's Git checkout path as `context.pack_repository`; AACT resolves
+it from the active manifest path and nearest Git root (or the manifest's
+directory when no Git metadata is available).
 No script is needed for simple substitution or Boolean Mustache sections. A
 per-skill generator may be any declared executable or script, with an optional
 Windows command variant. It receives protocol v1 JSON on stdin with `inputs`

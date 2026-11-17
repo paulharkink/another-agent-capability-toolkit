@@ -1464,8 +1464,8 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		packManifest = filepath.Join(s.Source.Root, "aact.toml")
 	}
 	renderer := render.Renderer{
-		Generator: &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr},
-		Context:   map[string]any{"pack_manifest": packManifest},
+		Generator:    &render.Generator{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr},
+		PackManifest: packManifest,
 	}
 	for _, skill := range p.SkillDefinitions() {
 		if q.Uninstall || !skills[skill.Name] {

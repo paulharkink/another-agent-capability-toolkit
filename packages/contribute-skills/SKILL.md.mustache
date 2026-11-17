@@ -5,25 +5,17 @@ description: Use when adding or updating an agent skill for the active AACT Capa
 
 # Contribute a skill to this Capability Pack
 
-The active AACT pack manifest is `{{{context.pack_manifest}}}`. Use this exact
-path to identify the pack; do not infer the repository from the pack name or
-ask the user to provide a repository path.
+AACT resolved the active Capability Pack's Git checkout:
+`{{{context.pack_repository}}}`. Work in this checkout; do not search for a
+repository based on the pack name or ask the user to provide a repository path.
 
-1. Read the pack manifest and identify the catalog entry or import that owns
-   the capability being changed. Resolve relative catalog and import paths
-   against the directory containing the manifest. A `bundled:` entry points to
-   AACT's bundled source and is not the pack's contribution repository.
-2. Locate the pack's checkout from its manifest path. Inspect the Git root,
-   current branch, working tree, and `origin`. Preserve all existing changes.
-3. Read the checkout's `AGENTS.md`, contribution guide, and the existing skill
+1. Inspect the current branch, working tree, and `origin`. Preserve all
+   existing changes.
+2. Read the checkout's `AGENTS.md`, contribution guide, and the existing skill
    layout. Follow those instructions for where skills live, catalog changes,
    checks, branch naming, commits, and pull requests. If no checkout exists at
-   or around the manifest path, or the source repository cannot be established
-   from the manifest and local Git metadata, ask the user which checkout to use.
-4. Add or update the skill in that repository, run its documented checks, and
+   this path or its contribution instructions do not identify where skills
+   belong, ask the user for the missing detail.
+3. Add or update the skill in that repository, run its documented checks, and
    prepare a focused branch and pull request. Do not push, publish, or merge
    unless the user has authorized that specific action.
-
-The active pack manifest path was supplied by AACT at render time:
-
-`{{{context.pack_manifest}}}`
