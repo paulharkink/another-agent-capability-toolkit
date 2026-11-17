@@ -57,6 +57,49 @@ func TestPublicCLIStopsDaemonWithSavedCredential(t *testing.T) {
 	}
 }
 
+func TestPublicCLIRejectsMetacharacterBatchHookPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmd.exe metacharacter handling is Windows-specific")
+	}
+	binary := buildPublicCLIBinary(t)
+	const password = "isolated-cmd-metachar-password"
+	root := prepareCredentialCLITest(t, password)
+	t.Setenv("AACT_VAULT_API_BIND_IP", "127.0.0.1")
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	t.Setenv("AACT_TEST_HOOK_MARKER", marker)
+
+	base := filepath.Join(filepath.Dir(os.Getenv("AACT_VAULT_CREDENTIAL_HOOK")), "hook-metachar")
+	actualScript := base + ".cmd"
+	injectedPath := actualScript + "&echo-injected.cmd"
+	script := "@echo off\r\nset /p \"request=\"\r\n>>\"%AACT_TEST_HOOK_MARKER%\" echo ran\r\necho {\"status\":\"missing\"}\r\n"
+	if err := os.WriteFile(actualScript, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AACT_VAULT_CREDENTIAL_HOOK", injectedPath)
+
+	info, err := vault.StartDetached(binary, root, []byte(password))
+	if err != nil {
+		t.Fatalf("start isolated daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		token, tokenErr := vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), []byte(password))
+		if tokenErr == nil {
+			defer clear(token)
+			_ = vault.StopDetached(info, token)
+		}
+	})
+
+	command := exec.Command(binary, "daemon", "stop")
+	command.Env = os.Environ()
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "interactive terminal") {
+		t.Fatalf("unsafe hook path was not rejected to manual fallback: err=%v output=%q", err, output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("batch path with cmd metacharacters was executed: marker stat err=%v", err)
+	}
+}
+
 func writeSavedCredentialHook(t *testing.T, password string) string {
 	t.Helper()
 	response := `{"status":"ok","secret":"` + base64.StdEncoding.EncodeToString([]byte(password)) + `"}`

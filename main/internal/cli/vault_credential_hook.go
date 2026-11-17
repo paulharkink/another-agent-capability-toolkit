@@ -182,7 +182,7 @@ func runCredentialHook(request credentialHookRequest) (credentialHookResponse, e
 			command = exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
 		case ".cmd", ".bat":
 			cmd := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
-			if !filepath.IsAbs(cmd) || strings.ContainsAny(path, "\"\r\n") {
+			if !filepath.IsAbs(cmd) || strings.ContainsAny(path, "\"\r\n&|^()<>%!") {
 				return credentialHookResponse{}, errCredentialUnavailable
 			}
 			// Go quotes the path as a single argument. Avoid /s, which changes

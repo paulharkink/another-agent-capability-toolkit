@@ -48,13 +48,6 @@ try {
         $secret = [string]$request.secret
         $decoded = [Convert]::FromBase64String($secret)
         [Array]::Clear($decoded, 0, $decoded.Length)
-
-        try {
-            $existing = $locker.Retrieve($resource, $account)
-            $locker.Remove($existing)
-        } catch {
-            if (-not (Is-CredentialMissing $_.Exception)) { Write-Reply 'unavailable' $null; exit 0 }
-        }
         try {
             $credential = New-Object Windows.Security.Credentials.PasswordCredential($resource, $account, $secret)
             $locker.Add($credential)
