@@ -19,6 +19,15 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.7.4
 ```
 
+On Windows PowerShell, use the PowerShell installer:
+
+```powershell
+$script = Join-Path $env:TEMP 'aact-install.ps1'
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.ps1' -OutFile $script
+& $script -Version 0.7.3
+Remove-Item $script
+```
+
 ## Use the manager
 
 The [interactive TUI design mock](docs/demo/index.html) shows the intended
@@ -29,6 +38,19 @@ can be served by GitHub Pages when the design is ready to publish.
 
 ```sh
 aact                         # editable terminal menus
+aact version
+aact version list
+aact version upgrade
+aact version install 0.7.0
+aact catalog --json
+aact agents
+aact settings
+```
+
+The same manager commands work in PowerShell:
+
+```powershell
+aact
 aact version
 aact version list
 aact version upgrade
@@ -78,7 +100,9 @@ aact install non-interactive-ready-planning --agent codex \
 ```
 
 MCP adapters currently include Codex, Claude Code, Copilot CLI, OpenCode,
-Copilot IntelliJ, and generic manual configuration. JetBrains AI Assistant's
+Copilot IntelliJ, and generic manual configuration. Generic manual configuration
+produces a configuration artifact for the user to apply; it does not edit an
+unrecognized agent's files. JetBrains AI Assistant's
 installed configuration uses IDE XML, so its former JSON writer is disabled
 until an XML adapter is verified. Select `--agent` more than
 once to target several agents. `--agent-home ID=PATH` assigns separate homes;
@@ -181,9 +205,11 @@ Windows. Override with `--state-dir` or `AACT_STATE_DIR`. Installed releases and
 manager state are separate: updating the launcher retains resources that existing
 managed skill links still reference.
 
-AACT's daemon hosts the KeePass-backed secret service. The daemon continues
-running after the manager exits; use `aact daemon status` and `aact daemon stop`
-to inspect or stop it. The older `aact vault` commands remain available.
+AACT has a daemon that hosts the KeePass-backed secret service. Use
+`aact daemon status` and `aact daemon stop` to inspect or stop it. The older
+`aact vault` commands remain available. This does not promise that the daemon
+will restart automatically after it exits or that the vault lifecycle works
+without a keyring.
 
 AACT normally asks for the vault master password interactively. To supply it
 without a prompt, set either `AACT_VAULT_PASSWORD_FILE` to a readable file path
@@ -191,33 +217,34 @@ or `AACT_VAULT_PASSWORD` to the password. Set only one. AACT removes one final
 newline from a password file and does not pass these variables to capability
 subprocesses. The same password must be used to open an existing vault.
 
-AACT can also use an OS credential store through a script hook. It looks for
-the bundled macOS Keychain, Windows Credential Locker, WSL Windows Credential
-Locker, or Linux Secret Service script. If the store has no usable password, AACT asks
-for the master password as usual. After a successful manual unlock, the TUI
-offers an opt-in toggle (`Ctrl+S`) and interactive CLI commands ask whether to
-save the password. Declining leaves the KeePass vault unchanged. On later
-unlocks, a stored password is used subject to the operating system's own access
-controls; a missing, locked, or stale entry falls back to the manual prompt.
-Linux needs `secret-tool` and an available Secret Service session for this
-option; without it, manual unlock remains available.
+AACT can optionally use an OS credential store through a script hook. The hook
+supports only `get` and `set` operations for the vault password; it does not
+manage daemon lifecycle or recover a password the OS store cannot return. If
+the store has no usable password, AACT asks for the master password as usual.
+After a successful manual unlock, the TUI offers an opt-in toggle (`Ctrl+S`)
+and interactive CLI commands ask whether to save the password. A failed or
+unavailable hook falls back to manual unlock. Linux needs `secret-tool` and an
+available Secret Service session for this option; without them, use the manual
+password prompt.
 
 The bundled Windows script uses the Windows Runtime Credential Locker through
 the PowerShell 5.1 WinRT type projection supplied by Windows; it needs no
 downloaded module or compiled helper. Windows Credential Locker supports up to
 20 credentials per app. If WinRT access is unavailable, AACT uses the normal
 password prompt. WSL invokes the same Windows PowerShell script and Credential
-Locker for the current Windows user. To use another store, configure an
-absolute-path hook with `AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`,
-`.bat`, and executable hooks are supported. Hook secrets travel over stdin and
-stdout, not process arguments or environment variables.
+Locker for the current Windows user. macOS uses the `security` command and
+Linux uses `secret-tool` with an available Secret Service session. To use
+another store, configure an absolute-path hook with
+`AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`, `.bat`, and executable
+hooks are supported. Hook secrets travel over stdin and stdout, not process
+arguments or environment variables.
 
 To use a custom connector, set `AACT_VAULT_CREDENTIAL_HOOK` to an absolute
-executable script path. AACT sends a versioned JSON request to the script's
-standard input and reads one JSON response from standard output. Passwords are
-carried only through these pipes, never as command-line arguments or
-environment variables. The connector protocol and bundled scripts are under
-`scripts/keyring/`.
+script path. AACT sends a versioned JSON request to the script's standard input
+and reads one JSON response from standard output. The request supports `get`
+and `set`; secrets are carried only through these pipes, never as command-line
+arguments or environment variables. The connector protocol and bundled scripts
+are under `scripts/keyring/`.
 
 ## Build and verify from source
 

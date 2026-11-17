@@ -9,7 +9,9 @@ handwritten release PR.
 2. After those feature PRs are merged, go to GitHub Actions and run **Request
    release** on `main`. Choose the requested patch, minor, or major version
    bump. The workflow updates the
-   README install version and opens a `release/vX.Y.Z` PR.
+   README install versions in both the Unix shell and Windows PowerShell
+   snippets and opens a `release/vX.Y.Z` PR. The workflow checks that both
+   commands contain the selected version before it opens the PR.
 3. Review the release PR and its checks. Merge it only with the maintainer's
    explicit approval. The merge triggers the tag workflow, which verifies the
    README version, creates the `vX.Y.Z` tag on the merge commit, and starts the
