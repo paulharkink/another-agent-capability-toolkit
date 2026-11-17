@@ -29,9 +29,11 @@ jobs:
             exit 1
           fi
           version="${tag#v}"
-          expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v $version"
-          if ! grep -Fqx "$expected" README.md; then
-            echo "README.md does not name $tag; refusing to create the tag." >&2
+          unix_expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v $version"
+          windows_expected="& \$script -Version $version"
+          if [[ "$(grep -Fxc "$unix_expected" README.md || true)" != 1 ]] || \
+             [[ "$(grep -Fxc "$windows_expected" README.md || true)" != 1 ]]; then
+            echo "README.md must contain exactly one Unix and one Windows install command for $tag; refusing to create the tag." >&2
             exit 1
           fi
           git config user.name "github-actions[bot]"

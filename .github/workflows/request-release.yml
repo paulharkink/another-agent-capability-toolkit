@@ -33,12 +33,34 @@ jobs:
         run: |
           version=$(go run github.com/caarlos0/svu/v3@v3.4.1 "$BUMP")
           version=${version#v}
-          expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v $version"
-          sed -E -i "s#(install\\.sh \\| sh -s -- -v )[0-9]+\\.[0-9]+\\.[0-9]+#\\1$version#" README.md
-          if ! grep -Fqx "$expected" README.md; then
-            echo "README install command was not updated to $version." >&2
-            exit 1
-          fi
+          VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("README.md")
+          readme = path.read_text()
+          patterns = {
+              "Unix shell": re.compile(r"(?m)^curl -fsSL https://raw\.githubusercontent\.com/paulharkink/another-agent-capability-toolkit/main/install\.sh \| sh -s -- -v (\d+\.\d+\.\d+)$"),
+              "Windows PowerShell": re.compile(r"(?m)^& \$script -Version (\d+\.\d+\.\d+)$"),
+          }
+          found = {}
+          for label, pattern in patterns.items():
+              matches = list(pattern.finditer(readme))
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected exactly one {label} README install command; found {len(matches)}.")
+              found[label] = matches[0]
+          if len({match.group(1) for match in found.values()}) != 1:
+              raise SystemExit("README Unix and Windows install versions differ before update.")
+          version = os.environ["VERSION"]
+          for label, match in sorted(found.items(), key=lambda item: item[1].start(1), reverse=True):
+              readme = readme[:match.start(1)] + version + readme[match.end(1):]
+          path.write_text(readme)
+          for label, pattern in patterns.items():
+              matches = list(pattern.finditer(readme))
+              if len(matches) != 1 or matches[0].group(1) != version:
+                  raise SystemExit(f"README {label} install command was not updated to {version}.")
+          PY
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: peter-evans/create-pull-request@v7
@@ -49,6 +71,6 @@ jobs:
           title: Release v${{ steps.version.outputs.version }}
           commit-message: "docs: prepare release v${{ steps.version.outputs.version }}"
           body: |
-            Updates the single README install command to v${{ steps.version.outputs.version }}.
+            Updates and checks the Unix and Windows README install commands to v${{ steps.version.outputs.version }}.
 
             Merging this PR creates the version tag and starts the GoReleaser release build.
