@@ -17,6 +17,7 @@ import (
 type Renderer struct {
 	Generator *Generator
 	Profile   *config.Profile
+	Context   map[string]any
 }
 
 func Stage(ctx context.Context, p catalog.Package, inputs map[string]any, target config.Target, parent string) (string, error) {
@@ -82,7 +83,7 @@ func (r Renderer) Stage(ctx context.Context, p catalog.Package, inputs map[strin
 	if e != nil {
 		return "", e
 	}
-	data := map[string]any{"inputs": inputs, "generated": generated}
+	data := map[string]any{"inputs": inputs, "generated": generated, "context": r.Context}
 	seen := map[string]bool{}
 	for _, t := range p.Templates {
 		if e = ctx.Err(); e != nil {

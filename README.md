@@ -7,7 +7,8 @@ Windows, on amd64 and arm64. WSL uses the Linux build and its own state.
 
 The shipped catalog contains cluster-inspector, grafana-inspector,
 azure-inspector, git-provider, find-session, non-interactive-ready-planning,
-and git-repo-map. Docker is required for containerized MCPs and find-session.
+git-repo-map, and contribute-skills. Docker is required for containerized
+MCPs and find-session.
 The release includes native helpers: system Go, Python, Node.js, npm, jq and
 Make are not needed to install, render, or manage these packages. Agent CLI
 registration requires that agent's installed CLI for Codex and Copilot CLI.
