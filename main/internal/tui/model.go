@@ -12,7 +12,9 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/picker"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/releasecatalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
 	"slices"
 	"sort"
@@ -112,6 +114,7 @@ type Model struct {
 	logProfile                    state.Key
 	logLabel                      string
 	pendingDefaultAgents          bool
+	releaseCheckStarted           bool
 	pendingMCPImageSource         bool
 	agents                        []string
 	agentManagement               []viewmodel.AgentManagementRow
@@ -186,12 +189,33 @@ type groupProfileAuthSavedMsg struct {
 	ref config.InstanceRef
 	err error
 }
+type releaseUpdateMsg struct{ version string }
 
 func New(backend Backend) tea.Model { return NewContext(context.Background(), backend) }
 func NewContext(ctx context.Context, backend Backend) *Model {
 	return &Model{backend: backend, ctx: ctx, view: "Catalog", width: 80, height: 24, settings: map[string]string{}, sourceLabels: map[string]string{}}
 }
 func (m *Model) Init() tea.Cmd { return m.load() }
+func (m *Model) checkReleaseUpdate() tea.Cmd {
+	current := strings.TrimPrefix(versioninfo.Version, "v")
+	return func() tea.Msg {
+		parent := m.ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 6*time.Second)
+		defer cancel()
+		releases, err := releasecatalog.List(ctx)
+		if err != nil || len(releases) == 0 {
+			return nil
+		}
+		latest := strings.TrimPrefix(releases[0].Tag, "v")
+		if releasecatalog.NewerThan(latest, current) {
+			return releaseUpdateMsg{version: latest}
+		}
+		return nil
+	}
+}
 func (m *Model) load() tea.Cmd {
 	backend, ctx := m.backend, m.ctx
 	if !m.busy && m.result == nil {
@@ -321,6 +345,9 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
+	case releaseUpdateMsg:
+		m.output = "AACT " + progress.version + " is available. Run aact version upgrade."
+		return m, nil
 	case setupProgressMsg:
 		if progress.progress.Acknowledged != nil {
 			defer close(progress.progress.Acknowledged)
@@ -375,6 +402,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// not consume them as ordinary form input after an operation completes.
 	if loaded, ok := msg.(loadedMsg); ok {
 		m.applyLoaded(loaded)
+		if !m.releaseCheckStarted {
+			m.releaseCheckStarted = true
+			return m, m.checkReleaseUpdate()
+		}
 		return m, nil
 	}
 	if saved, ok := msg.(setupInputsSavedMsg); ok {

@@ -30,10 +30,20 @@ can be served by GitHub Pages when the design is ready to publish.
 ```sh
 aact                         # editable terminal menus
 aact version
+aact version list
+aact version upgrade
+aact version install 0.7.0
 aact catalog --json
 aact agents
 aact settings
 ```
+
+`aact version` and `aact --version` print the installed build version. The
+version list, upgrade, and install commands query stable GitHub Releases. A
+TUI startup check runs in the background and reports a newer stable release
+when the network is available; catalog failures do not prevent normal use.
+Install and upgrade verify the GitHub release asset SHA-256 digests, then use
+the managed installer and its `checksums.txt` verification before activation.
 
 The terminal home has a Capabilities pane and a related MCP profiles pane.
 Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item

@@ -43,6 +43,7 @@ aact install PACKAGE --agent hermes --skills-only  Install only its Hermes skill
 aact uninstall PACKAGE --agent AGENT     Remove owned registrations and skill
 aact mcp list|status [--json]             Show MCPs from every Capability Pack
 aact mcp start|stop|logs|prepare|authenticate CAPABILITY --instance NAME [--mcp SERVER]
+aact version [list | upgrade | install VERSION]
 aact instance create CAPABILITY NAME
 aact agents | settings                   Show supported agents / configuration
 aact config set-instance-directory PATH  Save a default instance configuration directory
@@ -128,9 +129,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		fmt.Fprint(out, usage)
 		return 0
 	}
-	if f.version || (len(f.args) == 1 && f.args[0] == "version") {
+	if f.version {
 		fmt.Fprintln(out, Version)
 		return 0
+	}
+	if len(f.args) > 0 && f.args[0] == "version" {
+		return runVersionCommand(ctx, f.args[1:], out, errOut)
 	}
 	if f.environment != "" || f.target != "" {
 		fmt.Fprintln(errOut, "--environment and --target are no longer selection levels; use --instance NAME from the Capability Pack instance directory")
