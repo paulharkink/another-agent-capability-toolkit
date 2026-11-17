@@ -62,8 +62,8 @@ func TestClaudePluginFeatureAndFormatValidation(t *testing.T) {
 		t.Fatal("unsupported format accepted")
 	}
 	opencode, _ := r.Adapter("opencode")
-	if _, ok := opencode.(PluginManager); ok {
-		t.Fatal("unimplemented plugin format advertised")
+	if _, ok := opencode.(PluginManager); !ok || len(opencode.Features().PluginFormats) != 1 || opencode.Features().PluginFormats[0] != "opencode" {
+		t.Fatal("OpenCode native plugin manager missing")
 	}
 }
 
