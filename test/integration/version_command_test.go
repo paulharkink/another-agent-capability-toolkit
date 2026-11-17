@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -201,6 +203,85 @@ func TestVersionInstallSupportsHistoricalV050Installer(t *testing.T) {
 	installed := filepath.Join(root, "releases", "0.5.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")
 	if _, err := os.Stat(installed); err != nil {
 		t.Fatalf("historical managed release missing at %s: %v", installed, err)
+	}
+}
+
+func TestVersionInstallBypassesInheritedProxiesForStagedAssets(t *testing.T) {
+	version, arch := "1.2.3", runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		arch = "arm64"
+	}
+	trustedArchive := installerArchiveWithMarker(t, "verified loopback archive")
+	server := versionReleaseServer(t, version, arch, trustedArchive, true)
+	defer server.Close()
+	serverURL := strings.TrimPrefix(server.URL, "http://")
+	archiveName := fmt.Sprintf("aact_%s_%s_%s.tar.gz", version, runtime.GOOS, arch)
+	if runtime.GOOS == "windows" {
+		archiveName = fmt.Sprintf("aact_%s_windows_%s.zip", version, arch)
+	}
+	attackerArchive := installerArchiveWithMarker(t, "unverified proxy archive")
+	attackerChecksums := []byte(fmt.Sprintf("%s  %s\n", digestHex(attackerArchive), archiveName))
+	var intercepted atomic.Int64
+	transport := &http.Transport{Proxy: nil}
+	defer transport.CloseIdleConnections()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.URL.Host
+		if host == "" {
+			host = r.Host
+		}
+		if host == serverURL {
+			upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, server.URL+r.URL.RequestURI(), nil)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			response, err := (&http.Client{Transport: transport}).Do(upstream)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer response.Body.Close()
+			for name, values := range response.Header {
+				for _, value := range values {
+					w.Header().Add(name, value)
+				}
+			}
+			w.WriteHeader(response.StatusCode)
+			_, _ = io.Copy(w, response.Body)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			_, _ = w.Write(attackerChecksums)
+			intercepted.Add(1)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/"+archiveName) {
+			_, _ = w.Write(attackerArchive)
+			intercepted.Add(1)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer proxy.Close()
+
+	root := t.TempDir()
+	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", version)
+	cmd.Dir = t.TempDir()
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root,
+		"AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1",
+		"HTTP_PROXY="+proxy.URL, "http_proxy="+proxy.URL, "HTTPS_PROXY="+proxy.URL,
+		"https_proxy="+proxy.URL, "ALL_PROXY="+proxy.URL, "all_proxy="+proxy.URL,
+		"NO_PROXY=", "no_proxy=")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("version install failed: %s: %v", output, err)
+	}
+	if intercepted.Load() != 0 {
+		t.Fatalf("proxy received %d staged asset requests; installer did not bypass inherited proxies", intercepted.Load())
+	}
+	marker, err := os.ReadFile(filepath.Join(root, "releases", version+"-"+runtime.GOOS+"-"+arch, "packages", "sample", "SKILL.md"))
+	if err != nil || string(marker) != "verified loopback archive" {
+		t.Fatalf("installer did not consume the digest-verified loopback archive: marker=%q err=%v", marker, err)
 	}
 }
 
@@ -422,7 +503,7 @@ func cleanTestEnvironment(environment []string, overrides ...string) []string {
 		parts := strings.SplitN(override, "=", 2)
 		keys[parts[0]] = override
 	}
-	for _, name := range []string{"AACT_INSTALL_DIR", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "PROCESSOR_ARCHITEW6432", "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE"} {
+	for _, name := range []string{"AACT_INSTALL_DIR", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "PROCESSOR_ARCHITEW6432", "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
 		if _, set := keys[name]; !set {
 			keys[name] = ""
 		}
