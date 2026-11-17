@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -146,12 +145,23 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	if runtime.GOOS == "windows" {
 		installerName = "install.ps1"
 	}
+	if len(releases) == 0 {
+		return errors.New("no stable AACT release is available to provide a managed installer")
+	}
+	// Older tagged installers do not all support LocalArchive. Use the latest
+	// stable installer while keeping the requested version's release assets.
+	installerRelease := releases[0]
 	var installerAsset, archiveAsset, checksumsAsset *releasecatalog.Asset
+	for _, asset := range installerRelease.Assets {
+		asset := asset
+		if asset.Name == installerName {
+			installerAsset = &asset
+			break
+		}
+	}
 	for _, asset := range selected.Assets {
 		asset := asset
 		switch asset.Name {
-		case installerName:
-			installerAsset = &asset
 		case "checksums.txt":
 			checksumsAsset = &asset
 		default:
@@ -161,7 +171,7 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 		}
 	}
 	if installerAsset == nil || archiveAsset == nil || checksumsAsset == nil {
-		return fmt.Errorf("release %s is missing the installer, platform archive, or checksums.txt for %s (installer=%t archive=%t checksums=%t)", version, target, installerAsset != nil, archiveAsset != nil, checksumsAsset != nil)
+		return fmt.Errorf("latest stable release %s or requested release %s is missing the required installer, platform archive, or checksums.txt for %s (installer=%t archive=%t checksums=%t)", installerRelease.Tag, version, target, installerAsset != nil, archiveAsset != nil, checksumsAsset != nil)
 	}
 	stage, err := os.MkdirTemp("", "aact-release-*")
 	if err != nil {
@@ -179,27 +189,22 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	if _, err := downloadVerifiedAsset(ctx, *checksumsAsset, filepath.Join(stage, "checksums.txt"), 1<<20); err != nil {
 		return fmt.Errorf("download verified release checksums: %w", err)
 	}
-	baseURL, stopReleaseServer, err := serveStagedRelease(version, archiveAsset.Name, archivePath, filepath.Join(stage, "checksums.txt"))
-	if err != nil {
-		return fmt.Errorf("serve verified release assets locally: %w", err)
-	}
-	defer stopReleaseServer()
 	var command *exec.Cmd
 	if runtime.GOOS == "windows" {
 		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		args := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-Version", version}
+		args := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-Version", version, "-LocalArchive", archivePath}
 		if explicitRoot {
 			args = append(args, "-InstallDir", root)
 		}
 		command = exec.CommandContext(ctx, powershell, args...)
 	} else {
-		args := []string{installerPath, "--version", version}
+		args := []string{installerPath, "--version", version, "--local-archive", archivePath}
 		if explicitRoot {
 			args = append(args, "--install-dir", root)
 		}
 		command = exec.CommandContext(ctx, "/bin/sh", args...)
 	}
-	command.Env = installerEnvironment(baseURL)
+	command.Env = installerEnvironment()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("install AACT %s: %w: %s", version, err, strings.TrimSpace(string(output)))
@@ -207,48 +212,18 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	return nil
 }
 
-func installerEnvironment(downloadBase string) []string {
+func installerEnvironment() []string {
 	filtered := process.EnvironmentWithoutVaultPassword(os.Environ())
 	clean := make([]string, 0, len(filtered))
 	for _, entry := range filtered {
 		name, _, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(name) {
-		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE",
-			"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
+		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE":
 			continue
 		}
 		clean = append(clean, entry)
 	}
-	clean = append(clean, "AACT_DOWNLOAD_BASE="+downloadBase)
 	return clean
-}
-
-func serveStagedRelease(version, archiveName, archivePath, checksumsPath string) (string, func(), error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", nil, err
-	}
-	archiveURLPath := "/v" + version + "/" + archiveName
-	checksumsURLPath := "/v" + version + "/checksums.txt"
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var file string
-		switch r.URL.Path {
-		case archiveURLPath:
-			file = archivePath
-		case checksumsURLPath:
-			file = checksumsPath
-		default:
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, file)
-	})}
-	go func() { _ = server.Serve(listener) }()
-	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
 func downloadVerifiedAsset(ctx context.Context, asset releasecatalog.Asset, destination string, maxBytes int64) (string, error) {

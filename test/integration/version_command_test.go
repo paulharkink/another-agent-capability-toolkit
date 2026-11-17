@@ -144,6 +144,10 @@ func versionReleaseServer(t *testing.T, version, arch string, archive []byte, va
 }
 
 func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte) *httptest.Server {
+	return versionReleaseServerWithBootstrapInstaller(t, version, arch, archive, validChecksum, installer, "", nil)
+}
+
+func versionReleaseServerWithBootstrapInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte, bootstrapVersion string, bootstrapInstaller []byte) *httptest.Server {
 	t.Helper()
 	extension := "tar.gz"
 	if runtime.GOOS == "windows" {
@@ -162,13 +166,21 @@ func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archi
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{"tag_name": "v" + version, "assets": []any{
+			releases := []any{map[string]any{"tag_name": "v" + version, "assets": []any{
 				map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/installer"), "digest": "sha256:" + digestHex(installer)},
 				map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
 				map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
-			}}})
+			}}}
+			if bootstrapVersion != "" {
+				releases = append(releases, map[string]any{"tag_name": "v" + bootstrapVersion, "assets": []any{
+					map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/bootstrap-installer"), "digest": "sha256:" + digestHex(bootstrapInstaller)},
+				}})
+			}
+			_ = json.NewEncoder(w).Encode(releases)
 		case "/assets/installer":
 			_, _ = w.Write(installer)
+		case "/assets/bootstrap-installer":
+			_, _ = w.Write(bootstrapInstaller)
 		case "/assets/checksums":
 			_, _ = w.Write(checksums)
 		case "/assets/archive":
@@ -179,7 +191,7 @@ func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archi
 	}))
 }
 
-func TestVersionInstallSupportsHistoricalV050Installer(t *testing.T) {
+func TestVersionInstallUsesLatestInstallerForHistoricalV050Release(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("historical Unix installer fixture")
 	}
@@ -187,7 +199,11 @@ func TestVersionInstallSupportsHistoricalV050Installer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := versionReleaseServerWithInstaller(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer)
+	bootstrapInstaller, err := os.ReadFile("testdata/install-v0.7.4.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := versionReleaseServerWithBootstrapInstaller(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer, "0.7.4", bootstrapInstaller)
 	defer server.Close()
 	root, home := t.TempDir(), t.TempDir()
 	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
@@ -206,12 +222,51 @@ func TestVersionInstallSupportsHistoricalV050Installer(t *testing.T) {
 	}
 }
 
-func TestVersionInstallBypassesInheritedProxiesForStagedAssets(t *testing.T) {
+func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.T) {
+	archiveName := fmt.Sprintf("aact_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		archiveName = fmt.Sprintf("aact_0.5.0_windows_%s.zip", runtime.GOARCH)
+	}
+	installer, err := os.ReadFile("testdata/install-v0.5.0.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := installerArchive(t)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", digestHex(archive), archiveName))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]any{
+			map[string]any{"tag_name": "v0.7.4", "assets": []any{map[string]any{"name": "notes.txt"}}},
+			map[string]any{"tag_name": "v0.5.0", "assets": []any{
+				map[string]any{"name": "install.sh", "browser_download_url": serverAssetURL(r, "/assets/installer"), "digest": "sha256:" + digestHex(installer)},
+				map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
+				map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
+			}},
+		})
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	sentinel := filepath.Join(root, "existing-install")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
+	cmd.Dir = t.TempDir()
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "latest stable release v0.7.4") || !strings.Contains(string(output), "installer=false") {
+		t.Fatalf("missing latest bootstrap installer was not rejected: %q, %v", output, err)
+	}
+	if got, readErr := os.ReadFile(sentinel); readErr != nil || string(got) != "preserve" {
+		t.Fatalf("existing installation changed: %q, %v", got, readErr)
+	}
+}
+
+func TestVersionInstallAvoidsProxyRequestsForVerifiedLocalArchive(t *testing.T) {
 	version, arch := "1.2.3", runtime.GOARCH
 	if runtime.GOOS == "windows" {
 		arch = "arm64"
 	}
-	trustedArchive := installerArchiveWithMarker(t, "verified loopback archive")
+	trustedArchive := installerArchiveWithMarker(t, "verified local archive")
 	server := versionReleaseServer(t, version, arch, trustedArchive, true)
 	defer server.Close()
 	serverURL := strings.TrimPrefix(server.URL, "http://")
@@ -265,9 +320,18 @@ func TestVersionInstallBypassesInheritedProxiesForStagedAssets(t *testing.T) {
 	defer proxy.Close()
 
 	root := t.TempDir()
+	home := t.TempDir()
+	if runtime.GOOS != "windows" {
+		if err := os.WriteFile(filepath.Join(home, ".curlrc"), []byte("proxy = \""+proxy.URL+"\"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".wgetrc"), []byte("use_proxy = on\nhttp_proxy = "+proxy.URL+"\nhttps_proxy = "+proxy.URL+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", version)
 	cmd.Dir = t.TempDir()
-	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root,
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_INSTALL_DIR="+root,
 		"AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1",
 		"HTTP_PROXY="+proxy.URL, "http_proxy="+proxy.URL, "HTTPS_PROXY="+proxy.URL,
 		"https_proxy="+proxy.URL, "ALL_PROXY="+proxy.URL, "all_proxy="+proxy.URL,
@@ -277,11 +341,11 @@ func TestVersionInstallBypassesInheritedProxiesForStagedAssets(t *testing.T) {
 		t.Fatalf("version install failed: %s: %v", output, err)
 	}
 	if intercepted.Load() != 0 {
-		t.Fatalf("proxy received %d staged asset requests; installer did not bypass inherited proxies", intercepted.Load())
+		t.Fatalf("proxy received %d staged-asset requests", intercepted.Load())
 	}
 	marker, err := os.ReadFile(filepath.Join(root, "releases", version+"-"+runtime.GOOS+"-"+arch, "packages", "sample", "SKILL.md"))
-	if err != nil || string(marker) != "verified loopback archive" {
-		t.Fatalf("installer did not consume the digest-verified loopback archive: marker=%q err=%v", marker, err)
+	if err != nil || string(marker) != "verified local archive" {
+		t.Fatalf("installer did not consume the digest-verified local archive: marker=%q err=%v", marker, err)
 	}
 }
 
