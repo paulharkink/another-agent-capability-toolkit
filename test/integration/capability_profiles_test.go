@@ -407,7 +407,7 @@ func TestTUIOffersGenericBrowserLoginAndShowsViewerURL(t *testing.T) {
 	}
 	model, _ = model.Update(cmd())
 	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Log in to reference-api") || !strings.Contains(view, "Login to reference-api") {
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Log in to reference-api") || !strings.Contains(view, "Authenticate reference-api") {
 		t.Fatalf("TUI did not show both generic browser login and pack authentication actions:\n%s", view)
 	}
 	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -423,6 +423,80 @@ func TestTUIOffersGenericBrowserLoginAndShowsViewerURL(t *testing.T) {
 	model, _ = model.Update(cmd())
 	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "http://localhost:49001") {
 		t.Fatalf("TUI did not show the helper viewer URL:\n%s", view)
+	}
+}
+
+func TestTUIInvokesHostAuthenticationWhenBrowserMCPIsStopped(t *testing.T) {
+	root := copyCapabilityPackTree(t, "../../examples/capability-pack")
+	packagePath := filepath.Join(root, "vendor", "neutral-tools", "guidance", "package.toml")
+	manifest, err := os.ReadFile(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "host-auth-invoked")
+	command := fmt.Sprintf("printf '{}'; touch %s", marker)
+	manifestText := strings.Replace(string(manifest), "[[ui.sections]]", "[[inputs]]\nname = \"browser_volume\"\nlabel = \"Browser profile volume\"\ntype = \"string\"\nrequired = true\ndefault = \"aact-login-fixture\"\n[[ui.sections]]", 1)
+	manifestText = strings.Replace(manifestText, "fields = [\"project\", \"enabled\"]", "fields = [\"project\", \"enabled\", \"browser_volume\"]", 1)
+	manifestText = strings.Replace(manifestText, "endpoint_path = \"/mcp\"", "endpoint_path = \"/mcp\"\n[mcp.browser_controller]\nprofile_volume_input = \"browser_volume\"\nstartup_url = \"https://example.test\"", 1)
+	manifestText += fmt.Sprintf("\n[mcp.actions.authenticate]\ncommand = [\"sh\", \"-c\", %q]\n", command)
+	if err := os.WriteFile(packagePath, []byte(manifestText), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, err := config.DiscoverPack(root, filepath.Join(root, "aact.toml"), "", store.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	probe := agents.DiscoveryProbe{Home: home, GOOS: "linux", Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
+		if name == "opencode" {
+			return "injected-detection-evidence", nil
+		}
+		return "", fmt.Errorf("not installed")
+	}}
+	runtime := &rotatingRuntime{store: store, instances: []mcp.Instance{{Key: state.Key{Source: pack.ID, Package: "company-guidance", Target: "ota"}, ID: "synthetic-runtime", Name: "reference-api", Status: "running", Ownership: "local", URL: "http://127.0.0.1:18871/mcp"}}}
+	svc := app.New(pack.LegacySource(), store, app.Options{Runtime: runtime, DiscoveryProbe: &probe, AgentScopes: map[string]agents.Scope{"opencode": {ID: "opencode", Home: home, ExplicitHome: true}}})
+	ref := config.InstanceRef{PackID: pack.ID, CapabilityID: "company-guidance", Name: "ota"}
+	if _, err := svc.ApplyInstance(context.Background(), app.InstanceRequest{Ref: ref, DestinationIDs: []string{"opencode"}, ItemIDs: []string{"set:reference"}, Inputs: map[string]any{"project": "example-project", "enabled": false, "browser_volume": "aact-login-fixture"}}); err != nil {
+		t.Fatalf("prepare installed instance: %v", err)
+	}
+	// Model the public runtime observation after the MCP was stopped.
+	runtime.instances[0].Status = "stopped"
+	model := tui.New(svc)
+	cmd := model.Init()
+	if cmd == nil {
+		t.Fatal("TUI did not load its initial catalog")
+	}
+	model, _ = model.Update(cmd())
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model, cmd = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("opening the selected Capability Instance did not request its workspace")
+	}
+	model, _ = model.Update(cmd())
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "Log in to reference-api") || !strings.Contains(view, "Authenticate reference-api") {
+		t.Fatalf("TUI did not expose both login actions for the stopped MCP:\n%s", view)
+	}
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model, cmd = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("activating host authentication did not produce a UI event:\n%s", ansi.Strip(model.View().Content))
+	}
+	model, cmd = model.Update(cmd())
+	if cmd == nil {
+		t.Fatal("host authentication UI event did not invoke the backend")
+	}
+	model, _ = model.Update(cmd())
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("host authentication command was not invoked while MCP was stopped: %v\n%s", err, ansi.Strip(model.View().Content))
 	}
 }
 

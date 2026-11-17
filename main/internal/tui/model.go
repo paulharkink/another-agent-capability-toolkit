@@ -702,7 +702,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if profile != nil {
 					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
-				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row); reason != "" {
+				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row, parts[0]); reason != "" {
 					m.output = reason
 					return m, nil
 				}

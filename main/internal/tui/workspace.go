@@ -787,18 +787,18 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 			}
 			runtimeActions = append(runtimeActions, forms.FormAction{ID: "start:" + definition.Name, Label: "Start " + definition.Name, Disabled: startDisabled})
 			if definition.BrowserController != nil {
-				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
+				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow, "browser-login")
 				if foreignReason != "" {
 					authenticateDisabled = foreignReason
 				}
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "browser-login:" + definition.Name, Label: "Log in to " + definition.Name, Disabled: authenticateDisabled})
 			}
 			if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
-				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
+				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow, "authenticate")
 				if foreignReason != "" {
 					authenticateDisabled = foreignReason
 				}
-				runtimeActions = append(runtimeActions, forms.FormAction{ID: "authenticate:" + definition.Name, Label: "Login to " + definition.Name, Disabled: authenticateDisabled})
+				runtimeActions = append(runtimeActions, forms.FormAction{ID: "authenticate:" + definition.Name, Label: "Authenticate " + definition.Name, Disabled: authenticateDisabled})
 			}
 			if child != nil {
 				if child.Error != "" {
@@ -1156,7 +1156,7 @@ func isLoopbackName(host string) bool {
 	}
 }
 
-func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRow) string {
+func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRow, action string) string {
 	if reason := m.workspaceForeignRuntimeReason(mcpName); reason != "" {
 		return reason
 	}
@@ -1176,7 +1176,10 @@ func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRo
 	if definition == nil {
 		return "Refresh this target; its Login action is unavailable"
 	}
-	if definition.BrowserController != nil {
+	if action == "browser-login" {
+		if definition.BrowserController == nil {
+			return "This capability does not declare a browser login helper"
+		}
 		exactMCP := row.Key.MCP == mcpName || row.Key.MCPDefinition == mcpName || (row.Instance != nil && row.Instance.Name == mcpName)
 		if row.Instance == nil || !exactMCP || strings.ToLower(strings.TrimSpace(row.Status)) != "running" {
 			return "Start this MCP before logging in"
@@ -1252,7 +1255,7 @@ func (m *Model) refreshRuntimeActionAvailability() {
 		if prefix == "start:" {
 			disabled = m.runtimeStartDisabledReason(mcpName, row)
 		} else {
-			disabled = m.runtimeAuthenticateDisabledReason(mcpName, row)
+			disabled = m.runtimeAuthenticateDisabledReason(mcpName, row, strings.TrimSuffix(prefix, ":"))
 		}
 		if actions[i].Disabled != disabled {
 			actions[i].Disabled = disabled
