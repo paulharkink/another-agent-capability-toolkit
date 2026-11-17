@@ -10,9 +10,14 @@ AACT resolved the active Capability Pack's Git checkout:
 repository based on the pack name or ask the user to provide a repository path.
 
 1. Inspect the current branch and working tree. Preserve existing changes.
-2. Read the checkout's `AGENTS.md`, contribution guide, and existing skills.
-   Follow their conventions for skill location, format, and checks.
-3. Add the skill to the pack repository. Register it in that repository's
+2. Read the checkout's `AGENTS.md`, contribution guide, and existing skills
+   and MCP packages. Follow their conventions for layout, format, and checks.
+3. Decide whether this needs an MCP. Add a skill when the agent mainly needs
+   instructions, domain knowledge, or a repeatable workflow. Add an MCP when
+   the capability needs to expose callable tools backed by a server, such as
+   querying or changing an external system. Keep it skill-only when instructions
+   and the agent's existing tools are enough.
+4. Add the skill to the pack repository. Register it in that repository's
    `aact.toml` using a relative source path, matching nearby entries. For
    example:
 
@@ -26,7 +31,7 @@ repository based on the pack name or ask the user to provide a repository path.
    (`review-api` in this example). It identifies the entry in AACT and is the
    exact argument to `aact install`; it does not have to match the directory
    name.
-4. From the pack checkout, inspect the catalog and install the skill locally:
+5. From the pack checkout, inspect the catalog and install the skill locally:
 
    ```sh
    aact catalog --config ./aact.toml
@@ -37,6 +42,33 @@ repository based on the pack name or ask the user to provide a repository path.
    skill directory. Open that agent and try a task matching the skill's
    description; inspect the installed skill if it does not activate or behave
    as expected. Follow the pack's documented local checks as well.
-5. Prepare a focused branch and pull request following the checkout's
+
+For a capability that needs an MCP, follow the pack's existing Docker MCP
+package. Put the server and its `Dockerfile` in the package's `mcp/` build
+context. Declare the MCP in `package.toml` with `runtime = "docker"`, its
+transport, container port, endpoint path, and `build_context = "./mcp"`; declare
+typed inputs for configuration and credentials instead of hard-coding them.
+Add the associated skill if agents need instructions for using the MCP. Read
+the reference package's helper/action conventions and only add lifecycle
+actions the server requires. Do not introduce a new runtime pattern.
+
+Install the capability from the pack checkout and select a local profile with
+its required inputs. The **MCP name** is the `name` in the package's `[mcp]`
+table or the matching entry's `name` under `[[mcps]]`; use that value for
+`--mcp`. Install it for the intended local agent, then prepare and start it and
+inspect its status and logs:
+
+```sh
+aact install <capability-id> --config ./aact.toml --agent <agent>
+aact mcp prepare <capability-id> --config ./aact.toml --profile <profile> --mcp <mcp-name>
+aact mcp start <capability-id> --config ./aact.toml --profile <profile> --mcp <mcp-name>
+aact mcp status --config ./aact.toml
+aact mcp logs <capability-id> --config ./aact.toml --profile <profile> --mcp <mcp-name>
+```
+
+Call the MCP's tools from the target agent and verify their behavior against
+the external system. Keep local credentials and state out of the repository.
+
+6. Prepare a focused branch and pull request following the checkout's
    contribution instructions. Do not push, publish, or merge unless the user
    has authorized that specific action.
