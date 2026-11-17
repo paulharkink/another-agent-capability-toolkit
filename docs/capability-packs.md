@@ -172,14 +172,18 @@ required = true
 default = false
 ```
 
-Every stage must produce `SKILL.md`. Templates receive `inputs` directly; no
-script is needed for simple substitution or Boolean Mustache sections. A
+Every stage must produce `SKILL.md`. Templates receive `inputs` directly and
+the active pack's Git checkout path as `context.pack_repository`; AACT resolves
+it from the active manifest path and nearest Git root (or the manifest's
+directory when no Git metadata is available).
+No script is needed for simple substitution or Boolean Mustache sections. A
 per-skill generator may be any declared executable or script, with an optional
 Windows command variant. It receives protocol v1 JSON on stdin with `inputs`
-and `context.profile`, `package_dir`, `staging_dir`. It returns one JSON object
-used as `generated` by Mustache. Stderr/exit failures are shown with their
-actual diagnostics. Publishers supply their own runtimes or standalone builds;
-AACT does not silently replace missing commands with embedded behavior.
+and `context.profile`, `package_dir`, and `staging_dir`. It returns one JSON
+object used as `generated` by Mustache. Stderr/exit failures are shown with
+their actual diagnostics. Publishers supply their own runtimes or standalone
+builds; AACT does not silently replace missing commands with embedded
+behavior.
 
 Catalog `sets` link named skills and MCPs as one selectable item. Sets cannot
 overlap. Independent skills can be unchecked; **Select all skills** rechecks

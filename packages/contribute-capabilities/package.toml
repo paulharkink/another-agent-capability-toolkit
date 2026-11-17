@@ -1,0 +1,10 @@
+schema_version = 1
+id = "contribute-capabilities"
+name = "Contribute Capabilities to this Pack"
+
+[skill]
+name = "contribute-capabilities"
+
+[[templates]]
+source = "SKILL.md.mustache"
+destination = "SKILL.md"

@@ -15,8 +15,10 @@ import (
 )
 
 type Renderer struct {
-	Generator *Generator
-	Profile   *config.Profile
+	Generator    *Generator
+	Profile      *config.Profile
+	PackManifest string
+	Context      map[string]any
 }
 
 func Stage(ctx context.Context, p catalog.Package, inputs map[string]any, target config.Target, parent string) (string, error) {
@@ -82,7 +84,18 @@ func (r Renderer) Stage(ctx context.Context, p catalog.Package, inputs map[strin
 	if e != nil {
 		return "", e
 	}
-	data := map[string]any{"inputs": inputs, "generated": generated}
+	contextValues := make(map[string]any, len(r.Context)+1)
+	for name, value := range r.Context {
+		contextValues[name] = value
+	}
+	if r.PackManifest != "" {
+		repository, e := PackRepository(r.PackManifest)
+		if e != nil {
+			return "", e
+		}
+		contextValues["pack_repository"] = repository
+	}
+	data := map[string]any{"inputs": inputs, "generated": generated, "context": contextValues}
 	seen := map[string]bool{}
 	for _, t := range p.Templates {
 		if e = ctx.Err(); e != nil {
@@ -123,6 +136,28 @@ func (r Renderer) Stage(ctx context.Context, p catalog.Package, inputs map[strin
 		return "", errors.New("rendered skill must contain a regular SKILL.md")
 	}
 	return staging, nil
+}
+
+// PackRepository resolves the Git checkout containing an AACT pack manifest.
+// When the manifest is used without Git metadata, its directory is the best
+// available pack root.
+func PackRepository(manifest string) (string, error) {
+	manifest, err := filepath.Abs(manifest)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(manifest)
+	for current := dir; ; current = filepath.Dir(current) {
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return current, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return dir, nil
+		}
+	}
 }
 func forbidden(name string) bool {
 	base := filepath.Base(name)
