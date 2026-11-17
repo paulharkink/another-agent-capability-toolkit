@@ -169,7 +169,7 @@ func runCredentialHook(request credentialHookRequest) (credentialHookResponse, e
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var command *exec.Cmd
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Ext(path), ".ps1") {
 		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 		if !filepath.IsAbs(powershell) {
 			return credentialHookResponse{}, errCredentialUnavailable

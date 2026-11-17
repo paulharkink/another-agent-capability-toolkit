@@ -177,7 +177,7 @@ func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, 
 	return attachSharedVault(store, stateRoot, vaultStore, masterPassword)
 }
 
-func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte, saveCredential bool) error {
+func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte, saveCredential bool, warningOutput ...io.Writer) error {
 	if len(password) == 0 {
 		return errors.New("vault master password must not be empty")
 	}
@@ -187,7 +187,14 @@ func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, pas
 		return err
 	}
 	if saveCredential {
-		_ = setVaultCredential(stateRoot, password)
+		if err := setVaultCredential(stateRoot, password); err != nil {
+			for _, output := range warningOutput {
+				if output != nil {
+					_, _ = fmt.Fprintln(output, "Could not save the vault password to the OS credential store; the vault remains available for this session.")
+					break
+				}
+			}
+		}
 	}
 	return attachSharedVault(store, stateRoot, vaultStore, password)
 }

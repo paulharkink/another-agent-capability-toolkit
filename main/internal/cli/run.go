@@ -213,6 +213,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					credentialConfigured = false
 				}
 			}
+			if !passwordConfigured && !credentialConfigured && !terminal {
+				fmt.Fprintln(errOut, "this command needs the shared vault; run it from an interactive terminal to enter the vault master password")
+				return 2
+			}
 			if !passwordConfigured && !credentialConfigured {
 				vaultPath := filepath.Join(store.Root(), "credentials.kdbx")
 				_, statErr := os.Stat(vaultPath)
@@ -222,7 +226,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					return 1
 				}
 				err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte, saveCredential bool) error {
-					return initializeSharedVaultWithPassword(store, store.Root(), password, saveCredential)
+					return initializeSharedVaultWithPassword(store, store.Root(), password, saveCredential, errOut)
 				})
 				if errors.Is(err, tui.ErrVaultUnlockCanceled) {
 					return 0

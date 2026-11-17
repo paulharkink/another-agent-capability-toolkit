@@ -192,6 +192,19 @@ controls; a missing, locked, or stale entry falls back to the manual prompt.
 Linux needs `secret-tool` and an available Secret Service session for this
 option; without it, manual unlock remains available.
 
+Windows requires PowerShell's `Microsoft.PowerShell.SecretManagement` module
+and a registered extension vault named `AACT` backed by Windows Credential
+Manager. The bundled script does not install modules or change PowerShell
+configuration; if the module or vault is missing, credential lookup is treated
+as unavailable and AACT uses its normal password prompt. The CredManStore
+extension is maintained in the `PowerShell/SecretManagement` repository's
+`ExtensionModules/CredManStore` directory. That repository is archived, so
+review and install the extension through your normal PowerShell module process
+before registering it with `Register-SecretVault -Name AACT -ModuleName
+Microsoft.PowerShell.CredManStore`. WSL uses Windows PowerShell and the same
+Windows user module registry and Credential Manager; it has the same setup
+requirement. It does not fall back to arbitrary `PATH` executables.
+
 To use a custom connector, set `AACT_VAULT_CREDENTIAL_HOOK` to an absolute
 executable script path. AACT sends a versioned JSON request to the script's
 standard input and reads one JSON response from standard output. Passwords are
