@@ -197,6 +197,17 @@ func TestCapabilityProfilesIntegratedImportApplyObserveRemove(t *testing.T) {
 }
 
 func TestStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *testing.T) {
+	for _, sourceLineEnding := range []struct {
+		name string
+		crlf bool
+	}{{name: "LF"}, {name: "CRLF", crlf: true}} {
+		t.Run(sourceLineEnding.name, func(t *testing.T) {
+			testStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t, sourceLineEnding.crlf)
+		})
+	}
+}
+
+func testStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *testing.T, crlf bool) {
 	ctx := context.Background()
 	root := copyCapabilityPackTree(t, "../../examples/capability-pack")
 	packagePath := filepath.Join(root, "vendor", "neutral-tools", "guidance", "package.toml")
@@ -204,10 +215,12 @@ func TestStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Model a Windows checkout's CRLF and normalize before fixture edits. Without
-	// normalization, the input table insertion misses while the later UI field
-	// replacement still succeeds, leaving an undeclared field.
-	manifestText := strings.ReplaceAll(string(manifest), "\n", "\r\n")
+	// Normalize the source first so either checkout line ending works. The CRLF
+	// subtest models Windows while avoiding a second conversion of existing CRLF.
+	manifestText := strings.ReplaceAll(string(manifest), "\r\n", "\n")
+	if crlf {
+		manifestText = strings.ReplaceAll(manifestText, "\n", "\r\n")
+	}
 	manifestText = strings.ReplaceAll(manifestText, "\r\n", "\n")
 	manifestText = strings.Replace(manifestText, "[mcp]\n", "[[inputs]]\nname = \"local_port\"\nlabel = \"Local port\"\ntype = \"integer\"\nrequired = true\ndefault = 18871\n[mcp]\n", 1)
 	manifestText = strings.Replace(manifestText, "container_port = 8080", "container_port = 8080\nhost_port_input = \"local_port\"", 1)
