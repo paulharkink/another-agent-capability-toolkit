@@ -1,10 +1,12 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -32,6 +34,45 @@ func TestPublicCLIRejectsStaleCredentialWithoutLaunchingInteractiveUI(t *testing
 	}
 	if strings.Contains(out.String(), "Unlock AACT shared vault") {
 		t.Fatal("CLI launched the interactive unlock UI after rejecting the stale password")
+	}
+}
+
+func TestWSLKeyringIgnoresPATHPowerShellLookalike(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL connector is a POSIX shell script")
+	}
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate integration test source")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
+	connector := filepath.Join(repoRoot, "scripts", "keyring", "wsl.sh")
+	lookalikeDir := filepath.Join(t.TempDir(), "windows", "system32", "windowspowershell", "v1.0")
+	if err := os.MkdirAll(lookalikeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	capture := filepath.Join(t.TempDir(), "captured-request")
+	t.Setenv("AACT_TEST_CAPTURE", capture)
+	fakePowerShell := filepath.Join(lookalikeDir, "powershell.exe")
+	fakeScript := "#!/bin/sh\n/bin/cat > \"$AACT_TEST_CAPTURE\"\nprintf '{\"status\":\"ok\",\"secret\":\"bm90LXJlYWw=\"}\\n'\n"
+	if err := os.WriteFile(fakePowerShell, []byte(fakeScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", lookalikeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	request := `{"version":99,"action":"set","service":"AACT shared Vault","account":"state-` + strings.Repeat("a", 64) + `","secret":"c3ludGhldGljLXRlc3Q="}`
+	command := exec.Command("/bin/sh", connector)
+	command.Stdin = strings.NewReader(request)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("run WSL connector: %v; output=%q", err, output.String())
+	}
+	if !strings.Contains(output.String(), `"status":"unavailable"`) {
+		t.Fatalf("connector did not fail closed without trusted Windows PowerShell: %q", output.String())
+	}
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatalf("PATH lookalike PowerShell received the hook request: stat err=%v", err)
 	}
 }
 

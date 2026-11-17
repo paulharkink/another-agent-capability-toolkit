@@ -1,35 +1,34 @@
 #!/bin/sh
 set -eu
 
-request=$(cat)
+request=$(/bin/cat)
 
-system_root=
-old_ifs=$IFS
-IFS=:
-for directory in ${PATH:-}; do
-  case "$(printf '%s' "$directory" | tr '[:upper:]' '[:lower:]')" in
-    */windows/system32/windowspowershell/v1.0)
-      candidate=$directory/powershell.exe
-      if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-        resolved=$(readlink -f "$candidate" 2>/dev/null || true)
-        case "$(printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]')" in
-          */windows/system32/windowspowershell/v1.0/powershell.exe)
-            system_root=$resolved
-            break
-            ;;
-        esac
-      fi
-      ;;
-  esac
+# Resolve only from WSL's mounted Windows C: drive. PATH is attacker-controlled
+# and is never used to find PowerShell. Nonstandard Windows system drives fail
+# closed; users can configure their own absolute credential hook instead.
+drive_root=/mnt/c
+windows_root=$drive_root/Windows
+system_root=$windows_root/System32/WindowsPowerShell/v1.0/powershell.exe
+mount_rows=$(/usr/bin/findmnt -n -T "$drive_root" -o TARGET,SOURCE,FSTYPE 2>/dev/null || true)
+mount_ok=1
+set -- $mount_rows
+if [ "$#" -eq 0 ] || [ $(( $# % 3 )) -ne 0 ]; then
+  mount_ok=0
+fi
+while [ "$#" -ge 3 ]; do
+  if [ "$1" != "$drive_root" ] || [ "$2" != 'C:\' ] || [ "$3" != 9p ]; then
+    mount_ok=0
+  fi
+  shift 3
 done
-IFS=$old_ifs
+resolved=$(/usr/bin/readlink -f -- "$system_root" 2>/dev/null || true)
 
-if [ -z "$system_root" ] || [ ! -x /usr/bin/wslpath ]; then
+if [ "$mount_ok" -ne 1 ] || [ "$resolved" != "$system_root" ] || [ ! -f "$system_root" ] || [ ! -x "$system_root" ] || [ ! -x /usr/bin/wslpath ]; then
   printf '{"status":"unavailable"}\n'
   exit 0
 fi
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+script_dir=$(CDPATH= /bin/sh -c 'cd -- "$(/usr/bin/dirname -- "$1")" && /bin/pwd -P' sh "$0")
 windows_script=$(/usr/bin/wslpath -w "$script_dir/windows.ps1") || {
   printf '{"status":"unavailable"}\n'
   exit 0

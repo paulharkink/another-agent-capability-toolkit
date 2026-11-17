@@ -240,7 +240,9 @@ the PowerShell 5.1 WinRT type projection supplied by Windows; it needs no
 downloaded module or compiled helper. Windows Credential Locker supports up to
 20 credentials per app. If WinRT access is unavailable, AACT uses the normal
 password prompt. WSL invokes the same Windows PowerShell script and Credential
-Locker for the current Windows user. macOS uses the `security` command and
+Locker for the current Windows user when C: is mounted at `/mnt/c`; it fails
+closed if that trusted system path cannot be confirmed. Nonstandard drive or
+mount layouts can use a custom absolute-path hook. macOS uses the `security` command and
 Linux uses `secret-tool` with an available Secret Service session. To use
 another store, configure an absolute-path hook with
 `AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`, `.bat`, and executable
