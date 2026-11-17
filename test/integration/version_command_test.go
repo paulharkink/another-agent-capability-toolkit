@@ -130,15 +130,28 @@ func TestWindowsVersionUpgradeUsesNativeArchitecture(t *testing.T) {
 
 func versionReleaseServer(t *testing.T, version, arch string, archive []byte, validChecksum bool) *httptest.Server {
 	t.Helper()
-	extension, installerName := "tar.gz", "install.sh"
+	installerName := "install.sh"
 	if runtime.GOOS == "windows" {
-		extension, installerName = "zip", "install.ps1"
+		installerName = "install.ps1"
 	}
-	archiveName := fmt.Sprintf("aact_%s_%s_%s.%s", version, runtime.GOOS, arch, extension)
 	installer, err := os.ReadFile("../../" + installerName)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return versionReleaseServerWithInstaller(t, version, arch, archive, validChecksum, installer)
+}
+
+func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte) *httptest.Server {
+	t.Helper()
+	extension := "tar.gz"
+	if runtime.GOOS == "windows" {
+		extension = "zip"
+	}
+	installerName := "install.sh"
+	if runtime.GOOS == "windows" {
+		installerName = "install.ps1"
+	}
+	archiveName := fmt.Sprintf("aact_%s_%s_%s.%s", version, runtime.GOOS, arch, extension)
 	archiveSum := digestHex(archive)
 	if !validChecksum {
 		archiveSum = strings.Repeat("0", 64)
@@ -162,6 +175,33 @@ func versionReleaseServer(t *testing.T, version, arch string, archive []byte, va
 			http.NotFound(w, r)
 		}
 	}))
+}
+
+func TestVersionInstallSupportsHistoricalV050Installer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("historical Unix installer fixture")
+	}
+	installer, err := os.ReadFile("testdata/install-v0.5.0.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := versionReleaseServerWithInstaller(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer)
+	defer server.Close()
+	root, home := t.TempDir(), t.TempDir()
+	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
+	cmd.Dir = t.TempDir()
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("historical v0.5.0 installer failed: %s: %v", output, err)
+	}
+	if !strings.Contains(string(output), "Installed AACT 0.5.0") {
+		t.Fatalf("explicit historical version was not reported: %q", output)
+	}
+	installed := filepath.Join(root, "releases", "0.5.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatalf("historical managed release missing at %s: %v", installed, err)
+	}
 }
 
 func digestHex(data []byte) string {

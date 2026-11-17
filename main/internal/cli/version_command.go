@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -178,22 +179,27 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	if _, err := downloadVerifiedAsset(ctx, *checksumsAsset, filepath.Join(stage, "checksums.txt"), 1<<20); err != nil {
 		return fmt.Errorf("download verified release checksums: %w", err)
 	}
+	baseURL, stopReleaseServer, err := serveStagedRelease(version, archiveAsset.Name, archivePath, filepath.Join(stage, "checksums.txt"))
+	if err != nil {
+		return fmt.Errorf("serve verified release assets locally: %w", err)
+	}
+	defer stopReleaseServer()
 	var command *exec.Cmd
 	if runtime.GOOS == "windows" {
 		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		args := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-LocalArchive", archivePath}
+		args := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-Version", version}
 		if explicitRoot {
 			args = append(args, "-InstallDir", root)
 		}
 		command = exec.CommandContext(ctx, powershell, args...)
 	} else {
-		args := []string{installerPath, "--local-archive", archivePath}
+		args := []string{installerPath, "--version", version}
 		if explicitRoot {
 			args = append(args, "--install-dir", root)
 		}
 		command = exec.CommandContext(ctx, "/bin/sh", args...)
 	}
-	command.Env = installerEnvironment()
+	command.Env = installerEnvironment(baseURL)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("install AACT %s: %w: %s", version, err, strings.TrimSpace(string(output)))
@@ -201,18 +207,47 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	return nil
 }
 
-func installerEnvironment() []string {
+func installerEnvironment(downloadBase string) []string {
 	filtered := process.EnvironmentWithoutVaultPassword(os.Environ())
 	clean := make([]string, 0, len(filtered))
 	for _, entry := range filtered {
 		name, _, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(name) {
-		case "AACT_ARCH", "AACT_OS", "AACT_VERSION":
+		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE":
 			continue
 		}
 		clean = append(clean, entry)
 	}
+	clean = append(clean, "AACT_DOWNLOAD_BASE="+downloadBase)
 	return clean
+}
+
+func serveStagedRelease(version, archiveName, archivePath, checksumsPath string) (string, func(), error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", nil, err
+	}
+	archiveURLPath := "/v" + version + "/" + archiveName
+	checksumsURLPath := "/v" + version + "/checksums.txt"
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var file string
+		switch r.URL.Path {
+		case archiveURLPath:
+			file = archivePath
+		case checksumsURLPath:
+			file = checksumsPath
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, file)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
 func downloadVerifiedAsset(ctx context.Context, asset releasecatalog.Asset, destination string, maxBytes int64) (string, error) {
