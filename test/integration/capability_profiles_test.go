@@ -218,6 +218,7 @@ func TestStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *test
 		t.Fatal(err)
 	}
 	home := t.TempDir()
+	otherHome := t.TempDir()
 	probe := agents.DiscoveryProbe{Home: home, GOOS: "linux", Getenv: func(string) string { return "" }, LookPath: func(name string) (string, error) {
 		if name == "opencode" {
 			return "injected-detection-evidence", nil
@@ -255,25 +256,64 @@ func TestStartingMCPRefreshesExistingAgentRegistrationToActualRuntimeURL(t *test
 	if got := readRegistration(); got != "http://127.0.0.1:42001/mcp" {
 		t.Fatalf("initial registration URL = %q", got)
 	}
-	if _, err := svc.RunInstanceMCP(ctx, "start", app.InstanceRequest{Ref: ref}, "reference-api"); err != nil {
+	otherProbe := probe
+	otherProbe.Home = otherHome
+	otherSvc := app.New(pack.LegacySource(), store, app.Options{Runtime: runtime, DiscoveryProbe: &otherProbe, AgentScopes: map[string]agents.Scope{"opencode": {ID: "opencode", Home: otherHome, ExplicitHome: true}}})
+	_, err = otherSvc.ApplyInstance(ctx, app.InstanceRequest{Ref: ref, InstallOnly: true, DestinationIDs: []string{"opencode"}, ItemIDs: []string{"set:reference"}, Inputs: map[string]any{"project": "example-project", "enabled": false, "local_port": 18871}})
+	if err != nil {
+		t.Fatalf("install second isolated agent destination: %v", err)
+	}
+	otherConfigPath := filepath.Join(otherHome, ".config", "opencode", "opencode.jsonc")
+	readOtherRegistration := func() string {
+		t.Helper()
+		data, err := os.ReadFile(otherConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document struct {
+			MCP map[string]struct {
+				URL string `json:"url"`
+			} `json:"mcp"`
+		}
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		for _, registration := range document.MCP {
+			return registration.URL
+		}
+		return ""
+	}
+	if got := readOtherRegistration(); got != "http://127.0.0.1:42001/mcp" {
+		t.Fatalf("second destination initial registration URL = %q", got)
+	}
+	if _, err := otherSvc.RunInstanceMCP(ctx, "start", app.InstanceRequest{Ref: ref}, "reference-api"); err != nil {
 		t.Fatalf("restart MCP: %v", err)
 	}
 	if got := readRegistration(); got != "http://127.0.0.1:42002/mcp" {
 		t.Fatalf("registration after restart = %q, want actual runtime endpoint http://127.0.0.1:42002/mcp", got)
 	}
+	if got := readOtherRegistration(); got != "http://127.0.0.1:42002/mcp" {
+		t.Fatalf("second destination registration after restart = %q, want actual runtime endpoint http://127.0.0.1:42002/mcp", got)
+	}
 	rows, err := store.Installations()
 	if err != nil {
 		t.Fatal(err)
 	}
+	seenDestinations := map[string]bool{}
 	for _, row := range rows {
 		if row.Component == "mcp" && row.AgentID == "opencode" {
 			if row.URL != "http://127.0.0.1:42002/mcp" {
 				t.Fatalf("registration ledger URL = %q", row.URL)
 			}
-			return
+			if row.Destination == "" {
+				t.Fatalf("registration destination missing: %+v", row)
+			}
+			seenDestinations[row.Destination] = true
 		}
 	}
-	t.Fatal("refreshed registration ledger row is missing")
+	if len(seenDestinations) != 2 {
+		t.Fatalf("refreshed ledger destinations = %v, want both isolated agent homes", seenDestinations)
+	}
 }
 
 func TestInstallOnlyExternalMCPRegistrationDoesNotRequireRuntimeInventory(t *testing.T) {
@@ -329,6 +369,7 @@ func TestTUIOffersGenericBrowserLoginAndShowsViewerURL(t *testing.T) {
 	manifestText := strings.Replace(string(manifest), "[[ui.sections]]", "[[inputs]]\nname = \"browser_volume\"\nlabel = \"Browser profile volume\"\ntype = \"string\"\nrequired = true\ndefault = \"aact-login-fixture\"\n[[ui.sections]]", 1)
 	manifestText = strings.Replace(manifestText, "fields = [\"project\", \"enabled\"]", "fields = [\"project\", \"enabled\", \"browser_volume\"]", 1)
 	manifestText = strings.Replace(manifestText, "endpoint_path = \"/mcp\"", "endpoint_path = \"/mcp\"\n[mcp.browser_controller]\nprofile_volume_input = \"browser_volume\"\nstartup_url = \"https://example.test\"", 1)
+	manifestText += "\n[mcp.actions.authenticate]\ncommand = [\"sh\", \"-c\", \"printf '{}'\"]\n"
 	if err := os.WriteFile(packagePath, []byte(manifestText), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -366,8 +407,8 @@ func TestTUIOffersGenericBrowserLoginAndShowsViewerURL(t *testing.T) {
 	}
 	model, _ = model.Update(cmd())
 	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Log in to reference-api") {
-		t.Fatalf("TUI did not show the generic browser login action:\n%s", view)
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Log in to reference-api") || !strings.Contains(view, "Login to reference-api") {
+		t.Fatalf("TUI did not show both generic browser login and pack authentication actions:\n%s", view)
 	}
 	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})

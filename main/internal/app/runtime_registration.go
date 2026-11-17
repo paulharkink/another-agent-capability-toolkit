@@ -26,12 +26,15 @@ func (s *Service) refreshRuntimeRegistrations(ctx context.Context, key state.Key
 		return err
 	}
 	registration := agents.Registration{Name: name, URL: endpoint, Transport: definition.Transport, TimeoutMS: registrationTimeoutMS(&definition), Headers: headers}
-	refreshedAgents := map[string]bool{}
+	type registrationScope struct {
+		agentID, home, destination string
+	}
+	refreshedScopes := map[registrationScope]bool{}
 	for _, old := range rows {
-		if old.Key != key || old.Component != "mcp" || old.ExternalRegistration || refreshedAgents[old.AgentID] {
+		if old.Key != key || old.Component != "mcp" || old.ExternalRegistration {
 			continue
 		}
-		refreshedAgents[old.AgentID] = true
+		identity := registrationScope{agentID: old.AgentID, home: old.AgentHome, destination: old.Destination}
 		adapter, adapterErr := s.adapterRegistry().Adapter(old.AgentID)
 		if adapterErr != nil {
 			return fmt.Errorf("refresh MCP registration for agent %s: %w", old.AgentID, adapterErr)
@@ -40,7 +43,16 @@ func (s *Service) refreshRuntimeRegistrations(ctx context.Context, key state.Key
 		if !ok {
 			return fmt.Errorf("agent %s cannot manage MCP registrations", old.AgentID)
 		}
+		// A ledger row records the concrete agent home and config destination
+		// that AACT owns. The service's current scope may point elsewhere (for
+		// example, after a restart with another --agent-home), so refresh that
+		// exact destination instead of silently redirecting the binding.
 		scope := s.agentScope(old.AgentID)
+		if old.AgentHome != "" {
+			scope.Home = old.AgentHome
+			scope.ExplicitHome = true
+		}
+		scope.ConfigPathOverride = old.Destination
 		if old.RegistrationName != name {
 			if err := manager.Unregister(ctx, scope, old); err != nil {
 				return fmt.Errorf("remove prior MCP registration %q for agent %s: %w", old.RegistrationName, old.AgentID, err)
@@ -49,6 +61,10 @@ func (s *Service) refreshRuntimeRegistrations(ctx context.Context, key state.Key
 				return fmt.Errorf("forget prior MCP registration %q for agent %s: %w", old.RegistrationName, old.AgentID, err)
 			}
 		}
+		if refreshedScopes[identity] {
+			continue
+		}
+		refreshedScopes[identity] = true
 		result, registerErr := manager.Register(ctx, scope, agents.MCPRequest{Key: key, Registration: registration})
 		for _, removed := range result.Removed {
 			if err := s.removeRegistration(removed); err != nil {

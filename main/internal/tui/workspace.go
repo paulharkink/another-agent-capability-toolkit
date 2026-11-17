@@ -792,7 +792,8 @@ func (m *Model) configureWorkspaceForm(preview viewmodel.SetupPreview) {
 					authenticateDisabled = foreignReason
 				}
 				runtimeActions = append(runtimeActions, forms.FormAction{ID: "browser-login:" + definition.Name, Label: "Log in to " + definition.Name, Disabled: authenticateDisabled})
-			} else if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
+			}
+			if _, supportsAuthentication := definition.Actions["authenticate"]; supportsAuthentication {
 				authenticateDisabled := m.runtimeAuthenticateDisabledReason(definition.Name, startRow)
 				if foreignReason != "" {
 					authenticateDisabled = foreignReason
