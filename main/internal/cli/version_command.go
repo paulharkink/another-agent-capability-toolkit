@@ -262,8 +262,10 @@ func installerEnvironment() []string {
 		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE":
 			continue
 		case "PSMODULEPATH":
-			powerShellModulePath = value
-			continue
+			if runtime.GOOS == "windows" {
+				powerShellModulePath = value
+				continue
+			}
 		}
 		clean = append(clean, entry)
 	}

@@ -378,6 +378,42 @@ func TestVersionInstallAvoidsProxyRequestsForVerifiedLocalArchive(t *testing.T) 
 	}
 }
 
+func TestVersionInstallPreservesUnrelatedEnvironmentOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix installer environment")
+	}
+	archive := installerArchive(t)
+	realInstaller, err := filepath.Abs("../../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := []byte(`#!/bin/sh
+printf '%s' "${PSModulePath-<unset>}" > "$AACT_TEST_CAPTURE_PATH"
+exec /bin/sh "$AACT_TEST_INSTALLER_PATH" "$@"
+`)
+	server := versionReleaseServerWithInstaller(t, "1.2.3", runtime.GOARCH, archive, true, wrapper)
+	defer server.Close()
+	root, home := t.TempDir(), t.TempDir()
+	capture := filepath.Join(t.TempDir(), "psmodulepath.txt")
+	modulePath := "unrelated-module-path-value"
+	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "1.2.3")
+	cmd.Dir = t.TempDir()
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_INSTALL_DIR="+root,
+		"AACT_RELEASE_API_URL="+server.URL+"/releases", "PSModulePath="+modulePath,
+		"AACT_TEST_CAPTURE_PATH="+capture, "AACT_TEST_INSTALLER_PATH="+realInstaller)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("version install failed: %s: %v", output, err)
+	}
+	got, err := os.ReadFile(capture)
+	if err != nil || string(got) != modulePath {
+		t.Fatalf("installer did not receive the unrelated environment value: got %q, want %q (err=%v)", got, modulePath, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "1.2.3-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")); err != nil {
+		t.Fatalf("managed install did not complete: %v", err)
+	}
+}
+
 func digestHex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
