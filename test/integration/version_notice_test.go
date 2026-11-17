@@ -69,6 +69,37 @@ func TestTUIShowsNewerReleaseWithoutReplacingOperationStatus(t *testing.T) {
 	}
 }
 
+func TestTUINewerReleaseNoticeAndFooterFitSixteenRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]any{map[string]any{"tag_name": "v1.2.0", "assets": []any{}}})
+	}))
+	defer server.Close()
+	t.Setenv("AACT_RELEASE_API_URL", server.URL+"/releases")
+	previous := versioninfo.Version
+	versioninfo.Version = "1.0.0"
+	defer func() { versioninfo.Version = previous }()
+
+	model := tui.NewContext(context.Background(), releaseNoticeBackend{})
+	model.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+	loaded := model.Init()()
+	updated, check := model.Update(loaded)
+	model = updated.(*tui.Model)
+	if check == nil {
+		t.Fatal("initial catalog load did not schedule the release check")
+	}
+	updated, _ = model.Update(check())
+	view := updated.(*tui.Model).View().Content
+	if !strings.Contains(view, "AACT 1.2.0 is available") {
+		t.Fatalf("successful release response did not render the update notice: %q", view)
+	}
+	if !strings.Contains(view, "F10/q Quit") {
+		t.Fatalf("footer was clipped by the update notice: %q", view)
+	}
+	if rows := len(strings.Split(view, "\n")); rows > 16 {
+		t.Fatalf("home view rendered %d rows into a 16-row terminal: %q", rows, view)
+	}
+}
+
 func TestTUIStartupCheckIsOfflineTolerantAndKeepsHomeFooterVisible(t *testing.T) {
 	started, finish := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
