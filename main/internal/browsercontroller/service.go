@@ -206,6 +206,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Close a helper that was opened explicitly from the TUI before reading its
+	// profile offline. Chromium may hold the cookie database open while running.
+	if err := browser.StopBrowser(r.Context()); err != nil {
+		http.Error(w, "browser could not be stopped", http.StatusServiceUnavailable)
+		return
+	}
 	result, err := browser.ReadOffline(r.Context(), request)
 	if err == nil && adapterSucceeded(result) {
 		writeBrowserResult(w, http.StatusOK, result, "")

@@ -83,6 +83,26 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations", browserRegistration{Instance: namespace, ContainerID: container, Config: config}, nil); err != nil {
 		t.Fatal(err)
 	}
+	var opened struct {
+		ViewerURL string `json:"viewer_url"`
+	}
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+container+"/start", nil, &opened); err != nil {
+		t.Fatalf("open generic browser login: %v", err)
+	}
+	if !strings.HasPrefix(opened.ViewerURL, "http://localhost:") {
+		t.Fatalf("browser login returned an invalid viewer URL %q", opened.ViewerURL)
+	}
+	runningHelper := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName)
+	if string(runningHelper) != "true" {
+		t.Fatalf("browser login did not start its helper: %s", runningHelper)
+	}
+	foreignContainer := strings.Repeat("f", 64)
+	if foreignContainer == container {
+		t.Fatal("unexpected fixture ID collision")
+	}
+	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations/"+foreignContainer+"/start", nil, &opened); err == nil {
+		t.Fatal("browser login opened a helper for an unregistered container")
+	}
 	handoff, err := vault.NewContainerHandoff(info, token)
 	if err != nil {
 		t.Fatal(err)
@@ -93,9 +113,9 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if string(output) != "synthetic credential read through daemon" {
 		t.Fatalf("unexpected client result %q", output)
 	}
-	names := docker(nil, "ps", "-a", "--filter", "name=^/"+config.ContainerName+"$", "--format", "{{.Names}}")
-	if len(names) != 0 {
-		t.Fatal("offline read started a browser container")
+	stoppedHelper := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName)
+	if string(stoppedHelper) != "false" {
+		t.Fatalf("successful offline credential handoff left the login helper running: %s", stoppedHelper)
 	}
 	if os.Getenv("AACT_BROWSER_DEMO_MCP_IMAGE") != "" {
 		exerciseSyntheticMCP(t, docker, info, control, volume)
@@ -144,7 +164,7 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if err := testDaemonControlRequest(info, control, "DELETE", "/browser/configurations/"+container, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	names = docker(nil, "ps", "-a", "--filter", "name=^/"+config.ContainerName+"$", "--format", "{{.Names}}")
+	names := docker(nil, "ps", "-a", "--filter", "name=^/"+config.ContainerName+"$", "--format", "{{.Names}}")
 	if len(names) != 0 {
 		t.Fatal("browser container was not removed on unregister")
 	}

@@ -93,7 +93,7 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 		t.Fatalf("invalid status %d", status)
 	}
 	browser.offline = json.RawMessage(`{"status":"interaction_required"}`)
-	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 {
+	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 2 {
 		t.Fatalf("interactive status %d body %s", status, body)
 	}
 	browser.offline = json.RawMessage(`{"status":"refreshed","access_token":"signed-in-session"}`)

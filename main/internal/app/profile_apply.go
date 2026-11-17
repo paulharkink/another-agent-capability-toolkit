@@ -1498,10 +1498,8 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	}
 	urls := map[string]string{}
 	if q.InstallOnly {
-		observedRuntimes, observeErr := s.Options.Runtime.List(ctx)
-		if observeErr != nil {
-			return out, fmt.Errorf("refresh runtime observation before installing agent bindings: %w", observeErr)
-		}
+		var observedRuntimes []mcp.Instance
+		observedRuntimesLoaded := false
 		for _, definition := range p.MCPDefinitions() {
 			if !mcps[definition.Name] {
 				continue
@@ -1524,6 +1522,14 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			// port after Docker resolved a conflict. Reuse that endpoint only when
 			// it was launched for the same configured port.
 			if definition.HostPortInput != "" {
+				if !observedRuntimesLoaded {
+					var observeErr error
+					observedRuntimes, observeErr = s.Options.Runtime.List(ctx)
+					if observeErr != nil {
+						return out, fmt.Errorf("refresh runtime observation before installing agent bindings: %w", observeErr)
+					}
+					observedRuntimesLoaded = true
+				}
 				configuredPort, portErr := resolvePortInputValue(definition.HostPortInput, values[definition.HostPortInput])
 				if portErr != nil {
 					return out, invalid(portErr)
@@ -2255,6 +2261,9 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 				return out, e
 			}
 			out.Instances = []mcp.Instance{instance}
+			if err := s.refreshRuntimeRegistrations(ctx, child, definition, values, instance.URL); err != nil {
+				return out, fmt.Errorf("MCP started at %s but its existing agent registrations could not be refreshed: %w", instance.URL, err)
+			}
 			if definition.HealthPath != "" {
 				headers, headerErr := profileRegistrationHeaders(definition, values)
 				if headerErr != nil {
