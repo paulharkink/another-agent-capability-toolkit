@@ -80,9 +80,12 @@ jobs:
         shell: bash
         run: |
           version="${{ steps.resolve-release.outputs.version }}"
+          unix_count="$(grep -Ec '^curl -fsSL https://raw\.githubusercontent\.com/paulharkink/another-agent-capability-toolkit/main/install\.sh \| sh -s -- -v [0-9]+\.[0-9]+\.[0-9]+$' README.md || true)"
+          windows_count="$(grep -Ec '^& \$script -Version [0-9]+\.[0-9]+\.[0-9]+$' README.md || true)"
           unix_expected="curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v $version"
           windows_expected="& \$script -Version $version"
-          if [[ "$(grep -Fxc "$unix_expected" README.md || true)" != 1 ]] || \
+          if [[ "$unix_count" != 1 ]] || [[ "$windows_count" != 1 ]] || \
+             [[ "$(grep -Fxc "$unix_expected" README.md || true)" != 1 ]] || \
              [[ "$(grep -Fxc "$windows_expected" README.md || true)" != 1 ]]; then
             echo "README.md must contain exactly one Unix and one Windows install command for v$version before publishing." >&2
             exit 1
