@@ -13,9 +13,10 @@ handwritten release PR.
    snippets and opens a `release/vX.Y.Z` PR. The workflow checks that both
    commands contain the selected version before it opens the PR.
 3. Review the release PR and its checks. Merge it only with the maintainer's
-   explicit approval. The merge triggers the tag workflow, which verifies the
-   README version, creates the `vX.Y.Z` tag on the merge commit, and starts the
-   release workflow.
+   explicit approval. The merge triggers the tag workflow, which verifies that
+   both README install commands name the same version, creates the `vX.Y.Z` tag
+   on the merge commit, and starts the release workflow. The release workflow
+   checks both commands again before publishing.
 4. Monitor **Build and publish release artifacts** to completion. It runs the
    Go tests and GoReleaser validation, builds and publishes the multi-platform
    MCP images, assembles their manifests, and publishes the GitHub release
@@ -24,5 +25,10 @@ handwritten release PR.
 
 The release tag must point to `main` after the feature PRs have been merged.
 Never create a release tag from a feature branch or a release PR that contains
-unmerged product changes. If publication fails, use the workflow's documented
-recovery inputs against the existing tag; do not create a replacement tag.
+unmerged product changes. If publication fails, rerun **Build and publish
+release artifacts** from `main` with `release_tag` set to the existing tag
+(for example, `v0.7.3`). Leave `publish_assets_only` off to retry image and
+release publication. If the required public multi-platform images already
+exist and only GitHub release assets need publishing, set `publish_assets_only`
+to `true`; that path verifies the existing images before publishing the assets.
+Do not create a replacement tag.

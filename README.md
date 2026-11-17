@@ -60,12 +60,13 @@ aact agents
 aact settings
 ```
 
-`aact version` and `aact --version` print the installed build version. The
-version list, upgrade, and install commands query stable GitHub Releases. A
-TUI startup check runs in the background and reports a newer stable release
-when the network is available; catalog failures do not prevent normal use.
-Install and upgrade verify the GitHub release asset SHA-256 digests, then use
-the managed installer and its `checksums.txt` verification before activation.
+`aact version` and `aact --version` print the installed build version. Version
+list, upgrade, and install query the GitHub Releases API for stable releases;
+there is no offline release catalog. The TUI checks for a newer stable version
+in the background and continues normally if that request fails. Explicit
+version commands report a lookup error when GitHub is unavailable. Install and
+upgrade verify the release asset SHA-256 digest, then use the managed installer
+and its `checksums.txt` verification before activation.
 
 The terminal home has a Capabilities pane and a related MCP profiles pane.
 Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item
@@ -108,7 +109,7 @@ until an XML adapter is verified. Select `--agent` more than
 once to target several agents. `--agent-home ID=PATH` assigns separate homes;
 a single shared path applies to all selected agents. Copilot IntelliJ requires
 opening Copilot Chat and selecting **Add MCP Tools** to create its configuration
-first. Generic MCP produces a manual configuration artifact and reports its path.
+first. Generic MCP reports the path to its manual configuration artifact.
 The skill-only `all` destination installs under `~/.agents/skills`; it cannot
 be used for an MCP registration.
 
@@ -207,9 +208,11 @@ managed skill links still reference.
 
 AACT has a daemon that hosts the KeePass-backed secret service. Use
 `aact daemon status` and `aact daemon stop` to inspect or stop it. The older
-`aact vault` commands remain available. This does not promise that the daemon
-will restart automatically after it exits or that the vault lifecycle works
-without a keyring.
+`aact vault` commands remain available. AACT does not currently restart the
+daemon automatically after it exits. The lifecycle without a usable OS
+credential store is also not implemented; commands that need the vault may
+fall back to an interactive master-password prompt, and noninteractive use
+requires a configured password or a usable saved credential.
 
 AACT normally asks for the vault master password interactively. To supply it
 without a prompt, set either `AACT_VAULT_PASSWORD_FILE` to a readable file path
@@ -219,13 +222,18 @@ subprocesses. The same password must be used to open an existing vault.
 
 AACT can optionally use an OS credential store through a script hook. The hook
 supports only `get` and `set` operations for the vault password; it does not
-manage daemon lifecycle or recover a password the OS store cannot return. If
-the store has no usable password, AACT asks for the master password as usual.
-After a successful manual unlock, the TUI offers an opt-in toggle (`Ctrl+S`)
-and interactive CLI commands ask whether to save the password. A failed or
-unavailable hook falls back to manual unlock. Linux needs `secret-tool` and an
-available Secret Service session for this option; without them, use the manual
-password prompt.
+manage daemon lifecycle or recover a password the OS store cannot return. When
+no password environment override is set, AACT tries a saved vault password on
+each unlock; there is no 15-minute cooldown. A missing, unavailable, or
+invalid saved credential falls back to the master-password prompt. Saving
+remains opt-in:
+after a successful manual unlock, the TUI offers the `Ctrl+S` toggle and
+interactive CLI commands ask whether to save the password. Linux needs
+`secret-tool` and an available Secret Service session for this option.
+
+AACT does not currently apply a cooldown to repeated manual password attempts.
+The planned password-attempt cooldown and keyring-independent daemon lifecycle
+are not implemented.
 
 The bundled Windows script uses the Windows Runtime Credential Locker through
 the PowerShell 5.1 WinRT type projection supplied by Windows; it needs no
@@ -245,6 +253,22 @@ and reads one JSON response from standard output. The request supports `get`
 and `set`; secrets are carried only through these pipes, never as command-line
 arguments or environment variables. The connector protocol and bundled scripts
 are under `scripts/keyring/`.
+
+## Log in to an MCP
+
+MCPs can declare a Login action in their Capability Pack. In the TUI, open the
+capability instance, select the relevant MCP profile, and choose **Login** in
+its Runtime actions. Save valid inputs first. A host-side Login action can run
+before the MCP starts; a container-side action requires that MCP to be
+running. AACT waits for an authentication health check only when the pack
+declares one. The login method and provider-specific steps belong to the
+Capability Pack.
+
+For an MCP that declares a browser login helper, start that MCP first, then
+choose **Log in to …** under Runtime actions. AACT starts its dedicated browser
+helper and provides its login URL for interactive sign-in. This action is
+separate from an MCP's declared Login command. No 15-minute login cooldown is
+currently enforced.
 
 ## Build and verify from source
 
