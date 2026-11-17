@@ -182,8 +182,8 @@ newline from a password file and does not pass these variables to capability
 subprocesses. The same password must be used to open an existing vault.
 
 AACT can also use an OS credential store through a script hook. It looks for
-the bundled macOS Keychain, Windows Credential Manager, WSL Credential Manager,
-or Linux Secret Service script. If the store has no usable password, AACT asks
+the bundled macOS Keychain, Windows Credential Locker, WSL Windows Credential
+Locker, or Linux Secret Service script. If the store has no usable password, AACT asks
 for the master password as usual. After a successful manual unlock, the TUI
 offers an opt-in toggle (`Ctrl+S`) and interactive CLI commands ask whether to
 save the password. Declining leaves the KeePass vault unchanged. On later
@@ -192,18 +192,15 @@ controls; a missing, locked, or stale entry falls back to the manual prompt.
 Linux needs `secret-tool` and an available Secret Service session for this
 option; without it, manual unlock remains available.
 
-Windows requires PowerShell's `Microsoft.PowerShell.SecretManagement` module
-and a registered extension vault named `AACT` backed by Windows Credential
-Manager. The bundled script does not install modules or change PowerShell
-configuration; if the module or vault is missing, credential lookup is treated
-as unavailable and AACT uses its normal password prompt. The CredManStore
-extension is maintained in the `PowerShell/SecretManagement` repository's
-`ExtensionModules/CredManStore` directory. That repository is archived, so
-review and install the extension through your normal PowerShell module process
-before registering it with `Register-SecretVault -Name AACT -ModuleName
-Microsoft.PowerShell.CredManStore`. WSL uses Windows PowerShell and the same
-Windows user module registry and Credential Manager; it has the same setup
-requirement. It does not fall back to arbitrary `PATH` executables.
+The bundled Windows script uses the Windows Runtime Credential Locker through
+the PowerShell 5.1 WinRT type projection supplied by Windows; it needs no
+downloaded module or compiled helper. Windows Credential Locker supports up to
+20 credentials per app. If WinRT access is unavailable, AACT uses the normal
+password prompt. WSL invokes the same Windows PowerShell script and Credential
+Locker for the current Windows user. To use another store, configure an
+absolute-path hook with `AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`,
+`.bat`, and executable hooks are supported. Hook secrets travel over stdin and
+stdout, not process arguments or environment variables.
 
 To use a custom connector, set `AACT_VAULT_CREDENTIAL_HOOK` to an absolute
 executable script path. AACT sends a versioned JSON request to the script's

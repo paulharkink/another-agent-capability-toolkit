@@ -16,6 +16,12 @@ type vaultUnlockFunc func([]byte, bool) error
 
 type vaultUnlockResultMsg struct{ err error }
 
+// VaultUnlockWarning reports a non-fatal issue after the vault was unlocked.
+// The unlock screen keeps it visible until the user acknowledges it.
+type VaultUnlockWarning struct{ Message string }
+
+func (e *VaultUnlockWarning) Error() string { return e.Message }
+
 type vaultUnlockModel struct {
 	creating   bool
 	confirming bool
@@ -23,6 +29,7 @@ type vaultUnlockModel struct {
 	busy       bool
 	done       bool
 	cancelled  bool
+	waitingAck bool
 	password   []rune
 	input      []rune
 	message    string
@@ -40,6 +47,14 @@ func (m *vaultUnlockModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := message.(vaultUnlockResultMsg); ok {
 		m.busy = false
 		if result.err != nil {
+			var warning *VaultUnlockWarning
+			if errors.As(result.err, &warning) {
+				m.clearSecrets()
+				m.done = true
+				m.waitingAck = true
+				m.message = warning.Error()
+				return m, nil
+			}
 			m.clearSecrets()
 			m.confirming = false
 			m.message = "Could not unlock the vault. Check the master password and try again."
@@ -53,6 +68,10 @@ func (m *vaultUnlockModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(32, message.Width)
 	case tea.KeyPressMsg:
+		if m.waitingAck && (message.Code == tea.KeyEnter || message.Code == tea.KeyReturn) {
+			m.waitingAck = false
+			return m, tea.Quit
+		}
 		if message.Code == tea.KeyEscape || (message.Mod == tea.ModCtrl && message.Code == 'c') {
 			m.clearSecrets()
 			m.cancelled = true
@@ -145,7 +164,11 @@ func (m *vaultUnlockModel) View() tea.View {
 	if m.message != "" {
 		content += "\n" + m.message + "\n"
 	}
-	content += "\nEnter to continue · Esc to cancel"
+	if m.waitingAck {
+		content += "\nEnter to continue"
+	} else {
+		content += "\nEnter to continue · Esc to cancel"
+	}
 	if m.creating {
 		content += "\nA new vault is saved in AACT state."
 	}

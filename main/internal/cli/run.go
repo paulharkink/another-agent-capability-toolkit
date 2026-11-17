@@ -226,7 +226,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					return 1
 				}
 				err := tui.RunVaultUnlock(ctx, in, out, creating, func(password []byte, saveCredential bool) error {
-					return initializeSharedVaultWithPassword(store, store.Root(), password, saveCredential, errOut)
+					return initializeSharedVaultWithPassword(store, store.Root(), password, saveCredential)
 				})
 				if errors.Is(err, tui.ErrVaultUnlockCanceled) {
 					return 0

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/tui"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
 )
 
@@ -177,7 +178,7 @@ func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, 
 	return attachSharedVault(store, stateRoot, vaultStore, masterPassword)
 }
 
-func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte, saveCredential bool, warningOutput ...io.Writer) error {
+func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, password []byte, saveCredential bool) error {
 	if len(password) == 0 {
 		return errors.New("vault master password must not be empty")
 	}
@@ -186,17 +187,14 @@ func initializeSharedVaultWithPassword(store *state.Store, stateRoot string, pas
 	if err != nil {
 		return err
 	}
-	if saveCredential {
-		if err := setVaultCredential(stateRoot, password); err != nil {
-			for _, output := range warningOutput {
-				if output != nil {
-					_, _ = fmt.Fprintln(output, "Could not save the vault password to the OS credential store; the vault remains available for this session.")
-					break
-				}
-			}
-		}
+	var warning error
+	if saveCredential && setVaultCredential(stateRoot, password) != nil {
+		warning = &tui.VaultUnlockWarning{Message: "Could not save the vault password to the OS credential store; the vault remains available for this session."}
 	}
-	return attachSharedVault(store, stateRoot, vaultStore, password)
+	if err := attachSharedVault(store, stateRoot, vaultStore, password); err != nil {
+		return err
+	}
+	return warning
 }
 
 func confirmVaultCredentialSave(input io.Reader, output io.Writer) bool {

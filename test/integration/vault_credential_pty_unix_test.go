@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,23 +16,7 @@ import (
 
 func credentialPTYSupported() bool { return true }
 
-func buildPublicCLIBinary(t *testing.T) string {
-	t.Helper()
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate test source for CLI build")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	binary := filepath.Join(t.TempDir(), "aact")
-	command := exec.Command("go", "build", "-o", binary, "./cmd/aact")
-	command.Dir = filepath.Join(repoRoot, "main")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build public CLI: %v\n%s", err, output)
-	}
-	return binary
-}
-
-func runPublicCLIOnPTY(t *testing.T, binary string, enroll bool) (int, string) {
+func runPublicCLIOnPTY(t *testing.T, binary string, enroll, expectWarning bool) (int, string) {
 	t.Helper()
 	command := exec.Command(binary)
 	command.Env = os.Environ()
@@ -92,6 +74,12 @@ func runPublicCLIOnPTY(t *testing.T, binary string, enroll bool) (int, string) {
 		write("\x13") // Ctrl+S opts in to credential storage.
 	}
 	write("terminal-only-test-password\r")
+	if expectWarning {
+		if !waitFor("Could not save the vault password", 40*time.Second) {
+			t.Fatalf("failed keyring write warning was not shown in the unlock screen; output=%q stderr=%q", seen, stderr.String())
+		}
+		write("\r")
+	}
 	if !waitFor("AACT ·", 40*time.Second) {
 		t.Fatalf("CLI did not reach its main TUI after valid unlock; output=%q stderr=%q", seen, stderr.String())
 	}
@@ -99,5 +87,5 @@ func runPublicCLIOnPTY(t *testing.T, binary string, enroll bool) (int, string) {
 	if err := command.Wait(); err != nil {
 		t.Fatalf("CLI failed after quitting its TUI: %v; stderr=%q", err, stderr.String())
 	}
-	return command.ProcessState.ExitCode(), stderr.String()
+	return command.ProcessState.ExitCode(), seen + stderr.String()
 }

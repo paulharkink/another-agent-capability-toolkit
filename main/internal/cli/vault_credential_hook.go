@@ -169,12 +169,29 @@ func runCredentialHook(request credentialHookRequest) (credentialHookResponse, e
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var command *exec.Cmd
-	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Ext(path), ".ps1") {
-		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		if !filepath.IsAbs(powershell) {
+	if runtime.GOOS == "windows" {
+		if !filepath.IsAbs(path) {
 			return credentialHookResponse{}, errCredentialUnavailable
 		}
-		command = exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".ps1":
+			powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			if !filepath.IsAbs(powershell) {
+				return credentialHookResponse{}, errCredentialUnavailable
+			}
+			command = exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+		case ".cmd", ".bat":
+			cmd := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
+			if !filepath.IsAbs(cmd) || strings.ContainsAny(path, "\"\r\n") {
+				return credentialHookResponse{}, errCredentialUnavailable
+			}
+			// Go quotes the path as a single argument. Avoid /s, which changes
+			// cmd.exe's /c quote handling for paths containing spaces. The hook
+			// payload remains on stdin, never in this command line.
+			command = exec.CommandContext(ctx, cmd, "/d", "/c", path)
+		default:
+			command = exec.CommandContext(ctx, path)
+		}
 	} else {
 		if !filepath.IsAbs(path) {
 			return credentialHookResponse{}, errCredentialUnavailable

@@ -41,9 +41,9 @@ func TestPublicCLIKeyringEnrollmentChoice(t *testing.T) {
 			writeCredentialTraceHook(t, os.Getenv("AACT_VAULT_CREDENTIAL_HOOK"))
 			t.Setenv("AACT_VAULT_API_BIND_IP", "127.0.0.1")
 
-			code, errText := runPublicCLIOnPTY(t, binary, tc.enroll)
+			code, screenText := runPublicCLIOnPTY(t, binary, tc.enroll, tc.wantWarn)
 			if code != 0 {
-				t.Fatalf("CLI failed after valid Vault unlock: code=%d stderr=%q", code, errText)
+				t.Fatalf("CLI failed after valid Vault unlock: code=%d stderr=%q", code, screenText)
 			}
 			traceBytes, err := os.ReadFile(trace)
 			if err != nil && tc.wantSet {
@@ -53,11 +53,11 @@ func TestPublicCLIKeyringEnrollmentChoice(t *testing.T) {
 			if sawSet != tc.wantSet {
 				t.Fatalf("credential save request mismatch: got set=%v trace=%q", sawSet, traceBytes)
 			}
-			if strings.Contains(errText, "terminal-only-test-password") {
+			if strings.Contains(screenText, "terminal-only-test-password") {
 				t.Fatal("Vault password appeared in CLI diagnostics")
 			}
-			if strings.Contains(errText, "Could not save the vault password") != tc.wantWarn {
-				t.Fatalf("credential save warning mismatch: stderr=%q", errText)
+			if strings.Contains(screenText, "Could not save the vault password") != tc.wantWarn {
+				t.Fatalf("credential save warning visibility mismatch: terminal=%q", screenText)
 			}
 			unlocked, err := vault.Open(vaultPath, []byte("terminal-only-test-password"))
 			if err != nil {

@@ -1,12 +1,15 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$WarningPreference = 'SilentlyContinue'
-$InformationPreference = 'SilentlyContinue'
 
 function Write-Reply([string]$status, $secret) {
     $reply = @{ status = $status }
     if ($null -ne $secret) { $reply.secret = $secret }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
+}
+
+function Is-CredentialMissing($exception) {
+	while ($null -ne $exception.InnerException) { $exception = $exception.InnerException }
+	return $exception.HResult.ToString('X8') -eq '80070490'
 }
 
 try {
@@ -16,30 +19,49 @@ try {
     if ($request.version -ne 1 -or $request.service -ne 'AACT shared Vault' -or $request.account -notmatch '^state-[a-f0-9]{64}$') {
         Write-Reply 'unavailable' $null; exit 0
     }
-    if (-not (Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement)) {
-        Write-Reply 'unavailable' $null; exit 0
-    }
-    Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop | Out-Null
-    $vault = 'AACT'
-    $target = $request.service + ':' + $request.account
-    $vaultInfo = Get-SecretVault -Name $vault -ErrorAction SilentlyContinue
-    if ($null -eq $vaultInfo) { Write-Reply 'unavailable' $null; exit 0 }
+
+    # This uses the Windows Runtime Credential Locker directly. It needs no
+    # Add-Type, downloaded module, native helper, or secret-bearing arguments.
+    $null = [Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]
+    $locker = New-Object Windows.Security.Credentials.PasswordVault
+    $resource = $request.service
+    $account = $request.account
 
     if ($request.action -eq 'get') {
-        $found = @(Get-SecretInfo -Name $target -Vault $vault -ErrorAction Stop)
-        if ($found.Count -eq 0) { Write-Reply 'missing' $null; exit 0 }
         try {
-            $secret = Get-Secret -Name $target -Vault $vault -ErrorAction Stop
+            $credential = $locker.Retrieve($resource, $account)
         } catch {
-            Write-Reply 'unavailable' $null
+            if (Is-CredentialMissing $_.Exception) { Write-Reply 'missing' $null }
+            else { Write-Reply 'unavailable' $null }
             exit 0
         }
-        if ($secret -isnot [string] -or $secret.Length -eq 0) { Write-Reply 'unavailable' $null; exit 0 }
-        Write-Reply 'ok' $secret
+        try {
+            $credential.RetrievePassword()
+            $secret = [string]$credential.Password
+            if ($secret.Length -eq 0) { Write-Reply 'unavailable' $null; exit 0 }
+            $null = [Convert]::FromBase64String($secret)
+            Write-Reply 'ok' $secret
+        } catch {
+            Write-Reply 'unavailable' $null
+        }
     } elseif ($request.action -eq 'set' -and $request.secret) {
-        $null = [Convert]::FromBase64String([string]$request.secret)
-        Set-Secret -Name $target -Secret ([string]$request.secret) -Vault $vault -ErrorAction Stop | Out-Null
-        Write-Reply 'ok' $null
+        $secret = [string]$request.secret
+        $decoded = [Convert]::FromBase64String($secret)
+        [Array]::Clear($decoded, 0, $decoded.Length)
+
+        try {
+            $existing = $locker.Retrieve($resource, $account)
+            $locker.Remove($existing)
+        } catch {
+            if (-not (Is-CredentialMissing $_.Exception)) { Write-Reply 'unavailable' $null; exit 0 }
+        }
+        try {
+            $credential = New-Object Windows.Security.Credentials.PasswordCredential($resource, $account, $secret)
+            $locker.Add($credential)
+            Write-Reply 'ok' $null
+        } catch {
+            Write-Reply 'unavailable' $null
+        }
     } else {
         Write-Reply 'unavailable' $null
     }
