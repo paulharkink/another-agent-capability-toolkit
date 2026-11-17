@@ -108,6 +108,9 @@ func runInstaller(t *testing.T, root, version, base string) (string, error) {
 		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-Version", version, "-InstallDir", root, "-BaseUrl", base)
 	}
 	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir())
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(cmd.Env, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -408,6 +411,9 @@ func runLocalInstallerVersionForce(t *testing.T, root, archive, version string, 
 		cmd = exec.Command(powerShell(t), windowsArgs...)
 	}
 	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(cmd.Env, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

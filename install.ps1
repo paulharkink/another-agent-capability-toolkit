@@ -5,7 +5,8 @@ param(
   [string]$BaseUrl = $(if ($env:AACT_DOWNLOAD_BASE) { $env:AACT_DOWNLOAD_BASE } else { 'https://github.com/paulharkink/another-agent-capability-toolkit/releases/download' }),
   [string]$InstallDir = $(if ($env:AACT_INSTALL_DIR) { $env:AACT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'aact' }),
   [switch]$PrintTarget,
-  [switch]$Force
+  [switch]$Force,
+  [switch]$SkipUserPath
 )
 $ErrorActionPreference = 'Stop'
 
@@ -179,6 +180,7 @@ try {
     $releaseBackup = ''
   }
   Write-Output "Installed AACT $Version (windows/$arch) at $release"
+  if (-not $SkipUserPath -and $env:AACT_INSTALLER_SKIP_USER_PATH -ne '1') {
   try {
     $processPathHadLauncher = Test-PathContainsEntry $env:PATH $launchers
     $addedToUserPath = Add-UserPathEntry $launchers
@@ -196,6 +198,7 @@ try {
   } catch {
     Write-Warning "Installed successfully, but could not add the launcher directory to User PATH: $($_.Exception.Message)"
     Write-Output "Run the launcher directly at $(Join-Path $launchers 'aact.cmd') or add that directory to PATH."
+  }
   }
 } catch {
   if (-not $releaseCommitted -and $releaseBackup -and (Test-Path -LiteralPath $releaseBackup)) {

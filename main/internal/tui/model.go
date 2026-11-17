@@ -121,6 +121,7 @@ type Model struct {
 	settings, sourceLabels        map[string]string
 	busy                          bool
 	output, action                string
+	updateNotice                  string
 	result                        *resultState
 	retryOperation                func() tea.Cmd
 	form                          *forms.FormModel
@@ -346,7 +347,7 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
 	case releaseUpdateMsg:
-		m.output = "AACT " + progress.version + " is available. Run aact version upgrade."
+		m.updateNotice = "AACT " + progress.version + " is available. Run aact version upgrade."
 		return m, nil
 	case setupProgressMsg:
 		if progress.progress.Acknowledged != nil {
@@ -1878,7 +1879,11 @@ func (m *Model) View() (v tea.View) {
 	if m.busy {
 		status = "Running " + m.action + "…"
 	}
-	content := fmt.Sprintf("%s\n%s\n\n%s\n\n%s\n\n%s", title, nav, strings.Join(shown, "\n"), status, footer)
+	content := fmt.Sprintf("%s\n%s\n\n%s\n\n%s", title, nav, strings.Join(shown, "\n"), status)
+	if m.updateNotice != "" {
+		content += "\n" + m.updateNotice
+	}
+	content += "\n\n" + footer
 	width := m.width
 	if width < 20 {
 		width = 20

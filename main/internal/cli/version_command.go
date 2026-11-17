@@ -133,6 +133,10 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	if selected == nil {
 		return fmt.Errorf("stable release %s is unavailable", version)
 	}
+	root, explicitRoot, err := resolveInstallRoot()
+	if err != nil {
+		return err
+	}
 	target, err := installerTarget()
 	if err != nil {
 		return err
@@ -177,9 +181,17 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 	var command *exec.Cmd
 	if runtime.GOOS == "windows" {
 		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		command = exec.CommandContext(ctx, powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-LocalArchive", archivePath, "-InstallDir", installRoot())
+		args := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installerPath, "-LocalArchive", archivePath}
+		if explicitRoot {
+			args = append(args, "-InstallDir", root)
+		}
+		command = exec.CommandContext(ctx, powershell, args...)
 	} else {
-		command = exec.CommandContext(ctx, "/bin/sh", installerPath, "--local-archive", archivePath, "--install-dir", installRoot())
+		args := []string{installerPath, "--local-archive", archivePath}
+		if explicitRoot {
+			args = append(args, "--install-dir", root)
+		}
+		command = exec.CommandContext(ctx, "/bin/sh", args...)
 	}
 	command.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
 	output, err := command.CombinedOutput()
@@ -247,19 +259,90 @@ func equalDigest(a, b []byte) bool {
 	return mismatch == 0
 }
 
-func installRoot() string {
-	if root := os.Getenv("AACT_INSTALL_DIR"); root != "" {
-		return root
+func resolveInstallRoot() (root string, explicit bool, err error) {
+	if configured, ok := os.LookupEnv("AACT_INSTALL_DIR"); ok {
+		if strings.TrimSpace(configured) == "" {
+			return "", false, errors.New("AACT_INSTALL_DIR is empty")
+		}
+		absolute, err := filepath.Abs(configured)
+		return absolute, true, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return "", false, fmt.Errorf("locate current AACT executable: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve current AACT executable: %w", err)
+	}
+	name := filepath.Base(executable)
+	if name != "aact" && name != "aact.exe" {
+		return "", false, errors.New("cannot determine the managed AACT installation root from this executable; set AACT_INSTALL_DIR")
+	}
+	bin := filepath.Dir(executable)
+	release := filepath.Dir(bin)
+	releases := filepath.Dir(release)
+	if filepath.Base(bin) != "bin" || filepath.Base(releases) != "releases" {
+		return "", false, errors.New("cannot determine the managed AACT installation root from this executable; set AACT_INSTALL_DIR")
+	}
+	root = filepath.Dir(releases)
+	defaultRoot, err := defaultInstallRoot()
+	if err != nil {
+		return "", false, err
+	}
+	return root, !samePath(root, defaultRoot), nil
+}
+
+func defaultInstallRoot() (string, error) {
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" {
+			return "", errors.New("LOCALAPPDATA is required to locate the default AACT installation")
+		}
+		return filepath.Join(local, "aact"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate user home for default AACT installation: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "aact"), nil
+}
+
+func samePath(a, b string) bool {
+	left, leftErr := filepath.Abs(filepath.Clean(a))
+	right, rightErr := filepath.Abs(filepath.Clean(b))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(left); err == nil {
+		left = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(right); err == nil {
+		right = resolved
 	}
 	if runtime.GOOS == "windows" {
-		return filepath.Join(os.Getenv("LOCALAPPDATA"), "aact")
+		return strings.EqualFold(left, right)
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "aact")
+	return left == right
 }
 
 func installerTarget() (string, error) {
 	arch := runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		native := os.Getenv("PROCESSOR_ARCHITEW6432")
+		if native == "" {
+			native = os.Getenv("PROCESSOR_ARCHITECTURE")
+		}
+		switch strings.ToUpper(native) {
+		case "AMD64", "X86_64", "X64":
+			arch = "amd64"
+		case "ARM64", "AARCH64":
+			arch = "arm64"
+		}
+	}
 	if arch != "amd64" && arch != "arm64" {
 		return "", fmt.Errorf("unsupported AACT upgrade architecture: %s", arch)
 	}
