@@ -193,12 +193,26 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 		}
 		command = exec.CommandContext(ctx, "/bin/sh", args...)
 	}
-	command.Env = process.EnvironmentWithoutVaultPassword(os.Environ())
+	command.Env = installerEnvironment()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("install AACT %s: %w: %s", version, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func installerEnvironment() []string {
+	filtered := process.EnvironmentWithoutVaultPassword(os.Environ())
+	clean := make([]string, 0, len(filtered))
+	for _, entry := range filtered {
+		name, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(name) {
+		case "AACT_ARCH", "AACT_OS", "AACT_VERSION":
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return clean
 }
 
 func downloadVerifiedAsset(ctx context.Context, asset releasecatalog.Asset, destination string, maxBytes int64) (string, error) {

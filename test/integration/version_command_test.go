@@ -48,13 +48,35 @@ func TestVersionInstallUsesManagedInstaller(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		arch = "arm64"
 	}
+	wrongArch := "arm64"
+	if arch == "arm64" {
+		wrongArch = "amd64"
+	}
 	server := versionReleaseServer(t, "1.2.3", arch, archive, true)
 	defer server.Close()
-	bin := buildVersionCommandBinary(t)
 	root := t.TempDir()
-	cmd := exec.Command(bin, "version", "install", "1.2.3")
+	managedDir := filepath.Join(root, "releases", "0.9.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin")
+	if err := os.MkdirAll(managedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	managedBinary := filepath.Join(managedDir, "aact")
+	if runtime.GOOS == "windows" {
+		managedBinary += ".exe"
+	}
+	binary, err := os.ReadFile(buildVersionCommandBinary(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managedBinary, binary, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(managedBinary, "version", "install", "1.2.3")
 	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_DOWNLOAD_BASE="+server.URL+"/download", "AACT_INSTALL_DIR="+root, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	wrongOS := "darwin"
+	if runtime.GOOS == "darwin" {
+		wrongOS = "linux"
+	}
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1", "AACT_VERSION=9.9.9", "AACT_ARCH="+wrongArch, "AACT_OS="+wrongOS)
 	if runtime.GOOS == "windows" {
 		cmd.Env = append(cmd.Env, "PROCESSOR_ARCHITEW6432=ARM64")
 	}
@@ -72,6 +94,37 @@ func TestVersionInstallUsesManagedInstaller(t *testing.T) {
 		return "aact"
 	}())); err != nil {
 		t.Fatalf("managed release missing: %v", err)
+	}
+}
+
+func TestWindowsVersionUpgradeUsesNativeArchitecture(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows release installer")
+	}
+	root := t.TempDir()
+	managedDir := filepath.Join(root, "releases", "0.9.0-windows-"+runtime.GOARCH, "bin")
+	if err := os.MkdirAll(managedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	managedBinary := filepath.Join(managedDir, "aact.exe")
+	binary, err := os.ReadFile(buildVersionCommandBinary(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managedBinary, binary, 0755); err != nil {
+		t.Fatal(err)
+	}
+	server := versionReleaseServer(t, "1.2.3", "arm64", installerArchive(t), true)
+	defer server.Close()
+	cmd := exec.Command(managedBinary, "version", "upgrade")
+	cmd.Dir = t.TempDir()
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1", "AACT_VERSION=9.9.9", "AACT_ARCH=amd64", "AACT_OS=linux", "PROCESSOR_ARCHITEW6432=ARM64")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Windows version upgrade failed: %s: %v", output, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "1.2.3-windows-arm64", "bin", "aact.exe")); err != nil {
+		t.Fatalf("Windows ARM64 release missing: %v", err)
 	}
 }
 
@@ -220,17 +273,21 @@ func TestVersionUpgradeUsesManagedDefaultRootAndMigratesLegacyLauncher(t *testin
 }
 
 func TestVersionInstallChecksumMismatchPreservesManagedInstallation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix checksum-preservation path; Windows installer has a separate CI path")
-	}
 	root := t.TempDir()
 	version := "1.2.3"
-	release := filepath.Join(root, "releases", version+"-"+runtime.GOOS+"-"+runtime.GOARCH)
+	arch := runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		arch = "arm64"
+	}
+	release := filepath.Join(root, "releases", version+"-"+runtime.GOOS+"-"+arch)
 	binDir := filepath.Join(release, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	oldBinary := filepath.Join(binDir, "aact")
+	if runtime.GOOS == "windows" {
+		oldBinary += ".exe"
+	}
 	if err := os.WriteFile(oldBinary, []byte("old managed executable"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -238,17 +295,22 @@ func TestVersionInstallChecksumMismatchPreservesManagedInstallation(t *testing.T
 		t.Fatal(err)
 	}
 	canonical := filepath.Join(root, "bin", "aact")
-	if err := os.MkdirAll(filepath.Dir(canonical), 0700); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "windows" {
+		if err := os.MkdirAll(filepath.Dir(canonical), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(oldBinary, canonical); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.Symlink(oldBinary, canonical); err != nil {
-		t.Fatal(err)
-	}
-	server := versionReleaseServer(t, version, runtime.GOARCH, installerArchive(t), false)
+	server := versionReleaseServer(t, version, arch, installerArchive(t), false)
 	defer server.Close()
 	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", version)
 	cmd.Dir = t.TempDir()
-	cmd.Env = cleanTestEnvironment(os.Environ(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
+	cmd.Env = cleanTestEnvironment(os.Environ(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_INSTALLER_SKIP_USER_PATH=1")
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(cmd.Env, "PROCESSOR_ARCHITEW6432=ARM64")
+	}
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Release checksum mismatch") {
 		t.Fatalf("bad checksum was not reported: %q, %v", output, err)
@@ -256,8 +318,12 @@ func TestVersionInstallChecksumMismatchPreservesManagedInstallation(t *testing.T
 	if got, err := os.ReadFile(oldBinary); err != nil || string(got) != "old managed executable" {
 		t.Fatalf("managed executable changed: %q, %v", got, err)
 	}
-	if got, err := os.Readlink(canonical); err != nil || got != oldBinary {
-		t.Fatalf("canonical launcher changed: %q, %v", got, err)
+	if runtime.GOOS != "windows" {
+		if got, err := os.Readlink(canonical); err != nil || got != oldBinary {
+			t.Fatalf("canonical launcher changed: %q, %v", got, err)
+		}
+	} else if _, err := os.Stat(filepath.Join(root, "bin", "aact.cmd")); err == nil {
+		t.Fatal("checksum failure created or changed the Windows launcher")
 	}
 }
 
@@ -316,7 +382,7 @@ func cleanTestEnvironment(environment []string, overrides ...string) []string {
 		parts := strings.SplitN(override, "=", 2)
 		keys[parts[0]] = override
 	}
-	for _, name := range []string{"AACT_INSTALL_DIR", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "PROCESSOR_ARCHITEW6432"} {
+	for _, name := range []string{"AACT_INSTALL_DIR", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "PROCESSOR_ARCHITEW6432", "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE"} {
 		if _, set := keys[name]; !set {
 			keys[name] = ""
 		}

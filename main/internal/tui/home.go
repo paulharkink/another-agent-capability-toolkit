@@ -377,7 +377,13 @@ func (m *Model) profiles() []InstanceRow {
 	}
 	return rows
 }
-func (m *Model) paneHeight() int { return max(1, m.height-12) }
+func (m *Model) paneHeight() int {
+	reserved := 12
+	if m.updateNotice != "" {
+		reserved++
+	}
+	return max(1, m.height-reserved)
+}
 func reconcilePane(p *paneState, ids []string, visible int) bool {
 	oldID := p.ID
 	found := false

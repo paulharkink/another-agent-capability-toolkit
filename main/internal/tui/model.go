@@ -348,6 +348,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
 	case releaseUpdateMsg:
 		m.updateNotice = "AACT " + progress.version + " is available. Run aact version upgrade."
+		m.reconcileHome()
 		return m, nil
 	case setupProgressMsg:
 		if progress.progress.Acknowledged != nil {
