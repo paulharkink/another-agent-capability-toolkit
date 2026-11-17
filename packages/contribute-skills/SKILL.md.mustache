@@ -11,11 +11,20 @@ repository based on the pack name or ask the user to provide a repository path.
 
 1. Inspect the current branch, working tree, and `origin`. Preserve all
    existing changes.
-2. Read the checkout's `AGENTS.md`, contribution guide, and the existing skill
-   layout. Follow those instructions for where skills live, catalog changes,
-   checks, branch naming, commits, and pull requests. If no checkout exists at
-   this path or its contribution instructions do not identify where skills
-   belong, ask the user for the missing detail.
-3. Add or update the skill in that repository, run its documented checks, and
-   prepare a focused branch and pull request. Do not push, publish, or merge
-   unless the user has authorized that specific action.
+2. Read the checkout's `AGENTS.md`, contribution guide, and existing skill
+   layout. Follow their instructions for the skill directory and format. If
+   they do not identify where skills belong, ask the user for that detail.
+3. Add the skill under the repository's established directory. Register it in
+   the pack's `aact.toml` catalog, following nearby entries. A plain skill
+   normally uses its local directory as `source`; a bundled AACT skill uses
+   `source = "bundled:<capability-id>"`. Do not assume the pack catalog updates
+   automatically when a directory is added.
+4. Run the repository's documented checks. From the pack checkout, verify the
+   entry appears with `aact catalog`, then install it with
+   `aact install <capability-id> --agent all` for the shared skills directory
+   or replace `all` with the intended named agent. Use the pack's documented
+   config selection if its `aact.toml` is not discovered from the current
+   directory. Confirm the skill is available at the selected agent destination.
+5. Prepare a focused branch and pull request following the checkout's
+   contribution instructions. Do not push, publish, or merge unless the user
+   has authorized that specific action.
