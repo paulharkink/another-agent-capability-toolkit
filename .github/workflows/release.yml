@@ -90,7 +90,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: go test ./test/... -count=1
+      - run: go -C test test ./... -count=1
 
       # Build and validate release binaries before any MCP image is published.
       - uses: goreleaser/goreleaser-action@v6.2.1

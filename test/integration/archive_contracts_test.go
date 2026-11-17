@@ -1,4 +1,4 @@
-package release
+package integration_test
 
 import (
 	"archive/tar"
@@ -122,7 +122,14 @@ func TestArchiveContracts(t *testing.T) {
 					t.Errorf("missing executable %s", name+suffix)
 				}
 			}
-			for _, name := range []string{"README.md", "LICENSE", "packages/cluster-inspector/package.toml", "packages/git-provider/package.toml"} {
+			for _, name := range []string{
+				"README.md", "LICENSE", "packages/cluster-inspector/package.toml", "packages/git-provider/package.toml",
+				"images/browser-authentication-helper/Dockerfile",
+				"images/browser-authentication-helper/README.md",
+				"images/browser-authentication-helper/browser_auth.py",
+				"images/browser-authentication-helper/browser-authentication-helper",
+				"images/browser-authentication-helper/requirements.txt",
+			} {
 				if sizes[name] <= 0 {
 					t.Errorf("missing resource %s", name)
 				}

@@ -31,17 +31,18 @@ the README documents `AACT_BUNDLED_ROOT` and the release archive layout.
 
 ## Tests and formatting
 
-Keep black-box tests in `test/`, mirroring the public command or service under
-test. Tests must not import `main/internal` or inspect production internals. If
-a change has no useful black-box assertion, do not add a test solely to cover
-implementation lines. Keep fixtures under `testdata/` when appropriate.
+Keep black-box tests in the separate `test/` module, grouped by the public
+command, service, or package behavior they cover. Use external test packages and
+assert exported behavior through command, HTTP, file-format, or other public
+boundaries; do not access unexported state. If no useful black-box assertion
+exists, do not add a test solely to cover implementation lines.
 
 Run the black-box suite and source vet checks:
 
 ```sh
-go test ./test/... -count=1
+go -C test test ./... -count=1
 go vet ./main/...
-go test -race ./test/... -count=1
+go -C test test -race ./... -count=1
 ```
 
 Race tests require a supported platform/toolchain; CI runs them where supported.

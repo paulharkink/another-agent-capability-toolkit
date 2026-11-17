@@ -25,4 +25,5 @@ docker run --rm --network none -v "$PWD/packages/find-session/container:/port:ro
 
 ```
 
-The Go black-box suite lives under `test/` and does not import production internals.
+The Go black-box suite lives in the separate `test/` module. Tests use external
+package names and exercise exported behavior at command, service, or package boundaries.

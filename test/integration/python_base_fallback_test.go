@@ -1,4 +1,4 @@
-package tools
+package integration
 
 import (
 	"os"
@@ -10,7 +10,7 @@ import (
 )
 
 func TestPrefetchPythonBasesFallsBackToSameOfficialDigestOnQuotaExhaustion(t *testing.T) {
-	root, err := filepath.Abs("..")
+	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}

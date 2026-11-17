@@ -1,4 +1,4 @@
-package capabilitypack
+package integration_test
 
 import (
 	"os"
@@ -55,7 +55,7 @@ func TestPackBootstrapPinnedPathsAndFailures(t *testing.T) {
 			fixtureGit(t, root, "commit", "-qm", "pin dependency")
 			os.WriteFile(filepath.Join(origin, "value"), []byte("second"), 0600)
 			fixtureGit(t, origin, "commit", "-qam", "second")
-			script, err := os.ReadFile(filepath.Join("..", "..", "..", "examples", "capability-pack", "bootstrap."+extension))
+			script, err := os.ReadFile(filepath.Join("..", "..", "examples", "capability-pack", "bootstrap."+extension))
 			if err != nil {
 				t.Fatal(err)
 			}

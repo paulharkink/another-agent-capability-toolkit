@@ -1,4 +1,4 @@
-package aact
+package integration
 
 import (
 	"archive/tar"
@@ -103,9 +103,9 @@ func fixtureServer(t *testing.T, corrupt bool) *httptest.Server {
 }
 func runInstaller(t *testing.T, root, version, base string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "../../../install.sh", "--version", version, "--install-dir", root, "--base-url", base)
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--version", version, "--install-dir", root, "--base-url", base)
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../../install.ps1", "-Version", version, "-InstallDir", root, "-BaseUrl", base)
+		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-Version", version, "-InstallDir", root, "-BaseUrl", base)
 	}
 	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir())
 	out, err := cmd.CombinedOutput()
@@ -116,7 +116,7 @@ func TestInstallerVersionAndArchitectureMapping(t *testing.T) {
 		t.Skip("shell mapper")
 	}
 	for _, tc := range []struct{ os, arch, want string }{{"Darwin", "arm64", "darwin_arm64"}, {"Linux", "x86_64", "linux_amd64"}, {"Linux", "aarch64", "linux_arm64"}, {"MINGW64_NT-10.0", "AMD64", "windows_amd64"}, {"MSYS_NT-10.0", "ARM64", "windows_arm64"}} {
-		cmd := exec.Command("/bin/sh", "../../../install.sh", "--print-target")
+		cmd := exec.Command("/bin/sh", "../../install.sh", "--print-target")
 		cmd.Env = append(os.Environ(), "AACT_OS="+tc.os, "AACT_ARCH="+tc.arch)
 		out, err := cmd.CombinedOutput()
 		if err != nil || strings.TrimSpace(string(out)) != tc.want {
@@ -326,9 +326,9 @@ func TestInstallerRejectsLocalArchiveWithMissingOrInvalidChecksum(t *testing.T) 
 }
 
 func TestInstallerRequiresExplicitReleaseVersionWhenNoLocalArchiveIsProvided(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "../../../install.sh", "--install-dir", t.TempDir())
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--install-dir", t.TempDir())
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../../install.ps1", "-InstallDir", t.TempDir())
+		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-InstallDir", t.TempDir())
 	}
 	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_VERSION=", "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
 	out, err := cmd.CombinedOutput()
@@ -396,9 +396,9 @@ func runLocalInstallerVersionForce(t *testing.T, root, archive, version string, 
 	if force {
 		args = append(args, "--force")
 	}
-	cmd := exec.Command("/bin/sh", append([]string{"../../../install.sh"}, args...)...)
+	cmd := exec.Command("/bin/sh", append([]string{"../../install.sh"}, args...)...)
 	if runtime.GOOS == "windows" {
-		windowsArgs := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../../install.ps1", "-LocalArchive", archive, "-InstallDir", root}
+		windowsArgs := []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-LocalArchive", archive, "-InstallDir", root}
 		if version != "" {
 			windowsArgs = append(windowsArgs, "-Version", version)
 		}
@@ -499,7 +499,7 @@ func TestPowerShellInstallerArchitectureMapping(t *testing.T) {
 		t.Skip("native PowerShell test runs on Windows CI")
 	}
 	for _, tc := range []struct{ arch, want string }{{"AMD64", "windows_amd64"}, {"ARM64", "windows_arm64"}} {
-		cmd := exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../../install.ps1", "-PrintTarget")
+		cmd := exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-PrintTarget")
 		cmd.Env = append(os.Environ(), "AACT_ARCH="+tc.arch)
 		out, err := cmd.CombinedOutput()
 		if err != nil || strings.TrimSpace(string(out)) != tc.want {
@@ -577,7 +577,7 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 		t.Fatal(err)
 	}
 	server := fixtureServer(t, false)
-	cmd := exec.Command("/bin/sh", "../../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
 	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -602,7 +602,7 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 	if !strings.Contains(string(output), "Migrated legacy AACT release symlink") {
 		t.Fatalf("migration was not reported: %s", output)
 	}
-	secondInstall := exec.Command("/bin/sh", "../../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+	secondInstall := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
 	secondInstall.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
 	if secondOutput, err := secondInstall.CombinedOutput(); err != nil {
 		t.Fatalf("reinstall of the same managed release failed: %s: %v", secondOutput, err)
@@ -739,7 +739,7 @@ func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := fixtureServer(t, false)
-	cmd := exec.Command("/bin/sh", "../../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
+	cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
 	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
