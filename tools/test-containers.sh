@@ -36,7 +36,7 @@ build_image() {
 # These images and tests use only synthetic local credentials/fixtures.
 build_image -f packages/_shared/Dockerfile.test -t aact/shared:test packages/_shared
 docker run --rm -v "$root/packages/_shared:/port:ro" aact/shared:test
-builds=$(go run ./cmd/mcp-release-builds -root "$root" -version test)
+builds=$(go run ./main/cmd/mcp-release-builds -root "$root" -version test)
 while IFS="$(printf '\t')" read -r package profile context release_image; do
   [ -n "$package" ] || continue
   build_image -f "$context/Dockerfile" -t "aact/$package-$profile:test-release" "$context"

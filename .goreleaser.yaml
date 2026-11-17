@@ -7,73 +7,73 @@ before:
 
 builds:
   - id: aact
-    main: ./cmd/aact
+    main: ./main/cmd/aact
     binary: bin/aact
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/cli.Version={{ .Version }}
-      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.Version={{ .Version }}
-      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/cli.Version={{ .Version }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.Version={{ .Version }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
 
   - id: inspector-helper
-    main: ./cmd/inspector-helper
+    main: ./main/cmd/inspector-helper
     binary: bin/inspector-helper
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
   - id: find-session
-    main: ./cmd/find-session
+    main: ./main/cmd/find-session
     binary: bin/find-session
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
-      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
 
   - id: repo-map
-    main: ./packages/git-repo-map/generators/repo-map
+    main: ./main/packages/git-repo-map/generators/repo-map
     binary: bin/repo-map
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
   - id: cluster-inspector-helper
-    main: ./cmd/inspector-helper
+    main: ./main/cmd/inspector-helper
     binary: packages/cluster-inspector/bin/inspector-helper
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
   - id: grafana-inspector-helper
-    main: ./cmd/inspector-helper
+    main: ./main/cmd/inspector-helper
     binary: packages/grafana-inspector/bin/inspector-helper
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
   - id: azure-inspector-helper
-    main: ./cmd/inspector-helper
+    main: ./main/cmd/inspector-helper
     binary: packages/azure-inspector/bin/inspector-helper
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
 
   - id: find-session-helper
-    main: ./cmd/find-session
+    main: ./main/cmd/find-session
     binary: packages/find-session/bin/find-session
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     ldflags:
-      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
-      - -X=github.com/paulharkink/another-agent-capability-toolkit/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
+      - -s -w -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.ImageVersion={{ if .IsSnapshot }}{{ .Env.AACT_RELEASE_IMAGE_VERSION }}{{ else }}{{ .Version }}{{ end }}
+      - -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.ImageOwner={{ if .Env.AACT_IMAGE_OWNER }}{{ .Env.AACT_IMAGE_OWNER }}{{ else }}paulharkink{{ end }}
 
   - id: repo-map-helper
-    main: ./packages/git-repo-map/generators/repo-map
+    main: ./main/packages/git-repo-map/generators/repo-map
     binary: packages/git-repo-map/bin/repo-map
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]

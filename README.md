@@ -187,8 +187,9 @@ Development uses the Go version pinned in go.mod. Go is needed to develop or
 build releases, rather than to run an installed release.
 
 ```sh
-go test ./...
-go test -race ./...
+go test ./test/...
+go vet ./main/...
+go test -race ./test/...
 goreleaser release --snapshot --clean
 ```
 
@@ -202,8 +203,6 @@ directory next to `bin`.
 Docker verification uses synthetic fixtures, no live service credentials:
 
 ```sh
-go test -tags integration ./tests/integration -run TestDockerMCP -count=1
-go test -tags docker_integration ./internal/mcp ./internal/packagehelpers ./internal/sessionsearch ./tests/packages -count=1
 sh tools/test-containers.sh
 ```
 

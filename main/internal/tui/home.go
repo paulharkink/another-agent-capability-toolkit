@@ -1,0 +1,1617 @@
+package tui
+
+import (
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"fmt"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+// These local projections preserve domain identity; labels are presentation only.
+// The typed application snapshot can replace their construction without changing navigation.
+type CapabilityRow struct {
+	ID, Source, Package, Name string
+	Skill, MCP                bool
+	MCPNames                  []string
+	CatalogIndex              int
+}
+type InstanceRow struct {
+	ID                string
+	Key               state.Key
+	Name, Status, URL string
+	Runtime           mcp.Instance
+	Configuration     *viewmodel.CapabilityInstance
+	Instance          *viewmodel.Instance
+}
+type ProfileRow = InstanceRow
+type Pane uint8
+
+const (
+	CapabilitiesPane Pane = iota
+	InstancesPane
+)
+
+const ProfilesPane = InstancesPane
+
+type paneState struct {
+	ID            string
+	Index, Offset int
+}
+type modalState struct {
+	Kind     string
+	Selected int
+	Parent   *modalState
+	Label    string
+	Rows     []string
+	Offset   int
+	Column   int
+	Follow   bool
+}
+type homeMenuItem struct{ Label, Action, Reason string }
+type hitRegion struct {
+	X, Y, Width, Height int
+	Pane                Pane
+	Index               int
+	Control             string
+}
+
+func (h hitRegion) contains(x, y int) bool {
+	return x >= h.X && x < h.X+h.Width && y >= h.Y && y < h.Y+h.Height
+}
+
+type homeState struct {
+	Capabilities, Profiles, Context paneState
+	ContextDisplayOffset            int
+	Focus                           Pane
+	Modal                           *modalState
+	Hits                            []hitRegion
+}
+
+type contextRow struct {
+	ID, Label, Kind string
+	ProfileIndex    int
+	Key             state.Key
+	ParentKey       state.Key
+	MCPID           string
+	RuntimeID       string
+}
+
+func (m *Model) contextRows() []contextRow {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return nil
+	}
+	if m.instanceMode() && c.CatalogIndex >= 0 {
+		rows := []contextRow{}
+		for i, p := range m.profiles() {
+			rows = append(rows, contextRow{ID: p.ID, Label: p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
+			if p.Configuration == nil {
+				continue
+			}
+			for _, child := range p.Configuration.MCPs {
+				childID := "mcp:" + child.Key.ID()
+				label := "  MCP runtime · " + child.MCPID + " · " + child.Status
+				if auth := authenticationDisplayStatus(child.AuthenticationStatus); auth != "" {
+					label += " · " + auth
+				}
+				rows = append(rows, contextRow{ID: childID, Label: label, Kind: "mcp-child", Key: child.Key, ParentKey: p.Key, MCPID: child.MCPID})
+				for _, runtime := range child.RuntimeRecords {
+					runtimeName := firstNonempty(runtime.Name, runtime.ID)
+					runtimeLabel := fmt.Sprintf("    Runtime · ID %s · %s · %s · %s", runtime.ID, runtimeName, runtime.Status, runtime.Ownership)
+					if runtime.URL != "" {
+						runtimeLabel += " · " + runtime.URL
+					}
+					rows = append(rows, contextRow{
+						ID: "runtime:" + child.Key.ID() + ":" + runtime.ID, Label: runtimeLabel, Kind: "runtime-record",
+						Key: child.Key, ParentKey: p.Key, MCPID: child.MCPID, RuntimeID: runtime.ID,
+					})
+				}
+			}
+		}
+		if !m.skillOnlyWithoutInputs(c) {
+			rows = append(rows, contextRow{ID: "create-profile", Label: "Create another instance…", Kind: "create-profile"})
+		}
+		rows = append(rows, contextRow{ID: "details", Label: "View capability details", Kind: "details"})
+		return rows
+	}
+	if c.CatalogIndex < 0 {
+		rows := []contextRow{
+			{ID: "locate", Label: "Locate Capability Pack…", Kind: "locate-source"},
+			{ID: "information", Label: "View saved information", Kind: "saved-information"},
+		}
+		for i, p := range m.profiles() {
+			target := p.Key.Target
+			if target == "" {
+				target = "default"
+			}
+			rows = append(rows, contextRow{ID: p.ID, Label: p.Key.Environment + " / " + target + " · " + p.Name + " · " + p.Status, Kind: "profile", ProfileIndex: i, Key: p.Key})
+		}
+		return rows
+	}
+	rows := []contextRow{
+		{ID: "configure", Label: m.capabilitySetupLabel(c), Kind: "configure"},
+		{ID: "details", Label: "View capability details", Kind: "details"},
+	}
+	for i, p := range m.profiles() {
+		label := p.Name + " · " + p.Status
+		rows = append(rows, contextRow{ID: p.ID, Label: label, Kind: "profile", ProfileIndex: i, Key: p.Key})
+	}
+	return rows
+}
+
+func (m *Model) installationDetails(c CapabilityRow) (string, []string) {
+	if m.inventoryError != nil {
+		return "Unknown", []string{"AACT records unavailable: " + m.inventoryError.Error()}
+	}
+	if !c.Skill && !c.MCP {
+		return "Unknown", []string{"No installable components in the catalog"}
+	}
+	if snapshot, ok := m.capabilityInstances[c.Package]; ok {
+		instances := capabilityInstances(snapshot)
+		observed := false
+		unknown := false
+		registered := false
+		details := []string{}
+		for _, instance := range instances {
+			if instance.Key.Source != c.Source || instance.Key.Package != c.Package {
+				continue
+			}
+			for _, component := range instance.Components {
+				if component.Kind != "skill" && component.Kind != "mcp" && component.Kind != "plugin" {
+					continue
+				}
+				observed = true
+				label := instance.Ref.Name + " · " + agents.DisplayName(component.AgentID) + " · " + component.Kind + " · " + component.Name + ": " + component.Status
+				details = append(details, label)
+				if component.Status == "installed" {
+					registered = true
+				}
+				if component.Status == "unavailable" || component.Status == "unknown" || component.Status == "unobserved" || component.Status == "stale" {
+					unknown = true
+				}
+			}
+		}
+		if registered {
+			return "Installed", details
+		}
+		if observed {
+			if unknown {
+				return "Unknown", details
+			}
+			return "Not installed", details
+		}
+		return "Unknown", []string{"No Agent registration observation is available for this Pack Instance"}
+	}
+	return "Unknown", []string{"Capability Instance registration state has not been observed"}
+}
+
+func selectedWorkInstallationDetails(snapshot viewmodel.CapabilityInstanceSnapshot) (string, []string, bool) {
+	profiles := capabilityInstances(snapshot)
+	if len(profiles) == 0 {
+		return "", nil, false
+	}
+	handled := false
+	work := 0
+	complete := 0
+	hasUnknown := false
+	details := []string{}
+	for _, profile := range profiles {
+		if !profile.CompletionScopeRelevant {
+			continue
+		}
+		handled = true
+		if !profile.CompletionScopeKnown {
+			hasUnknown = true
+			if profile.CompletionScopeError != "" {
+				details = append(details, profile.Ref.Name+": selected-work status unavailable: "+profile.CompletionScopeError)
+			} else {
+				details = append(details, profile.Ref.Name+": selected-work status unavailable")
+			}
+			continue
+		}
+		if len(profile.SelectedComponents) == 0 {
+			details = append(details, profile.Ref.Name+": no components selected")
+			continue
+		}
+		if len(profile.EligibleDestinations) == 0 {
+			details = append(details, profile.Ref.Name+": no selected destinations can install the selected components")
+			continue
+		}
+		for _, destination := range profile.EligibleDestinations {
+			for _, selected := range profile.SelectedComponents {
+				work++
+				status := "unknown"
+				for _, observed := range profile.Components {
+					if observed.AgentID == destination && observed.Kind == selected.Kind && observed.Name == selected.Name {
+						status = observed.Status
+						break
+					}
+				}
+				label := agents.DisplayName(destination) + " · " + selected.Kind + " · " + selected.Name
+				if status == "installed" {
+					complete++
+					if selected.Kind == "mcp" {
+						details = append(details, label+": registered")
+					} else {
+						details = append(details, label+": installed")
+					}
+				} else {
+					if status == "unknown" || status == "unavailable" || status == "unobserved" || status == "stale" {
+						hasUnknown = true
+					}
+					details = append(details, label+": "+status)
+				}
+			}
+		}
+	}
+	if !handled {
+		return "Not installed", []string{"No saved selected work"}, true
+	}
+	if work == 0 {
+		if hasUnknown {
+			return "Unknown", details, true
+		}
+		return "Not installed", details, true
+	}
+	if complete == work && !hasUnknown {
+		return "Installed", details, true
+	}
+	if complete > 0 {
+		return "Partial", details, true
+	}
+	if hasUnknown {
+		return "Unknown", details, true
+	}
+	return "Not installed", details, true
+}
+
+func capabilityInstances(snapshot viewmodel.CapabilityInstanceSnapshot) []viewmodel.CapabilityInstance {
+	if snapshot.Instances != nil {
+		return snapshot.Instances
+	}
+	return snapshot.Profiles
+}
+
+func runtimeInstances(snapshot *viewmodel.InstanceSnapshot) []viewmodel.Instance {
+	if snapshot == nil {
+		return nil
+	}
+	if snapshot.Instances != nil {
+		return snapshot.Instances
+	}
+	return snapshot.Profiles
+}
+
+func (m *Model) selectedContextRow() (contextRow, bool) {
+	rows := m.contextRows()
+	if len(rows) == 0 {
+		return contextRow{}, false
+	}
+	return rows[min(max(m.home.Context.Index, 0), len(rows)-1)], true
+}
+
+func (m *Model) selectedContextProfile() (InstanceRow, bool) {
+	row, ok := m.selectedContextRow()
+	profiles := m.profiles()
+	if !ok || row.Kind != "profile" || row.ProfileIndex >= len(profiles) {
+		return InstanceRow{}, false
+	}
+	return profiles[row.ProfileIndex], true
+}
+
+func (m *Model) capabilities() []CapabilityRow {
+	rows := make([]CapabilityRow, 0, len(m.catalog))
+	for i, p := range m.catalog {
+		source := m.sourceLabels[p.Dir]
+		if source == "" {
+			source = m.settings["source"]
+		}
+		name := p.Name
+		if name == "" {
+			name = p.ID
+		}
+		mcpNames := []string{}
+		for _, definition := range p.MCPDefinitions() {
+			if definition.Name != "" {
+				mcpNames = append(mcpNames, definition.Name)
+			}
+		}
+		rows = append(rows, CapabilityRow{ID: source + "\x00" + p.ID, Source: source, Package: p.ID, Name: name, Skill: p.HasSkill(), MCP: p.HasMCP(), MCPNames: mcpNames, CatalogIndex: i})
+	}
+	return rows
+}
+func (m *Model) selectedCapability() (CapabilityRow, bool) {
+	rows := m.capabilities()
+	if len(rows) == 0 {
+		return CapabilityRow{}, false
+	}
+	i := min(max(m.home.Capabilities.Index, 0), len(rows)-1)
+	return rows[i], true
+}
+func (m *Model) profiles() []InstanceRow {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return nil
+	}
+	if m.instanceMode() && c.CatalogIndex >= 0 {
+		rows := []InstanceRow{}
+		snapshot := m.capabilityInstances[c.Package]
+		instances := capabilityInstances(snapshot)
+		for _, profile := range instances {
+			if profile.Key.Source != c.Source || profile.Key.Package != c.Package {
+				continue
+			}
+			copy := profile
+			rows = append(rows, InstanceRow{ID: profile.Key.ID(), Key: profile.Key, Name: profile.Ref.Name, Status: instanceStatusSummary(profile), Configuration: &copy})
+		}
+		return rows
+	}
+	if !c.MCP {
+		return nil
+	}
+	rows := []InstanceRow{}
+	if m.instanceSnapshot != nil {
+		instances := runtimeInstances(m.instanceSnapshot)
+		for _, p := range instances {
+			if p.Key.Source == c.Source && p.Key.Package == c.Package {
+				profile := p
+				rows = append(rows, InstanceRow{ID: p.Key.ID(), Key: p.Key, Name: p.Name, Status: p.RuntimeStatus, URL: p.URL, Instance: &profile, Runtime: mcp.Instance{Key: p.Key, Name: p.Name, Status: p.RuntimeStatus, URL: p.URL, Ownership: p.Ownership}})
+			}
+		}
+		return rows
+	}
+	for _, p := range m.mcps {
+		if p.Key.Source == c.Source && p.Key.Package == c.Package {
+			rows = append(rows, InstanceRow{ID: p.Key.ID() + "\x00" + p.Name, Key: p.Key, Name: p.Name, Status: p.Status, URL: p.URL, Runtime: p})
+		}
+	}
+	return rows
+}
+func (m *Model) paneHeight() int { return max(1, m.height-12) }
+func reconcilePane(p *paneState, ids []string, visible int) bool {
+	oldID := p.ID
+	found := false
+	for i, id := range ids {
+		if id == oldID {
+			p.Index = i
+			found = true
+			break
+		}
+	}
+	if len(ids) == 0 {
+		*p = paneState{}
+		return oldID != ""
+	}
+	p.Index = min(max(0, p.Index), len(ids)-1)
+	p.ID = ids[p.Index]
+	p.Offset = min(max(0, p.Offset), max(0, len(ids)-visible))
+	if p.Index < p.Offset {
+		p.Offset = p.Index
+	}
+	if p.Index >= p.Offset+visible {
+		p.Offset = p.Index - visible + 1
+	}
+	return oldID != "" && !found
+}
+func (m *Model) reconcileHome() {
+	cs := m.capabilities()
+	ids := []string{}
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	removed := reconcilePane(&m.home.Capabilities, ids, m.paneHeight())
+	if removed {
+		m.home.Profiles = paneState{}
+	}
+	ps := m.profiles()
+	ids = nil
+	for _, p := range ps {
+		ids = append(ids, p.ID)
+	}
+	removed = reconcilePane(&m.home.Profiles, ids, m.paneHeight()) || removed
+	contextIDs := make([]string, 0, len(ps)+3)
+	for _, row := range m.contextRows() {
+		contextIDs = append(contextIDs, row.ID)
+	}
+	reconcilePane(&m.home.Context, contextIDs, m.paneHeight())
+	if removed {
+		m.output = "Selected item was removed; selected the nearest surviving row."
+	}
+	m.selected = m.home.Capabilities.Index
+}
+func (m *Model) selectPane(pane Pane, index int) {
+	if pane == ProfilesPane {
+		rows := m.profiles()
+		if len(rows) == 0 {
+			m.output = m.emptyProfiles()
+			return
+		}
+		m.home.Focus = pane
+		m.home.Profiles.Index = min(max(index, 0), len(rows)-1)
+		m.home.Profiles.ID = rows[m.home.Profiles.Index].ID
+		m.home.Context.Index = 0
+		for i, contextRow := range m.contextRows() {
+			if contextRow.Kind == "profile" && contextRow.ProfileIndex == m.home.Profiles.Index {
+				m.home.Context.Index = i
+				m.home.Context.ID = contextRow.ID
+				break
+			}
+		}
+	} else {
+		rows := m.capabilities()
+		if len(rows) == 0 {
+			return
+		}
+		index = min(max(index, 0), len(rows)-1)
+		if m.home.Capabilities.ID != rows[index].ID {
+			m.home.Profiles = paneState{}
+			m.home.Context = paneState{}
+			m.home.ContextDisplayOffset = 0
+		}
+		m.home.Capabilities.Index = index
+		m.home.Capabilities.ID = rows[index].ID
+		m.home.Focus = pane
+	}
+	m.reconcileHome()
+}
+func (m *Model) focusPane(pane Pane) {
+	m.home.Focus = pane
+}
+
+func (m *Model) selectContext(index int) {
+	rows := m.contextRows()
+	if len(rows) == 0 {
+		return
+	}
+	m.home.Focus = ProfilesPane
+	m.home.Context.Index = min(max(index, 0), len(rows)-1)
+	m.home.Context.ID = rows[m.home.Context.Index].ID
+	if row := rows[m.home.Context.Index]; row.Kind == "profile" {
+		profiles := m.profiles()
+		m.home.Profiles.Index = row.ProfileIndex
+		m.home.Profiles.ID = profiles[row.ProfileIndex].ID
+	}
+	m.reconcileHome()
+}
+func (m *Model) movePane(key string) {
+	p := m.home.Capabilities
+	count := len(m.capabilities())
+	if m.home.Focus == ProfilesPane {
+		p = m.home.Context
+		count = len(m.contextRows())
+	}
+	next := p.Index
+	switch key {
+	case "up", "k":
+		next--
+	case "down", "j":
+		next++
+	case "pgup":
+		next -= m.paneHeight()
+	case "pgdown":
+		next += m.paneHeight()
+	case "home":
+		next = 0
+	case "end":
+		next = count - 1
+	}
+	if m.home.Focus == ProfilesPane {
+		m.selectContext(next)
+	} else {
+		m.selectPane(CapabilitiesPane, next)
+	}
+}
+func (m *Model) emptyProfiles() string {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return "No capability selected"
+	}
+	if !c.MCP {
+		return "No MCP instances — skill-only capability"
+	}
+	return "No MCP instances yet — configure/install to create one"
+}
+func (m *Model) homeKey(stroke string) tea.Cmd {
+	if stroke == "ctrl+c" || stroke == "f10" {
+		return tea.Quit
+	}
+	if m.home.Modal != nil {
+		return m.modalKey(stroke)
+	}
+	switch stroke {
+	case "ctrl+c", "f10", "q":
+		return tea.Quit
+	case "esc":
+		if m.home.Focus == ProfilesPane {
+			m.home.Focus = CapabilitiesPane
+		}
+	case "m", "f9":
+		m.openHomeMenu("main")
+	case "f1", "?":
+		m.navigate("Help")
+	case "tab":
+		m.focusPane(1 - m.home.Focus)
+	case "left":
+		m.focusPane(CapabilitiesPane)
+	case "right":
+		m.focusPane(ProfilesPane)
+	case "up", "down", "k", "j", "pgup", "pgdown", "home", "end":
+		m.movePane(stroke)
+	case "enter":
+		if m.home.Focus == CapabilitiesPane {
+			m.focusPane(ProfilesPane)
+		} else {
+			return m.openContextRow()
+		}
+	case "delete", "backspace":
+		if m.home.Focus == ProfilesPane {
+			if row, ok := m.selectedContextProfile(); ok {
+				ref := config.InstanceRef{PackID: row.Key.Source, CapabilityID: row.Key.Package, Name: row.Key.Target}
+				m.deletingInstance = &ref
+				m.home.Modal = &modalState{Kind: "delete-confirm", Selected: 0}
+			}
+		}
+	case "f3":
+		m.home.Modal = &modalState{Kind: "details"}
+	case "f5", "R":
+		return m.load()
+	case "u":
+		m.output = "Use instance Actions for registration changes; package uninstall is unavailable here."
+	case "a":
+		if m.instanceMode() {
+			m.openHomeMenu("actions")
+			return nil
+		}
+		return m.homeOperation(stroke)
+	case "i", "s", "x", "l":
+		return m.homeOperation(stroke)
+	}
+	return nil
+}
+
+func (m *Model) openContextRow() tea.Cmd {
+	row, ok := m.selectedContextRow()
+	if !ok {
+		return nil
+	}
+	switch row.Kind {
+	case "create-profile":
+		if c, ok := m.selectedCapability(); ok {
+			m.openInstanceCreation(c)
+		}
+	case "configure":
+		return m.homeOperation("parameters")
+	case "skill-access":
+		m.openHomeMenu("actions")
+	case "locate-source":
+		m.locateSelectedSource()
+	case "saved-information":
+		m.showSavedCapabilityInformation()
+	case "remove-local-registration":
+		m.removeUnavailableRegistration()
+	case "details":
+		m.home.Modal = &modalState{Kind: "details"}
+	case "profile":
+		if c, ok := m.selectedCapability(); ok && c.CatalogIndex < 0 {
+			if profile, found := m.selectedContextProfile(); found && profile.Key == row.Key {
+				m.openObservedInstanceWorkspace(profile)
+				return nil
+			}
+		}
+		section := "Overview"
+		if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
+			section = "Agents"
+		}
+		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), section)
+	case "mcp-child", "runtime-record":
+		request := m.packInstanceRequest(row.ParentKey)
+		cmd := m.openTargetWorkspace(request, "Runtime")
+		if m.workspace != nil {
+			m.workspace.SelectedMCP = row.MCPID
+			m.workspace.SelectedRuntimeID = row.RuntimeID
+		}
+		return cmd
+	case "target":
+		return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Overview")
+	}
+	return nil
+}
+
+func (m *Model) openObservedInstanceWorkspace(p InstanceRow) {
+	if p.Instance == nil || p.Instance.Key != p.Key {
+		m.output = "Observed target facts are unavailable; refresh this instance before opening its workspace."
+		return
+	}
+	profile := *p.Instance
+	profile.RegisteredAgents = append([]string(nil), p.Instance.RegisteredAgents...)
+	sections := []forms.FormSection{{ID: sectionOverviewID, Title: "Overview"}, {ID: sectionEndpointID, Title: "Endpoint"}, {ID: sectionAgentsID, Title: "Agents"}, {ID: sectionInformationID, Title: "Information"}}
+	form := forms.NewForm(m.ctx, nil, nil)
+	form.SetTitle("Observed · " + p.Name)
+	form.SetBackNavigation(true)
+	form.SetReadOnly(true)
+	form.SetSections(sections...)
+	form.SelectSectionID(sectionOverviewID)
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m.workspace = &workspaceState{
+		Key: p.Key, Section: "Overview", InvokingView: m.view, InvokingSelection: m.home.Context.Index,
+		Active: true, ObservedOnly: true, Existing: true, Instance: &profile, InstanceSnapshot: copyInstanceSnapshot(m.instanceSnapshot),
+	}
+	m.form = form
+	m.refreshObservedWorkspaceFacts()
+	m.pendingSetup = nil
+	m.home.Modal = nil
+}
+
+func (m *Model) locateSelectedSource() {
+	m.pending = operation{action: "locate-source", source: m.selectedCapabilitySource()}
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "root", Label: "Capability Pack directory", Type: "directory", Required: true}}, map[string]any{})
+	m.form.SetTitle("Locate Capability Pack · " + m.selectedCapabilitySource())
+	m.form.SetBackNavigation(true)
+	m.management.FormOverlay = true
+	_, _, width, height, _ := managementFormOverlayBounds(m.width, m.height)
+	m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+}
+
+func (m *Model) showSavedCapabilityInformation() {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return
+	}
+	info := "Saved capability: " + c.Package + " · Capability Pack: " + c.Source + ". The pack is unavailable. Locate its directory to configure it."
+	if m.instanceSnapshot != nil {
+		for _, p := range runtimeInstances(m.instanceSnapshot) {
+			if p.Key.Source == c.Source && p.Key.Package == c.Package {
+				info += " Saved target: " + p.Key.Environment + " / " + p.Key.Target + "."
+			}
+		}
+	}
+	m.output = info
+}
+
+func (m *Model) removeUnavailableRegistration() {
+	profiles := m.profiles()
+	if len(profiles) == 0 {
+		m.output = "No local registration is recorded for this saved target."
+		return
+	}
+	m.removeRegistrationForm(profiles[0])
+}
+
+func (m *Model) selectedCapabilitySource() string {
+	c, _ := m.selectedCapability()
+	return c.Source
+}
+func (m *Model) selectedCapabilityDetails() []string {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return []string{"No capability selected"}
+	}
+	lines := []string{"Capability: " + c.Name, "Capability Pack: " + c.Source, "Package: " + c.Package}
+	components := []string{}
+	if c.Skill {
+		components = append(components, "skill")
+	}
+	if c.MCP {
+		components = append(components, "MCP")
+	}
+	lines = append(lines, "Components: "+strings.Join(components, " + "))
+	if len(c.MCPNames) > 0 {
+		lines = append(lines, "MCP definitions: "+strings.Join(c.MCPNames, ", "))
+	}
+	return append(lines, "Enter / Esc Back")
+}
+
+func (m *Model) selectedInstanceIsPackPreset() bool {
+	row, ok := m.selectedContextProfile()
+	return ok && row.Configuration != nil && row.Configuration.Origin == "pack"
+}
+
+func (m *Model) homeMenuItems() []homeMenuItem {
+	if m.home.Modal == nil {
+		return nil
+	}
+	if m.home.Modal.Kind == "delete-confirm" {
+		confirmLabel := "Delete"
+		if m.selectedInstanceIsPackPreset() {
+			confirmLabel = "Reset to preset"
+		}
+		return []homeMenuItem{{"Cancel", "cancel-delete", ""}, {confirmLabel, "confirm-delete", ""}}
+	}
+	if m.home.Modal.Kind == "main" {
+		return []homeMenuItem{{"Agents", "Agents", ""}, {"Environments", "Environments", ""}, {"Profiles", "Profiles", ""}, {"Settings", "Settings", ""}, {"Help", "Help", ""}, {"Back", "back", ""}}
+	}
+	if m.instanceMode() {
+		c, _ := m.selectedCapability()
+		items := []homeMenuItem{}
+		if row, selected := m.selectedContextProfile(); selected {
+			if m.skillOnlyWithoutInputs(c) {
+				items = append(items, homeMenuItem{"Agent access…", "agents", ""})
+			} else {
+				label := "Delete instance " + row.Name + string(rune(8230))
+				if row.Configuration != nil && row.Configuration.Origin == "pack" {
+					label = "Reset " + row.Name + " to pack preset" + string(rune(8230))
+				}
+				items = append(items, homeMenuItem{label, "delete-instance", ""})
+			}
+		}
+		if !m.skillOnlyWithoutInputs(c) {
+			items = append(items, homeMenuItem{"Create another instance" + string(rune(8230)), "create-profile", ""})
+		}
+		items = append(items, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
+		return items
+	}
+	if m.home.Focus == ProfilesPane {
+		p, isProfile := m.selectedContextProfile()
+		if isProfile {
+			item := func(label, action string) homeMenuItem {
+				return homeMenuItem{label, action, m.instanceActionReason(p, action)}
+			}
+			start := "Start…"
+			if strings.EqualFold(p.Status, "running") {
+				start = "Restart…"
+			}
+			bindingReason := ""
+			if _, available := m.backend.(setupBackend); !available {
+				bindingReason = "The active AACT backend does not support setup operations"
+			} else if capability, exists := m.selectedCapability(); !exists || capability.CatalogIndex < 0 {
+				bindingReason = "package is absent from the local catalog"
+			}
+			return []homeMenuItem{item(start, "s"), item("Stop…", "x"), item("Edit parameters…", "parameters"), {"Manage complete agent binding…", "agents", bindingReason}, item("Check connection", "check-connection"), {"Refresh observation", "refresh", ""}, item("View logs", "l"), {"View details", "details", ""}, {"Back", "back", ""}}
+		}
+	}
+	c, ok := m.selectedCapability()
+	if !ok {
+		return []homeMenuItem{{"Back", "back", ""}}
+	}
+	installReason := ""
+	if c.CatalogIndex < 0 {
+		installReason = "absent from local catalog"
+	}
+	if c.CatalogIndex < 0 {
+		return []homeMenuItem{{"Locate Capability Pack…", "locate-source", ""}, {"View saved information", "saved-information", ""}, {"Back", "back", ""}}
+	}
+	items := []homeMenuItem{{m.capabilitySetupLabel(c), "parameters", installReason}}
+	items = append(items, homeMenuItem{"View capability details", "details", ""}, homeMenuItem{"Back", "back", ""})
+	return items
+}
+
+func (m *Model) capabilitySetupLabel(c CapabilityRow) string {
+	if c.CatalogIndex >= 0 && c.CatalogIndex < len(m.catalog) {
+		p := m.catalog[c.CatalogIndex]
+		if p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0 {
+			return "Install skill\u2026"
+		}
+	}
+	return "Configure now\u2026"
+}
+func (m *Model) menuEntries() []string {
+	items := m.homeMenuItems()
+	entries := make([]string, 0, len(items))
+	for _, item := range items {
+		label := item.Label
+		if item.Reason != "" {
+			label += " — disabled: " + item.Reason
+		}
+		entries = append(entries, label)
+	}
+	return entries
+}
+func (m *Model) openHomeMenu(kind string) {
+	m.home.Modal = &modalState{Kind: kind}
+	for i, item := range m.homeMenuItems() {
+		if item.Reason == "" {
+			m.home.Modal.Selected = i
+			break
+		}
+	}
+}
+func (m *Model) modalKey(stroke string) tea.Cmd {
+	if m.home.Modal.Kind == "logs" {
+		return m.logKey(stroke)
+	}
+	if stroke == "esc" {
+		if m.home.Modal.Kind == "delete-confirm" {
+			m.deletingInstance = nil
+		}
+		m.home.Modal = m.home.Modal.Parent
+		return nil
+	}
+	if m.home.Modal.Kind == "details" {
+		if stroke == "enter" {
+			m.home.Modal = m.home.Modal.Parent
+		}
+		return nil
+	}
+	items := m.homeMenuItems()
+	switch stroke {
+	case "up":
+		for step := 0; step < len(items); step++ {
+			m.home.Modal.Selected = (m.home.Modal.Selected + len(items) - 1) % len(items)
+			if items[m.home.Modal.Selected].Reason == "" {
+				break
+			}
+		}
+	case "down":
+		for step := 0; step < len(items); step++ {
+			m.home.Modal.Selected = (m.home.Modal.Selected + 1) % len(items)
+			if items[m.home.Modal.Selected].Reason == "" {
+				break
+			}
+		}
+	case "home":
+		for i, item := range items {
+			if item.Reason == "" {
+				m.home.Modal.Selected = i
+				break
+			}
+		}
+	case "end":
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Reason == "" {
+				m.home.Modal.Selected = i
+				break
+			}
+		}
+	case "enter":
+		index := m.home.Modal.Selected
+		if index < 0 || index >= len(items) {
+			return nil
+		}
+		item := items[index]
+		if item.Reason != "" {
+			m.output = item.Reason
+			return nil
+		}
+		if m.home.Modal.Kind == "actions" && item.Action == "locate-source" {
+			m.home.Modal = nil
+			m.locateSelectedSource()
+			return nil
+		}
+		if m.home.Modal.Kind == "actions" && item.Action == "saved-information" {
+			m.home.Modal = nil
+			m.showSavedCapabilityInformation()
+			return nil
+		}
+		if m.home.Modal.Kind == "actions" && item.Action == "remove-local-registration" {
+			m.home.Modal = nil
+			m.removeUnavailableRegistration()
+			return nil
+		}
+		if m.home.Modal.Kind == "main" {
+			m.home.Modal = nil
+			if item.Action != "back" {
+				m.navigate(item.Action)
+				if item.Action == "Profiles" {
+					return m.loadGroupProfiles()
+				}
+			}
+			return nil
+		}
+		if m.home.Modal.Kind == "delete-confirm" {
+			ref := m.deletingInstance
+			m.deletingInstance = nil
+			m.home.Modal = nil
+			if item.Action == "cancel-delete" || ref == nil {
+				return nil
+			}
+			m.action = "delete instance"
+			selected := *ref
+			resetPreset := m.selectedInstanceIsPackPreset()
+			return func() tea.Msg {
+				if resetPreset {
+					backend, ok := m.backend.(instancePresetResetBackend)
+					if !ok {
+						return instanceRemovedMsg{ref: selected, resetPreset: true, err: fmt.Errorf("reset to pack preset is unavailable")}
+					}
+					result, err := backend.UIResetInstanceToPreset(m.ctx, selected)
+					return instanceRemovedMsg{ref: selected, resetPreset: true, message: result.Message, err: err}
+				}
+				backend, ok := m.backend.(instanceRemovalBackend)
+				if !ok {
+					return instanceRemovedMsg{ref: selected, err: fmt.Errorf("instance removal is unavailable")}
+				}
+				_, err := backend.UIRemoveInstance(m.ctx, selected)
+				return instanceRemovedMsg{ref: selected, err: err}
+			}
+		}
+		switch item.Action {
+		case "back":
+			m.home.Modal = nil
+		case "refresh":
+			m.home.Modal = nil
+			return m.load()
+		case "details":
+			m.home.Modal = &modalState{Kind: "details", Parent: m.home.Modal}
+		case "delete-instance":
+			if row, ok := m.selectedContextProfile(); ok {
+				ref := config.InstanceRef{PackID: row.Key.Source, CapabilityID: row.Key.Package, Name: row.Key.Target}
+				m.deletingInstance = &ref
+				m.home.Modal = &modalState{Kind: "delete-confirm", Selected: 0}
+			}
+		default:
+			if item.Action != "registrations" && item.Action != "remove-registrations" {
+				m.home.Modal = nil
+			}
+			return m.homeOperation(item.Action)
+		}
+	}
+	return nil
+}
+func (m *Model) homeOperation(action string) tea.Cmd {
+	if m.instanceMode() {
+		if c, ok := m.selectedCapability(); ok && m.skillOnlyWithoutInputs(c) {
+			if action == "agents" || action == "parameters" || action == "configure" || action == "i" {
+				if row, selected := m.selectedContextProfile(); selected {
+					return m.openTargetWorkspace(m.packInstanceRequest(row.Key), "Agents")
+				}
+				return m.openTargetWorkspace(viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: c.Source, CapabilityID: c.Package, Name: "default"}}, "Agents")
+			}
+			if action == "details" {
+				m.home.Modal = &modalState{Kind: "details"}
+			}
+			return nil
+		}
+		if c, ok := m.selectedCapability(); ok && !c.MCP {
+			if action == "details" {
+				m.home.Modal = &modalState{Kind: "details"}
+				return nil
+			}
+			if action == "configure" || action == "parameters" {
+				return m.openTargetWorkspace(m.packInstanceRequest(state.Key{Source: c.Source, Package: c.Package, Target: "default"}), "Overview")
+			}
+		}
+		if action == "create-profile" {
+			if c, ok := m.selectedCapability(); ok {
+				m.openInstanceCreation(c)
+			}
+			return nil
+		}
+		if action == "details" {
+			m.home.Modal = &modalState{Kind: "details"}
+			return nil
+		}
+		if m.home.Focus == CapabilitiesPane {
+			m.focusPane(ProfilesPane)
+			return nil
+		}
+		if row, ok := m.selectedContextRow(); ok {
+			if row.Kind == "create-profile" {
+				if c, ok := m.selectedCapability(); ok {
+					m.openInstanceCreation(c)
+				}
+				return nil
+			}
+			if row.Kind == "profile" {
+				section := "Overview"
+				if action == "agents" {
+					section = "Agents"
+				}
+				if action == "s" || action == "x" || action == "l" {
+					section = "Runtime"
+				}
+				return m.openTargetWorkspace(m.packInstanceRequest(row.Key), section)
+			}
+		}
+		return nil
+	}
+
+	c, ok := m.selectedCapability()
+	if !ok {
+		return nil
+	}
+	if m.home.Focus == ProfilesPane {
+		p, isProfile := m.selectedContextProfile()
+		if isProfile {
+			capability, capabilityOK := m.selectedCapability()
+			packageUnavailable := capabilityOK && capability.CatalogIndex < 0
+			if action == "remove-registrations" {
+				if packageUnavailable {
+					m.openObservedInstanceWorkspace(p)
+					return nil
+				}
+				return m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Agents")
+			}
+			if action == "check-connection" {
+				return m.checkProfileConnection(p)
+			}
+			if action == "registrations" || action == "agents" {
+				if packageUnavailable {
+					m.openObservedInstanceWorkspace(p)
+					return nil
+				}
+				return m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Agents")
+			}
+			if action == "l" {
+				return m.openProfileLogs(p)
+			}
+			if action == "parameters" {
+				if packageUnavailable {
+					m.output = "Capability Pack configuration is unavailable. Enter on this observed target opens its read-only workspace; use Locate Capability Pack… to restore package settings."
+					return nil
+				}
+				if reason := m.instanceActionReason(p, action); reason != "" {
+					m.output = reason
+					return nil
+				}
+				return m.openTargetWorkspace(m.packInstanceRequest(p.Key), "Overview")
+			}
+
+			actions := map[string]string{"s": "start", "x": "stop", "l": "logs"}
+			kind := actions[action]
+			if kind == "" {
+				return nil
+			}
+			if reason := m.instanceActionReason(p, action); reason != "" {
+				m.output = reason
+				return nil
+			}
+			m.home.Modal = nil
+			op := operation{action: kind, source: p.Key.Source, packageID: p.Key.Package, environment: p.Key.Environment, target: p.Key.Target, mcp: p.Key.MCP}
+			return m.run(op)
+		}
+	}
+	if c.CatalogIndex < 0 {
+		m.output = "Capability is absent from the active catalog; Enter a saved target to open its observed workspace, or choose Locate Capability Pack… to restore package settings."
+		return nil
+	}
+	m.selected = c.CatalogIndex
+	if action == "parameters" || action == "i" {
+		if _, ok := m.backend.(setupBackend); ok {
+			m.openInstanceCreation(c)
+			return nil
+		}
+	}
+	if action != "details" {
+		m.output = "Choose a Capability Pack instance before starting or changing installed components."
+	}
+	return nil
+}
+
+func (m *Model) skillOnlyWithoutInputs(c CapabilityRow) bool {
+	if c.CatalogIndex < 0 || c.CatalogIndex >= len(m.catalog) {
+		return false
+	}
+	p := m.catalog[c.CatalogIndex]
+	return p.HasSkill() && !p.HasMCP() && len(p.Inputs) == 0
+}
+
+func (m *Model) homeMouse(msg tea.MouseMsg) tea.Cmd {
+	mouse := msg.Mouse()
+	m.homeView() // Rebuild geometry after resize/refresh, not stale rendered coordinates.
+	if m.home.Modal != nil {
+		if m.home.Modal.Kind == "logs" {
+			return m.logMouse(msg)
+		}
+		if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft {
+			for _, h := range m.home.Hits {
+				if h.contains(mouse.X, mouse.Y) && h.Control == "menu" {
+					m.home.Modal.Selected = h.Index
+					return m.modalKey("enter")
+				}
+			}
+		}
+		return nil
+	}
+	for _, h := range m.home.Hits {
+		if !h.contains(mouse.X, mouse.Y) {
+			continue
+		}
+		if _, ok := msg.(tea.MouseWheelMsg); ok && h.Control == "pane" {
+			old := m.home.Focus
+			m.focusPane(h.Pane)
+			key := "down"
+			if mouse.Button == tea.MouseWheelUp {
+				key = "up"
+			}
+			m.movePane(key)
+			if h.Pane != old {
+				m.home.Focus = old
+			}
+			return nil
+		}
+		if _, ok := msg.(tea.MouseClickMsg); !ok || mouse.Button != tea.MouseLeft {
+			continue
+		}
+		switch h.Control {
+		case "row":
+			if h.Pane == ProfilesPane {
+				m.selectContext(h.Index)
+			} else {
+				m.selectPane(h.Pane, h.Index)
+			}
+			return nil
+		case "panes":
+			return m.homeKey("tab")
+		case "main":
+			return m.homeKey("m")
+		case "actions":
+			return m.homeKey("a")
+		case "details":
+			return m.homeKey("f3")
+		case "parameters":
+			return m.homeKey("f4")
+		case "refresh":
+			return m.homeKey("f5")
+		case "help":
+			return m.homeKey("f1")
+		case "quit":
+			return tea.Quit
+		case "pane":
+			m.focusPane(h.Pane)
+			return nil
+		}
+	}
+	return nil
+}
+func fit(s string, width int) string {
+	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
+	s = ansi.Truncate(s, max(0, width), "…")
+	return s + strings.Repeat(" ", max(0, width-lipgloss.Width(s)))
+}
+func (m *Model) selectedDetail() string {
+	c, ok := m.selectedCapability()
+	if !ok {
+		return "No capabilities in this catalog"
+	}
+	if c.CatalogIndex < 0 {
+		return "Capability Pack unavailable · capability " + c.Package + " · use Locate Capability Pack to recover configuration access"
+	}
+	if m.home.Focus == ProfilesPane {
+		if row, ok := m.selectedContextRow(); ok {
+			switch row.Kind {
+			case "mcp-child":
+				if child := m.contextMCP(row.ParentKey, row.MCPID); child != nil {
+					lines := []string{c.Name + " · MCP definition " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime summary: " + child.Status + " · ownership: " + child.Ownership}
+					if auth := authenticationDisplayStatus(child.AuthenticationStatus); auth != "" {
+						lines = append(lines, "Authentication: "+auth)
+					}
+					for _, record := range child.RuntimeRecords {
+						lines = append(lines, fmt.Sprintf("Runtime ID %s · %s · %s", record.ID, record.Status, record.Ownership))
+					}
+					return strings.Join(lines, " · ")
+				}
+			case "runtime-record":
+				if child := m.contextMCP(row.ParentKey, row.MCPID); child != nil {
+					for _, record := range child.RuntimeRecords {
+						if record.ID == row.RuntimeID {
+							lines := []string{c.Name + " · Runtime for MCP " + child.MCPID, "Instance: " + row.ParentKey.Target, "Runtime ID: " + record.ID, "Container: " + nonempty(record.Name, "unknown"), "Status: " + record.Status, "Ownership: " + record.Ownership}
+							if record.URL != "" {
+								lines = append(lines, "Endpoint: "+record.URL)
+							}
+							if record.LastAction != "" {
+								lines = append(lines, "Last action: "+record.LastAction)
+							}
+							return strings.Join(lines, " · ")
+						}
+					}
+				}
+			}
+		}
+		if p, ok := m.selectedContextProfile(); ok {
+			if p.Configuration != nil {
+				return c.Name + " · Instance " + p.Name + " · " + instanceStatusSummary(*p.Configuration)
+			}
+			return fmt.Sprintf("%s / %s / %s / %s · %s · %s", p.Key.Source, p.Key.Package, p.Key.Environment, p.Key.Target, p.Name, p.URL) + " · owner: " + p.Runtime.Ownership
+		}
+		if row, ok := m.selectedContextRow(); ok {
+			return c.Name + " · " + row.Label
+		}
+	}
+	components := []string{}
+	if c.Skill {
+		components = append(components, "skill")
+	}
+	if c.MCP {
+		if len(c.MCPNames) == 0 {
+			components = append(components, "MCP")
+		} else {
+			for _, name := range c.MCPNames {
+				components = append(components, "MCP "+name)
+			}
+		}
+	}
+	detail := fmt.Sprintf("Capability Pack · %s · %s", c.Name, strings.Join(components, " + "))
+	if c.MCP {
+		if m.instanceMode() {
+			detail += fmt.Sprintf(" · %d instances", len(m.profiles()))
+		} else {
+			detail += fmt.Sprintf(" · %d MCP runtimes", len(m.profiles()))
+		}
+	}
+	status, _ := m.installationDetails(c)
+	detail += " · AACT records: " + status
+	return detail
+}
+
+func (m *Model) contextMCP(parentKey state.Key, name string) *viewmodel.RuntimeStatus {
+	snapshot, ok := m.capabilityInstances[parentKey.Package]
+	if !ok {
+		return nil
+	}
+	for _, instance := range capabilityInstances(snapshot) {
+		if instance.Key != parentKey {
+			continue
+		}
+		for i := range instance.MCPs {
+			if instance.MCPs[i].MCPID == name {
+				return &instance.MCPs[i]
+			}
+		}
+	}
+	return nil
+}
+func (m *Model) homeView() tea.View {
+	m.home.Hits = nil
+	if m.width < 80 || m.height < 16 {
+		lines := []string{
+			"┌" + strings.Repeat("─", max(0, m.width-2)) + "┐",
+			"│" + fit("AACT needs at least 80×16; current "+fmt.Sprintf("%d×%d", m.width, m.height), max(0, m.width-2)) + "│",
+			"│" + fit("Resize to continue. Your current draft is retained.", max(0, m.width-2)) + "│",
+			"│" + fit("F10 / q Quit", max(0, m.width-2)) + "│",
+			"└" + strings.Repeat("─", max(0, m.width-2)) + "┘",
+		}
+		for len(lines) < m.height {
+			lines = append(lines, strings.Repeat(" ", m.width))
+		}
+		v := tea.NewView(navyCanvas(strings.Join(lines[:min(m.height, len(lines))], "\n")))
+		return v
+	}
+	m.reconcileHome()
+	width := m.width
+	left := (width - 3) / 2
+	right := width - 3 - left
+	visible := m.paneHeight()
+	cs := m.capabilities()
+	ps := m.profiles()
+	c, _ := m.selectedCapability()
+	type displayRow struct {
+		text         string
+		contextIndex int
+		kind         string
+	}
+	contextDisplay := []displayRow{{text: "Capability", contextIndex: -1, kind: "heading"}}
+	contextRows := m.contextRows()
+	if m.instanceMode() && c.CatalogIndex >= 0 {
+		contextDisplay = []displayRow{{text: "Instances", contextIndex: -1, kind: "heading"}}
+		for i, row := range contextRows {
+			contextDisplay = append(contextDisplay, displayRow{text: row.Label, contextIndex: i, kind: "action"})
+			if row.Kind == "profile" {
+				for _, detail := range instanceConfigurationDetails(ps[row.ProfileIndex]) {
+					contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
+				}
+			}
+		}
+		for _, message := range m.capabilityInstances[c.Package].Errors {
+			contextDisplay = append(contextDisplay, displayRow{text: "Observation: " + message, contextIndex: -1, kind: "empty"})
+		}
+	} else {
+		if c.CatalogIndex < 0 {
+			contextDisplay = append(contextDisplay, displayRow{text: "Capability Pack unavailable · " + c.Package, contextIndex: -1, kind: "heading"})
+			for i := 0; i < min(3, len(contextRows)); i++ {
+				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+			}
+			if len(contextRows) > 3 {
+				heading := "Saved targets"
+				if c.Skill && !c.MCP {
+					heading = "Saved configuration"
+				}
+				contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
+				for i := 3; i < len(contextRows); i++ {
+					contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+				}
+			}
+		} else {
+			for i := 0; i < min(2, len(contextRows)); i++ {
+				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+			}
+		}
+		if c.MCP && c.CatalogIndex >= 0 {
+			contextDisplay = append(contextDisplay, displayRow{text: "MCP runtimes", contextIndex: -1, kind: "heading"})
+			if len(ps) == 0 {
+				contextDisplay = append(contextDisplay, displayRow{text: "No instances yet — configure/install to create one", contextIndex: -1, kind: "empty"})
+			} else {
+				for i, p := range ps {
+					environment, target := p.Key.Environment, p.Key.Target
+					if environment == "" {
+						environment = "No preset"
+					}
+					if target == "" {
+						target = "default"
+					}
+					contextDisplay = append(contextDisplay, displayRow{text: environment + " / " + target + " · Runtime · " + p.Name + " · " + p.Status, contextIndex: i + 2, kind: "action"})
+				}
+			}
+		}
+		if len(contextRows) > 2+len(m.profiles()) {
+			heading := "Saved targets"
+			if c.Skill && !c.MCP {
+				heading = "Saved configuration"
+			}
+			contextDisplay = append(contextDisplay, displayRow{text: heading, contextIndex: -1, kind: "heading"})
+			for i := 2 + len(m.profiles()); i < len(contextRows); i++ {
+				contextDisplay = append(contextDisplay, displayRow{text: contextRows[i].Label, contextIndex: i, kind: "action"})
+			}
+		}
+		installStatus, installDetails := m.installationDetails(c)
+		contextDisplay = append(contextDisplay, displayRow{text: "Installation · AACT records: " + installStatus, contextIndex: -1, kind: "heading"})
+		for _, detail := range installDetails {
+			contextDisplay = append(contextDisplay, displayRow{text: detail, contextIndex: -1, kind: "empty"})
+		}
+	}
+	selectedDisplay := 0
+	for i, row := range contextDisplay {
+		if row.contextIndex == m.home.Context.Index {
+			selectedDisplay = i
+			break
+		}
+	}
+	if selectedDisplay < m.home.ContextDisplayOffset {
+		m.home.ContextDisplayOffset = selectedDisplay
+	}
+	if selectedDisplay >= m.home.ContextDisplayOffset+visible {
+		m.home.ContextDisplayOffset = selectedDisplay - visible + 1
+	}
+	m.home.ContextDisplayOffset = min(max(0, m.home.ContextDisplayOffset), max(0, len(contextDisplay)-visible))
+	shortPath := func(path string) string {
+		if path == "" {
+			return "none"
+		}
+		return filepath.Base(path)
+	}
+	scope := " Capability Pack: " + m.settings["source"] + " · Instance root: " + shortPath(m.environmentRoot()) + " · Managing: " + runtime.GOOS + "/" + runtime.GOARCH
+	menubar := " F9 Main menu: Agents | Settings | Help"
+	lines := []string{"╔" + fit(" AACT · Another Agent Capability Toolkit", width-2) + "╗", "║" + fit(menubar, width-2) + "║", "║" + fit(scope, width-2) + "║"}
+	ltitle := "Capabilities"
+	rtitle := "Selected capability · " + c.Name
+	if m.home.Focus == CapabilitiesPane {
+		ltitle = "► " + ltitle
+	} else {
+		rtitle = "► " + rtitle
+	}
+	if m.home.ContextDisplayOffset > 0 {
+		rtitle = "↑ More above · " + rtitle
+	}
+	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
+	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+	focusedTitle := lipgloss.NewStyle().Bold(true).Reverse(true)
+	leftTitle := gold.Render(fit(ltitle, left))
+	rightTitle := gold.Render(fit(rtitle, right))
+	if m.home.Focus == CapabilitiesPane {
+		leftTitle = focusedTitle.Render(fit(ltitle, left))
+	} else {
+		rightTitle = focusedTitle.Render(fit(rtitle, right))
+	}
+	lines = append(lines, "╠"+leftTitle+"╦"+rightTitle+"╣")
+	for row := 0; row < visible; row++ {
+		l, r := "", ""
+		i := m.home.Capabilities.Offset + row
+		if i < len(cs) {
+			installationStatus, _ := m.installationDetails(cs[i])
+			cursor := "›"
+			if i == m.home.Capabilities.Index {
+				cursor = ">"
+			}
+			kind := "skill"
+			if cs[i].MCP {
+				kind = "MCP"
+				if len(cs[i].MCPNames) > 0 {
+					kind = "MCP: " + strings.Join(cs[i].MCPNames, ", ")
+				}
+				if cs[i].Skill {
+					kind = "skill + MCP"
+				}
+			}
+			l = cursor + " " + installationStatus + " · " + cs[i].Name + "  " + kind
+			m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 4 + row, Width: left, Height: 1, Pane: CapabilitiesPane, Index: i, Control: "row"})
+		}
+		i = m.home.ContextDisplayOffset + row
+		if i < len(contextDisplay) {
+			item := contextDisplay[i]
+			if item.contextIndex >= 0 {
+				cursor := "›"
+				if item.contextIndex == m.home.Context.Index {
+					cursor = ">"
+				}
+				r = cursor + " " + item.text
+				m.home.Hits = append(m.home.Hits, hitRegion{X: left + 2, Y: 4 + row, Width: right, Height: 1, Pane: ProfilesPane, Index: item.contextIndex, Control: "row"})
+			} else if item.kind == "heading" {
+				r = "── " + item.text
+			} else {
+				r = "· " + item.text
+			}
+		}
+		leftBody, rightBody := left, right
+		leftBar, rightBar := len(cs) > visible, len(contextDisplay) > visible
+		if leftBar {
+			leftBody = max(1, left-1)
+		}
+		if rightBar {
+			rightBody = max(1, right-1)
+		}
+		l = fit(l, leftBody)
+		r = fit(r, rightBody)
+		if leftBar {
+			l += scrollbarGlyph(m.home.Capabilities.Offset, len(cs), visible, row)
+		}
+		if rightBar {
+			r += scrollbarGlyph(m.home.ContextDisplayOffset, len(contextDisplay), visible, row)
+		}
+		if i := m.home.ContextDisplayOffset + row; i < len(contextDisplay) {
+			switch contextDisplay[i].kind {
+			case "heading":
+				r = gold.Render(r)
+			case "empty":
+				r = muted.Render(r)
+			}
+		}
+		if i := m.home.Capabilities.Offset + row; i < len(cs) && i == m.home.Capabilities.Index && m.home.Focus == CapabilitiesPane {
+			l = selected.Render(l)
+		}
+		if i := m.home.ContextDisplayOffset + row; i < len(contextDisplay) && contextDisplay[i].contextIndex == m.home.Context.Index && m.home.Focus == ProfilesPane {
+			r = selected.Render(r)
+		}
+		lines = append(lines, "║"+l+"║"+r+"║")
+	}
+	pos := func(p paneState, n int) string {
+		if n == 0 {
+			return "0/0"
+		}
+		return fmt.Sprintf("%d/%d", p.Index+1, n)
+	}
+	status := m.output
+	if m.busy {
+		status = "Running " + m.action + "…"
+	}
+	if m.instanceSnapshot != nil && m.instanceSnapshot.ObservationStale {
+		observed := "never"
+		if !m.instanceSnapshot.ObservedAt.IsZero() {
+			observed = m.instanceSnapshot.ObservedAt.Format("2006-01-02 15:04:05 MST")
+		}
+		status = "Docker: " + m.instanceSnapshot.DockerError + "; last observed " + observed + " · " + status
+	}
+	contextPosition := pos(m.home.Context, len(contextRows))
+	if m.home.ContextDisplayOffset+visible < len(contextDisplay) {
+		contextPosition += "  ↓ More below"
+	}
+	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(contextPosition, right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║", "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
+	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F3 Details", "details"}, {"F5 Refresh", "refresh"}}
+	x := 2
+	f := " "
+	fy := len(lines)
+	for _, b := range footer {
+		f += b.text + "  "
+		m.home.Hits = append(m.home.Hits, hitRegion{X: x, Y: fy, Width: len(b.text), Height: 1, Control: b.control})
+		x += len(b.text) + 2
+	}
+	lines = append(lines, "║"+fit(f, width-2)+"║")
+	second := []struct{ text, control string }{{"Tab/←→ Panes", "panes"}, {"Enter Open", "actions"}, {"a Actions", "actions"}, {"m Main menu", "main"}, {"F10/q Quit", "quit"}}
+	f = " "
+	x = 2
+	fy = len(lines)
+	for i, b := range second {
+		if i > 0 {
+			f += " · "
+			x += 3
+		}
+		f += b.text
+		m.home.Hits = append(m.home.Hits, hitRegion{X: x, Y: fy, Width: lipgloss.Width(b.text), Height: 1, Control: b.control})
+		x += lipgloss.Width(b.text)
+	}
+	lines = append(lines, "║"+fit(f, width-2)+"║", "╚"+strings.Repeat("═", width-2)+"╝")
+	m.home.Hits = append(m.home.Hits, hitRegion{X: 1, Y: 1, Width: width - 2, Height: 1, Control: "main"}, hitRegion{X: 1, Y: 3, Width: left, Height: visible + 2, Pane: CapabilitiesPane, Control: "pane"}, hitRegion{X: left + 2, Y: 3, Width: right, Height: visible + 2, Pane: ProfilesPane, Control: "pane"})
+	if m.home.Modal != nil && m.registration == nil {
+		lines = m.overlay(lines)
+	}
+	if m.registration != nil {
+		lines = m.registrationOverlay(lines)
+	}
+	v := tea.NewView(navyCanvas(strings.Join(lines, "\n")))
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+func (m *Model) overlay(lines []string) []string {
+	if m.home.Modal.Kind == "logs" {
+		return m.logsOverlay(lines)
+	}
+	title := "Actions"
+	if m.home.Modal.Kind == "main" {
+		title = "Main menu"
+	} else if m.home.Modal.Kind == "delete-confirm" {
+		if m.deletingInstance != nil {
+			if m.selectedInstanceIsPackPreset() {
+				title = "Reset instance " + m.deletingInstance.Name + " to pack preset?"
+			} else {
+				title = "Delete instance " + m.deletingInstance.Name + "?"
+			}
+		} else {
+			title = "Delete instance?"
+		}
+	} else if m.home.Modal.Kind == "actions" {
+		if m.home.Focus == ProfilesPane {
+			if profiles := m.profiles(); len(profiles) > 0 {
+				profile := profiles[m.home.Profiles.Index]
+				if capability, ok := m.selectedCapability(); ok {
+					title = capability.Name + " · " + profile.Name
+				}
+			}
+		} else if capability, ok := m.selectedCapability(); ok {
+			title = capability.Name + " · Actions"
+		}
+	}
+	entries := []string{}
+	menuItems := []homeMenuItem{}
+	if m.home.Modal.Kind == "details" {
+		title = "Details"
+		if m.home.Focus == CapabilitiesPane {
+			entries = m.selectedCapabilityDetails()
+		} else {
+			entries = m.instanceDetails()
+		}
+	} else {
+		menuItems = m.homeMenuItems()
+		entries = m.menuEntries()
+	}
+	w := min(m.width-6, 64)
+	x := (m.width - w) / 2
+	y := max(3, (len(lines)-len(entries)-4)/2)
+	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffe38a"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#a8bddb"))
+	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#081f5b")).Background(lipgloss.Color("#e9f2fb"))
+	box := []string{"┌" + gold.Render(fit(" "+title, w-2)) + "┐"}
+	for i, e := range entries {
+		prefix := "› "
+		disabled := i < len(menuItems) && menuItems[i].Reason != ""
+		if m.home.Modal.Kind == "details" {
+			prefix = "· "
+		} else if disabled {
+			prefix = "× "
+		}
+		if i == m.home.Modal.Selected {
+			if m.home.Modal.Kind != "details" {
+				prefix = "> "
+			}
+		}
+		item := fit(prefix+e, w-2)
+		if i == m.home.Modal.Selected && m.home.Modal.Kind != "details" && !disabled {
+			item = selected.Render(item)
+		} else if disabled {
+			item = muted.Render(item)
+		}
+		box = append(box, "│"+item+"│")
+		if m.home.Modal.Kind != "details" {
+			m.home.Hits = append(m.home.Hits, hitRegion{X: x + 1, Y: y + i + 1, Width: w - 2, Height: 1, Index: i, Control: "menu"})
+		}
+	}
+	box = append(box, "│"+fit(" ↑↓ Select · Enter Open · Esc Back", w-2)+"│", "└"+strings.Repeat("─", w-2)+"┘")
+	for i, line := range box {
+		if y+i >= len(lines) {
+			break
+		}
+		lines[y+i] = ansi.Cut(lines[y+i], 0, x) + line + ansi.Cut(lines[y+i], x+w, m.width)
+	}
+	return lines
+}
+
+func scrollbarGlyph(offset, total, visible, row int) string {
+	if total <= visible || visible < 1 {
+		return " "
+	}
+	thumb := max(1, visible*visible/total)
+	start := offset * (visible - thumb) / max(1, total-visible)
+	if row >= start && row < start+thumb {
+		return "█"
+	}
+	return "│"
+}

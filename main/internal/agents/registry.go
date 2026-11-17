@@ -1,0 +1,136 @@
+package agents
+
+import (
+	"context"
+	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/process"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"os"
+	"runtime"
+	"strings"
+)
+
+type Dependencies struct {
+	Store  *state.Store
+	Runner process.Executor
+	Probe  DiscoveryProbe
+}
+type Registry struct{ adapters []Adapter }
+type registeredAdapter struct {
+	kind string
+	deps Dependencies
+}
+
+func NewRegistry(deps Dependencies) *Registry {
+	if deps.Probe.GOOS == "" && deps.Probe.Home == "" {
+		if probe, err := DefaultDiscoveryProbe(); err == nil {
+			deps.Probe = probe
+		}
+	}
+	if deps.Probe.GOOS == "" {
+		deps.Probe.GOOS = runtime.GOOS
+	}
+	if deps.Probe.Home == "" {
+		deps.Probe.Home, _ = os.UserHomeDir()
+	}
+	r := &Registry{}
+	for _, kind := range []string{"codex", "opencode", "claude", "copilot-cli", "intellij", "copilot-intellij", "hermes", "generic"} {
+		skill := &skillAdapter{registeredAdapter: &registeredAdapter{kind: kind, deps: deps}}
+		if kind == "intellij" {
+			r.adapters = append(r.adapters, &intellijAdapter{skillAdapter: skill})
+		} else if kind != "generic" && kind != "hermes" {
+			mcp := &mcpAdapter{skillAdapter: skill}
+			if kind == "claude" {
+				r.adapters = append(r.adapters, &claudePluginAdapter{mcpAdapter: mcp})
+			} else {
+				r.adapters = append(r.adapters, mcp)
+			}
+		} else {
+			r.adapters = append(r.adapters, skill)
+		}
+	}
+	return r
+}
+func (r *Registry) Adapter(id string) (Adapter, error) {
+	id, _, _ = strings.Cut(id, ":")
+	if id == "all" {
+		id = "generic"
+	}
+	if id == "copilot" {
+		id = "copilot-cli"
+	}
+	if id == "intellij-ai-assistant" {
+		id = "intellij"
+	}
+	for _, adapter := range r.adapters {
+		if adapter.ID() == id {
+			return adapter, nil
+		}
+	}
+	return nil, fmt.Errorf("unsupported agent adapter %q", id)
+}
+func (r *Registry) Adapters() []Adapter { return append([]Adapter(nil), r.adapters...) }
+func (a *registeredAdapter) ID() string { return a.kind }
+func (a *registeredAdapter) Name() string {
+	if a.kind == "generic" {
+		return "All"
+	}
+	return discoveryName(a.kind)
+}
+
+// Features become available as their concrete optional managers are installed.
+func (a *registeredAdapter) Features() FeatureSet { return FeatureSet{} }
+
+func (a *registeredAdapter) scopedProbe(scope Scope) DiscoveryProbe {
+	p := a.deps.Probe
+	if scope.Home != "" {
+		p.Home = scope.Home
+	}
+	if scope.ExplicitHome {
+		p.Getenv = func(string) string { return "" }
+	}
+	return p
+}
+func (a *registeredAdapter) Detect(ctx context.Context, scope Scope) (Detection, error) {
+	if err := ctx.Err(); err != nil {
+		return Detection{State: "unverified", Reason: err.Error()}, err
+	}
+	environment, layoutErr := a.environment(scope)
+	if layoutErr != nil {
+		return Detection{State: "unverified", Reason: layoutErr.Error()}, layoutErr
+	}
+	if a.kind == "generic" {
+		return Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, ConfigPath: environment.ConfigPath, State: "installed", Installed: true, Evidence: "Shared .agents/skills destination"}, nil
+	}
+	d := DiscoverAgent(ctx, a.kind, a.scopedProbe(scope))
+	writePath, pathErr := ResolveConfigWritePath(environment)
+	if pathErr != nil {
+		return Detection{State: "unverified", Reason: pathErr.Error()}, pathErr
+	}
+	result := Detection{Home: environment.Home, SkillsPath: environment.SkillsDir, ConfigPath: writePath, State: d.Detection, Installed: d.Detection == "installed", Evidence: d.Evidence, Reason: d.Note}
+	for _, file := range d.ConfigFiles {
+		result.ConfigFiles = append(result.ConfigFiles, ConfigFile{Path: file.Path, Scope: file.Scope, Precedence: file.Precedence, Evidence: file.Evidence, Exists: file.Exists})
+	}
+	if scope.ConfigPathOverride != "" {
+		_, err := os.Stat(result.ConfigPath)
+		result.ConfigFiles = []ConfigFile{{Path: result.ConfigPath, Scope: "explicit", Precedence: "effective", Evidence: "Explicit agent config override", Exists: err == nil}}
+	}
+	if supportsMCPConfig(a.kind) {
+		if result.Installed {
+			result.MCPDisabledReason = MCPDestinationDisabledReason(ctx, a.kind, result.ConfigPath, d, nil, a.scopedProbe(scope))
+			result.CanCreateConfig = result.MCPDisabledReason == ""
+		} else {
+			result.Reason = MCPDestinationDisabledReason(ctx, a.kind, result.ConfigPath, d, nil, a.scopedProbe(scope))
+		}
+	}
+	return result, nil
+}
+
+func supportsMCPConfig(kind string) bool {
+	switch kind {
+	case "codex", "copilot-cli", "opencode", "claude", "copilot-intellij":
+		return true
+	default:
+		return false
+	}
+}

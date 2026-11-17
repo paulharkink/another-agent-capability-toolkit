@@ -14,7 +14,7 @@ manifest_file="$(mktemp)"
 error_file="$(mktemp)"
 trap 'rm -f "$manifest_file" "$error_file"' EXIT
 
-builds="$(go run ./cmd/mcp-release-builds -root . -version "${release_tag#v}")"
+builds="$(go run ./main/cmd/mcp-release-builds -root . -version "${release_tag#v}")"
 while IFS=$'\t' read -r package profile context release_image; do
   [[ -n "$package" ]] || continue
   image_name="${release_image##*/}"

@@ -1,0 +1,1307 @@
+package mcp
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/browsercontroller"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/process"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+)
+
+type Mount struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	ReadOnly    bool   `json:"read_only"`
+}
+type PortMapping struct {
+	HostPort      int `json:"host_port"`
+	ContainerPort int `json:"container_port"`
+}
+type RunSpec struct {
+	BrowserController *BrowserControllerSpec `json:"browser_controller,omitempty"`
+	BrowserVaultKey   *state.Key             `json:"-"`
+	User              string                 `json:"user,omitempty"`
+	Image             string                 `json:"image"`
+	BuildContext      string                 `json:"build_context,omitempty"`
+	Args              []string               `json:"args,omitempty"`
+	Env               map[string]string      `json:"env,omitempty"`
+	SecretEnv         map[string]string      `json:"secret_env,omitempty"`
+	Mounts            []Mount                `json:"mounts,omitempty"`
+	BindIP            string                 `json:"bind_ip,omitempty"`
+	AdvertisedHost    string                 `json:"advertised_host,omitempty"`
+	RegistrationName  string                 `json:"registration_name,omitempty"`
+	// Host is retained for actions and saved specs written before bind and
+	// advertised endpoint addressing were separated.
+	Host                string        `json:"host"`
+	HostPort            int           `json:"host_port"`
+	ContainerPort       int           `json:"container_port"`
+	AdditionalPorts     []PortMapping `json:"additional_ports,omitempty"`
+	Transport           string        `json:"transport"`
+	EndpointPath        string        `json:"endpoint_path"`
+	DeferProtocolHealth bool          `json:"-"`
+	// SkipProtocolHealthForExisting skips only the repeat probe for an exact
+	// running instance with the same spec. New or replaced instances still check readiness.
+	SkipProtocolHealthForExisting bool                    `json:"-"`
+	VaultHandoff                  *vault.ContainerHandoff `json:"-"`
+	VaultHandoffEnabled           bool                    `json:"-"`
+	VaultHandoffRevoke            func() error            `json:"-"`
+	VaultSecretInputs             map[string]string       `json:"-"`
+	VaultSecretRevision           string                  `json:"vault_secret_revision,omitempty"`
+	VaultNamespaceID              string                  `json:"vault_namespace,omitempty"`
+}
+type BrowserControllerSpec struct {
+	AdapterSource    string `json:"adapter_source,omitempty"`
+	ProfileVolume    string `json:"profile_volume"`
+	AccessConfigJSON string `json:"access_config_json,omitempty"`
+	StartupURL       string `json:"startup_url,omitempty"`
+}
+
+type Instance struct {
+	Key              state.Key `json:"key"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	RegistrationName string    `json:"registration_name,omitempty"`
+	Status           string    `json:"status"`
+	URL              string    `json:"url"`
+	Ownership        string    `json:"ownership"`
+	LastAction       string    `json:"last_action,omitempty"`
+	LastActionAt     time.Time `json:"last_action_at,omitempty"`
+}
+type Runtime struct {
+	Store                  *state.Store
+	Executor               process.Executor
+	OnStderr               func([]byte)
+	SkipHealth             bool
+	VaultHandoffHelperPath string
+	VaultTokenIssuer       vault.ContainerHandoffIssuer
+	vaultRevokers          *sync.Map
+}
+
+var ErrRunningWithDifferentSettings = errors.New("MCP is running with different settings")
+
+func NewDockerRuntime(s *state.Store) *Runtime {
+	r := &Runtime{Store: s, Executor: process.OSExecutor{}, vaultRevokers: &sync.Map{}, VaultHandoffHelperPath: os.Getenv("AACT_VAULT_HANDOFF_HELPER")}
+	if s != nil {
+		if issuer, ok := s.ConfiguredSecretBackend().(vault.ContainerHandoffIssuer); ok {
+			r.VaultTokenIssuer = issuer
+		}
+	}
+	return r
+}
+func bundledVaultHandoffHelper(arch string) string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	name := "aact-vault-handoff-linux-" + arch
+	dir := filepath.Dir(executable)
+	candidates := []string{filepath.Join(dir, name), filepath.Join(dir, "..", "dist", "helpers", name)}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	return candidates[0]
+}
+
+func (r *Runtime) resolveVaultHandoffHelper(ctx context.Context, image string) (string, error) {
+	path := r.VaultHandoffHelperPath
+	if path == "" {
+		output, err := r.run(ctx, []string{"image", "inspect", "--format", "{{.Architecture}}", image})
+		if err != nil {
+			return "", fmt.Errorf("vault handoff requires image architecture inspection; pull the image first: %w", err)
+		}
+		arch := strings.TrimSpace(string(output))
+		if arch != "amd64" && arch != "arm64" {
+			return "", fmt.Errorf("vault handoff does not support Linux image architecture %q", arch)
+		}
+		path = bundledVaultHandoffHelper(arch)
+	}
+	if path == "" {
+		return "", errors.New("vault handoff helper is not bundled; set AACT_VAULT_HANDOFF_HELPER to a matching Linux helper")
+	}
+	if strings.Contains(path, ",") {
+		return "", errors.New("vault handoff helper path cannot contain commas")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect vault handoff helper: %w", err)
+	}
+	// On Unix the host mode must make the mounted Linux helper executable. On
+	// Windows, os.Stat's POSIX mode does not represent executable bits in the
+	// Linux VM; the container's docker exec is the authoritative check there.
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
+		return "", errors.New("vault handoff helper must be a regular executable file")
+	}
+	return path, nil
+}
+
+func (r *Runtime) revokeVaultHandoff(containerID, namespace string) error {
+	if r.VaultTokenIssuer != nil {
+		if err := r.VaultTokenIssuer.RevokeContainerHandoff(namespace, containerID); err != nil {
+			return fmt.Errorf("revoke container vault token: %w", err)
+		}
+		if r.vaultRevokers != nil {
+			r.vaultRevokers.Delete(containerID)
+		}
+		return nil
+	}
+	return r.revokeKnownVaultHandoff(containerID, namespace)
+}
+
+// revokeKnownVaultHandoff revokes only the token recorded for one container.
+// It is used after replacement so the new container's token stays active.
+func (r *Runtime) revokeKnownVaultHandoff(containerID, namespace string) error {
+	if r.VaultTokenIssuer != nil {
+		return r.VaultTokenIssuer.RevokeContainerHandoff(namespace, containerID)
+	}
+	if r.vaultRevokers == nil {
+		return nil
+	}
+	if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
+		if err := revoker.(func() error)(); err != nil {
+			return fmt.Errorf("revoke replaced container vault token: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) revokeVaultHandoffByContainer(containerID string) error {
+	if issuer, ok := r.VaultTokenIssuer.(vault.ContainerHandoffContainerRevoker); ok {
+		if err := issuer.RevokeContainerHandoffByContainer(containerID); err != nil {
+			return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+		}
+		if r.vaultRevokers != nil {
+			r.vaultRevokers.Delete(containerID)
+		}
+		return nil
+	}
+	if r.VaultTokenIssuer != nil {
+		return errors.New("vault token issuer cannot revoke by exact container ID")
+	}
+	if r.vaultRevokers != nil {
+		if revoker, ok := r.vaultRevokers.LoadAndDelete(containerID); ok {
+			if err := revoker.(func() error)(); err != nil {
+				return fmt.Errorf("revoke container vault token by exact ID: %w", err)
+			}
+		}
+	}
+	return nil
+}
+func containerName(k state.Key) string { return "aact-" + k.ID()[:24] }
+
+// containerNameForRegistration produces a readable, deterministic Docker name.
+// Non-ASCII letters and digits are encoded as u plus their lowercase codepoint
+// so distinct names do not collapse merely because their characters were lost.
+func containerNameForRegistration(registrationName string) (string, error) {
+	registrationName = strings.TrimSpace(registrationName)
+	if registrationName == "" {
+		return "", errors.New("MCP registration name is required for Docker container naming")
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range registrationName {
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
+			b.WriteRune(r)
+			lastDash = r == '-'
+			continue
+		}
+		if r > 127 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			fmt.Fprintf(&b, "u%x", r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	value := strings.Trim(b.String(), "-._")
+	if value == "" {
+		return "", errors.New("MCP registration name contains no Docker-name characters")
+	}
+	const maxName = 128
+	const prefix = "aact-"
+	if len(value) > maxName-len(prefix) {
+		value = strings.TrimRight(value[:maxName-len(prefix)], "-._")
+	}
+	if value == "" {
+		return "", errors.New("MCP registration name is too long to normalize safely")
+	}
+	return prefix + value, nil
+}
+func specURL(s RunSpec) string {
+	h := s.AdvertisedHost
+	if h == "" {
+		h = s.Host
+	}
+	if h == "" {
+		h = "localhost"
+	}
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")) != nil {
+		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	}
+	return "http://" + net.JoinHostPort(h, strconv.Itoa(s.HostPort)) + s.EndpointPath
+}
+
+func effectiveBindIP(s RunSpec) string {
+	if s.BindIP != "" {
+		return s.BindIP
+	}
+	if ip := net.ParseIP(s.Host); ip != nil && ip.IsLoopback() {
+		return ip.String()
+	}
+	return "127.0.0.1"
+}
+
+func effectiveAdvertisedHost(s RunSpec) string {
+	if s.AdvertisedHost != "" {
+		return s.AdvertisedHost
+	}
+	if s.Host != "" {
+		return s.Host
+	}
+	return "localhost"
+}
+
+func validateAdvertisedHost(host string) error {
+	if host == "" || strings.ContainsAny(host, "\r\n\x00 /\\?#@") {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")) != nil {
+		return nil
+	}
+	dnsName := strings.TrimSuffix(host, ".")
+	if len(dnsName) == 0 || len(dnsName) > 253 {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	for _, label := range strings.Split(dnsName, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+			}
+		}
+	}
+	u, err := url.Parse("http://" + host)
+	if err != nil || u.Scheme != "http" || u.Host != host || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == "" || u.Port() != "" {
+		return errors.New("MCP advertised host must be a hostname or IP address without a scheme, port, path, or credentials")
+	}
+	return nil
+}
+func canonicalRunSpec(s RunSpec) RunSpec {
+	s.AdditionalPorts = append([]PortMapping(nil), s.AdditionalPorts...)
+	sort.Slice(s.AdditionalPorts, func(i, j int) bool {
+		if s.AdditionalPorts[i].ContainerPort != s.AdditionalPorts[j].ContainerPort {
+			return s.AdditionalPorts[i].ContainerPort < s.AdditionalPorts[j].ContainerPort
+		}
+		return s.AdditionalPorts[i].HostPort < s.AdditionalPorts[j].HostPort
+	})
+	return s
+}
+
+func labels(k state.Key, s RunSpec) map[string]string {
+	b, _ := json.Marshal(canonicalRunSpec(s))
+	h := sha256.Sum256(b)
+	result := map[string]string{"aact.managed": "1", "aact.key": k.ID(), "aact.source": k.Source, "aact.package": k.Package, "aact.environment": k.Environment, "aact.target": k.Target, "aact.url": specURL(s), "aact.spec": hex.EncodeToString(h[:])}
+	if s.RegistrationName != "" {
+		result["aact.registration_name"] = s.RegistrationName
+	}
+	if s.VaultNamespaceID != "" {
+		result["aact.vault_namespace"] = s.VaultNamespaceID
+	}
+	if s.BrowserController != nil {
+		result["aact.browser_auth"] = "1"
+	}
+	if k.MCPDefinition != "" {
+		result["aact.mcp_definition"] = k.MCPDefinition
+	}
+	if k.MCP != "" {
+		result["aact.mcp"] = k.MCP
+	}
+	return result
+}
+
+type dockerConfig struct {
+	Labels map[string]string `json:"Labels"`
+}
+type dockerState struct {
+	Running bool   `json:"Running"`
+	Status  string `json:"Status"`
+}
+type dockerInfo struct {
+	ID     string       `json:"Id"`
+	Name   string       `json:"Name"`
+	Config dockerConfig `json:"Config"`
+	State  dockerState  `json:"State"`
+}
+
+var errDockerObjectNotFound = errors.New("expected Docker object-not-found probe")
+
+type dockerObjectNotFoundError struct{ cause error }
+
+func (e dockerObjectNotFoundError) Error() string { return e.cause.Error() }
+func (e dockerObjectNotFoundError) Unwrap() error { return e.cause }
+func (e dockerObjectNotFoundError) Is(target error) bool {
+	return target == errDockerObjectNotFound
+}
+
+func (r *Runtime) run(ctx context.Context, args []string) ([]byte, error) {
+	b, commandErr, diagnostics := r.runCapture(ctx, args, true)
+	if commandErr != nil {
+		return b, dockerCommandError(args[0], commandErr, diagnostics)
+	}
+	return b, nil
+}
+func (r *Runtime) runCapture(ctx context.Context, args []string, stream bool) ([]byte, error, []byte) {
+	var diagnostics bytes.Buffer
+	b, e := r.Executor.Run(ctx, append([]string{"docker"}, args...), "", nil, nil, func(p []byte) {
+		if diagnostics.Len() < 8192 {
+			diagnostics.Write(p)
+		}
+		if stream && r.OnStderr != nil {
+			r.OnStderr(p)
+		}
+	})
+	return b, e, diagnostics.Bytes()
+}
+func dockerCommandError(operation string, commandErr error, diagnostics []byte) error {
+	return fmt.Errorf("Docker %s: %w: %s", operation, commandErr, strings.TrimSpace(string(diagnostics)))
+}
+func (r *Runtime) inspect(ctx context.Context, name string) (dockerInfo, error) {
+	// Inspect is a probe during first install. Keep its stderr buffered until
+	// the result distinguishes an expected missing container from a real error.
+	b, e, diagnostics := r.runCapture(ctx, []string{"inspect", name}, false)
+	if e != nil {
+		if isExpectedDockerNotFound(e, diagnostics) {
+			e = dockerObjectNotFoundError{cause: dockerCommandError("inspect", e, diagnostics)}
+		} else if r.OnStderr != nil && len(diagnostics) > 0 {
+			r.OnStderr(diagnostics)
+		}
+		if !isDockerNotFound(e) {
+			e = dockerCommandError("inspect", e, diagnostics)
+		}
+		return dockerInfo{}, e
+	}
+	var v []dockerInfo
+	if e = json.Unmarshal(b, &v); e != nil {
+		return dockerInfo{}, e
+	}
+	if len(v) != 1 {
+		return dockerInfo{}, errors.New("Docker inspect expected one container")
+	}
+	return v[0], nil
+}
+func isDockerNotFound(err error) bool {
+	return errors.Is(err, errDockerObjectNotFound)
+}
+func isExpectedDockerNotFound(exitErr error, diagnostics []byte) bool {
+	if exitErr == nil {
+		return false
+	}
+	message := strings.TrimSpace(exitErr.Error())
+	statusText, hasStatus := strings.CutPrefix(message, "exit status ")
+	if strings.HasPrefix(message, "command docker failed: ") {
+		statusText, hasStatus = strings.CutPrefix(strings.TrimPrefix(message, "command docker failed: "), "exit status ")
+	}
+	if !hasStatus {
+		return false
+	}
+	status, err := strconv.Atoi(statusText)
+	if err != nil || status < 1 {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(string(diagnostics), "\r\n", "\n"), "\n")
+	matched := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		knownNotFound := false
+		for _, prefix := range []string{"error: no such object: ", "error: no such container: "} {
+			if strings.HasPrefix(lowerLine, prefix) && strings.TrimSpace(line[len(prefix):]) != "" {
+				knownNotFound = true
+				break
+			}
+		}
+		if knownNotFound {
+			matched++
+			continue
+		}
+		return false
+	}
+	return matched > 0
+}
+func ownership(d dockerInfo, k state.Key, localID string, rows []state.Installation) string {
+	l := d.Config.Labels
+	if l["aact.managed"] != "1" || l["aact.key"] != k.ID() || l["aact.source"] != k.Source {
+		return "unknown"
+	}
+	if owner := l["aact.owner"]; owner != "" {
+		if owner == localID {
+			return "local"
+		}
+		return "other-aact"
+	}
+	for _, row := range rows {
+		if row.Component == "runtime" && row.Key == k && row.SourcePath != "" && row.SourcePath == d.ID {
+			return "local"
+		}
+	}
+	return "unknown"
+}
+func runtimeRecord(rows []state.Installation, k state.Key, id string) (state.Installation, bool) {
+	for _, row := range rows {
+		if row.Component == "runtime" && row.Key == k && row.SourcePath == id {
+			return row, true
+		}
+	}
+	return state.Installation{}, false
+}
+func (r *Runtime) recordAction(k state.Key, i Instance, action string) (Instance, error) {
+	i.LastAction = action
+	i.LastActionAt = time.Now().UTC()
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return i, err
+	}
+	var canonical state.Installation
+	hasCanonical := false
+	duplicates := []state.Installation{}
+	for _, row := range rows {
+		if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.SourcePath != i.ID {
+			continue
+		}
+		if !hasCanonical {
+			canonical, hasCanonical = row, true
+		} else if row.Destination != canonical.Destination {
+			duplicates = append(duplicates, row)
+		}
+	}
+	destination := i.Name
+	if hasCanonical {
+		destination = canonical.Destination
+	}
+	for _, duplicate := range duplicates {
+		if err := r.Store.Remove(duplicate); err != nil {
+			return i, err
+		}
+	}
+	if err := r.Store.Record(state.Installation{Key: k, AgentID: "docker", Component: "runtime", Destination: destination, SourcePath: i.ID, Mode: "docker", URL: i.URL, LastAction: action, LastActionAt: i.LastActionAt}); err != nil {
+		return i, err
+	}
+	return i, nil
+}
+func vaultHandoffHostGatewayArgs(goos string) []string {
+	if goos != "linux" {
+		return nil
+	}
+	return []string{"--add-host", "host.docker.internal:host-gateway"}
+}
+
+func (r *Runtime) Start(ctx context.Context, k state.Key, s RunSpec) (out Instance, startErr error) {
+	if s.BrowserController != nil {
+		if strings.TrimSpace(s.BrowserController.ProfileVolume) == "" {
+			return Instance{}, errors.New("browser controller profile volume is required")
+		}
+		if err := browsercontroller.ValidateAccessConfig(s.BrowserController.AccessConfigJSON); err != nil {
+			return Instance{}, err
+		}
+		if err := browsercontroller.ValidateStartupURLAgainstAccessConfig(s.BrowserController.StartupURL, s.BrowserController.AccessConfigJSON); err != nil {
+			return Instance{}, errors.New("browser controller startup URL is invalid or blocked by browser access policy")
+		}
+		if r.Store == nil {
+			return Instance{}, errors.New("browser controller requires AACT runtime state")
+		}
+		browserKey := k
+		if s.BrowserVaultKey != nil {
+			browserKey = *s.BrowserVaultKey
+		}
+		if s.VaultNamespaceID != "" && s.VaultNamespaceID != browserKey.ID() {
+			return Instance{}, errors.New("browser controller and MCP vault namespaces differ")
+		}
+		s.VaultNamespaceID = browserKey.ID()
+		s.VaultHandoffEnabled = true
+		var err error
+		s.VaultSecretRevision, err = r.Store.SecretInputsRevision(browserKey)
+		if err != nil {
+			return Instance{}, errors.New("could not read browser vault revision")
+		}
+
+	}
+	handoffCommitted := false
+	issuedByRuntime := false
+	if len(s.VaultSecretInputs) > 0 || s.BrowserController != nil {
+		s.VaultHandoffEnabled = true
+	}
+	if len(s.VaultSecretInputs) > 0 || s.BrowserController != nil {
+		if s.VaultHandoff != nil {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault handoff")
+		}
+		scopedIssuer, ok := r.VaultTokenIssuer.(vault.ScopedContainerHandoffIssuer)
+		if !ok {
+			return Instance{}, errors.New("mapped private inputs require a scoped vault token issuer")
+		}
+		namespace := s.VaultNamespaceID
+		if namespace == "" {
+			namespace = k.ID()
+		}
+		inputNames := make([]string, 0, len(s.VaultSecretInputs))
+		for _, inputName := range s.VaultSecretInputs {
+			inputNames = append(inputNames, inputName)
+		}
+		if len(inputNames) == 0 {
+			inputNames = append(inputNames, vault.BrowserOnlyPrivateInputScope)
+		}
+		handoff, revoke, err := scopedIssuer.IssueContainerHandoffForPrivateInputs(namespace, inputNames)
+		if err != nil {
+			return Instance{}, fmt.Errorf("issue scoped vault token: %w", err)
+		}
+		s.VaultHandoff = &handoff
+		issuedByRuntime = true
+		if s.VaultHandoffRevoke == nil {
+			s.VaultHandoffRevoke = revoke
+		}
+	} else if s.VaultHandoff == nil && s.VaultHandoffEnabled && r.VaultTokenIssuer != nil {
+		namespace := s.VaultNamespaceID
+		if namespace == "" {
+			namespace = k.ID()
+		}
+		handoff, revoke, err := r.VaultTokenIssuer.IssueContainerHandoff(namespace)
+		if err != nil {
+			return Instance{}, fmt.Errorf("issue instance-scoped vault token: %w", err)
+		}
+		s.VaultHandoff = &handoff
+		issuedByRuntime = true
+		if s.VaultHandoffRevoke == nil {
+			s.VaultHandoffRevoke = revoke
+		}
+	}
+	if s.VaultHandoffEnabled && s.VaultHandoff == nil {
+		return Instance{}, errors.New("vault handoff was requested but no token issuer is configured")
+	}
+	if s.VaultHandoffRevoke != nil {
+		defer func() {
+			if !handoffCommitted {
+				if revokeErr := s.VaultHandoffRevoke(); revokeErr != nil {
+					startErr = errors.Join(startErr, fmt.Errorf("revoke failed container vault token: %w", revokeErr))
+				}
+			}
+		}()
+	}
+	var handoffPayload []byte
+	if s.VaultHandoff != nil {
+		var payload bytes.Buffer
+		if err := vault.WriteContainerHandoff(&payload, *s.VaultHandoff); err != nil {
+			return Instance{}, err
+		}
+		handoffPayload = payload.Bytes()
+		defer clear(handoffPayload)
+	}
+
+	secretValues := []string{}
+	for _, v := range s.SecretEnv {
+		if v != "" {
+			secretValues = append(secretValues, v)
+		}
+	}
+	if s.VaultHandoff != nil && s.VaultHandoff.Token != "" {
+		secretValues = append(secretValues, s.VaultHandoff.Token)
+	}
+	local := *r
+	local.Executor = redactingExecutor{base: r.Executor, values: secretValues}
+	r = &local
+	s.BindIP = effectiveBindIP(s)
+	s.AdvertisedHost = effectiveAdvertisedHost(s)
+	bindIP := net.ParseIP(s.BindIP)
+	if bindIP == nil || !bindIP.IsLoopback() {
+		return Instance{}, errors.New("MCP Docker bind IP must be a numeric loopback address")
+	}
+	if err := validateAdvertisedHost(s.AdvertisedHost); err != nil {
+		return Instance{}, err
+	}
+	if s.HostPort < 1 || s.HostPort > 65535 || s.ContainerPort < 1 || s.ContainerPort > 65535 {
+		return Instance{}, errors.New("MCP port outside 1..65535")
+	}
+	usedHostPorts := map[int]bool{s.HostPort: true}
+	usedContainerPorts := map[int]bool{s.ContainerPort: true}
+	for _, port := range s.AdditionalPorts {
+		if port.HostPort < 1 || port.HostPort > 65535 || port.ContainerPort < 1 || port.ContainerPort > 65535 {
+			return Instance{}, errors.New("MCP additional port outside 1..65535")
+		}
+		if usedHostPorts[port.HostPort] || usedContainerPorts[port.ContainerPort] {
+			return Instance{}, errors.New("MCP additional port mappings must use unique host and container ports")
+		}
+		usedHostPorts[port.HostPort] = true
+		usedContainerPorts[port.ContainerPort] = true
+	}
+	if s.Image == "" && s.BuildContext == "" {
+		return Instance{}, errors.New("MCP image or build context required")
+	}
+	registrationName := s.RegistrationName
+	if strings.TrimSpace(registrationName) == "" {
+		registrationName = strings.Join([]string{k.Package, k.Environment, k.Target, k.MCPDefinition, k.MCP}, " ")
+	}
+	s.RegistrationName = registrationName
+	name, err := containerNameForRegistration(registrationName)
+	if err != nil {
+		return Instance{}, err
+	}
+	expected := labels(k, s)
+	var attempt [16]byte
+	if _, e := rand.Read(attempt[:]); e != nil {
+		return Instance{}, e
+	}
+	expected["aact.attempt"] = hex.EncodeToString(attempt[:])
+	installationID, e := r.Store.InstallationID()
+	if e != nil {
+		return Instance{}, e
+	}
+	expected["aact.owner"] = installationID
+	rows, e := r.Store.Installations()
+	if e != nil {
+		return Instance{}, e
+	}
+	var previous *dockerInfo
+	replacingRegistrationName := false
+	legacyNameLookup := false
+	old, inspectErr := r.inspect(ctx, name)
+	if inspectErr != nil && isDockerNotFound(inspectErr) && containerName(k) != name {
+		// Saved installations may still own a key-derived container name.
+		old, inspectErr = r.inspect(ctx, containerName(k))
+		legacyNameLookup = inspectErr == nil
+	}
+	hasRecordedRuntime := false
+	for _, row := range rows {
+		if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath != "" && row.Destination != containerName(k) {
+			hasRecordedRuntime = true
+			break
+		}
+	}
+	if inspectErr != nil && isDockerNotFound(inspectErr) && hasRecordedRuntime {
+		// A registration rename changes the desired Docker name, but Docker's
+		// immutable key/owner labels and container ID still identify our current
+		// runtime. Resolve that current observation before attempting another bind.
+		observed, listErr := r.List(ctx)
+		if listErr != nil {
+			return Instance{}, fmt.Errorf("refresh Docker inventory before registration-name replacement: %w", listErr)
+		}
+		var keyed []Instance
+		for _, item := range observed {
+			if item.Key == k && item.Status != "missing" && item.Status != "external" && item.ID != "" {
+				keyed = append(keyed, item)
+			}
+		}
+		if len(keyed) > 1 {
+			return Instance{}, errors.New("multiple Docker runtime observations match this MCP profile; refusing ambiguous replacement")
+		}
+		if len(keyed) == 1 {
+			candidate, candidateErr := r.inspect(ctx, keyed[0].ID)
+			if candidateErr != nil {
+				return Instance{}, candidateErr
+			}
+			if ownership(candidate, k, installationID, rows) != "local" {
+				return Instance{}, errors.New("container name collision: the current MCP runtime belongs to another installation or has unknown ownership")
+			}
+			registeredName := candidate.Config.Labels["aact.registration_name"]
+			candidateName, nameErr := containerNameForRegistration(registeredName)
+			actualName := strings.TrimPrefix(candidate.Name, "/")
+			retainedBackup := actualName != name && strings.HasPrefix(actualName, "aact-previous-")
+			sameRegistrationBackup := registeredName == s.RegistrationName && retainedBackup
+			if registeredName == "" || nameErr != nil || (candidateName == name && registeredName != s.RegistrationName) || (registeredName == s.RegistrationName && !sameRegistrationBackup) {
+				return Instance{}, errors.New("container name collision: existing runtime does not identify a distinct registration name")
+			}
+			old, inspectErr = candidate, nil
+			replacingRegistrationName = true
+		}
+	}
+	if inspectErr == nil {
+		if ownership(old, k, installationID, rows) != "local" {
+			return Instance{}, errors.New("container name collision: the readable name belongs to another installation, key, or an unknown owner")
+		}
+		if legacyNameLookup {
+			if _, recorded := runtimeRecord(rows, k, old.ID); !recorded && old.State.Running {
+				return Instance{}, errors.New("container name collision: legacy runtime has no matching locally recorded container ID")
+			}
+			actualName := strings.TrimPrefix(old.Name, "/")
+			registeredName := old.Config.Labels["aact.registration_name"]
+			if actualName == name {
+				return Instance{}, errors.New("container name collision: legacy runtime unexpectedly occupies the desired readable name")
+			}
+			if registeredName != "" && registeredName != s.RegistrationName {
+				registeredDockerName, nameErr := containerNameForRegistration(registeredName)
+				if nameErr == nil && registeredDockerName == name {
+					return Instance{}, errors.New("container name collision: different MCP registration names normalize to the same Docker name")
+				}
+			}
+			replacingRegistrationName = true
+		}
+		if existingName := old.Config.Labels["aact.registration_name"]; !replacingRegistrationName && existingName != "" && existingName != s.RegistrationName {
+			return Instance{}, errors.New("container name collision: different MCP registration names normalize to the same Docker name")
+		}
+		if old.State.Running && !replacingRegistrationName {
+			if old.Config.Labels["aact.spec"] != expected["aact.spec"] {
+				return Instance{}, ErrRunningWithDifferentSettings
+			}
+			out := instance(old)
+			out.Ownership = "local"
+			if !s.DeferProtocolHealth && !s.SkipProtocolHealthForExisting {
+				if e := r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+					return out, fmt.Errorf("existing MCP health check failed: %w", e)
+				}
+			}
+			if out, e = r.recordAction(k, out, "start"); e != nil {
+				return out, fmt.Errorf("MCP state recording failed: %w", e)
+			}
+			return out, nil
+		}
+		previous = &old
+	} else if !isDockerNotFound(inspectErr) {
+		return Instance{}, inspectErr
+	}
+	image := s.Image
+	if s.BuildContext != "" {
+		image = "aact/" + k.ID()[:24] + ":local"
+		if _, e := r.run(ctx, []string{"build", "--tag", image, s.BuildContext}); e != nil {
+			return Instance{}, e
+		}
+	}
+	helperPath := ""
+	if s.VaultHandoff != nil {
+		helperPath, e = r.resolveVaultHandoffHelper(ctx, image)
+		if e != nil {
+			return Instance{}, e
+		}
+	}
+	a := []string{"run", "--detach", "--name", name}
+	if s.VaultHandoff != nil {
+		a = append(a, vaultHandoffHostGatewayArgs(runtime.GOOS)...)
+		a = append(a, "--tmpfs", vault.ContainerHandoffTmpfs)
+		a = append(a, "--mount", "type=bind,src="+helperPath+",dst=/run/aact-vault-handoff,readonly")
+	}
+	if s.User != "" {
+		a = append(a, "--user", s.User)
+	}
+	names := make([]string, 0, len(expected))
+	for n := range expected {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		a = append(a, "--label", n+"="+expected[n])
+	}
+	a = append(a, "--publish", net.JoinHostPort(s.BindIP, strconv.Itoa(s.HostPort))+":"+strconv.Itoa(s.ContainerPort))
+	for _, port := range canonicalRunSpec(s).AdditionalPorts {
+		a = append(a, "--publish", net.JoinHostPort(s.BindIP, strconv.Itoa(port.HostPort))+":"+strconv.Itoa(port.ContainerPort))
+	}
+	for _, m := range s.Mounts {
+		if strings.Contains(m.Source, ",") || strings.Contains(m.Destination, ",") {
+			return Instance{}, errors.New("Docker mount paths cannot contain commas")
+		}
+		v := "type=bind,src=" + m.Source + ",dst=" + m.Destination
+		if m.ReadOnly {
+			v += ",readonly"
+		}
+		a = append(a, "--mount", v)
+	}
+	if len(s.Env)+len(s.SecretEnv) > 0 {
+		f, e := os.CreateTemp(r.Store.Root(), ".aact-env-*")
+		if e != nil {
+			return Instance{}, e
+		}
+		defer os.Remove(f.Name())
+		if e = f.Chmod(0600); e != nil {
+			f.Close()
+			return Instance{}, e
+		}
+		env := map[string]string{}
+		for n, v := range s.Env {
+			env[n] = v
+		}
+		for n, v := range s.SecretEnv {
+			env[n] = v
+		}
+		ns := make([]string, 0, len(env))
+		for n := range env {
+			ns = append(ns, n)
+		}
+		sort.Strings(ns)
+		for _, n := range ns {
+			if strings.ContainsAny(n, "=\r\n") || strings.ContainsAny(env[n], "\r\n") {
+				f.Close()
+				return Instance{}, errors.New("invalid container environment entry")
+			}
+			if _, e = fmt.Fprintf(f, "%s=%s\n", n, env[n]); e != nil {
+				f.Close()
+				return Instance{}, e
+			}
+		}
+		if e = f.Close(); e != nil {
+			return Instance{}, e
+		}
+		a = append(a, "--env-file", f.Name())
+	}
+	a = append(a, image)
+	a = append(a, s.Args...)
+	committed, renamed := false, false
+	createdID := ""
+	browserRegistered := false
+	defer func() {
+		if committed {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var cleanupErr error
+		if createdID == "" {
+			if candidate, err := r.inspect(cleanupCtx, name); err == nil && ownership(candidate, k, installationID, rows) == "local" && candidate.Config.Labels["aact.spec"] == expected["aact.spec"] && candidate.Config.Labels["aact.attempt"] == expected["aact.attempt"] && (previous == nil || candidate.ID != previous.ID) {
+				createdID = candidate.ID
+			}
+		}
+		if createdID != "" {
+			if browserRegistered {
+				cleanupErr = r.unregisterBrowserWithDaemon(createdID)
+			}
+			_, removeErr := r.run(cleanupCtx, []string{"rm", "--force", createdID})
+			cleanupErr = errors.Join(cleanupErr, removeErr)
+		}
+		if cleanupErr != nil {
+			startErr = errors.Join(startErr, fmt.Errorf("MCP startup cleanup failed: %w", cleanupErr))
+		}
+	}()
+	if previous != nil {
+		if previous.State.Running && replacingRegistrationName {
+			if _, e := r.run(ctx, []string{"stop", previous.ID}); e != nil {
+				return Instance{}, fmt.Errorf("stop prior MCP runtime before registration-name replacement: %w", e)
+			}
+		}
+		if previous.Config.Labels["aact.browser_auth"] == "1" {
+			if err := r.pauseBrowserWithDaemon(previous.ID); err != nil {
+				return Instance{}, fmt.Errorf("pause prior browser: %w", err)
+			}
+		}
+		backupName := "aact-previous-" + previous.ID[:min(12, len(previous.ID))] + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		if _, e := r.run(ctx, []string{"rename", previous.ID, backupName}); e != nil {
+			return Instance{}, e
+		}
+		renamed = true
+	}
+	b, e := r.run(ctx, a)
+	if e != nil {
+		return Instance{}, fmt.Errorf("start MCP on %s:%d: %w", s.BindIP, s.HostPort, e)
+	}
+	createdID = strings.TrimSpace(string(b))
+	if s.VaultHandoff != nil {
+		if issuedByRuntime {
+			if bindErr := r.VaultTokenIssuer.BindContainerHandoff(createdID, s.VaultHandoff.Token); bindErr != nil {
+				return Instance{}, fmt.Errorf("bind vault token to container: %w", bindErr)
+			}
+		}
+		if s.BrowserController != nil {
+			// Registration may succeed even when its response is lost; cleanup
+			// must try to remove it on every subsequent startup failure.
+			browserRegistered = true
+			if err := r.registerBrowserWithDaemon(k, s, createdID); err != nil {
+				return Instance{}, fmt.Errorf("register browser with daemon: %w", err)
+			}
+		}
+		args := []string{"docker", "exec", "--interactive", createdID, "/run/aact-vault-handoff"}
+		var diagnostics bytes.Buffer
+		_, handoffErr := r.Executor.Run(ctx, args, "", handoffPayload, nil, func(p []byte) {
+			if diagnostics.Len() < 8192 {
+				diagnostics.Write(p)
+			}
+			if r.OnStderr != nil {
+				r.OnStderr(p)
+			}
+		})
+		if handoffErr != nil {
+			return Instance{}, dockerCommandError("vault handoff", handoffErr, diagnostics.Bytes())
+		}
+	}
+	out = Instance{Key: k, ID: createdID, Name: name, Status: "running", URL: specURL(s), Ownership: "local"}
+	if !s.DeferProtocolHealth {
+		if e = r.checkHealth(ctx, out.URL, s.Transport); e != nil {
+			return out, fmt.Errorf("MCP health check failed: %w", e)
+		}
+	}
+	if out, e = r.recordAction(k, out, "start"); e != nil {
+		return out, fmt.Errorf("MCP state recording failed: %w", e)
+	}
+	committed = true
+	if s.VaultHandoffRevoke != nil {
+		r.vaultRevokers.Store(createdID, s.VaultHandoffRevoke)
+	}
+	handoffCommitted = true
+	if renamed {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, e = r.run(cleanupCtx, []string{"rm", previous.ID}); e != nil {
+			return out, fmt.Errorf("MCP started but prior stopped container cleanup failed: %w", e)
+		}
+		previousNamespace := previous.Config.Labels["aact.vault_namespace"]
+		if previousNamespace == "" {
+			previousNamespace = k.ID()
+		}
+		if e = r.revokeKnownVaultHandoff(previous.ID, previousNamespace); e != nil {
+			return out, fmt.Errorf("MCP replaced successfully but prior token revocation failed: %w", e)
+		}
+		if previous.Config.Labels["aact.browser_auth"] == "1" {
+			if e = r.unregisterBrowserWithDaemon(previous.ID); e != nil {
+				return out, fmt.Errorf("MCP started but prior browser cleanup failed: %w", e)
+			}
+		}
+		for _, row := range rows {
+			if row.Key == k && row.AgentID == "docker" && row.Component == "runtime" && row.SourcePath == previous.ID {
+				// The old runtime remains a distinct ledger record until the
+				// replacement has passed health and been recorded. Remove only
+				// the exact previous container ID after successful replacement.
+				if e = r.Store.Remove(row); e != nil {
+					return out, fmt.Errorf("MCP started but prior runtime history cleanup failed: %w", e)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (r *Runtime) checkHealth(ctx context.Context, url, transport string) error {
+	if r.SkipHealth {
+		return nil
+	}
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		err := Health(deadline, url, transport)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-deadline.Done():
+			return err
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+type redactingExecutor struct {
+	base   process.Executor
+	values []string
+}
+
+func (e redactingExecutor) Run(ctx context.Context, a []string, cwd string, in []byte, env map[string]string, cb func([]byte)) ([]byte, error) {
+	scrub := func(s string) string {
+		for _, v := range e.values {
+			s = strings.ReplaceAll(s, v, "[redacted]")
+		}
+		return s
+	}
+	redactor := process.NewRedactor(e.values, cb)
+	out, err := e.base.Run(ctx, a, cwd, in, env, redactor.Write)
+	redactor.Flush()
+	if err != nil {
+		err = errors.New(scrub(err.Error()))
+	}
+	return out, err
+}
+func instance(d dockerInfo) Instance {
+	l := d.Config.Labels
+	s := d.State.Status
+	mcpDefinition := l["aact.mcp_definition"]
+	if mcpDefinition == "" {
+		// Containers created before the key discriminator rename used this label.
+		mcpDefinition = l["aact.profile"]
+	}
+	if s == "" && d.State.Running {
+		s = "running"
+	}
+	return Instance{Key: state.Key{Source: l["aact.source"], Package: l["aact.package"], Environment: l["aact.environment"], Target: l["aact.target"], MCP: l["aact.mcp"], MCPDefinition: mcpDefinition}, ID: d.ID, Name: strings.TrimPrefix(d.Name, "/"), RegistrationName: l["aact.registration_name"], Status: s, URL: l["aact.url"]}
+}
+func (r *Runtime) observedContainer(ctx context.Context, k state.Key) (Instance, error) {
+	instances, err := r.List(ctx)
+	if err != nil {
+		return Instance{}, fmt.Errorf("refresh Docker observation before controlling runtime: %w", err)
+	}
+	var match *Instance
+	for i := range instances {
+		item := &instances[i]
+		if item.Key != k || item.Status == "missing" || item.Status == "external" || item.ID == "" {
+			continue
+		}
+		if match != nil {
+			return Instance{}, fmt.Errorf("multiple Docker runtime observations match this MCP profile; refusing ambiguous control")
+		}
+		match = item
+	}
+	if match == nil {
+		return Instance{}, errors.New("no current Docker runtime observation matches this MCP profile")
+	}
+	if match.Ownership != "local" {
+		return Instance{}, fmt.Errorf("refusing to control a container owned by %s", match.Ownership)
+	}
+	return *match, nil
+}
+
+// Exec sends an argv array to the exact running container currently observed as locally owned.
+// Docker receives the arguments directly; no shell is inserted between the caller and executable.
+func (r *Runtime) Exec(ctx context.Context, k state.Key, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, errors.New("container action argv is required")
+	}
+	observed, err := r.observedContainer(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	if observed.Status != "running" {
+		return nil, fmt.Errorf("refusing to execute in non-running container %s", observed.ID)
+	}
+	args := append([]string{"docker", "exec", "-i", observed.ID}, argv...)
+	var diagnostics bytes.Buffer
+	out, err := r.Executor.Run(ctx, args, "", stdin, nil, func(p []byte) {
+		if diagnostics.Len() < 8192 {
+			diagnostics.Write(p)
+		}
+		if stderr != nil {
+			stderr(p)
+		} else if r.OnStderr != nil {
+			r.OnStderr(p)
+		}
+	})
+	if err != nil {
+		return out, dockerCommandError("exec", err, diagnostics.Bytes())
+	}
+	return out, nil
+}
+
+func (r *Runtime) Stop(ctx context.Context, k state.Key) error {
+	observed, err := r.observedContainer(ctx, k)
+	if err != nil {
+		if err.Error() != "no current Docker runtime observation matches this MCP profile" {
+			return err
+		}
+		rows, rowsErr := r.Store.Installations()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		var stale *state.Installation
+		for i := range rows {
+			row := &rows[i]
+			if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.Mode != "docker" || row.SourcePath == "" {
+				continue
+			}
+			if stale != nil {
+				return errors.New("multiple stale Docker runtime records match this MCP profile; refusing ambiguous cleanup")
+			}
+			stale = row
+		}
+		if stale == nil {
+			return err
+		}
+		if revokeErr := r.revokeVaultHandoffByContainer(stale.SourcePath); revokeErr != nil {
+			return fmt.Errorf("stale runtime vault token revocation failed: %w", revokeErr)
+		}
+		if removeErr := r.Store.Remove(*stale); removeErr != nil {
+			return fmt.Errorf("stale runtime record could not be cleared: %w", removeErr)
+		}
+		return nil
+	}
+	namespace := k.ID()
+	browserEnabled := false
+	if info, inspectErr := r.inspect(ctx, observed.ID); inspectErr == nil {
+		if info.Config.Labels["aact.vault_namespace"] != "" {
+			namespace = info.Config.Labels["aact.vault_namespace"]
+		}
+		browserEnabled = info.Config.Labels["aact.browser_auth"] == "1"
+	}
+	_, e := r.run(ctx, []string{"rm", "--force", observed.ID})
+	if e != nil {
+		return e
+	}
+	if err := r.revokeVaultHandoff(observed.ID, namespace); err != nil {
+		return fmt.Errorf("runtime %s was removed but token revocation failed: %w", observed.ID, err)
+	}
+	if browserEnabled {
+		if err := r.unregisterBrowserWithDaemon(observed.ID); err != nil {
+			return fmt.Errorf("runtime was removed but browser cleanup failed: %w", err)
+		}
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return fmt.Errorf("runtime %s was removed but its ledger could not be read: %w", observed.ID, err)
+	}
+	for _, row := range rows {
+		if row.Key != k || row.AgentID != "docker" || row.Component != "runtime" || row.SourcePath != observed.ID {
+			continue
+		}
+		if err := r.Store.Remove(row); err != nil {
+			return fmt.Errorf("runtime %s was removed but its ledger record could not be cleared: %w", observed.ID, err)
+		}
+	}
+	return nil
+}
+
+// StopExact removes one container only after verifying its exact state key,
+// exact container ID, and AACT ownership. A matching local ledger row is
+// removed when present, but is not required when Docker labels prove ownership.
+// It is intentionally
+// separate from Stop, whose key-based lookup refuses ambiguous instances.
+func (r *Runtime) StopExact(ctx context.Context, k state.Key, id string) error {
+	if id == "" {
+		return errors.New("runtime ID is required")
+	}
+	rows, err := r.Store.Installations()
+	if err != nil {
+		return err
+	}
+	record, recorded := runtimeRecord(rows, k, id)
+	if recorded && record.AgentID != "docker" {
+		return errors.New("exact runtime ID has a non-Docker ledger record")
+	}
+	info, err := r.inspect(ctx, id)
+	if err != nil {
+		if isDockerNotFound(err) {
+			if err := r.revokeVaultHandoffByContainer(id); err != nil {
+				return fmt.Errorf("missing container %s token revocation failed: %w", id, err)
+			}
+			if recorded {
+				return r.Store.Remove(record)
+			}
+			return nil
+		}
+		return err
+	}
+	observed := instance(info)
+	if observed.ID != id || observed.Key != k {
+		return errors.New("exact runtime ID does not match the requested MCP key")
+	}
+	installationID, err := r.Store.InstallationID()
+	if err != nil {
+		return err
+	}
+	if owner := ownership(info, k, installationID, rows); owner != "local" {
+		return fmt.Errorf("refusing to delete runtime %s: ownership is %s", id, owner)
+	}
+	if _, err := r.run(ctx, []string{"rm", "--force", id}); err != nil {
+		return err
+	}
+	namespace := info.Config.Labels["aact.vault_namespace"]
+	if namespace == "" {
+		namespace = k.ID()
+	}
+	if err := r.revokeVaultHandoff(id, namespace); err != nil {
+		return fmt.Errorf("container %s was removed but token revocation failed: %w", id, err)
+	}
+	if info.Config.Labels["aact.browser_auth"] == "1" {
+		if err := r.unregisterBrowserWithDaemon(id); err != nil {
+			return fmt.Errorf("container was removed but browser cleanup failed: %w", err)
+		}
+	}
+	if recorded {
+		if err := r.Store.Remove(record); err != nil {
+			return fmt.Errorf("container %s was removed but its exact ledger record remains: %w", id, err)
+		}
+	}
+	return nil
+}
+func (r *Runtime) List(ctx context.Context) ([]Instance, error) {
+	installationID, e := r.Store.InstallationID()
+	if e != nil {
+		return nil, e
+	}
+	rows, e := r.Store.Installations()
+	if e != nil {
+		return nil, e
+	}
+	b, e := r.run(ctx, []string{"ps", "--all", "--filter", "label=aact.managed=1", "--format", "{{.ID}}"})
+	if e != nil {
+		return nil, e
+	}
+	ids := strings.Fields(string(b))
+	out := []Instance{}
+	for _, id := range ids {
+		d, e := r.inspect(ctx, id)
+		if e != nil {
+			return nil, e
+		}
+		if d.Config.Labels["aact.managed"] != "1" {
+			continue
+		}
+		i := instance(d)
+		if d.Config.Labels["aact.key"] != i.Key.ID() {
+			continue
+		}
+		i.Ownership = ownership(d, i.Key, installationID, rows)
+		if row, ok := runtimeRecord(rows, i.Key, i.ID); ok {
+			i.LastAction = row.LastAction
+			i.LastActionAt = row.LastActionAt
+		}
+		out = append(out, i)
+	}
+	present := map[string]bool{}
+	for _, i := range out {
+		present[i.ID] = true
+	}
+	for _, row := range rows {
+		if row.Component == "runtime" && !present[row.SourcePath] {
+			out = append(out, Instance{Key: row.Key, ID: row.SourcePath, Name: row.Destination, Status: "missing", URL: row.URL, Ownership: "local", LastAction: row.LastAction, LastActionAt: row.LastActionAt})
+		}
+	}
+	type registration struct {
+		Key state.Key
+		URL string
+	}
+	seen := map[registration]bool{}
+	for _, item := range out {
+		if item.Status != "missing" {
+			seen[registration{item.Key, item.URL}] = true
+		}
+	}
+	for _, row := range rows {
+		identity := registration{row.Key, row.URL}
+		if row.Component == "mcp" && row.ExternalRegistration && row.URL != "" && !seen[identity] {
+			out = append(out, Instance{Key: row.Key, Name: row.RegistrationName, Status: "external", URL: row.URL, Ownership: "unknown"})
+			seen[identity] = true
+		}
+	}
+	return out, nil
+}
+func (r *Runtime) Logs(ctx context.Context, k state.Key) (io.ReadCloser, error) {
+	observed, err := r.observedContainer(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	b, e := r.run(ctx, []string{"logs", "--tail", "200", observed.ID})
+	if e != nil {
+		return nil, e
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}

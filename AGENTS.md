@@ -11,11 +11,11 @@ not create tags or start publication manually.
 
 ## Repository layout
 
-- `cmd/` contains executable entry points; `internal/` contains the manager,
-  TUI, state, runtime, and agent adapter implementations.
-- `packages/` contains bundled Capability definitions and their resources,
-  including MCP server implementations and tests where applicable.
-- `tests/` contains broader integration and user-experience tests; `docs/`
+- `main/cmd/` contains executable entry points; `main/internal/` contains the
+  manager, TUI, state, runtime, and agent adapter implementations.
+- `main/packages/` contains Go package sources; `packages/` contains bundled
+  Capability definitions and their non-Go resources, including MCP servers.
+- `test/` contains black-box Go tests in a mirrored tree; `docs/`
   contains project documentation and design history.
 
 ## Working on changes
@@ -33,9 +33,12 @@ not create tags or start publication manually.
 
 ## Verification and delivery
 
-- Run the relevant focused tests for the change. For Go changes, format changed
-  files with `gofmt` and run `go test ./... -count=1` and `go vet ./...` when
-  applicable. Follow `CONTRIBUTING.md` for race and container checks.
+- Keep Go tests in the separate mirrored `test/` tree and make them black-box.
+  Do not add tests that import `main/internal`, access private state, or exist
+  only to cover implementation lines. For Go changes, format changed files with
+  `gofmt`; use `go test ./test/... -count=1` and `go vet ./main/...` when the
+  user asks for testing or verification. Follow `CONTRIBUTING.md` for race and
+  container checks.
 - Report what was tested and any checks that could not be run.
 - Every agent-authored commit must include an `Agent-Conversation` trailer for
   each contributing session: platform, durable link or stable ID, start time

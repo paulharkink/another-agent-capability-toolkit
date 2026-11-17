@@ -1,0 +1,812 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/browsercontroller"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/process"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo"
+	"io"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Editor func(context.Context, []catalog.Input, map[string]any) (map[string]any, error)
+type PresentationEditor func(context.Context, []catalog.Input, map[string]any, []string, map[string][]string) (map[string]any, error)
+type MCPRuntime interface {
+	Start(context.Context, state.Key, mcp.RunSpec) (mcp.Instance, error)
+	Stop(context.Context, state.Key) error
+	List(context.Context) ([]mcp.Instance, error)
+	Logs(context.Context, state.Key) (io.ReadCloser, error)
+}
+type mcpRuntimeActionExecutor interface {
+	Exec(context.Context, state.Key, []string, []byte, func([]byte)) ([]byte, error)
+}
+type profileActionExecutor struct {
+	runtime mcpRuntimeActionExecutor
+	key     state.Key
+}
+
+func (e profileActionExecutor) Exec(ctx context.Context, argv []string, stdin []byte, stderr func([]byte)) ([]byte, error) {
+	return e.runtime.Exec(ctx, e.key, argv, stdin, stderr)
+}
+
+func (s *Service) containerActionExecutor(key state.Key) mcp.ContainerActionExecutor {
+	runtime, ok := s.Options.Runtime.(mcpRuntimeActionExecutor)
+	if !ok {
+		return nil
+	}
+	return profileActionExecutor{runtime: runtime, key: key}
+}
+
+type Options struct {
+	Adapters           AdapterProvider
+	AgentScopes        map[string]agents.Scope
+	Runner             process.Executor
+	Editor             Editor
+	PresentationEditor PresentationEditor
+	Runtime            MCPRuntime
+	DiscoveryProbe     *agents.DiscoveryProbe
+	OnStderr           func([]byte)
+	BundledRoot        string
+	RecordInstallation func(state.Installation) error
+	RemoveInstallation func(state.Installation) error
+}
+type Service struct {
+	Source         config.Source
+	Store          *state.Store
+	Options        Options
+	observationMu  sync.Mutex
+	lastInstances  []mcp.Instance
+	lastObservedAt time.Time
+}
+
+func registrationTimeoutMS(m *catalog.MCP) int {
+	if m != nil && m.RegistrationTimeoutMS > 0 {
+		return m.RegistrationTimeoutMS
+	}
+	return 30000
+}
+
+// authenticationRequiredMessage keeps provider-specific diagnostics first so
+// retry guidance does not bury the cause. An empty diagnostic keeps the
+// established user-facing fallback unchanged.
+func authenticationRequiredMessage(packageID, diagnostic string) string {
+	retry := fmt.Sprintf("run aact mcp authenticate %s with credentials or --interactive", packageID)
+	if diagnostic = strings.TrimSpace(diagnostic); diagnostic != "" {
+		return diagnostic + "\nTo retry, " + retry
+	}
+	return fmt.Sprintf("%s authentication required; %s", packageID, retry)
+}
+
+type authenticationRequiredFailure struct{ message string }
+
+func (e authenticationRequiredFailure) Error() string { return e.message }
+
+func New(src config.Source, s *state.Store, o Options) *Service {
+	if o.Runner == nil {
+		o.Runner = process.OSExecutor{}
+	}
+	if o.Runtime == nil {
+		r := mcp.NewDockerRuntime(s)
+		r.Executor = o.Runner
+		r.OnStderr = o.OnStderr
+		o.Runtime = r
+	}
+	return &Service{Source: src, Store: s, Options: o}
+}
+
+func (s *Service) mcpImageChoice(ctx context.Context, definition catalog.MCP) (string, string, error) {
+	if definition.ReleaseImage == "" {
+		return "local", "", nil
+	}
+	settings, err := s.UISettings(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	source := settings["image_source"]
+	if source == "" {
+		source = "release"
+	}
+	if source == "local" {
+		return source, "", nil
+	}
+	image, err := versioninfo.ResolveImage(definition.ReleaseImage)
+	if err != nil {
+		return "", "", err
+	}
+	return "release", image, nil
+}
+
+type InstallRequest struct {
+	Ref                          config.InstanceRef
+	Package, Environment, Target string
+	Agents                       []agents.Environment
+	Inputs                       map[string]any
+	ResetInputs                  []string
+	Interactive                  bool
+	SkillsOnly                   bool
+	ExternalURL                  string
+	ExternalURLs                 map[string]string
+	UpdateSource                 bool
+}
+type MCPRequest struct {
+	Ref                                           config.InstanceRef
+	Action, Package, Environment, Target, Profile string
+	MCP                                           string
+	Inputs                                        map[string]any
+	Interactive                                   bool
+}
+type Result struct {
+	Changes   []state.Installation `json:"changes"`
+	Errors    []string             `json:"errors"`
+	Saved     bool                 `json:"saved"`
+	LoginURL  string               `json:"login_url,omitempty"`
+	Instances []mcp.Instance       `json:"instances,omitempty"`
+	Logs      string               `json:"logs,omitempty"`
+	Message   string               `json:"message,omitempty"`
+	Step      string               `json:"step,omitempty"`
+	Target    string               `json:"target,omitempty"`
+}
+type InvalidInput struct{ Err error }
+
+type operationFailure struct {
+	step string
+	err  error
+}
+
+func (e operationFailure) Error() string { return e.err.Error() }
+func (e operationFailure) Unwrap() error { return e.err }
+
+func (e *InvalidInput) Error() string { return e.Err.Error() }
+func (e *InvalidInput) Unwrap() error { return e.Err }
+func invalid(e error) error           { return &InvalidInput{e} }
+func (s *Service) Catalog(ctx context.Context) ([]catalog.Package, error) {
+	if e := ctx.Err(); e != nil {
+		return nil, e
+	}
+	return s.Source.Catalog, nil
+}
+func (s *Service) packageByID(id string) (catalog.Package, error) {
+	for _, p := range s.Source.Catalog {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return catalog.Package{}, invalid(fmt.Errorf("unknown package %q", id))
+}
+func (s *Service) key(p, env, target string) state.Key {
+	if target == "" {
+		target = "default"
+	}
+	return state.Key{Source: s.Source.ID, Package: p, Environment: env, Target: target}
+}
+
+func packageMCPProfiles(p catalog.Package, values map[string]any) []catalog.MCP {
+	profiles := p.MCPProfiles()
+	enabled := make([]catalog.MCP, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.EnabledInput != "" {
+			value, ok := values[profile.EnabledInput].(bool)
+			if !ok || !value {
+				continue
+			}
+		}
+		enabled = append(enabled, profile)
+	}
+	return enabled
+}
+
+func sameCapabilityKey(a, b state.Key) bool {
+	return a.Source == b.Source && a.Package == b.Package && a.Environment == b.Environment && a.Target == b.Target
+}
+
+const foreignRuntimeManagementReason = "This Capability Instance is managed by another AACT installation; change its inputs and runtime there."
+
+// rejectForeignRuntimeMutation prevents this installation from changing the
+// Pack instance whose exact runtime is currently owned by another AACT.
+// Agent-only installation deliberately does not use this guard: it changes
+// only this installation's agent bindings and never the observed runtime.
+func (s *Service) rejectForeignRuntimeMutation(ctx context.Context, key state.Key) error {
+	p, err := s.packageByID(key.Package)
+	if err != nil {
+		return err
+	}
+	if !p.HasMCP() {
+		return nil
+	}
+	instances, err := s.Options.Runtime.List(ctx)
+	if err != nil {
+		// A failed refresh must not erase a previously observed foreign owner.
+		s.observationMu.Lock()
+		instances = append([]mcp.Instance(nil), s.lastInstances...)
+		s.observationMu.Unlock()
+	}
+	for _, instance := range instances {
+		if !sameCapabilityKey(instance.Key, key) || instance.Status != "running" || instance.Ownership != "other-aact" {
+			continue
+		}
+		return errors.New(foreignRuntimeManagementReason)
+	}
+	return nil
+}
+
+func runtimeChildName(key state.Key) string {
+	if key.MCPDefinition != "" {
+		return key.MCPDefinition
+	}
+	return key.MCP
+}
+
+func skillInstallInputs(p catalog.Package, skillsOnly bool) []catalog.Input {
+	defs := append([]catalog.Input{}, p.Inputs...)
+	if !skillsOnly || p.MCP == nil {
+		return defs
+	}
+	for n := range defs {
+		if defs[n].ConfigKey != "" || defs[n].ExclusiveGroup != "" {
+			defs[n].Required = false
+			defs[n].MinItems = nil
+		}
+	}
+	return defs
+}
+func (s *Service) saveAnswers(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool) error {
+	return s.saveAnswersWithReset(k, p, values, skillsOnly, nil)
+}
+
+func (s *Service) saveAnswersWithReset(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool, resetInputs []string) error {
+	return s.saveAnswersWithActiveGroups(k, p, values, skillsOnly, resetInputs, nil)
+}
+
+func (s *Service) saveAnswersWithActiveGroups(k state.Key, p catalog.Package, values map[string]any, skillsOnly bool, resetInputs []string, activeGroups map[string]string) error {
+	reset := make(map[string]bool, len(resetInputs))
+	for _, name := range resetInputs {
+		reset[name] = true
+	}
+	safe := map[string]any{}
+	for _, d := range p.Inputs {
+		if d.Type != "secret" && !reset[d.Name] {
+			if v, ok := values[d.Name]; ok {
+				safe[d.Name] = v
+			}
+		}
+	}
+	secrets := map[string]any{}
+	for _, d := range p.Inputs {
+		if d.Type == "secret" {
+			if !reset[d.Name] {
+				if value, ok := values[d.Name]; ok {
+					secrets[d.Name] = value
+				}
+			}
+		}
+	}
+	secretResets := append([]string(nil), resetInputs...)
+	for _, definition := range p.MCPDefinitions() {
+		if definition.VaultAuthEnv == "" {
+			continue
+		}
+		secretName := definition.VaultSecretEnvInputs[definition.VaultAuthEnv]
+		if secretName == "" {
+			continue
+		}
+		selected := false
+		for _, source := range []string{definition.TokenInput, definition.TokenFileInput, definition.TokenEnvInput} {
+			if value, ok := values[source].(string); ok && strings.TrimSpace(value) != "" {
+				selected = true
+			}
+		}
+		resetSource := reset[definition.TokenInput] || reset[definition.TokenFileInput] || reset[definition.TokenEnvInput]
+		if resetSource {
+			secretResets = append(secretResets, secretName)
+			continue
+		}
+		if selected {
+			token, err := resolveProfileToken(definition, values)
+			if err != nil {
+				return err
+			}
+			secrets[secretName] = token
+		}
+	}
+	previousSecrets, err := s.Store.SecretInputs(k)
+	if err != nil {
+		return err
+	}
+	if err := s.Store.SaveSecretInputs(k, secrets, secretResets); err != nil {
+		return err
+	}
+	if err := s.Store.SaveAnswersWithActiveInputGroups(k, safe, activeGroups); err != nil {
+		rollbackValues := map[string]any{}
+		rollbackResets := []string{}
+		affectedNames := map[string]bool{}
+		for name := range secrets {
+			affectedNames[name] = true
+		}
+		for _, name := range secretResets {
+			affectedNames[name] = true
+		}
+		for name := range affectedNames {
+			if value, ok := previousSecrets[name]; ok {
+				rollbackValues[name] = value
+			} else {
+				rollbackResets = append(rollbackResets, name)
+			}
+		}
+		if rollbackErr := s.Store.SaveSecretInputs(k, rollbackValues, rollbackResets); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore prior secret inputs: %w", rollbackErr))
+		}
+		return err
+	}
+	if p.HasMCP() && !skillsOnly {
+		for _, profile := range packageMCPProfiles(p, values) {
+			if err := s.Store.RecordInstance(state.ProfileRecord{Key: mcpDefinitionKey(k, p, profile)}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func restoreSecretInputs(store *state.Store, key state.Key, defs []catalog.Input, previous map[string]any) error {
+	resetNames := []string{}
+	for _, def := range defs {
+		if def.Type == "secret" {
+			if _, existed := previous[def.Name]; !existed {
+				resetNames = append(resetNames, def.Name)
+			}
+		}
+	}
+	return store.SaveSecretInputs(key, previous, resetNames)
+}
+
+func hasSubmittedAuthentication(s *Service, p catalog.Package, k state.Key, submitted, previous map[string]any) bool {
+	for _, input := range p.Inputs {
+		if input.Type == "secret" && submitted[input.Name] != nil && submitted[input.Name] != "" {
+			return true
+		}
+		if input.Type == "file" {
+			value, ok := submitted[input.Name].(string)
+			if !ok || value == "" {
+				continue
+			}
+			oldValue, _ := previous[input.Name].(string)
+			if value == oldValue {
+				state, _ := s.credentialObservation(p, k)
+				if state == "present" {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+func registrationName(k state.Key) string {
+	parts := []string{k.Package}
+	if k.Environment != "" {
+		parts = append(parts, k.Environment)
+	}
+	if k.Target != "default" {
+		parts = append(parts, k.Target)
+	}
+	if k.MCPDefinition != "" {
+		parts = append(parts, k.MCPDefinition)
+	} else if k.MCP != "" {
+		parts = append(parts, k.MCP)
+	}
+	return strings.Join(parts, "-")
+}
+
+func declaredRegistrationName(definition catalog.MCP, key state.Key, inputs map[string]any) (string, error) {
+	name := ""
+	if definition.RegistrationNameInput != "" {
+		value, ok := inputs[definition.RegistrationNameInput]
+		if !ok {
+			return "", fmt.Errorf("MCP %s registration name input %q is missing", definition.Name, definition.RegistrationNameInput)
+		}
+		var isString bool
+		name, isString = value.(string)
+		if !isString {
+			return "", fmt.Errorf("MCP %s registration name input %q must be a string", definition.Name, definition.RegistrationNameInput)
+		}
+	} else {
+		name = registrationName(key)
+	}
+	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, "\r\n\x00") {
+		return "", fmt.Errorf("MCP %s registration name %q is invalid", definition.Name, name)
+	}
+	return name, nil
+}
+
+func operationTarget(k state.Key) string {
+	target := k.Target
+	if target == "" {
+		target = "default"
+	}
+	identity := k.Source + "/" + k.Package
+	if k.MCPDefinition != "" {
+		identity += " MCP definition " + k.MCPDefinition
+	} else if k.MCP != "" {
+		identity += " MCP " + k.MCP
+	}
+	if k.Environment != "" {
+		return identity + " — " + k.Environment + "/" + target
+	}
+	return identity + " — " + target
+}
+
+func (s *Service) ownedEnvironment(e agents.Environment, rows []state.Installation) agents.Environment {
+	e.Owned = map[string]agents.Registration{}
+	for _, r := range rows {
+		if r.AgentID == e.ID && r.Component == "mcp" && r.Destination == e.ConfigPath {
+			e.Owned[r.RegistrationName] = agents.Registration{Name: r.RegistrationName, URL: r.URL, Transport: r.Transport, TimeoutMS: r.TimeoutMS}
+		}
+	}
+	return e
+}
+func (s *Service) Install(ctx context.Context, q InstallRequest) (Result, error) {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	destinations := make([]string, 0, len(q.Agents))
+	for _, agent := range q.Agents {
+		destinations = append(destinations, agent.ID)
+	}
+	result, err := s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, ResetInputs: q.ResetInputs, DestinationIDs: destinations, SkillsOnly: q.SkillsOnly, Interactive: q.Interactive, ExternalURLs: q.ExternalURLs})
+	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
+}
+
+// installCompatibility is retained for package-internal migration tests only.
+// Production setup/apply entrypoints select capabilities through ProfileRef.
+func (s *Service) validateRegistrationNames(p catalog.Package, definitions []catalog.MCP, key state.Key, values map[string]any, destinations []agents.Environment) error {
+	used := map[string]string{}
+	for _, definition := range definitions {
+		child := mcpDefinitionKey(key, p, definition)
+		name, err := declaredRegistrationName(definition, child, values)
+		if err != nil {
+			return err
+		}
+		if prior, exists := used[name]; exists {
+			return fmt.Errorf("MCP registrations %s and %s resolve to the same name %q; give each service a distinct registration name", prior, definition.Name, name)
+		}
+		used[name] = definition.Name
+	}
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return err
+	}
+	for _, env := range destinations {
+		for _, definition := range definitions {
+			child := mcpDefinitionKey(key, p, definition)
+			name, _ := declaredRegistrationName(definition, child, values)
+			for _, row := range rows {
+				if row.Component != "mcp" || row.AgentID != env.ID || filepath.Clean(row.Destination) != filepath.Clean(env.ConfigPath) || row.RegistrationName != name {
+					continue
+				}
+				if row.Key == child {
+					continue
+				}
+				return fmt.Errorf("MCP registration name %q is already used by %s/%s for %s; choose a different declared registration name", name, row.Key.Source, row.Key.Package, row.Key.Target)
+			}
+		}
+	}
+	return nil
+}
+func (s *Service) Uninstall(ctx context.Context, q InstallRequest) (Result, error) {
+	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	result, err := s.ApplyInstance(ctx, InstanceRequest{Ref: q.Ref, ItemIDs: []string{}, DestinationIDs: []string{}})
+	return Result{Changes: result.Changes, Errors: result.Errors, Saved: result.Saved, Message: result.Message, Step: result.Step, Target: result.Target}, err
+}
+
+type profileStartOptions struct {
+	deferProtocolHealth           bool
+	skipProtocolHealthForExisting bool
+}
+
+func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Package, profile config.Instance, k state.Key, values map[string]any, interactive bool, options ...profileStartOptions) (mcp.Instance, error) {
+	if p.MCP == nil {
+		return mcp.Instance{}, invalid(errors.New("package has no MCP"))
+	}
+	if p.MCP.VaultAuthEnv != "" {
+		secretName := p.MCP.VaultSecretEnvInputs[p.MCP.VaultAuthEnv]
+		if secretName != "" {
+			token, err := resolveProfileToken(*p.MCP, values)
+			if err != nil {
+				return mcp.Instance{}, invalid(err)
+			}
+			if token != "" {
+				parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+				if err != nil {
+					return mcp.Instance{}, err
+				}
+				if err := s.Store.SaveSecretInputs(parentKey, map[string]any{secretName: token}, nil); err != nil {
+					return mcp.Instance{}, err
+				}
+			}
+		}
+	}
+	resolvedRegistrationName, nameErr := declaredRegistrationName(*p.MCP, k, values)
+	if nameErr != nil {
+		return mcp.Instance{}, invalid(nameErr)
+	}
+	stateDir, stateErr := s.Store.EnsureAuthDir(k)
+	if stateErr != nil {
+		return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("prepare private instance state: %w", stateErr)}
+	}
+	additionalPorts, portErr := resolveConditionalPorts(*p.MCP, p.Inputs, values)
+	if portErr != nil {
+		return mcp.Instance{}, invalid(portErr)
+	}
+	spec := mcp.RunSpec{Image: p.MCP.Image, Args: append([]string(nil), p.MCP.Args...), ContainerPort: p.MCP.ContainerPort, Transport: p.MCP.Transport, EndpointPath: p.MCP.EndpointPath}
+	spec.AdditionalPorts = additionalPorts
+	spec.RegistrationName = resolvedRegistrationName
+	applyDeclaredRuntimeHosts := func() {
+		if p.MCP.BindIPInput != "" {
+			spec.BindIP, _ = values[p.MCP.BindIPInput].(string)
+		}
+		if p.MCP.AdvertisedHostInput != "" {
+			spec.AdvertisedHost, _ = values[p.MCP.AdvertisedHostInput].(string)
+		}
+	}
+	applyDeclaredRuntimeHosts()
+	for name, value := range p.MCP.Env {
+		if spec.Env == nil {
+			spec.Env = map[string]string{}
+		}
+		spec.Env[name] = value
+	}
+	for name, inputName := range p.MCP.EnvInputs {
+		if value, ok := values[inputName]; ok && value != nil {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env[name] = fmt.Sprint(value)
+		}
+	}
+	for name, inputName := range p.MCP.SecretEnvInputs {
+		if value, ok := values[inputName].(string); ok && strings.TrimSpace(value) != "" {
+			if spec.SecretEnv == nil {
+				spec.SecretEnv = map[string]string{}
+			}
+			spec.SecretEnv[name] = value
+		}
+	}
+	if len(p.MCP.VaultSecretEnvInputs) > 0 {
+		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.VaultNamespaceID = parentKey.ID()
+		spec.VaultHandoffEnabled = true
+		spec.VaultSecretInputs = p.MCP.VaultSecretEnvInputs
+		revision, err := s.Store.SecretInputsRevision(parentKey)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.VaultSecretRevision = revision
+		for envName, inputName := range p.MCP.VaultSecretEnvInputs {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env["AACT_VAULT_SECRET_INPUT_"+envName] = inputName
+		}
+		if p.MCP.VaultAuthEnv != "" {
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env["AACT_VAULT_AUTH_ENV"] = p.MCP.VaultAuthEnv
+		}
+	}
+	if p.MCP.TokenContainerEnv != "" {
+		token, tokenErr := resolveProfileToken(*p.MCP, values)
+		if tokenErr != nil {
+			return mcp.Instance{}, operationFailure{step: "authenticate", err: tokenErr}
+		}
+		if spec.SecretEnv == nil {
+			spec.SecretEnv = map[string]string{}
+		}
+		spec.SecretEnv[p.MCP.TokenContainerEnv] = token
+	}
+	if p.MCP.BuildContext != "" {
+		spec.BuildContext = p.MCP.BuildContext
+		if !filepath.IsAbs(spec.BuildContext) {
+			spec.BuildContext = filepath.Join(p.Dir, spec.BuildContext)
+		}
+	}
+	switch port := values[p.MCP.HostPortInput].(type) {
+	case int64:
+		spec.HostPort = int(port)
+	case int:
+		spec.HostPort = port
+	}
+	_, hasPrepare := p.MCP.Actions["prepare"]
+	imageSource, releaseImage, choiceErr := s.mcpImageChoice(ctx, *p.MCP)
+	if choiceErr != nil {
+		step := "start"
+		if hasPrepare {
+			step = "prepare"
+		}
+		return mcp.Instance{}, operationFailure{step: step, err: choiceErr}
+	}
+	preserveImageSelection := false
+	if imageSource == "release" {
+		spec.Image = releaseImage
+		spec.BuildContext = ""
+		preserveImageSelection = true
+	} else if p.MCP.BuildContext != "" {
+		spec.Image = ""
+		preserveImageSelection = true
+	}
+	if hasPrepare {
+		runner := mcp.ActionRunner{Executor: s.Options.Runner, ContainerExecutor: s.containerActionExecutor(k), OnStderr: s.Options.OnStderr}
+		selectedImage := spec.Image
+		selectedBuildContext := spec.BuildContext
+		result, e := runner.Run(ctx, p, mcp.ActionRequest{Action: "prepare", Instance: profile, Inputs: values, StateDir: stateDir, Interactive: interactive, ImageSource: imageSource, ReleaseImage: releaseImage})
+		if e != nil {
+			return mcp.Instance{}, operationFailure{step: "prepare", err: e}
+		}
+		if result.AuthRequired {
+			return mcp.Instance{}, operationFailure{step: "prepare", err: authenticationRequiredFailure{message: authenticationRequiredMessage(p.ID, result.Diagnostic)}}
+		}
+		if e = forms.Validate(withChoices(p.Inputs, result.Choices), values); e != nil {
+			return mcp.Instance{}, operationFailure{step: "prepare", err: invalid(e)}
+		}
+		if result.Runtime == nil {
+			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
+		}
+		spec = *result.Runtime
+		if preserveImageSelection {
+			spec.Image = selectedImage
+			spec.BuildContext = selectedBuildContext
+		}
+		spec.RegistrationName = resolvedRegistrationName
+		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
+		applyDeclaredRuntimeHosts()
+	}
+	if p.MCP.BrowserController != nil {
+		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
+		if err != nil {
+			return mcp.Instance{}, err
+		}
+		spec.BrowserVaultKey = &parentKey
+		profileVolume, ok := values[p.MCP.BrowserController.ProfileVolumeInput].(string)
+		if !ok || strings.TrimSpace(profileVolume) == "" {
+			return mcp.Instance{}, invalid(fmt.Errorf("%s must name an existing Docker profile volume", p.MCP.BrowserController.ProfileVolumeInput))
+		}
+		accessConfig := ""
+		if inputName := p.MCP.BrowserController.AccessConfigInput; inputName != "" {
+			accessConfig, _ = values[inputName].(string)
+			mergedConfig, mergeErr := browsercontroller.ApplyDefaultPopupAllowedURLs(accessConfig, p.MCP.BrowserController.DefaultPopupAllowedURLs)
+			if mergeErr != nil {
+				return mcp.Instance{}, invalid(fmt.Errorf("%s is invalid: %w", inputName, mergeErr))
+			}
+			accessConfig = mergedConfig
+			if err := browsercontroller.ValidateAccessConfig(accessConfig); err != nil {
+				return mcp.Instance{}, invalid(fmt.Errorf("%s is invalid: %w", inputName, err))
+			}
+		}
+		if err := browsercontroller.ValidateStartupURLAgainstAccessConfig(p.MCP.BrowserController.StartupURL, accessConfig); err != nil {
+			return mcp.Instance{}, invalid(fmt.Errorf("browser_controller startup_url is invalid: %w", err))
+		}
+		adapter, err := readBrowserAdapter(p.Dir, p.MCP.BrowserController.AdapterPath)
+		if err != nil {
+			return mcp.Instance{}, invalid(err)
+		}
+		spec.BrowserController = &mcp.BrowserControllerSpec{ProfileVolume: profileVolume, AccessConfigJSON: accessConfig, StartupURL: p.MCP.BrowserController.StartupURL, AdapterSource: adapter}
+	}
+	if len(options) > 0 && p.MCP.HealthPath != "" {
+		spec.DeferProtocolHealth = options[0].deferProtocolHealth
+		spec.SkipProtocolHealthForExisting = options[0].skipProtocolHealthForExisting
+	}
+	stateMount := mcp.Mount{Source: stateDir, Destination: "/state", ReadOnly: false}
+	for i := 0; i < len(spec.Mounts); {
+		if spec.Mounts[i].Destination == stateMount.Destination {
+			spec.Mounts = append(spec.Mounts[:i], spec.Mounts[i+1:]...)
+			continue
+		}
+		i++
+	}
+	spec.Mounts = append(spec.Mounts, stateMount)
+	instance, err := s.Options.Runtime.Start(ctx, k, spec)
+	if errors.Is(err, mcp.ErrRunningWithDifferentSettings) {
+		if stopErr := s.Options.Runtime.Stop(ctx, k); stopErr != nil {
+			return mcp.Instance{}, operationFailure{step: "start", err: fmt.Errorf("apply changed MCP settings: stop old instance: %w", stopErr)}
+		}
+		instance, err = s.Options.Runtime.Start(ctx, k, spec)
+	}
+	if err != nil {
+		return instance, operationFailure{step: "start", err: err}
+	}
+	return instance, nil
+}
+
+func resolveConditionalPorts(definition catalog.MCP, inputs []catalog.Input, values map[string]any) ([]mcp.PortMapping, error) {
+	resolved := make([]mcp.PortMapping, 0, len(definition.AdditionalPorts))
+	for _, port := range definition.AdditionalPorts {
+		hostInput := findInput(inputs, port.HostPortInput)
+		if hostInput == nil {
+			return nil, fmt.Errorf("conditional port references unknown input %q", port.HostPortInput)
+		}
+		var containerInput *catalog.Input
+		if port.ContainerPortInput != "" {
+			containerInput = findInput(inputs, port.ContainerPortInput)
+			if containerInput == nil {
+				return nil, fmt.Errorf("conditional port references unknown container input %q", port.ContainerPortInput)
+			}
+		}
+		if !catalog.InputVisible(catalog.Input{VisibleWhen: port.When}, values) || !catalog.InputVisible(*hostInput, values) || containerInput != nil && !catalog.InputVisible(*containerInput, values) {
+			continue
+		}
+		hostPort, err := resolvePortInputValue(port.HostPortInput, values[port.HostPortInput])
+		if err != nil {
+			return nil, err
+		}
+		containerPort := port.ContainerPort
+		if containerInput != nil {
+			containerPort, err = resolvePortInputValue(port.ContainerPortInput, values[port.ContainerPortInput])
+			if err != nil {
+				return nil, err
+			}
+		}
+		resolved = append(resolved, mcp.PortMapping{HostPort: hostPort, ContainerPort: containerPort})
+	}
+	return resolved, nil
+}
+
+func findInput(inputs []catalog.Input, name string) *catalog.Input {
+	for i := range inputs {
+		if inputs[i].Name == name {
+			return &inputs[i]
+		}
+	}
+	return nil
+}
+
+func resolvePortInputValue(name string, raw any) (int, error) {
+	var port int
+	switch value := raw.(type) {
+	case int:
+		port = value
+	case int64:
+		port = int(value)
+		if int64(port) != value {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+		}
+		port = int(parsed)
+		if int64(port) != parsed {
+			return 0, fmt.Errorf("conditional port input %q is outside the supported range", name)
+		}
+	default:
+		return 0, fmt.Errorf("conditional port input %q must be an integer", name)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("conditional port input %q must be between 1 and 65535", name)
+	}
+	return port, nil
+}
+
+func (s *Service) MCP(ctx context.Context, q MCPRequest) (Result, error) {
+	if q.Action != "list" && q.Action != "status" && (q.Ref.CapabilityID == "" || q.Ref.Name == "") {
+		return Result{}, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	return s.RunInstanceMCP(ctx, q.Action, InstanceRequest{Ref: q.Ref, Inputs: q.Inputs, Interactive: q.Interactive}, q.MCP)
+}

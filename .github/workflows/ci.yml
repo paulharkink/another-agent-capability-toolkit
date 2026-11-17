@@ -16,11 +16,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./... -count=1
-      - run: go vet ./...
+      - run: go test ./test/... -count=1
+      - run: go vet ./main/...
       - name: Race checks
         if: runner.os != 'Windows'
-        run: go test -race ./... -count=1
+        run: go test -race ./test/... -count=1
   docker:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -45,10 +45,4 @@ jobs:
             public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72 \
             public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f \
             public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-      - run: go test -tags integration ./tests/integration -run TestDockerMCP -count=1
-      - run: go test -tags docker_integration ./internal/mcp ./internal/packagehelpers ./internal/sessionsearch ./tests/packages -count=1
-      - name: Verify automatic vault route from Linux containers
-        run: go test -tags docker_integration ./internal/vault -run '^TestDockerContainerReachesDefaultVaultRouteWithPinnedTLS$' -count=1
-        env:
-          AACT_TEST_DOCKER: "1"
       - run: sh tools/test-containers.sh
