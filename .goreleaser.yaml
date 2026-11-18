@@ -101,6 +101,8 @@ archives:
       - README.md
       - LICENSE
       - THIRD_PARTY_NOTICES.md
+      - install.sh
+      - install.ps1
       - packages/**
       - main/packages/git-provider/mcp/**
       - scripts/keyring/**

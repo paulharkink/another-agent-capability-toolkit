@@ -12,15 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/releasecatalog"
 )
-
-const minimumLocalArchiveInstallerVersion = "0.5.1"
 
 func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
@@ -47,15 +44,7 @@ func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer
 			if i == 0 {
 				label += " (latest)"
 			}
-			platforms := releasePlatforms(release)
-			fmt.Fprintf(out, "%s platforms: %s", label, strings.Join(platforms, ", "))
-			for _, asset := range release.Assets {
-				if asset.Name == "checksums.txt" && strings.HasPrefix(asset.Digest, "sha256:") {
-					fmt.Fprint(out, "; SHA-256 checksums available")
-					break
-				}
-			}
-			fmt.Fprintln(out)
+			fmt.Fprintln(out, label)
 		}
 		return 0
 	case "upgrade", "install":
@@ -72,32 +61,32 @@ func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer
 			fmt.Fprintln(errOut, "could not query AACT releases:", err)
 			return 1
 		}
-		version := ""
+		var selected *releasecatalog.Release
 		if args[0] == "upgrade" {
 			if len(releases) == 0 {
 				fmt.Fprintln(errOut, "no stable AACT releases are available")
 				return 1
 			}
-			version = strings.TrimPrefix(releases[0].Tag, "v")
+			selected = &releases[0]
 		} else {
-			version = strings.TrimPrefix(args[1], "v")
+			version := strings.TrimPrefix(args[1], "v")
 			if !releasecatalog.StableVersion("v" + version) {
 				fmt.Fprintln(errOut, "invalid stable release version")
 				return 2
 			}
-			found := false
 			for _, release := range releases {
 				if release.Tag == "v"+version {
-					found = true
+					selected = &release
 					break
 				}
 			}
-			if !found {
+			if selected == nil {
 				fmt.Fprintf(errOut, "stable release %s is unavailable\n", version)
 				return 1
 			}
 		}
-		if err := installPublishedVersion(ctx, version, releases); err != nil {
+		version := strings.TrimPrefix(selected.Tag, "v")
+		if err := installPublishedVersion(ctx, *selected, releases); err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
@@ -109,32 +98,8 @@ func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer
 	}
 }
 
-func releasePlatforms(release releasecatalog.Release) []string {
-	var platforms []string
-	for _, asset := range release.Assets {
-		name := strings.TrimPrefix(asset.Name, "aact_"+strings.TrimPrefix(release.Tag, "v")+"_")
-		for _, platform := range []string{"darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64", "windows_amd64", "windows_arm64"} {
-			if strings.HasPrefix(name, platform+".") {
-				platforms = append(platforms, strings.Replace(platform, "_", "/", 1))
-				break
-			}
-		}
-	}
-	sort.Strings(platforms)
-	return platforms
-}
-
-func installPublishedVersion(ctx context.Context, version string, releases []releasecatalog.Release) error {
-	var selected *releasecatalog.Release
-	for i := range releases {
-		if releases[i].Tag == "v"+version {
-			selected = &releases[i]
-			break
-		}
-	}
-	if selected == nil {
-		return fmt.Errorf("stable release %s is unavailable", version)
-	}
+func installPublishedVersion(ctx context.Context, selected releasecatalog.Release, releases []releasecatalog.Release) error {
+	version := strings.TrimPrefix(selected.Tag, "v")
 	root, explicitRoot, err := resolveInstallRoot()
 	if err != nil {
 		return err
@@ -167,9 +132,12 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 		return fmt.Errorf("stage AACT release: %w", err)
 	}
 	defer os.RemoveAll(stage)
-	installerPath, err := downloadBootstrapInstaller(ctx, releases, installerName, filepath.Join(stage, installerName))
+	installerPath, err := localInstaller(installerName)
+	if errors.Is(err, os.ErrNotExist) {
+		installerPath, err = downloadBootstrapInstaller(ctx, releases, installerName, filepath.Join(stage, installerName))
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("locate a compatible AACT installer: %w", err)
 	}
 	archivePath, err := downloadVerifiedAsset(ctx, *archiveAsset, filepath.Join(stage, archiveAsset.Name), 128<<20)
 	if err != nil {
@@ -202,42 +170,31 @@ func installPublishedVersion(ctx context.Context, version string, releases []rel
 }
 
 func downloadBootstrapInstaller(ctx context.Context, releases []releasecatalog.Release, installerName, destination string) (string, error) {
-	var failures []string
-	for _, release := range releases {
-		version := strings.TrimPrefix(release.Tag, "v")
-		if !releasecatalog.StableVersion(release.Tag) || (version != minimumLocalArchiveInstallerVersion && !releasecatalog.NewerThan(version, minimumLocalArchiveInstallerVersion)) {
-			continue
-		}
-		var candidate *releasecatalog.Asset
-		for i := range release.Assets {
-			if release.Assets[i].Name == installerName {
-				candidate = &release.Assets[i]
-				break
-			}
-		}
-		if candidate == nil {
-			continue
-		}
-		if !hasSHA256ReleaseDigest(candidate.Digest) {
-			failures = append(failures, release.Tag+" has no valid SHA-256 installer digest")
-			continue
-		}
-		if _, err := releasecatalog.ValidateAssetURL(candidate.URL); err != nil {
-			failures = append(failures, release.Tag+" installer URL rejected: "+err.Error())
-			continue
-		}
-		path, err := downloadVerifiedAsset(ctx, *candidate, destination, 2<<20)
-		if err != nil {
-			failures = append(failures, release.Tag+" installer unavailable or failed digest verification: "+err.Error())
-			continue
-		}
-		return path, nil
+	if len(releases) == 0 {
+		return "", errors.New("no stable release is available to provide an installer")
 	}
-	message := "no SHA-256 verified local-archive installer found in stable releases at or above v" + minimumLocalArchiveInstallerVersion
-	if len(failures) > 0 {
-		message += ": " + strings.Join(failures, "; ")
+	latest := releases[0]
+	var candidate *releasecatalog.Asset
+	for i := range latest.Assets {
+		if latest.Assets[i].Name == installerName {
+			candidate = &latest.Assets[i]
+			break
+		}
 	}
-	return "", errors.New(message)
+	if candidate == nil {
+		return "", fmt.Errorf("latest stable release %s has no %s asset", latest.Tag, installerName)
+	}
+	if !hasSHA256ReleaseDigest(candidate.Digest) {
+		return "", fmt.Errorf("latest stable release %s has no valid SHA-256 installer digest", latest.Tag)
+	}
+	if _, err := releasecatalog.ValidateAssetURL(candidate.URL); err != nil {
+		return "", fmt.Errorf("latest stable release %s installer URL rejected: %w", latest.Tag, err)
+	}
+	path, err := downloadVerifiedAsset(ctx, *candidate, destination, 2<<20)
+	if err != nil {
+		return "", fmt.Errorf("latest stable release %s installer failed digest verification: %w", latest.Tag, err)
+	}
+	return path, nil
 }
 
 func hasSHA256ReleaseDigest(digest string) bool {
@@ -350,6 +307,21 @@ func resolveInstallRoot() (root string, explicit bool, err error) {
 		absolute, err := filepath.Abs(configured)
 		return absolute, true, err
 	}
+	root, managed, err := managedInstallRootFromExecutable()
+	if err != nil {
+		return "", false, err
+	}
+	if !managed {
+		return "", false, errors.New("cannot determine the managed AACT installation root from this executable; set AACT_INSTALL_DIR")
+	}
+	defaultRoot, err := defaultInstallRoot()
+	if err != nil {
+		return "", false, err
+	}
+	return root, !samePath(root, defaultRoot), nil
+}
+
+func managedInstallRootFromExecutable() (string, bool, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return "", false, fmt.Errorf("locate current AACT executable: %w", err)
@@ -361,22 +333,49 @@ func resolveInstallRoot() (root string, explicit bool, err error) {
 	if err != nil {
 		return "", false, fmt.Errorf("resolve current AACT executable: %w", err)
 	}
-	name := filepath.Base(executable)
-	if name != "aact" && name != "aact.exe" {
-		return "", false, errors.New("cannot determine the managed AACT installation root from this executable; set AACT_INSTALL_DIR")
+	if name := filepath.Base(executable); name != "aact" && name != "aact.exe" {
+		return "", false, nil
 	}
 	bin := filepath.Dir(executable)
-	release := filepath.Dir(bin)
-	releases := filepath.Dir(release)
+	releases := filepath.Dir(filepath.Dir(bin))
 	if filepath.Base(bin) != "bin" || filepath.Base(releases) != "releases" {
-		return "", false, errors.New("cannot determine the managed AACT installation root from this executable; set AACT_INSTALL_DIR")
+		return "", false, nil
 	}
-	root = filepath.Dir(releases)
-	defaultRoot, err := defaultInstallRoot()
+	return filepath.Dir(releases), true, nil
+}
+
+func localInstaller(name string) (string, error) {
+	if root, managed, err := managedInstallRootFromExecutable(); err != nil {
+		return "", err
+	} else if managed {
+		path := filepath.Join(root, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("bundled installer is not a regular file: %s", path)
+		}
+		return path, nil
+	}
+	dir, err := os.Getwd()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	return root, !samePath(root, defaultRoot), nil
+	for {
+		path := filepath.Join(dir, name)
+		_, installerErr := os.Stat(path)
+		_, moduleErr := os.Stat(filepath.Join(dir, "go.mod"))
+		if installerErr == nil && moduleErr == nil {
+			return path, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", os.ErrNotExist
 }
 
 func defaultInstallRoot() (string, error) {

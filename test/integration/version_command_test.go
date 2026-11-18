@@ -54,7 +54,7 @@ func TestVersionInstallUsesManagedInstaller(t *testing.T) {
 	if arch == "arm64" {
 		wrongArch = "amd64"
 	}
-	server := versionReleaseServer(t, "1.2.3", arch, archive, true)
+	server := versionReleaseServerWithInstaller(t, "1.2.3", arch, archive, true, nil)
 	defer server.Close()
 	root := t.TempDir()
 	managedDir := filepath.Join(root, "releases", "0.9.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin")
@@ -71,6 +71,15 @@ func TestVersionInstallUsesManagedInstaller(t *testing.T) {
 	}
 	if err := os.WriteFile(managedBinary, binary, 0755); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"install.sh", "install.ps1"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cmd := exec.Command(managedBinary, "version", "install", "1.2.3")
 	cmd.Dir = t.TempDir()
@@ -144,17 +153,6 @@ func versionReleaseServer(t *testing.T, version, arch string, archive []byte, va
 }
 
 func versionReleaseServerWithInstaller(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte) *httptest.Server {
-	return versionReleaseServerWithBootstrapInstallers(t, version, arch, archive, validChecksum, installer)
-}
-
-type bootstrapInstallerFixture struct {
-	version       string
-	installer     []byte
-	omitInstaller bool
-	badDigest     bool
-}
-
-func versionReleaseServerWithBootstrapInstallers(t *testing.T, version, arch string, archive []byte, validChecksum bool, installer []byte, bootstraps ...bootstrapInstallerFixture) *httptest.Server {
 	t.Helper()
 	extension := "tar.gz"
 	if runtime.GOOS == "windows" {
@@ -170,77 +168,30 @@ func versionReleaseServerWithBootstrapInstallers(t *testing.T, version, arch str
 		archiveSum = strings.Repeat("0", 64)
 	}
 	checksums := []byte(fmt.Sprintf("%s  %s\n", archiveSum, archiveName))
-	bootstrapAssets := make(map[string][]byte, len(bootstraps))
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
-			releases := []any{map[string]any{"tag_name": "v" + version, "assets": []any{
-				map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/installer"), "digest": "sha256:" + digestHex(installer)},
+			targetAssets := []any{
 				map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
 				map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
-			}}}
-			for _, bootstrap := range bootstraps {
-				assets := []any{map[string]any{"name": "notes.txt"}}
-				if !bootstrap.omitInstaller {
-					assetPath := "/assets/bootstrap-installer/" + bootstrap.version
-					digest := digestHex(bootstrap.installer)
-					if bootstrap.badDigest {
-						digest = strings.Repeat("0", 64)
-					}
-					assets = []any{map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, assetPath), "digest": "sha256:" + digest}}
-					bootstrapAssets[assetPath] = bootstrap.installer
-				}
-				releases = append(releases, map[string]any{"tag_name": "v" + bootstrap.version, "assets": assets})
 			}
+			if installer != nil {
+				targetAssets = append(targetAssets, map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/installer"), "digest": "sha256:" + digestHex(installer)})
+			}
+			releases := []any{map[string]any{"tag_name": "v" + version, "assets": targetAssets}}
 			_ = json.NewEncoder(w).Encode(releases)
 		case "/assets/installer":
+			if installer == nil {
+				http.NotFound(w, r)
+				return
+			}
 			_, _ = w.Write(installer)
 		case "/assets/checksums":
 			_, _ = w.Write(checksums)
 		case "/assets/archive":
 			_, _ = w.Write(archive)
-		default:
-			if body, ok := bootstrapAssets[r.URL.Path]; ok {
-				_, _ = w.Write(body)
-				return
-			}
-			http.NotFound(w, r)
 		}
 	}))
-}
-
-func TestVersionInstallFallsBackToVerifiedCompatibleInstallerForHistoricalV050Release(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("historical Unix installer fixture")
-	}
-	installer, err := os.ReadFile("testdata/install-v0.5.0.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrapInstaller, err := os.ReadFile("testdata/install-v0.5.17.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := versionReleaseServerWithBootstrapInstallers(t, "0.5.0", runtime.GOARCH, installerArchive(t), true, installer,
-		bootstrapInstallerFixture{version: "0.7.4", omitInstaller: true},
-		bootstrapInstallerFixture{version: "0.6.1", installer: bootstrapInstaller, badDigest: true},
-		bootstrapInstallerFixture{version: "0.5.17", installer: bootstrapInstaller})
-	defer server.Close()
-	root, home := t.TempDir(), t.TempDir()
-	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
-	cmd.Dir = t.TempDir()
-	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("historical v0.5.0 installer failed: %s: %v", output, err)
-	}
-	if !strings.Contains(string(output), "Installed AACT 0.5.0") {
-		t.Fatalf("explicit historical version was not reported: %q", output)
-	}
-	installed := filepath.Join(root, "releases", "0.5.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")
-	if _, err := os.Stat(installed); err != nil {
-		t.Fatalf("historical managed release missing at %s: %v", installed, err)
-	}
 }
 
 func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.T) {
@@ -248,21 +199,38 @@ func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.
 	if runtime.GOOS == "windows" {
 		archiveName = fmt.Sprintf("aact_0.5.0_windows_%s.zip", runtime.GOARCH)
 	}
-	installer, err := os.ReadFile("testdata/install-v0.5.0.sh")
+	installerName := "install.sh"
+	if runtime.GOOS == "windows" {
+		installerName = "install.ps1"
+	}
+	olderInstaller, err := os.ReadFile(filepath.Join("..", "..", installerName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	archive := installerArchive(t)
 	checksums := []byte(fmt.Sprintf("%s  %s\n", digestHex(archive), archiveName))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode([]any{
-			map[string]any{"tag_name": "v0.7.4", "assets": []any{map[string]any{"name": "notes.txt"}}},
-			map[string]any{"tag_name": "v0.5.0", "assets": []any{
-				map[string]any{"name": "install.sh", "browser_download_url": serverAssetURL(r, "/assets/installer"), "digest": "sha256:" + digestHex(installer)},
-				map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
-				map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
-			}},
-		})
+		switch r.URL.Path {
+		case "/releases":
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"tag_name": "v0.7.4", "assets": []any{map[string]any{"name": "notes.txt"}}},
+				map[string]any{"tag_name": "v0.6.1", "assets": []any{
+					map[string]any{"name": installerName, "browser_download_url": serverAssetURL(r, "/assets/older-installer"), "digest": "sha256:" + digestHex(olderInstaller)},
+				}},
+				map[string]any{"tag_name": "v0.5.0", "assets": []any{
+					map[string]any{"name": "checksums.txt", "browser_download_url": serverAssetURL(r, "/assets/checksums"), "digest": "sha256:" + digestHex(checksums)},
+					map[string]any{"name": archiveName, "browser_download_url": serverAssetURL(r, "/assets/archive"), "digest": "sha256:" + digestHex(archive)},
+				}},
+			})
+		case "/assets/older-installer":
+			_, _ = w.Write(olderInstaller)
+		case "/assets/checksums":
+			_, _ = w.Write(checksums)
+		case "/assets/archive":
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 	root := t.TempDir()
@@ -274,7 +242,7 @@ func TestVersionInstallRejectsMissingLatestInstallerBeforeActivation(t *testing.
 	cmd.Dir = t.TempDir()
 	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
 	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "no SHA-256 verified local-archive installer") {
+	if err == nil || !strings.Contains(string(output), "has no "+installerName+" asset") {
 		t.Fatalf("missing latest bootstrap installer was not rejected: %q, %v", output, err)
 	}
 	if got, readErr := os.ReadFile(sentinel); readErr != nil || string(got) != "preserve" {
@@ -519,6 +487,84 @@ func TestVersionUpgradeUsesManagedDefaultRootAndMigratesLegacyLauncher(t *testin
 	}
 	if _, err := os.Stat(filepath.Join(root, "releases", "1.2.3-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")); err != nil {
 		t.Fatalf("upgraded release missing from default root: %v", err)
+	}
+}
+
+func TestVersionInstallFromCheckoutUsesLocalInstallerForHistoricalRelease(t *testing.T) {
+	archive := installerArchive(t)
+	server := versionReleaseServerWithInstaller(t, "0.5.0", runtime.GOARCH, archive, true, nil)
+	defer server.Close()
+	root := t.TempDir()
+	cmd := exec.Command(buildVersionCommandBinary(t), "version", "install", "0.5.0")
+	cmd.Dir = filepath.Join("..", "..")
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+t.TempDir(), "AACT_INSTALL_DIR="+root, "AACT_RELEASE_API_URL="+server.URL+"/releases")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("historical release install from checkout failed: %s: %v", output, err)
+	}
+	installed := filepath.Join(root, "releases", "0.5.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin", "aact")
+	if runtime.GOOS == "windows" {
+		installed += ".exe"
+	}
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatalf("historical managed release missing at %s: %v", installed, err)
+	}
+}
+
+func TestExistingManagedInstallUsesVerifiedFallbackWithoutReadingInstallerFromWorkingDirectory(t *testing.T) {
+	version, arch := "1.2.3", runtime.GOARCH
+	server := versionReleaseServer(t, version, arch, installerArchive(t), true)
+	defer server.Close()
+	home := t.TempDir()
+	root := filepath.Join(home, ".local", "share", "aact")
+	managedDir := filepath.Join(root, "releases", "0.9.0-"+runtime.GOOS+"-"+runtime.GOARCH, "bin")
+	if err := os.MkdirAll(managedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(buildVersionCommandBinary(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryName := "aact"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	managedBinary := filepath.Join(managedDir, binaryName)
+	if err := os.WriteFile(managedBinary, binary, 0755); err != nil {
+		t.Fatal(err)
+	}
+	workingDir := t.TempDir()
+	marker := filepath.Join(workingDir, "untrusted-installer-ran")
+	installerName, untrustedScript := "install.sh", "#!/bin/sh\nprintf malicious > \"$AACT_TEST_MARKER\"\nexit 9\n"
+	if runtime.GOOS == "windows" {
+		installerName, untrustedScript = "install.ps1", "Set-Content -LiteralPath $env:AACT_TEST_MARKER -Value malicious; exit 9\n"
+	}
+	if err := os.WriteFile(filepath.Join(workingDir, installerName), []byte(untrustedScript), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Even a directory that resembles the checkout layout must not override the
+	// installer location for a managed executable.
+	if err := os.MkdirAll(filepath.Join(workingDir, "main"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workingDir, "go.mod"), []byte("module untrusted\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workingDir, "main", "go.mod"), []byte("module untrusted/main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(managedBinary, "version", "install", version)
+	cmd.Dir = workingDir
+	cmd.Env = cleanTestEnvironment(os.Environ(), "HOME="+home, "AACT_RELEASE_API_URL="+server.URL+"/releases", "AACT_TEST_MARKER="+marker, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("existing managed install did not use verified installer fallback: %s: %v", output, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("untrusted working-directory installer ran: stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", version+"-"+runtime.GOOS+"-"+arch, "bin", binaryName)); err != nil {
+		t.Fatalf("upgraded release missing: %v", err)
 	}
 }
 
