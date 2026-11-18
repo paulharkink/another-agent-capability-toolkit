@@ -44,7 +44,7 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", volume).Run() })
 	fixture := `import pathlib,sqlite3,os; p=pathlib.Path('/profile/.config/chromium/Default/Network'); p.mkdir(parents=True); c=sqlite3.connect(str(p/'Cookies')); c.execute('CREATE TABLE cookies(host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER, is_secure INTEGER)'); c.execute('INSERT INTO cookies VALUES(?,?,?,?,?,?)',('example.invalid','demo_session','synthetic-demo-cookie',b'',0,0)); c.commit(); c.close(); os.chmod(p/'Cookies',0o644); [(os.chown(root,1000,1000),[os.chown(os.path.join(root,n),1000,1000) for n in files]) for root,dirs,files in os.walk('/profile')]`
 	docker(nil, "run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "python3", "--mount", "source="+volume+",target=/profile", image, "-c", fixture)
-	container := string(docker(nil, "run", "-d", "--entrypoint", "sleep", image, "300"))
+	container := string(docker(nil, "run", "-d", "--add-host", "host.docker.internal:host-gateway", "--entrypoint", "sleep", image, "300"))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", container).Run() })
 	root := t.TempDir()
 	password := []byte("synthetic-only-password")
@@ -205,7 +205,7 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 	docker(nil, "build", "--tag", mcpImage, fixturePath)
 
 	mcpUpstreamURL := "http://127.0.0.1:8766"
-	mcpContainer := string(docker(nil, "run", "-d", "--tmpfs", "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777", "--env", "AACT_SYNTHETIC_UPSTREAM="+mcpUpstreamURL, mcpImage, "sleep", "3600"))
+	mcpContainer := string(docker(nil, "run", "-d", "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/run/aact:rw,noexec,nosuid,nodev,size=16k,mode=1777", "--env", "AACT_SYNTHETIC_UPSTREAM="+mcpUpstreamURL, mcpImage, "sh", "-c", "while [ ! -f /run/aact/vault.json ]; do sleep 0.1; done; exec python3 /app/server.py"))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", mcpContainer).Run() })
 	browserAddress := string(docker(nil, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", mcpContainer))
 	browserOrigin := fmt.Sprintf("http://%s:8766", browserAddress)
@@ -274,10 +274,28 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload, _ := json.Marshal(handoff)
+	redactFixtureSecrets := func(value string) string {
+		for _, secret := range [][]byte{[]byte(token), control, password, payload, []byte("synthetic-signed-in-token")} {
+			if len(secret) > 0 {
+				value = strings.ReplaceAll(value, string(secret), "[redacted]")
+			}
+		}
+		return value
+	}
+	fixtureDiagnostics := func() string {
+		inspect := exec.Command("docker", "inspect", "--format", "status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}", mcpContainer)
+		state, _ := inspect.CombinedOutput()
+		logsCommand := exec.Command("docker", "logs", "--tail", "80", mcpContainer)
+		logs, _ := logsCommand.CombinedOutput()
+		diagnostics := redactFixtureSecrets(string(logs))
+		return fmt.Sprintf("container %s; recent fixture logs:\n%s", strings.TrimSpace(string(state)), diagnostics)
+	}
 	install := `import os,sys; p='/run/aact/vault.json'; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400); os.write(fd,sys.stdin.buffer.read()); os.close(fd)`
 	docker(payload, "exec", "-i", mcpContainer, "python3", "-c", install)
-	docker(nil, "exec", "-d", mcpContainer, "python3", "/app/server.py")
-	docker(nil, "exec", mcpContainer, "python3", "-c", `import socket,time
+	route := docker(nil, "exec", mcpContainer, "python3", "-c", `import json,socket,urllib.parse
+h=json.load(open('/run/aact/vault.json')); u=urllib.parse.urlsplit(h['api_address']); host=socket.gethostbyname(u.hostname); s=socket.create_connection((host,u.port),timeout=5); s.close(); print('vault API gateway reachable:',host,u.port)`)
+	t.Log(string(route))
+	readiness := exec.Command("docker", "exec", mcpContainer, "python3", "-c", `import socket,time
 deadline=time.time()+20
 for port in (8765,8766):
  while time.time()<deadline:
@@ -285,6 +303,9 @@ for port in (8765,8766):
   try: s.connect(('127.0.0.1',port)); s.close(); break
   except OSError: time.sleep(.1)
  else: raise RuntimeError('synthetic capability runtime did not start')`)
+	if output, err := readiness.CombinedOutput(); err != nil {
+		t.Fatalf("synthetic MCP startup probe failed: %v: %s; %s", err, redactFixtureSecrets(string(output)), fixtureDiagnostics())
+	}
 
 	var opened struct {
 		ViewerURL string `json:"viewer_url"`
@@ -305,7 +326,11 @@ listed=rpc(2,'tools/list'); assert any(t['name']=='list_projects' for t in liste
 r=rpc(3,'tools/call',{'name':'list_projects','arguments':{}}); print(json.dumps(r))`
 	callTool := func() map[string]any {
 		t.Helper()
-		out := docker(nil, "exec", mcpContainer, "python3", "-c", client)
+		cmd := exec.Command("docker", "exec", mcpContainer, "python3", "-c", client)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("synthetic MCP client call failed: %v: %s; %s", err, redactFixtureSecrets(string(out)), fixtureDiagnostics())
+		}
 		var result map[string]any
 		if err := json.Unmarshal(out, &result); err != nil {
 			t.Fatalf("decode MCP client result %q: %v", out, err)
