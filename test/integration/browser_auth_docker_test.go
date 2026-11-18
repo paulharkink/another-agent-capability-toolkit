@@ -290,7 +290,7 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 		diagnostics := redactFixtureSecrets(string(logs))
 		return fmt.Sprintf("container %s; recent fixture logs:\n%s", strings.TrimSpace(string(state)), diagnostics)
 	}
-	install := `import os,sys; p='/run/aact/vault.json'; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o400); os.write(fd,sys.stdin.buffer.read()); os.close(fd)`
+	install := `import os,sys; p='/run/aact/vault.json'; tmp=p+'.tmp'; f=open(tmp,'xb'); f.write(sys.stdin.buffer.read()); f.flush(); os.fsync(f.fileno()); f.close(); os.chmod(tmp,0o400); os.replace(tmp,p)`
 	docker(payload, "exec", "-i", mcpContainer, "python3", "-c", install)
 	route := docker(nil, "exec", mcpContainer, "python3", "-c", `import json,socket,urllib.parse
 h=json.load(open('/run/aact/vault.json')); u=urllib.parse.urlsplit(h['api_address']); host=socket.gethostbyname(u.hostname); s=socket.create_connection((host,u.port),timeout=5); s.close(); print('vault API gateway reachable:',host,u.port)`)
