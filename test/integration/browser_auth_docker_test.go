@@ -199,7 +199,7 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixturePath = browserMCPFixtureWithPinnedPythonBase(t, fixturePath)
+	fixturePath = fixtureWithPrefetchedPythonBase(t, fixturePath)
 	mcpImage := fmt.Sprintf("aact-test/browser-auth-mcp:%x", time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", mcpImage).Run() })
 	docker(nil, "build", "--tag", mcpImage, fixturePath)
@@ -378,37 +378,4 @@ r=rpc(3,'tools/call',{'name':'list_projects','arguments':{}}); print(json.dumps(
 	if err := testDaemonControlRequest(info, control, "DELETE", "/browser/configurations/"+mcpContainer, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func browserMCPFixtureWithPinnedPythonBase(t *testing.T, source string) string {
-	t.Helper()
-	const ecr = "public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
-	const hub = "docker.io/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72"
-	selected := os.Getenv("AACT_PYTHON_BASE_IMAGE_3_14_ALPINE")
-	if selected == "" {
-		selected = ecr
-	}
-	if selected != ecr && selected != hub {
-		t.Fatalf("refusing unverified integration fixture Python base %q", selected)
-	}
-	data, err := os.ReadFile(filepath.Join(source, "Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defaultLine := "ARG PYTHON_BASE_IMAGE=" + ecr
-	if !strings.Contains(string(data), defaultLine) {
-		t.Fatal("synthetic browser MCP fixture lost its pinned Python base")
-	}
-	context := t.TempDir()
-	if err := os.WriteFile(filepath.Join(context, "Dockerfile"), []byte(strings.Replace(string(data), defaultLine, "ARG PYTHON_BASE_IMAGE="+selected, 1)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	server, err := os.ReadFile(filepath.Join(source, "server.py"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(context, "server.py"), server, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return context
 }
