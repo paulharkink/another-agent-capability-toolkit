@@ -19,21 +19,34 @@ import (
 // These tests enter through the exported CLI and use an isolated state directory
 // and fake connector process. They intentionally do not manufacture daemon APIs
 // or private authorization metadata.
-func TestPublicCLIRejectsStaleCredentialWithoutLaunchingInteractiveUI(t *testing.T) {
+func TestPublicCLIUsesManualFallbackWhenSavedCredentialCannotUnlock(t *testing.T) {
 	const actual = "isolated-vault-password"
-	prepareCredentialCLITest(t, actual)
-	writeCredentialHookResponse(t, `{"status":"ok","secret":"`+base64.StdEncoding.EncodeToString([]byte("stale-password"))+`"}`)
+	for _, tc := range []struct {
+		name     string
+		response string
+	}{
+		{
+			name:     "stale credential",
+			response: `{"status":"ok","secret":"` + base64.StdEncoding.EncodeToString([]byte("stale-password")) + `"}`,
+		},
+		{name: "unavailable credential store", response: `{"status":"unavailable"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepareCredentialCLITest(t, actual)
+			writeCredentialHookResponse(t, tc.response)
 
-	var out, errOut strings.Builder
-	code := cli.Run(context.Background(), nil, os.Stdin, &out, &errOut)
-	if code != 2 || !strings.Contains(errOut.String(), "interactive terminal") {
-		t.Fatalf("stale saved password did not stop the nonterminal CLI: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
-	}
-	if strings.Contains(out.String()+errOut.String(), actual) || strings.Contains(out.String()+errOut.String(), "stale-password") {
-		t.Fatal("a vault password appeared in CLI output")
-	}
-	if strings.Contains(out.String(), "Unlock AACT shared vault") {
-		t.Fatal("CLI launched the interactive unlock UI after rejecting the stale password")
+			var out, errOut strings.Builder
+			code := cli.Run(context.Background(), nil, os.Stdin, &out, &errOut)
+			if code != 2 || !strings.Contains(errOut.String(), "interactive terminal") {
+				t.Fatalf("credential failure did not stop the nonterminal CLI for manual fallback: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			if strings.Contains(out.String()+errOut.String(), actual) || strings.Contains(out.String()+errOut.String(), "stale-password") {
+				t.Fatal("a vault password appeared in CLI output")
+			}
+			if strings.Contains(out.String(), "Unlock AACT shared vault") {
+				t.Fatal("CLI launched the interactive unlock UI after rejecting the saved credential")
+			}
+		})
 	}
 }
 
@@ -73,20 +86,6 @@ func TestWSLKeyringIgnoresPATHPowerShellLookalike(t *testing.T) {
 	}
 	if _, err := os.Stat(capture); !os.IsNotExist(err) {
 		t.Fatalf("PATH lookalike PowerShell received the hook request: stat err=%v", err)
-	}
-}
-
-func TestPublicCLIUsesManualFallbackWhenCredentialHookUnavailable(t *testing.T) {
-	prepareCredentialCLITest(t, "isolated-vault-password")
-	writeCredentialHookResponse(t, `{"status":"unavailable"}`)
-
-	var out, errOut strings.Builder
-	code := cli.Run(context.Background(), nil, os.Stdin, &out, &errOut)
-	if code != 2 || !strings.Contains(errOut.String(), "interactive terminal") {
-		t.Fatalf("unavailable hook did not use the safe manual fallback: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
-	}
-	if strings.Contains(out.String(), "Unlock AACT shared vault") {
-		t.Fatal("nonterminal CLI launched an interactive unlock UI")
 	}
 }
 

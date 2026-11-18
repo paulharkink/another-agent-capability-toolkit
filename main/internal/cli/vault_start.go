@@ -167,6 +167,14 @@ func hasConfiguredVaultPassword() bool {
 	return hasPassword || hasPasswordFile
 }
 
+func savedVaultCredential(stateRoot string) []byte {
+	if _, err := os.Stat(filepath.Join(stateRoot, "credentials.kdbx")); err != nil {
+		return nil
+	}
+	password, _ := getVaultCredential(stateRoot)
+	return password
+}
+
 // initializeSharedVault prompts without echo, then attaches the encrypted
 // backend used by state.SecretInputs and state.SaveSecretInputs.
 func initializeSharedVault(store *state.Store, stateRoot string, out io.Writer, read passwordReader, preferred []byte, confirmSave func() bool) error {

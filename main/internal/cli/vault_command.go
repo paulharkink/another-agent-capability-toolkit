@@ -44,13 +44,11 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 		manualUnlock := !configured
 		fromCredentialStore := false
 		if !configured {
-			if _, statErr := os.Stat(filepath.Join(root, "credentials.kdbx")); statErr == nil {
-				if saved, keyringErr := getVaultCredential(root); keyringErr == nil && len(saved) > 0 {
-					password = saved
-					configured = true
-					manualUnlock = false
-					fromCredentialStore = true
-				}
+			if saved := savedVaultCredential(root); len(saved) > 0 {
+				password = saved
+				configured = true
+				manualUnlock = false
+				fromCredentialStore = true
 			}
 		}
 		var controlToken []byte

@@ -196,9 +196,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		passwordConfigured := hasConfiguredVaultPassword()
 		var credentialPassword []byte
 		if !passwordConfigured {
-			if _, statErr := os.Stat(filepath.Join(store.Root(), "credentials.kdbx")); statErr == nil {
-				credentialPassword, _ = getVaultCredential(store.Root())
-			}
+			credentialPassword = savedVaultCredential(store.Root())
 		}
 		defer clear(credentialPassword)
 		credentialConfigured := len(credentialPassword) > 0
