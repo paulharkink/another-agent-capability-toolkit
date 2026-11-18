@@ -18,7 +18,11 @@ func buildPublicCLIBinary(t *testing.T) string {
 		t.Fatal("locate test source for CLI build")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	binary := filepath.Join(t.TempDir(), "aact")
+	binaryName := "aact"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), binaryName)
 	command := exec.Command("go", "build", "-o", binary, "./cmd/aact")
 	command.Dir = filepath.Join(repoRoot, "main")
 	if output, err := command.CombinedOutput(); err != nil {
