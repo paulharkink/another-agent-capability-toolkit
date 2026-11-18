@@ -170,32 +170,45 @@ func installPublishedVersion(ctx context.Context, selected releasecatalog.Releas
 }
 
 func downloadBootstrapInstaller(ctx context.Context, releases []releasecatalog.Release, installerName, destination string) (string, error) {
-	if len(releases) == 0 {
-		return "", errors.New("no stable release is available to provide an installer")
-	}
-	latest := releases[0]
-	var candidate *releasecatalog.Asset
-	for i := range latest.Assets {
-		if latest.Assets[i].Name == installerName {
-			candidate = &latest.Assets[i]
-			break
+	var failures []string
+	for _, release := range releases {
+		version := strings.TrimPrefix(release.Tag, "v")
+		if !releasecatalog.StableVersion(release.Tag) || (version != minimumLocalArchiveInstallerVersion && !releasecatalog.NewerThan(version, minimumLocalArchiveInstallerVersion)) {
+			continue
 		}
+		var candidate *releasecatalog.Asset
+		for i := range release.Assets {
+			if release.Assets[i].Name == installerName {
+				candidate = &release.Assets[i]
+				break
+			}
+		}
+		if candidate == nil {
+			continue
+		}
+		if !hasSHA256ReleaseDigest(candidate.Digest) {
+			failures = append(failures, release.Tag+" has no valid SHA-256 installer digest")
+			continue
+		}
+		if _, err := releasecatalog.ValidateAssetURL(candidate.URL); err != nil {
+			failures = append(failures, release.Tag+" installer URL rejected: "+err.Error())
+			continue
+		}
+		path, err := downloadVerifiedAsset(ctx, *candidate, destination, 2<<20)
+		if err != nil {
+			failures = append(failures, release.Tag+" installer unavailable or failed digest verification: "+err.Error())
+			continue
+		}
+		return path, nil
 	}
-	if candidate == nil {
-		return "", fmt.Errorf("latest stable release %s has no %s asset", latest.Tag, installerName)
+	message := "no SHA-256 verified local-archive installer found in stable releases at or above v" + minimumLocalArchiveInstallerVersion
+	if len(failures) > 0 {
+		message += ": " + strings.Join(failures, "; ")
 	}
-	if !hasSHA256ReleaseDigest(candidate.Digest) {
-		return "", fmt.Errorf("latest stable release %s has no valid SHA-256 installer digest", latest.Tag)
-	}
-	if _, err := releasecatalog.ValidateAssetURL(candidate.URL); err != nil {
-		return "", fmt.Errorf("latest stable release %s installer URL rejected: %w", latest.Tag, err)
-	}
-	path, err := downloadVerifiedAsset(ctx, *candidate, destination, 2<<20)
-	if err != nil {
-		return "", fmt.Errorf("latest stable release %s installer failed digest verification: %w", latest.Tag, err)
-	}
-	return path, nil
+	return "", errors.New(message)
 }
+
+const minimumLocalArchiveInstallerVersion = "0.5.1"
 
 func hasSHA256ReleaseDigest(digest string) bool {
 	if !strings.HasPrefix(digest, "sha256:") {
@@ -322,6 +335,14 @@ func resolveInstallRoot() (root string, explicit bool, err error) {
 }
 
 func managedInstallRootFromExecutable() (string, bool, error) {
+	releaseDir, managed, err := managedReleaseDirFromExecutable()
+	if err != nil || !managed {
+		return "", managed, err
+	}
+	return filepath.Dir(filepath.Dir(releaseDir)), true, nil
+}
+
+func managedReleaseDirFromExecutable() (string, bool, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return "", false, fmt.Errorf("locate current AACT executable: %w", err)
@@ -341,15 +362,15 @@ func managedInstallRootFromExecutable() (string, bool, error) {
 	if filepath.Base(bin) != "bin" || filepath.Base(releases) != "releases" {
 		return "", false, nil
 	}
-	return filepath.Dir(releases), true, nil
+	return filepath.Dir(bin), true, nil
 }
 
 func localInstaller(name string) (string, error) {
-	if root, managed, err := managedInstallRootFromExecutable(); err != nil {
+	if releaseDir, managed, err := managedReleaseDirFromExecutable(); err != nil {
 		return "", err
 	} else if managed {
-		path := filepath.Join(root, name)
-		info, err := os.Stat(path)
+		path := filepath.Join(releaseDir, name)
+		info, err := os.Lstat(path)
 		if err != nil {
 			return "", err
 		}
@@ -357,23 +378,6 @@ func localInstaller(name string) (string, error) {
 			return "", fmt.Errorf("bundled installer is not a regular file: %s", path)
 		}
 		return path, nil
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		path := filepath.Join(dir, name)
-		_, installerErr := os.Stat(path)
-		_, moduleErr := os.Stat(filepath.Join(dir, "go.mod"))
-		if installerErr == nil && moduleErr == nil {
-			return path, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
 	}
 	return "", os.ErrNotExist
 }

@@ -35,13 +35,26 @@ func installerArchiveWithMarker(t *testing.T, marker string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return installerArchiveWithNative(t, native, marker)
+}
+
+func installerArchiveWithNative(t *testing.T, native []byte, marker string) []byte {
+	t.Helper()
+	installers := make(map[string][]byte, 2)
+	for _, name := range []string{"install.sh", "install.ps1"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		installers[name] = data
+	}
 	var b bytes.Buffer
 	if runtime.GOOS == "windows" {
 		z := zip.NewWriter(&b)
 		for _, f := range []struct {
 			name string
 			data []byte
-		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte(marker)}, {"release.json", []byte(`{"version":"fixture"}`)}} {
+		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte(marker)}, {"release.json", []byte(`{"version":"fixture"}`)}, {"install.sh", installers["install.sh"]}, {"install.ps1", installers["install.ps1"]}} {
 			h := &zip.FileHeader{Name: f.name, Method: zip.Deflate}
 			h.SetMode(0755)
 			w, err := z.CreateHeader(h)
@@ -61,11 +74,11 @@ func installerArchiveWithMarker(t *testing.T, marker string) []byte {
 		name string
 		data []byte
 		mode int64
-	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte(marker), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}} {
-		if err = tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
+	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte(marker), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}, {"install.sh", installers["install.sh"], 0644}, {"install.ps1", installers["install.ps1"], 0644}} {
+		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = tw.Write(f.data); err != nil {
+		if _, err := tw.Write(f.data); err != nil {
 			t.Fatal(err)
 		}
 	}
