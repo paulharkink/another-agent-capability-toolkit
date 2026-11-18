@@ -117,6 +117,17 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "__installer-lifecycle" {
+		if len(args) == 2 && args[1] == "--probe" {
+			fmt.Fprintln(out, "aact-installer-lifecycle-v1")
+			return 0
+		}
+		if len(args) >= 4 && args[1] == "--run" {
+			return runInstallerLifecycle(ctx, args[2:], out, errOut)
+		}
+		fmt.Fprintln(errOut, "usage: aact __installer-lifecycle --probe")
+		return 2
+	}
 	if len(args) > 0 && (args[0] == "vault" || args[0] == "daemon") {
 		return runDaemonCommand(args[1:], args[0] == "vault", out, errOut)
 	}

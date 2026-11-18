@@ -17,6 +17,9 @@ import (
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/process"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/releasecatalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
+	"golang.org/x/term"
 )
 
 func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -86,16 +89,146 @@ func runVersionCommand(ctx context.Context, args []string, out, errOut io.Writer
 			}
 		}
 		version := strings.TrimPrefix(selected.Tag, "v")
-		if err := installPublishedVersion(ctx, *selected, releases); err != nil {
+		if err := installVersionAndRestartDaemon(ctx, *selected, releases, errOut); err != nil {
 			fmt.Fprintln(errOut, err)
+			if errors.Is(err, errDaemonCredentialRequiresTerminal) {
+				return 2
+			}
 			return 1
 		}
 		fmt.Fprintf(out, "Installed AACT %s.\n", version)
+		if targetDaemonKind(version) == daemonTargetNone {
+			fmt.Fprintln(out, "The target release has no daemon; Vault-dependent running MCPs remain disconnected until a daemon-capable release is installed.")
+		} else if targetDaemonKind(version) == daemonTargetLegacy || version == "0.6.0" || version == "0.6.1" {
+			fmt.Fprintln(out, "This historical release has no browser API; browser-backed MCPs may not work.")
+		}
 		return 0
 	default:
 		fmt.Fprintln(errOut, "usage: aact version [list | upgrade | install VERSION]")
 		return 2
 	}
+}
+
+func installVersionAndRestartDaemon(ctx context.Context, selected releasecatalog.Release, releases []releasecatalog.Release, errOut io.Writer) error {
+	version := strings.TrimPrefix(selected.Tag, "v")
+	return installWithDaemonLifecycle(ctx, version, errOut, func() error {
+		return installPublishedVersion(ctx, selected, releases)
+	})
+}
+
+func installWithDaemonLifecycle(ctx context.Context, version string, errOut io.Writer, install func() error) error {
+	return installWithDaemonLifecycleAtRoot(ctx, "", version, errOut, install)
+}
+
+func installWithDaemonLifecycleAtRoot(ctx context.Context, rootOverride, version string, errOut io.Writer, install func() error) error {
+	stateRoot := state.DefaultRoot(runtime.GOOS, homeDirectory(), os.Getenv)
+	unlockManager, err := vault.LockDaemonManager(stateRoot)
+	if err != nil {
+		return fmt.Errorf("lock AACT daemon lifecycle during update: %w", err)
+	}
+	defer unlockManager()
+	info, err := vault.ReadDaemonInfo(stateRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return install()
+	}
+	if err != nil {
+		return fmt.Errorf("read AACT daemon metadata before update: %w", err)
+	}
+	if !vault.DaemonRunning(info) {
+		return install()
+	}
+	apiListenAddress, err := vault.APIListenAddressForDaemon(info)
+	if err != nil {
+		return fmt.Errorf("preserve the running Vault API endpoint before update: %w", err)
+	}
+	password, controlToken, manualUnlock, err := daemonControlCredentials(stateRoot, errOut, "updating AACT while its daemon is running")
+	if err != nil {
+		return err
+	}
+	defer clear(password)
+	defer clear(controlToken)
+	if manualUnlock && term.IsTerminal(int(os.Stdin.Fd())) && confirmVaultCredentialSave(os.Stdin, errOut) {
+		if err := setVaultCredential(stateRoot, password); err != nil {
+			fmt.Fprintln(errOut, "Could not save the vault password to the OS credential store; the daemon remains available for this session.")
+		}
+	}
+	if err := vault.StopDetached(info, controlToken); err != nil {
+		return fmt.Errorf("stop AACT daemon before update: %w", err)
+	}
+	if err := install(); err != nil {
+		return fmt.Errorf("%w; AACT daemon remains stopped", err)
+	}
+	if targetDaemonKind(version) == daemonTargetNone {
+		return nil
+	}
+	newExecutable, err := installedExecutablePathForVersionAtRoot(version, rootOverride)
+	if err != nil {
+		return fmt.Errorf("installed AACT %s but could not locate its executable: %w; daemon remains stopped", version, err)
+	}
+	if _, err := startDaemonForVersionLocked(newExecutable, version, stateRoot, password, apiListenAddress); err != nil {
+		return fmt.Errorf("installed AACT %s but failed to start its daemon: %w; installation remains active and the daemon remains stopped", version, err)
+	}
+	return nil
+}
+
+type daemonTarget int
+
+const (
+	daemonTargetNone daemonTarget = iota
+	daemonTargetLegacy
+	daemonTargetCurrent
+)
+
+func targetDaemonKind(version string) daemonTarget {
+	if version == "0.5.15" || releasecatalog.NewerThan(version, "0.5.15") {
+		if version == "0.6.0" || releasecatalog.NewerThan(version, "0.6.0") {
+			return daemonTargetCurrent
+		}
+		return daemonTargetLegacy
+	}
+	return daemonTargetNone
+}
+
+func startDaemonForVersionLocked(executable, version, stateRoot string, password []byte, apiListenAddress string) (vault.DaemonInfo, error) {
+	if version != "" && targetDaemonKind(version) == daemonTargetLegacy {
+		return vault.StartLegacyDetachedLocked(executable, stateRoot, password, apiListenAddress)
+	}
+	return vault.StartDetachedWithAPIListenAddressLocked(executable, stateRoot, password, apiListenAddress)
+}
+
+func installedExecutablePathForVersion(version string) (string, error) {
+	return installedExecutablePathForVersionAtRoot(version, "")
+}
+
+func installedExecutablePathForVersionAtRoot(version, rootOverride string) (string, error) {
+	root := rootOverride
+	var err error
+	if root != "" {
+		root, err = filepath.Abs(root)
+	} else {
+		root, _, err = resolveInstallRoot()
+	}
+	if err != nil {
+		return "", err
+	}
+	target, err := installerTarget()
+	if err != nil {
+		return "", err
+	}
+	platformArch := strings.ReplaceAll(target, "_", "-")
+	name := "aact"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(root, "releases", version+"-"+platformArch, "bin", name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect installed AACT executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("installed AACT executable is not a regular file: %s", path)
+	}
+	return path, nil
 }
 
 func installPublishedVersion(ctx context.Context, selected releasecatalog.Release, releases []releasecatalog.Release) error {
@@ -229,7 +362,7 @@ func installerEnvironment() []string {
 	for _, entry := range filtered {
 		name, value, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(name) {
-		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE":
+		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE", "AACT_INSTALLER_LIFECYCLE":
 			continue
 		case "PSMODULEPATH":
 			if runtime.GOOS == "windows" {
@@ -251,6 +384,7 @@ func installerEnvironment() []string {
 			clean = append(clean, "PSModulePath="+powerShellModulePath)
 		}
 	}
+	clean = append(clean, "AACT_INSTALLER_LIFECYCLE=1")
 	return clean
 }
 

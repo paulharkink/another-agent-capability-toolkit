@@ -67,6 +67,12 @@ in the background and continues normally if that request fails. Explicit
 version commands report a lookup error when GitHub is unavailable. Install and
 upgrade verify the release asset SHA-256 digest, then use the managed installer
 and its `checksums.txt` verification before activation.
+Direct installer runs use the installed AACT lifecycle controller when
+available, so an active daemon is stopped before replacement and restarted at
+the same Vault API endpoint. Releases without a daemon leave the prior daemon
+stopped. When an older installed controller cannot supervise an update, the
+installer reports that a daemon-capable target remains stopped and needs a
+manual restart.
 
 The terminal home has a Capabilities pane and a related MCP profiles pane.
 Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item

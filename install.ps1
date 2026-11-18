@@ -9,6 +9,7 @@ param(
   [switch]$SkipUserPath
 )
 $ErrorActionPreference = 'Stop'
+$fallbackControllerInstallDir = if ($env:AACT_INSTALL_DIR) { [IO.Path]::GetFullPath($env:AACT_INSTALL_DIR) } else { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'aact')) }
 
 function Get-NormalizedPathEntry([string]$entry) {
   $value = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
@@ -52,6 +53,27 @@ function Add-UserPathEntry([string]$entry) {
   } finally { $key.Dispose() }
 }
 
+function Get-ManagedController([string]$root) {
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
+  $root = [IO.Path]::GetFullPath($root)
+  $launcher = Join-Path $root 'bin/aact.cmd'
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { return $null }
+  $content = Get-Content -LiteralPath $launcher -Raw
+  $match = [regex]::Match($content, '(?i)\.\.\\releases\\([^\\]+)\\bin\\aact\.exe')
+  if (-not $match.Success) { return $null }
+  $releaseName = $match.Groups[1].Value
+  $suffix = '-windows-' + $arch
+  if (-not $releaseName.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  $release = Join-Path (Join-Path $root 'releases') $releaseName
+  $executable = Join-Path $release 'bin/aact.exe'
+  $metadata = Join-Path $release '.archive-sha256'
+  if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or -not (Test-Path -LiteralPath $metadata -PathType Leaf)) { return $null }
+  if ((Get-Content -LiteralPath $metadata -Raw).Trim() -notmatch '^[a-fA-F0-9]{64}$') { return $null }
+  $installer = Join-Path $release 'install.ps1'
+  if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { $installer = '' }
+  return [pscustomobject]@{ Controller = $executable; Installer = $installer }
+}
+
 function Send-EnvironmentChanged {
   if (-not ('AactEnvironmentBroadcast' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -92,6 +114,8 @@ if ($LocalArchive) {
 }
 if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { throw 'Invalid release version' }
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
+$controllerInstallDir = $InstallDir
+$lifecycleFallback = $false
 $releases = Join-Path $InstallDir 'releases'
 $launchers = Join-Path $InstallDir 'bin'
 [IO.Directory]::CreateDirectory($releases) | Out-Null
@@ -135,6 +159,57 @@ try {
   Expand-Archive -LiteralPath $archive -DestinationPath $tree
   if (-not (Test-Path -LiteralPath (Join-Path $tree 'bin/aact.exe') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $tree 'packages') -PathType Container)) { throw 'Release archive is incomplete' }
   [IO.File]::WriteAllText((Join-Path $tree '.archive-sha256'), $expected + "`n", [Text.UTF8Encoding]::new($false))
+  if ($env:AACT_INSTALLER_LIFECYCLE -ne '1') {
+    Copy-Item -LiteralPath $checksumFile -Destination (Join-Path $work 'checksums.txt')
+    $rootManaged = Get-ManagedController $controllerInstallDir
+    $fallbackManaged = $null
+    if ($fallbackControllerInstallDir -and -not [string]::Equals($fallbackControllerInstallDir, $controllerInstallDir, [StringComparison]::OrdinalIgnoreCase)) {
+      $fallbackManaged = Get-ManagedController $fallbackControllerInstallDir
+    }
+    $currentLifecycle = $null
+    if ($rootManaged -and $rootManaged.Installer -and ((& $rootManaged.Controller __installer-lifecycle --probe 2>$null | Out-String).Trim() -eq 'aact-installer-lifecycle-v1')) {
+      $currentLifecycle = $rootManaged
+    } elseif ($fallbackManaged -and $fallbackManaged.Installer -and ((& $fallbackManaged.Controller __installer-lifecycle --probe 2>$null | Out-String).Trim() -eq 'aact-installer-lifecycle-v1')) {
+      $currentLifecycle = $fallbackManaged
+    }
+    $staged = Join-Path $tree 'bin/aact.exe'
+    $lifecycleController = ''
+    $lifecycleScript = ''
+    if ((& $staged __installer-lifecycle --probe 2>$null | Out-String).Trim() -eq 'aact-installer-lifecycle-v1') {
+      $lifecycleController = $staged
+      $stagedInstaller = Join-Path $tree 'install.ps1'
+      if (Test-Path -LiteralPath $stagedInstaller -PathType Leaf) { $lifecycleScript = $stagedInstaller }
+      elseif ($currentLifecycle) { $lifecycleScript = $currentLifecycle.Installer }
+    } elseif ($currentLifecycle) {
+      $lifecycleController = $currentLifecycle.Controller
+      $lifecycleScript = $currentLifecycle.Installer
+    }
+    if ($lifecycleController -and $lifecycleScript) {
+      $delegatedArgs = @('__installer-lifecycle', '--run', $lifecycleScript, '--install-dir', $InstallDir)
+      $delegatedArgs += @('--', '-Version', $Version, '-LocalArchive', $archive, '-InstallDir', $InstallDir)
+      if ($Force) { $delegatedArgs += '-Force' }
+      if ($SkipUserPath) { $delegatedArgs += '-SkipUserPath' }
+      & $lifecycleController @delegatedArgs
+      exit $LASTEXITCODE
+    }
+    $controller = if ($rootManaged) { $rootManaged.Controller } elseif ($fallbackManaged) { $fallbackManaged.Controller } else { '' }
+    if ($controller) {
+      $status = ''
+      try { $status = (& $controller daemon status 2>&1 | Out-String) } catch { }
+      $stopCommand = 'daemon'
+      if ($status -notmatch ' running at ') {
+        try { $status = (& $controller vault status 2>&1 | Out-String) } catch { $status = '' }
+        $stopCommand = 'vault'
+      }
+      $lifecycleFallback = $status -match ' running at '
+      $targetHasDaemon = $Version -notmatch '^0\.[0-4]\.' -and $Version -notmatch '^0\.5\.(?:[0-9]|1[0-4])$'
+      if ($lifecycleFallback -and $targetHasDaemon) { throw 'A running daemon cannot be safely updated by this installer/controller combination; install was not started.' }
+      if ($lifecycleFallback) {
+        & $controller $stopCommand stop
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stop the running AACT daemon; install was not started.' }
+      }
+    }
+  }
   $release = Join-Path $releases "$Version-windows-$arch"
   if (Test-Path -LiteralPath $release) {
     $existingHash = Join-Path $release '.archive-sha256'
@@ -180,6 +255,12 @@ try {
     $releaseBackup = ''
   }
   Write-Output "Installed AACT $Version (windows/$arch) at $release"
+  if ($lifecycleFallback -and $Version -notmatch '^0\.[0-4]\.' -and $Version -notmatch '^0\.5\.(?:[0-9]|1[0-4])$') {
+    throw 'A running daemon cannot be safely updated by this installer/controller combination; install was not started.'
+  }
+  if ($lifecycleFallback) {
+    Write-Warning "Installed AACT $Version without a daemon; the previous daemon remains stopped and Vault-dependent running MCPs are disconnected."
+  }
   if (-not $SkipUserPath -and $env:AACT_INSTALLER_SKIP_USER_PATH -ne '1') {
   try {
     $processPathHadLauncher = Test-PathContainsEntry $env:PATH $launchers
@@ -200,6 +281,7 @@ try {
     Write-Output "Run the launcher directly at $(Join-Path $launchers 'aact.cmd') or add that directory to PATH."
   }
   }
+  $global:LASTEXITCODE = 0
 } catch {
   if (-not $releaseCommitted -and $releaseBackup -and (Test-Path -LiteralPath $releaseBackup)) {
     try {

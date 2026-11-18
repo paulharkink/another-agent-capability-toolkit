@@ -1523,11 +1523,10 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			// it was launched for the same configured port.
 			if definition.HostPortInput != "" {
 				if !observedRuntimesLoaded {
-					var observeErr error
-					observedRuntimes, observeErr = s.Options.Runtime.List(ctx)
-					if observeErr != nil {
-						return out, fmt.Errorf("refresh runtime observation before installing agent bindings: %w", observeErr)
-					}
+					// Inventory can supply Docker's actual port after a conflict
+					// fallback. If Docker is unavailable, the declared host endpoint
+					// below remains a usable install-time fallback.
+					observedRuntimes, _ = s.Options.Runtime.List(ctx)
 					observedRuntimesLoaded = true
 				}
 				configuredPort, portErr := resolvePortInputValue(definition.HostPortInput, values[definition.HostPortInput])

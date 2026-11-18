@@ -124,7 +124,7 @@ func (a *API) StartBrowser(ctx context.Context, container string) (string, error
 	return a.browserService.StartConfiguration(ctx, record.Config)
 }
 
-func (a *API) stopBrowserRegistration(ctx context.Context, container string, remove bool) error {
+func (a *API) stopBrowserRegistration(ctx context.Context, container string, removeRegistration bool) error {
 	if !browsercontroller.ValidDockerContainerID(container) {
 		return errors.New("invalid browser owner")
 	}
@@ -144,8 +144,10 @@ func (a *API) stopBrowserRegistration(ctx context.Context, container string, rem
 		return errors.New("browser service is unavailable")
 	}
 	record.Config.ContainerID = container
-	return a.browserService.StopConfiguration(ctx, record.Config, remove, func() error {
-		if !remove {
+	// Remove the helper even when pausing. A stopped container still holds the
+	// profile volume and would block a replacement MCP from opening its helper.
+	return a.browserService.StopConfiguration(ctx, record.Config, true, func() error {
+		if !removeRegistration {
 			return nil
 		}
 		return a.store.Delete(browserRegistryNamespace, container)
