@@ -102,6 +102,7 @@ archives:
       - LICENSE
       - THIRD_PARTY_NOTICES.md
       - packages/**
+      - main/packages/git-provider/mcp/**
       - images/browser-authentication-helper/Dockerfile
       - images/browser-authentication-helper/README.md
       - images/browser-authentication-helper/*.py

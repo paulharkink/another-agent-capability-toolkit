@@ -124,6 +124,12 @@ func TestArchiveContracts(t *testing.T) {
 			}
 			for _, name := range []string{
 				"README.md", "LICENSE", "packages/cluster-inspector/package.toml", "packages/git-provider/package.toml",
+				"main/packages/git-provider/mcp/github/Dockerfile",
+				"main/packages/git-provider/mcp/github/child_process_windows.go",
+				"main/packages/git-provider/mcp/gitlab/Dockerfile",
+				"main/packages/git-provider/mcp/bitbucket/Dockerfile",
+				"main/packages/git-provider/mcp/bitbucket/search-client.integration.test.mjs",
+				"main/packages/git-provider/mcp/bitbucket/search-client.patch",
 				"images/browser-authentication-helper/Dockerfile",
 				"images/browser-authentication-helper/README.md",
 				"images/browser-authentication-helper/browser_auth.py",

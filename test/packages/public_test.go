@@ -205,6 +205,10 @@ func TestGitProviderInspectorDeclaresOptionalProviderServers(t *testing.T) {
 		if profile.Runtime != "docker" {
 			t.Fatalf("%s should launch as a local Docker MCP server, got runtime %q", profile.Name, profile.Runtime)
 		}
+		context := filepath.Clean(filepath.Join(p.Dir, profile.BuildContext))
+		if _, err := os.Stat(filepath.Join(context, "Dockerfile")); err != nil {
+			t.Fatalf("%s build context has no Dockerfile: %v", profile.Name, err)
+		}
 		if profile.TokenInput == "" || profile.TokenFileInput == "" || profile.TokenEnvInput == "" {
 			t.Fatalf("%s must accept a raw token, token file, or environment variable", profile.Name)
 		}
@@ -216,6 +220,11 @@ func TestGitProviderInspectorDeclaresOptionalProviderServers(t *testing.T) {
 			if input.Default != nil && input.Default != "" {
 				t.Fatalf("%s token input %q must not contain a default secret", profile.Name, inputName)
 			}
+		}
+	}
+	for _, name := range []string{"search-client.patch", "search-client.integration.test.mjs"} {
+		if _, err := os.Stat(filepath.Join(p.Dir, profiles[2].BuildContext, name)); err != nil {
+			t.Fatalf("Bitbucket build context is missing %s: %v", name, err)
 		}
 	}
 	bitbucketURL, ok := findInput(p.Inputs, "bitbucket_url")
