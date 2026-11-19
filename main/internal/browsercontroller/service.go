@@ -157,6 +157,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Selector BrowserAuthSelector `json:"selector"`
 		Origin   string              `json:"origin,omitempty"`
 		Config   map[string]any      `json:"config,omitempty"`
+		Private  map[string]string   `json:"private,omitempty"`
 	}
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -188,6 +189,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	adapter := config.Adapter
 	adapter.Config = input.Config
+	if len(input.Private) > 0 {
+		if adapter.Config == nil {
+			adapter.Config = make(map[string]any)
+		}
+		if _, exists := adapter.Config["__private"]; exists {
+			http.Error(w, "invalid browser request", http.StatusBadRequest)
+			return
+		}
+		adapter.Config["__private"] = input.Private
+	}
 	request := BrowserAuthRequest{Origin: origin, Selector: input.Selector, Adapter: adapter}
 	if request.Adapter.Source == "" {
 		request.Adapter.Source = browserCredentialAdapterSource
@@ -222,7 +233,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Offline reads require an unmounted profile. Once a login helper is open,
 	// retries must keep it alive and use its active profile through the adapter.
-	if !interactive {
+	if !interactive && request.Selector.Kind != "none" {
 		result, readErr := browser.ReadOffline(r.Context(), request)
 		if readErr == nil && adapterSucceeded(result) {
 			writeBrowserResult(w, http.StatusOK, result, "")
@@ -234,7 +245,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "browser could not be started", http.StatusServiceUnavailable)
 		return
 	}
-	if !interactive {
+	if !interactive && request.Selector.Kind != "none" {
 		// Chromium and its initial page may take a few seconds after startup.
 		// Retry the initial tab lookup only for a newly opened login; reloading
 		// an active session would discard forms and other user progress.

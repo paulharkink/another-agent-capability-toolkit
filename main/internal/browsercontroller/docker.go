@@ -23,7 +23,7 @@ import (
 
 const (
 	containerName               = "browser-authentication-helper-controller"
-	authenticationHelperImage   = "aact/browser-authentication-helper:1.18.0"
+	authenticationHelperImage   = "aact/browser-authentication-helper:1.18.0-form1"
 	browserPort                 = "6901/tcp"
 	browserHome                 = "/home/kasm-user"
 	browserProfilePath          = "/home/kasm-user/.config/chromium/Default"
@@ -185,6 +185,22 @@ func (d DockerBrowser) EnsureStarted(ctx context.Context) (string, error) {
 		}
 		if mounted {
 			return "", errors.New("browser profile volume is mounted by another container; identify it; if it is the previous AACT browser, stop and remove that container without removing the profile volume, then retry; otherwise resolve the mount conflict manually")
+		}
+	}
+	if strings.TrimSpace(string(names)) == name {
+		previous, inspectErr := d.inspect(ctx, name)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if previous.Config.Image == "aact/browser-authentication-helper:1.18.0" && !previous.State.Running {
+			startup, hasStartup := previous.Config.Labels["aact.browser-controller.startup-url-sha256"]
+			if !d.owned(previous) || previous.Config.Labels["org.aact.browser-authentication-helper"] != "1" || previous.Config.Labels["org.aact.browser-access-controller"] != "1" || previous.Config.Labels["aact.browser-controller.access-config-sha256"] != accessConfigDigest(d.AccessConfigJSON) || (hasStartup && startup != startupURLDigest(d.StartupURL)) || (!hasStartup && d.StartupURL != "") {
+				return "", errors.New("legacy browser container does not match the registered configuration")
+			}
+			if _, err := d.Commands.Run(ctx, []string{"container", "rm", name}); err != nil {
+				return "", errors.New("legacy browser container could not be upgraded")
+			}
+			names = nil
 		}
 	}
 	if strings.TrimSpace(string(names)) == "" {
@@ -487,6 +503,7 @@ func (d DockerBrowser) RunBrowserAuthAdapter(ctx context.Context, request Browse
 	if err != nil || len(input) > 256*1024 {
 		return nil, errors.New("browser authentication request is too large or invalid")
 	}
+	defer clear(input)
 	opCtx, cancel := context.WithTimeout(ctx, browserAuthOperationTimeout)
 	defer cancel()
 	if d.Commands == nil {
@@ -630,6 +647,10 @@ func validateGenericBrowserAuthRequest(request BrowserAuthRequest) error {
 		}
 	}
 	switch request.Selector.Kind {
+	case "none":
+		if request.Selector.Name != "" || len(request.Selector.Names) != 0 || request.Selector.Match != "" || request.Selector.AllowEmpty {
+			return errors.New("browser authentication selector is invalid")
+		}
 	case "cookie":
 		if request.Selector.Name != "" || request.Selector.Match != "exact" || request.Selector.AllowEmpty || len(request.Selector.Names) == 0 || len(request.Selector.Names) > maxBrowserAuthCookies {
 			return errors.New("browser authentication cookie selector is invalid")
@@ -666,6 +687,7 @@ func validateGenericBrowserAuthRequest(request BrowserAuthRequest) error {
 	}
 	helpRequest := genericBrowserAuthHelperRequest{ProfilePath: browserProfilePath, Origin: request.Origin, Selector: request.Selector, Adapter: adapter}
 	encoded, err := json.Marshal(helpRequest)
+	defer clear(encoded)
 	if err != nil || len(encoded) > 256*1024 {
 		return errors.New("browser authentication request is too large or invalid")
 	}
@@ -799,7 +821,7 @@ func (d DockerBrowser) inspect(ctx context.Context, name string) (*inspectedCont
 }
 
 func (d DockerBrowser) owned(state *inspectedContainer) bool {
-	if state.Config.Image != authenticationHelperImage || state.Config.Labels["aact.browser-controller"] != "1" || state.Config.Labels["aact.browser-controller.profile-volume"] != d.ProfileVolume {
+	if (state.Config.Image != authenticationHelperImage && state.Config.Image != "aact/browser-authentication-helper:1.18.0") || state.Config.Labels["aact.browser-controller"] != "1" || state.Config.Labels["aact.browser-controller.profile-volume"] != d.ProfileVolume {
 		return false
 	}
 	for _, mount := range state.Mounts {

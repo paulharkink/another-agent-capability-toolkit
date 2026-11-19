@@ -100,6 +100,30 @@ it to obtain a fresh OpenShift token when the cached token expires, including
 while the MCP is running. Direct token and kubeconfig authentication remain
 available; they do not automatically use a password.
 
+Grafana Inspector also supports a browser username and password as an alternative
+to an API token or manually supplied session cookies. A Capability Pack supplies
+the HTTPS login origin and CSS selectors for the username, password and submit
+controls. AACT keeps the password in its vault. If session rotation fails, the
+browser attempts login and the MCP retries the request. If the login flow needs
+attention, the MCP returns the browser viewer URL; update a changed password in
+the Capability Instance inputs and restart its MCP. A failed or uncertain attempt is not repeatedly
+submitted while interaction is pending.
+
+For example, a Pack can configure an OpenShift login form in its Grafana
+target TOML:
+
+```toml
+[grafana]
+auth_mode = "browser_credentials"
+browser_login_origin = "https://login.example.com"
+browser_username_selector = "#inputUsername"
+browser_password_selector = "#inputPassword"
+browser_submit_selector = "#co-login-button"
+```
+
+Enter the username and password in AACT, and configure a CA file when the
+Grafana and login endpoints use a private CA.
+
 ```sh
 aact install git-repo-map --agent codex \
   --set scan_roots="$HOME/projects" --set scan_roots="$HOME/worktrees"

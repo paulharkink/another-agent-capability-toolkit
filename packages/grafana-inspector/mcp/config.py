@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tomllib
@@ -14,6 +14,7 @@ class GrafanaTarget:
     refresh_cookie_name: str = ""
     ca_file: Path | None = None
     verify_x509_strict: bool | None = None
+    browser: dict = field(default_factory=dict)
     @property
     def auth_file(self) -> Path:
         """Credential JSON file used by the Grafana launcher and server."""
@@ -32,7 +33,7 @@ def load_target(path: Path, environment: str, target: str, state_home: Path | No
     if not isinstance(port, int) or not 1024 <= port <= 65535: raise ValueError("[mcp].local_port must be between 1024 and 65535.")
     if not isinstance(url, str) or not re.fullmatch(r"https://[^\s]+", url): raise ValueError("[grafana].url must be an HTTPS URL.")
     if uid is not None and (not isinstance(uid, str) or not uid.strip()): raise ValueError("[grafana].datasource_uid must be a non-empty string when provided.")
-    if mode not in {"api_token", "session_cookie"}: raise ValueError("[grafana].auth_mode must be api_token or session_cookie.")
+    if mode not in {"api_token", "session_cookie", "browser_credentials"}: raise ValueError("[grafana].auth_mode must be api_token, session_cookie or browser_credentials.")
     base = Path(state_home or Path.home() / ".local" / "state")
     refresh_name = cfg.get("refresh_cookie_name", "")
     if not isinstance(refresh_name, str): raise ValueError("[grafana].refresh_cookie_name must be a string.")
@@ -48,4 +49,6 @@ def load_target(path: Path, environment: str, target: str, state_home: Path | No
         ca_file = (target_directory / configured_ca).resolve()
         if not ca_file.is_relative_to(target_directory): raise ValueError("[grafana].ca_file must stay within the target TOML directory.")
         if not ca_file.is_file(): raise ValueError("[grafana].ca_file must point to a readable certificate file.")
-    return GrafanaTarget(url.rstrip("/"), port, uid, mode, state_directory(base, environment, target), Path(path).resolve(), refresh_name, ca_file, verify_x509_strict)
+    browser = {name: cfg.get("browser_" + name, "") for name in ("username", "login_origin", "username_selector", "password_selector", "submit_selector")}
+    if any(not isinstance(value, str) for value in browser.values()): raise ValueError("Grafana browser login configuration must contain strings.")
+    return GrafanaTarget(url.rstrip("/"), port, uid, mode, state_directory(base, environment, target), Path(path).resolve(), refresh_name, ca_file, verify_x509_strict, browser)

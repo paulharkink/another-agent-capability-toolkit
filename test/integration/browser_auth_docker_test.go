@@ -28,7 +28,7 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("detached test helper uses a POSIX shell")
 	}
-	image := "aact/browser-authentication-helper:1.18.0"
+	image := "aact/browser-authentication-helper:1.18.0-form1"
 	docker := func(input []byte, args ...string) []byte {
 		t.Helper()
 		c := exec.Command("docker", args...)
@@ -83,6 +83,15 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := browsercontroller.ServiceConfig{Origin: "https://example.invalid", StartupURL: "https://example.invalid", ProfileVolume: volume, ContainerName: "aact-test-browser-" + container[:16], Adapter: browsercontroller.BrowserAuthAdapter{Source: "def run(credentials, config):\n    return {'status': 'refreshed', 'synthetic_value': credentials[0]['value']}\n"}}
+	helperName := config.ContainerName
+	t.Cleanup(func() {
+		owner, err := exec.Command("docker", "inspect", "--format", `{{index .Config.Labels "aact.browser-controller"}} {{index .Config.Labels "aact.browser-controller.profile-volume"}}`, helperName).Output()
+		if err == nil && strings.TrimSpace(string(owner)) == "1 "+volume {
+			if err := exec.Command("docker", "rm", "-f", helperName).Run(); err != nil {
+				t.Errorf("remove test browser: %v", err)
+			}
+		}
+	})
 	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations", browserRegistration{Instance: namespace, ContainerID: container, Config: config}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +128,9 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if string(output) != "synthetic credential read through daemon" {
 		t.Fatalf("unexpected client result %q", output)
 	}
-	stoppedHelper := docker(nil, "inspect", "--format", "{{.State.Running}}", config.ContainerName)
-	if string(stoppedHelper) != "false" {
-		t.Fatalf("successful offline credential handoff left the login helper running: %s", stoppedHelper)
+	runningHelper = docker(nil, "ps", "--filter", "name=^/"+config.ContainerName+"$", "--format", "{{.Names}}")
+	if len(runningHelper) != 0 {
+		t.Fatalf("successful offline credential handoff left the login helper running: %s", runningHelper)
 	}
 	if os.Getenv("AACT_BROWSER_DEMO_MCP_IMAGE") != "" {
 		exerciseSyntheticMCP(t, docker, info, control, volume)
@@ -146,7 +155,6 @@ func TestBrowserDaemonCredentialDockerFlow(t *testing.T) {
 	if err := testDaemonControlRequest(info, control, "POST", "/browser/configurations", browserRegistration{Instance: namespace, ContainerID: container, Config: config}, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", config.ContainerName).Run() })
 	onlineClient := strings.Replace(client, "synthetic-demo-cookie", "online-synthetic", 1)
 	if out := docker(payload, "exec", "-i", container, "python3", "-c", onlineClient); string(out) != "synthetic credential read through daemon" {
 		t.Fatalf("online result %q", out)
@@ -181,7 +189,7 @@ func TestBrowserLoginHandoffAuthenticatesSyntheticMCPRuntime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("detached test helper uses a POSIX shell")
 	}
-	image := "aact/browser-authentication-helper:1.18.0"
+	image := "aact/browser-authentication-helper:1.18.0-form1"
 	docker := func(input []byte, args ...string) []byte {
 		t.Helper()
 		cmd := exec.Command("docker", args...)

@@ -43,9 +43,9 @@ def prepare_auth(request: dict) -> dict:
         old = {}
     auth = dict(old)
     mode = inputs.get("auth_mode") or auth.get("auth_mode") or cfg.get("auth_mode")
-    if mode not in {"api_token", "session_cookie"}:
-        raise ValueError("Grafana auth_mode must be api_token or session_cookie.")
-    auth["auth_mode"] = mode
+    if mode not in {"api_token", "session_cookie", "browser_credentials"}:
+        raise ValueError("Grafana auth_mode must be api_token, session_cookie or browser_credentials.")
+    auth["auth_mode"] = "session_cookie" if mode == "browser_credentials" else mode
     for name, key in (("token", "api_token"), ("api_token", "api_token"), ("grafana_session", "grafana_session"), ("oauth_refresh", "oauth_refresh"), ("session_expiry", "session_expiry"), ("refresh_cookie_name", "refresh_cookie_name")):
         value = inputs.get(name)
         if value:
@@ -80,7 +80,7 @@ def prepare_auth(request: dict) -> dict:
                 if not isinstance(token, str) or not token:
                     raise ValueError("Vault returned an empty Grafana service account token.")
                 auth["api_token"] = token
-    required = not auth.get("api_token") if mode == "api_token" else not auth.get("grafana_session") or bool(refresh_name and not auth.get("oauth_refresh"))
+    required = False if mode == "browser_credentials" else (not auth.get("api_token") if mode == "api_token" else not auth.get("grafana_session") or bool(refresh_name and not auth.get("oauth_refresh")))
     # Preserve supplied partial cookies as the old launcher did, but a missing
     # credential alone creates no state file or noninteractive prompt.
     if auth != old and (not required or len(auth) > 1):

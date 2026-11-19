@@ -589,7 +589,16 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 	if p.MCP.VaultAuthEnv == "" {
 		vaultInputs = map[string]string{}
 		for envName, inputName := range p.MCP.VaultSecretEnvInputs {
-			if value, ok := values[inputName].(string); ok && strings.TrimSpace(value) != "" {
+			visible := true
+			if p.MCP.BrowserController != nil && len(p.MCP.BrowserController.When) > 0 {
+				for _, input := range p.Inputs {
+					if input.Name == inputName {
+						visible = catalog.InputVisible(input, values)
+						break
+					}
+				}
+			}
+			if value, ok := values[inputName].(string); visible && ok && strings.TrimSpace(value) != "" {
 				vaultInputs[envName] = inputName
 			}
 		}
@@ -701,15 +710,19 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		spec.AdditionalPorts = append(spec.AdditionalPorts, additionalPorts...)
 		applyDeclaredRuntimeHosts()
 	}
-	if p.MCP.BrowserController != nil {
+	if p.MCP.BrowserController != nil && catalog.InputVisible(catalog.Input{VisibleWhen: p.MCP.BrowserController.When}, values) {
 		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
 		if err != nil {
 			return mcp.Instance{}, err
 		}
 		spec.BrowserVaultKey = &parentKey
-		profileVolume, ok := values[p.MCP.BrowserController.ProfileVolumeInput].(string)
-		if !ok || strings.TrimSpace(profileVolume) == "" {
-			return mcp.Instance{}, invalid(fmt.Errorf("%s must name an existing Docker profile volume", p.MCP.BrowserController.ProfileVolumeInput))
+		profileVolume := "aact-browser-" + parentKey.ID()[:24]
+		if inputName := p.MCP.BrowserController.ProfileVolumeInput; inputName != "" {
+			var ok bool
+			profileVolume, ok = values[inputName].(string)
+			if !ok || strings.TrimSpace(profileVolume) == "" {
+				return mcp.Instance{}, invalid(fmt.Errorf("%s must name an existing Docker profile volume", inputName))
+			}
 		}
 		accessConfig := ""
 		if inputName := p.MCP.BrowserController.AccessConfigInput; inputName != "" {

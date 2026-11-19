@@ -57,6 +57,50 @@ label = "api_token"
 [[inputs.options]]
 value = "session_cookie"
 label = "session_cookie"
+[[inputs.options]]
+value = "browser_credentials"
+label = "Browser username and password"
+
+[[inputs]]
+name = "browser_username"
+type = "string"
+label = "Browser username"
+config_key = "grafana.browser_username"
+visible_when = { auth_mode = "browser_credentials" }
+
+[[inputs]]
+name = "browser_password"
+type = "secret"
+label = "Browser password"
+visible_when = { auth_mode = "browser_credentials" }
+
+[[inputs]]
+name = "browser_login_origin"
+type = "string"
+label = "Login origin"
+config_key = "grafana.browser_login_origin"
+visible_when = { auth_mode = "browser_credentials" }
+
+[[inputs]]
+name = "browser_username_selector"
+type = "string"
+label = "Username field selector"
+config_key = "grafana.browser_username_selector"
+visible_when = { auth_mode = "browser_credentials" }
+
+[[inputs]]
+name = "browser_password_selector"
+type = "string"
+label = "Password field selector"
+config_key = "grafana.browser_password_selector"
+visible_when = { auth_mode = "browser_credentials" }
+
+[[inputs]]
+name = "browser_submit_selector"
+type = "string"
+label = "Submit button selector"
+config_key = "grafana.browser_submit_selector"
+visible_when = { auth_mode = "browser_credentials" }
 
 [[inputs]]
 name = "datasource_uid"
@@ -96,7 +140,6 @@ name = "refresh_cookie_name"
 type = "string"
 label = "Refresh cookie name"
 config_key = "grafana.refresh_cookie_name"
-visible_when = { auth_mode = "session_cookie" }
 
 [[inputs]]
 name = "ca_file"
@@ -146,6 +189,11 @@ registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
 release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/grafana-inspector-mcp:v{aact_version}"
+vault_secret_env_inputs = { GRAFANA_BROWSER_PASSWORD = "browser_password" }
+
+[mcp.browser_controller]
+when = { auth_mode = "browser_credentials" }
+adapter_path = "browser_login.py"
 
 [mcp.actions.prepare]
 command = ["bin/inspector-helper", "grafana-inspector", "prepare"]
@@ -169,7 +217,7 @@ fields = ["host", "advertised_host", "local_port", "registration_name", "url"]
 [[ui.sections]]
 id = "authentication"
 title = "Authentication"
-fields = ["auth_mode", "token", "grafana_session", "oauth_refresh", "session_expiry", "refresh_cookie_name"]
+fields = ["auth_mode", "token", "grafana_session", "oauth_refresh", "session_expiry", "refresh_cookie_name", "browser_username", "browser_password", "browser_login_origin", "browser_username_selector", "browser_password_selector", "browser_submit_selector"]
 [[ui.sections]]
 id = "datasource"
 title = "Datasource"

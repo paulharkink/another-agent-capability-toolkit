@@ -978,7 +978,10 @@ def parse_request(raw: bytes) -> dict:
         raise BrowserAuthError("selector is invalid")
     if "match" in selector and not isinstance(selector["match"], str):
         raise BrowserAuthError("selector is invalid")
-    if selector["kind"] == "cookie":
+    if selector["kind"] == "none":
+        if set(selector) != {"kind"}:
+            raise BrowserAuthError("selector is invalid")
+    elif selector["kind"] == "cookie":
         names = selector.get("names", [selector.get("name")])
         if ("name" in selector and "names" in selector) or not isinstance(names, list) or not 1 <= len(names) <= MAX_MATCHES or any(
             not isinstance(name, str) or not name or len(name) > 512 for name in names
@@ -1053,7 +1056,9 @@ def main() -> int:
             require_read_only_profile(profile_path)
         selector = request["selector"]
         kind = selector.get("kind")
-        if kind == "sessionStorage":
+        if kind == "none":
+            credential = []
+        elif kind == "sessionStorage":
             credential = read_session_storage(
                 profile_path,
                 origin=request["origin"],

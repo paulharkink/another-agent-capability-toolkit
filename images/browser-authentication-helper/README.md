@@ -8,7 +8,7 @@ Build it once from the repository or extracted AACT release root. AACT uses
 this local image and does not build it automatically:
 
 ```sh
-docker build --pull --tag aact/browser-authentication-helper:1.18.0 images/browser-authentication-helper
+docker build --pull --tag aact/browser-authentication-helper:1.18.0-form1 images/browser-authentication-helper
 ```
 
 Start a temporary browser session on the local machine:
@@ -18,7 +18,7 @@ docker run --detach --rm \
   --name browser-authentication-helper \
   --shm-size=512m \
   --publish 127.0.0.1:6901:6901 \
-  aact/browser-authentication-helper:1.18.0
+  aact/browser-authentication-helper:1.18.0-form1
 ```
 
 Open <http://localhost:6901>. No Kasm username or password is required. Stop
@@ -121,7 +121,7 @@ Chromium process:
 docker run --rm -i \
   --entrypoint browser-authentication-helper \
   --mount source=aact-browser-profile,target=/home/kasm-user,readonly \
-  aact/browser-authentication-helper:1.18.0 run-adapter-offline \
+  aact/browser-authentication-helper:1.18.0-form1 run-adapter-offline \
   < request.json
 ```
 
@@ -300,7 +300,7 @@ provider domains are not built into the image.
 After changing this image or its helper, rebuild it from the repository root:
 
 ```sh
-docker build --pull --tag aact/browser-authentication-helper:1.18.0 images/browser-authentication-helper
+docker build --pull --tag aact/browser-authentication-helper:1.18.0-form1 images/browser-authentication-helper
 ```
 
 For a currently open page, the helper uses a fixed local Chrome DevTools
@@ -340,21 +340,28 @@ Docker volume; it is not a Vault record.
 
 ### Calling the daemon from a capability
 
-Declare `[mcp.browser_controller]` in the capability manifest with a required
+Declare `[mcp.browser_controller]` in the capability manifest with an optional
 `profile_volume_input`, optional `access_config_input`, optional `startup_url`,
 and optional `adapter_path` relative to the capability directory. The adapter
 is trusted code from the installed capability; callers cannot submit source.
+When no profile volume input is declared, AACT derives a separate volume name
+for each Capability Instance. An optional `when` table enables the controller
+only when the listed input values match.
 AACT passes the daemon address, pinned TLS certificate, and the MCP's existing
 credential in `/run/aact/vault.json`.
 
 Send an authenticated `POST /v1/browser/credentials` to that daemon with a
-selector, an optional exact `origin`, and optional non-secret adapter `config`:
+selector, an optional exact `origin`, optional non-secret adapter `config`, and
+an optional `private` object containing secrets for the trusted adapter. The
+daemon passes the private object only in memory to the adapter as
+`config["__private"]`; it must not be returned or logged.
 
 ```json
 {"origin":"https://example.invalid","selector":{"kind":"cookie","match":"exact","names":["session"]},"config":{}}
 ```
 
-`cookie` selectors use `names`; `localStorage` and `sessionStorage` selectors
+`none` invokes the adapter without reading browser storage and starts the
+browser directly. `cookie` selectors use `names`; `localStorage` and `sessionStorage` selectors
 use `name` and `match` (`exact`, `prefix`, or `all`). The origin must be
 permitted by the configured browser policy. The daemon first runs the helper
 against a read-only profile without starting Chromium. If that does not yield
@@ -381,7 +388,7 @@ docker volume create aact-browser-profile
 # Kasm runs as uid/gid 1000. Make the new volume writable by that user.
 docker run --rm --user 0 --entrypoint sh \
   --mount source=aact-browser-profile,target=/profile \
-  aact/browser-authentication-helper:1.18.0 \
+  aact/browser-authentication-helper:1.18.0-form1 \
   -lc 'chown 1000:1000 /profile'
 
 docker run --detach \
@@ -389,7 +396,7 @@ docker run --detach \
   --shm-size=512m \
   --publish 127.0.0.1:6903:6901 \
   --mount source=aact-browser-profile,target=/home/kasm-user \
-  aact/browser-authentication-helper:1.18.0
+  aact/browser-authentication-helper:1.18.0-form1
 ```
 
 Open <http://localhost:6903> for this persistent session. Change the host-side
