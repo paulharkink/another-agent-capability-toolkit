@@ -83,6 +83,21 @@ func TestClusterInspectorRejectsBothCredentialMethods(t *testing.T) {
 	}
 }
 
+func TestClusterInspectorPasswordAndTokenAreAlternativeCredentials(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "cluster-inspector"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]any{"registration_name": "cluster-inspector-test", "api_server": "https://cluster.example", "username": "user", "password": "secret"}
+	if err := forms.Validate(p.Inputs, values); err != nil {
+		t.Fatalf("username and password were rejected: %v", err)
+	}
+	values["token"] = "token"
+	if err := forms.Validate(p.Inputs, values); err == nil {
+		t.Fatal("password and token were accepted together")
+	}
+}
+
 func loadPublic(t *testing.T, name string) (publicManifest, string) {
 	t.Helper()
 	dir := filepath.Join("..", "..", "packages", name)

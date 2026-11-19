@@ -53,6 +53,18 @@ label = "Token"
 exclusive_group = "cluster_credentials"
 
 [[inputs]]
+name = "username"
+type = "string"
+label = "OpenShift username"
+config_key = "cluster.login_username"
+
+[[inputs]]
+name = "password"
+type = "secret"
+label = "OpenShift password"
+exclusive_group = "cluster_credentials"
+
+[[inputs]]
 name = "kubeconfig"
 type = "file"
 label = "Source kubeconfig"
@@ -129,6 +141,7 @@ registration_name_input = "registration_name"
 registration_timeout_ms = 60000
 build_context = "./mcp"
 release_image = "ghcr.io/paulharkink/another-agent-capability-toolkit/cluster-inspector-mcp:v{aact_version}"
+vault_secret_env_inputs = { CLUSTER_INSPECTOR_PASSWORD = "password" }
 
 [mcp.actions.prepare]
 command = ["bin/inspector-helper", "cluster-inspector", "prepare"]
@@ -152,7 +165,7 @@ fields = ["host", "advertised_host", "local_port", "registration_name", "api_ser
 [[ui.sections]]
 id = "authentication"
 title = "Authentication"
-fields = ["token", "kubeconfig"]
+fields = ["token", "username", "password", "kubeconfig"]
 [[ui.sections]]
 id = "databases"
 title = "Databases"

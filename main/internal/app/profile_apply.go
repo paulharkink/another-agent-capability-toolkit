@@ -685,6 +685,44 @@ func validateProfileValuesForActiveGroups(defs []catalog.Input, values map[strin
 	return forms.ValidateActiveGroups(defs, values, active)
 }
 
+// activeInputValues preserves saved alternatives while passing only the selected
+// credential method to actions and runtimes.
+func activeInputValues(defs []catalog.Input, values map[string]any, active map[string]string) map[string]any {
+	selected := make(map[string]any, len(values))
+	for name, value := range values {
+		selected[name] = value
+	}
+	for _, def := range defs {
+		if choice := active[def.ExclusiveGroup]; def.ExclusiveGroup != "" && choice != "" && choice != def.Name {
+			delete(selected, def.Name)
+		}
+	}
+	return selected
+}
+
+func submittedInputGroups(defs []catalog.Input, inputs map[string]any, explicit map[string]string) (map[string]string, error) {
+	groups := make(map[string]string, len(explicit))
+	for group, name := range explicit {
+		groups[group] = name
+	}
+	submitted := map[string]string{}
+	for _, def := range defs {
+		if def.ExclusiveGroup == "" || !formsValueFilled(inputs[def.Name]) {
+			continue
+		}
+		if previous := submitted[def.ExclusiveGroup]; previous != "" && previous != def.Name {
+			return nil, fmt.Errorf("inputs %s and %s are mutually exclusive", previous, def.Name)
+		}
+		submitted[def.ExclusiveGroup] = def.Name
+	}
+	for group, name := range submitted {
+		if _, exists := groups[group]; !exists {
+			groups[group] = name
+		}
+	}
+	return groups, nil
+}
+
 func formsValueFilled(value any) bool {
 	switch v := value.(type) {
 	case string:
@@ -1186,7 +1224,11 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		if err != nil {
 			return out, err
 		}
-		activeGroups = effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
+		submittedGroups, groupErr := submittedInputGroups(p.Inputs, q.Inputs, q.ActiveInputGroups)
+		if groupErr != nil {
+			return out, invalid(groupErr)
+		}
+		activeGroups = effectiveActiveInputGroups(p.Inputs, values, fixed, submittedGroups, previousGroups)
 	} else {
 		activeGroups = map[string]string{}
 	}
@@ -1221,6 +1263,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 		if err = editProfileInputs(ctx, s.Options.Editor, s.Options.PresentationEditor, seedInputs, values, fixed, s.Source.PackageUI[p.ID]); err != nil {
 			return out, err
 		}
+		activeGroups = effectiveActiveInputGroups(p.Inputs, values, fixed, q.ActiveInputGroups, previousGroups)
 		if len(prepare) > 0 {
 			if err = validateProfileValuesForActiveGroups(seedInputs, values, activeGroups); err != nil {
 				return out, invalid(err)
@@ -1234,7 +1277,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				if choiceErr != nil {
 					return out, choiceErr
 				}
-				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Instance: pr, Inputs: values, StateDir: s.Store.AuthDir(mcpDefinitionKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
+				result, runErr := (&mcp.ActionRunner{Executor: s.Options.Runner, OnStderr: s.Options.OnStderr}).Run(ctx, cp, mcp.ActionRequest{Action: "prepare", Instance: pr, Inputs: activeInputValues(p.Inputs, values, activeGroups), StateDir: s.Store.AuthDir(mcpDefinitionKey(key, p, definition)), Interactive: false, ImageSource: imageSource, ReleaseImage: releaseImage})
 				if runErr != nil {
 					return out, runErr
 				}
@@ -1455,6 +1498,7 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			return out, err
 		}
 	}
+	values = activeInputValues(p.Inputs, values, activeGroups)
 	stages := map[string]string{}
 	pluginStages := map[string]string{}
 	out.Step = "generate"
@@ -2248,9 +2292,26 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 			return out, invalid(e)
 		}
 		child = mcpDefinitionKey(key, p, definition)
-		if e = forms.Validate(p.Inputs, values); e != nil {
+		if e = validateActiveInputGroups(p.Inputs, q.ActiveInputGroups); e != nil {
 			return out, invalid(e)
 		}
+		savedGroups, e := s.Store.ActiveInputGroups(key)
+		if e != nil {
+			return out, e
+		}
+		fixed, e := fixedTargetInputs(p.Inputs, config.Target{Path: pr.Path, InputPolicy: pr.InputPolicy}, pr.Raw)
+		if e != nil {
+			return out, invalid(e)
+		}
+		submittedGroups, e := submittedInputGroups(p.Inputs, q.Inputs, q.ActiveInputGroups)
+		if e != nil {
+			return out, invalid(e)
+		}
+		active := effectiveActiveInputGroups(p.Inputs, values, fixed, submittedGroups, savedGroups)
+		if e = validateProfileValuesForActiveGroups(p.Inputs, values, active); e != nil {
+			return out, invalid(e)
+		}
+		values = activeInputValues(p.Inputs, values, active)
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil

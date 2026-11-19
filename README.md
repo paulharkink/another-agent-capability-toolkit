@@ -93,7 +93,12 @@ and unregister forms allow multiple agents. Catalog a/s actions authenticate or
 start an MCP before it appears in runtime inventory; they ask for its context.
 Inputs sharing `exclusive_group` in `package.toml` cannot both be set. Entering
 one in a form clears the other; noninteractive commands reject conflicting
-values. Cluster Inspector uses this for Token and Source kubeconfig.
+values. Cluster Inspector uses this for Token, OpenShift password, and Source
+kubeconfig. For OpenShift username/password authentication, enter the username
+and password together. AACT stores the password in its encrypted vault and uses
+it to obtain a fresh OpenShift token when the cached token expires, including
+while the MCP is running. Direct token and kubeconfig authentication remain
+available; they do not automatically use a password.
 
 ```sh
 aact install git-repo-map --agent codex \

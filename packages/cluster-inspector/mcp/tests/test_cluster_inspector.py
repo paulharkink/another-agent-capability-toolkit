@@ -65,6 +65,52 @@ class ProfileTests(unittest.TestCase):
                 config.load_profile(path)
 
 class ServerTests(unittest.TestCase):
+    def test_expired_session_is_refreshed_before_retrying_resource_request(self):
+        import http.server
+        import ssl
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); bindir = root / "bin"; bindir.mkdir()
+            key = root / "key.pem"; certificate = root / "cert.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(certificate), "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], check=True, capture_output=True)
+            class Vault(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path != "/v1/private-inputs/password" or self.headers.get("Authorization") != "Bearer fixture-handoff":
+                        self.send_error(403); return
+                    body = b'{"value":"fixture-password"}'
+                    self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                def log_message(self, *args): pass
+            vault = http.server.HTTPServer(("127.0.0.1", 0), Vault)
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); tls.load_cert_chain(certificate, key)
+            vault.socket = tls.wrap_socket(vault.socket, server_side=True)
+            worker = threading.Thread(target=vault.serve_forever, daemon=True); worker.start()
+            self.addCleanup(vault.server_close); self.addCleanup(vault.shutdown)
+            handoff = root / "handoff.json"
+            handoff.write_text(json.dumps({"api_address": f"https://localhost:{vault.server_port}", "certificate": certificate.read_text(), "token": "fixture-handoff"}))
+            target = root / "target.toml"
+            target.write_text('[mcp]\nlocal_port=18800\n[cluster]\napi_server="https://cluster.test"\nlogin_username="fixture-user"\n')
+            kubeconfig = root / "kubeconfig"
+            from kubernetes_auth import write_token_kubeconfig, AuthCheck
+            write_token_kubeconfig("https://cluster.test", None, kubeconfig, "expired")
+            (root / "auth.json").write_text('{"mode":"openshift"}')
+            kubectl = bindir / "kubectl"
+            kubectl.write_text('''#!/usr/bin/env python3
+import os, sys
+if "expired" in open(os.environ["KUBECONFIG"]).read():
+ print("error: Unauthorized", file=sys.stderr); sys.exit(1)
+print('{"kind":"Pod"}')
+''')
+            kubectl.chmod(0o755)
+            def login(state, path, api, ca, username, password, strict):
+                if username != "fixture-user" or password != "fixture-password": return AuthCheck("invalid", None)
+                write_token_kubeconfig(api, ca, path, "renewed")
+                return AuthCheck("valid", username)
+            with patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"], "KUBECONFIG": str(kubeconfig), "CLUSTER_INSPECTOR_STATE": str(root), "NO_PROXY": "localhost,127.0.0.1"}), patch.object(server, "PROFILE", config.load_profile(target)), patch.object(server, "VAULT_HANDOFF_PATH", handoff), patch.object(server, "prepare_openshift_auth", side_effect=login):
+                result = get_resource("pods", "example", "app")
+            self.assertEqual(result["resource"]["kind"], "Pod")
+            self.assertIn("renewed", kubeconfig.read_text())
+
     def test_config_free_pod_auth_uses_explicit_api_and_skips_local_renewal(self):
         with __import__("tempfile").TemporaryDirectory() as directory:
             runtime = Path(directory) / "pod-kubeconfig"
@@ -255,6 +301,35 @@ class KubeconfigTests(unittest.TestCase):
             with server._database_transport(profile) as endpoint:
                 self.assertEqual(endpoint, ("127.0.0.1", 45555))
             forward.assert_called_once_with("ns", "pg", 5432)
+
+    def test_database_query_renews_expired_port_forward_session(self):
+        import tempfile
+        from kubernetes_auth import write_token_kubeconfig
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); binary = root / "kubectl"; kubeconfig = root / "kubeconfig"
+            write_token_kubeconfig("https://cluster.test", None, kubeconfig, "expired")
+            binary.write_text('''#!/usr/bin/env python3
+import os, socket, sys, time
+if "expired" in open(os.environ["KUBECONFIG"]).read():
+ print("error: Unauthorized", file=sys.stderr); sys.exit(1)
+port = int(sys.argv[-1].split(":")[0])
+s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen()
+time.sleep(30)
+''')
+            binary.chmod(0o755)
+            tenant = config.TenantProfile("one", "one", "u", {"type":"literal", "password":"p"})
+            db = config.DatabaseProfile("pg", "port_forward", "", 5432, namespace="ns", service="pg", tenants={"one":tenant})
+            profile = config.ClusterProfile("e", "t", 18800, "https://cluster.test", {}, {"pg":db})
+            def refresh(_):
+                write_token_kubeconfig("https://cluster.test", None, kubeconfig, "renewed")
+                return True
+            database = MagicMock(); database.cursor.return_value.__enter__.return_value.description = None
+            with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + os.environ["PATH"], "KUBECONFIG": str(kubeconfig)}), patch.object(server, "PROFILE", profile), patch.object(server, "SELECTED_CONNECTIONS", {"pg/one"}), patch.object(server, "_refresh_openshift", side_effect=refresh), patch("server.psycopg.connect") as connect:
+                server.credentials = {"pg/one": "p"}
+                connect.return_value.__enter__.return_value = database
+                result = run_query("pg/one", "select 1")
+            self.assertNotIn("error", result)
+            self.assertIn("renewed", kubeconfig.read_text())
 
     def test_reads_each_tenant_secret_independently(self):
         db = config.DatabaseProfile("pg", "direct", "db", 5432, tenants={

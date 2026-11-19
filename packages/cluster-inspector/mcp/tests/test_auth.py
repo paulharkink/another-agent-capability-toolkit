@@ -26,6 +26,130 @@ class Response:
     def __exit__(self,*args): pass
     def read(self): return json.dumps({"status":{"userInfo":{"username":self.username}}}).encode()
 
+def test_openshift_password_login_stores_token_and_prepare_renews_expired_cache(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    oc = bindir / "oc"
+    oc.write_text('''#!/usr/bin/env python3
+import json, os, sys
+password = input("Password: ")
+if password != "synthetic-password": sys.exit(1)
+path = sys.argv[sys.argv.index("--kubeconfig") + 1]
+token = "fresh-token"
+json.dump({"current-context":"c","clusters":[{"name":"c","cluster":{"server":"https://cluster.example.test"}}],"contexts":[{"name":"c","context":{"cluster":"c","user":"u"}}],"users":[{"name":"u","user":{"token":token}}]}, open(path, "w"))
+''')
+    oc.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    req = request(tmp_path, {"username": "fixture-user", "password": "synthetic-password"}); req["action"] = "authenticate"
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", return_value=Response()):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+    cache = Path(req["state_dir"]) / "kubeconfig"
+    assert "fresh-token" in cache.read_text()
+    assert "synthetic-password" not in cache.read_text()
+    kubernetes_auth.write_token_kubeconfig("https://cluster.example.test", None, cache, "expired-token")
+    def probe(query, **kwargs):
+        if query.get_header("Authorization") == "Bearer expired-token":
+            raise HTTPError(query.full_url, 401, "expired", {}, None)
+        return Response()
+    req["action"] = "prepare"
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", side_effect=probe):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+    assert "fresh-token" in cache.read_text()
+
+def test_failed_openshift_login_preserves_cached_credentials_and_hides_password(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    oc = bindir / "oc"
+    oc.write_text('#!/bin/sh\nread password\necho "$password" >&2\nexit 1\n')
+    oc.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    req = request(tmp_path, {"username": "fixture-user", "password": "synthetic-password"}); req["action"] = "authenticate"
+    state = Path(req["state_dir"]); state.mkdir()
+    cache = state / "kubeconfig"
+    kubernetes_auth.write_token_kubeconfig("https://cluster.example.test", None, cache, "existing-token")
+    previous = cache.read_bytes()
+    result = load_action().prepare_auth(req)
+    assert result["auth_required"] is True
+    assert "synthetic-password" not in json.dumps(result)
+    assert cache.read_bytes() == previous
+
+def test_prepare_switches_valid_cached_token_to_password_authentication(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    oc = bindir / "oc"
+    oc.write_text('''#!/usr/bin/env python3
+import json, sys
+password = input("Password: ")
+if password != "synthetic-password": sys.exit(1)
+path = sys.argv[sys.argv.index("--kubeconfig") + 1]
+json.dump({"current-context":"c","clusters":[{"name":"c","cluster":{"server":"https://cluster.example.test"}}],"contexts":[{"name":"c","context":{"cluster":"c","user":"u"}}],"users":[{"name":"u","user":{"token":"password-token"}}]}, open(path, "w"))
+''')
+    oc.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    req = request(tmp_path, {"token": "old-token"}); req["action"] = "authenticate"
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", return_value=Response()):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        req["action"] = "prepare"; req["inputs"] = {"username":"fixture-user", "password":"synthetic-password"}
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        state = Path(req["state_dir"])
+        assert "password-token" in (state / "kubeconfig").read_text()
+        req["inputs"] = {"token":"direct-token"}
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        assert "direct-token" in (state / "kubeconfig").read_text()
+
+def test_prepare_switches_between_token_and_kubeconfig(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    req = request(tmp_path, {"token":"direct-token"}); req["action"] = "authenticate"
+    source = tmp_path / "source"
+    kubernetes_auth.write_token_kubeconfig("https://cluster.example.test", None, source, "imported-token")
+    def kubectl(args, **kwargs):
+        if "view" in args:
+            return SimpleNamespace(stdout=source.read_text())
+        return SimpleNamespace(stdout=json.dumps({"status":{"userInfo":{"username":"synthetic-user"}}}))
+    monkeypatch.setattr(kubernetes_auth.subprocess, "run", kubectl)
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", return_value=Response()):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        state = Path(req["state_dir"]); req["action"] = "prepare"; req["inputs"] = {"kubeconfig":str(source)}
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        assert "imported-token" in (state / "kubeconfig").read_text()
+        req["inputs"] = {"token":"direct-token"}
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        assert "direct-token" in (state / "kubeconfig").read_text()
+
+def test_password_refresh_after_cluster_returns_canonical_username(tmp_path, monkeypatch):
+    import config
+    import server
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    oc = bindir / "oc"
+    oc.write_text('''#!/usr/bin/env python3
+import json, sys
+if input("Password: ") != "synthetic-password": sys.exit(1)
+path = sys.argv[sys.argv.index("--kubeconfig") + 1]
+json.dump({"current-context":"c","clusters":[{"name":"c","cluster":{"server":"https://cluster.example.test"}}],"contexts":[{"name":"c","context":{"cluster":"c","user":"u"}}],"users":[{"name":"u","user":{"token":"fresh-token"}}]}, open(path, "w"))
+''')
+    oc.chmod(0o755)
+    kubectl = bindir / "kubectl"
+    kubectl.write_text('''#!/usr/bin/env python3
+import os, sys
+if "expired-token" in open(os.environ["KUBECONFIG"]).read():
+ print("Unauthorized", file=sys.stderr); sys.exit(1)
+print('{"kind":"Pod"}')
+''')
+    kubectl.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    req = request(tmp_path, {"username":"initial-user", "password":"synthetic-password"}); req["action"] = "authenticate"
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", return_value=Response("initial-user")):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+    state = Path(req["state_dir"])
+    req["action"] = "prepare"
+    with patch.object(kubernetes_auth.urllib.request, "urlopen", return_value=Response("canonical-user")):
+        assert load_action().prepare_auth(req)["auth_required"] is False
+        credential = state / "kubeconfig"
+        kubernetes_auth.write_token_kubeconfig("https://cluster.example.test", None, credential, "expired-token")
+        monkeypatch.setenv("KUBECONFIG", str(credential)); monkeypatch.setenv("CLUSTER_INSPECTOR_STATE", str(state))
+        profile = config.load_profile(Path(req["target"]["path"]))
+        profile.cluster["login_username"] = "initial-user"
+        with patch.object(server, "PROFILE", profile), patch.object(server, "_vault_password", return_value="synthetic-password"):
+            assert server.get_resource("pods", "example", "app")["resource"]["kind"] == "Pod"
+
 def test_prepare_without_cache_requires_auth_and_ignores_host_default(tmp_path,monkeypatch):
     host=tmp_path/"home/.kube"; host.mkdir(parents=True); (host/"config").write_text("must never read")
     monkeypatch.setenv("HOME",str(host.parent))
