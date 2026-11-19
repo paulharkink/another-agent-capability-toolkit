@@ -699,7 +699,7 @@ func TestInstallerLifecycleProvidesWindowsPowerShellModules(t *testing.T) {
 	}
 	got, err := os.ReadFile(marker)
 	want := fmt.Sprintf("%x", sha256.Sum256([]byte("verified test archive")))
-	if err != nil || strings.TrimSpace(string(got)) != want {
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(got)), want) {
 		t.Fatalf("nested PowerShell Get-FileHash result=%q err=%v; want %s", got, err, want)
 	}
 }
