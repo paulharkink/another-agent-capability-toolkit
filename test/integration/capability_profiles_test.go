@@ -12,6 +12,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/tui"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
 	"io"
 	"io/fs"
 	"os"
@@ -427,7 +428,69 @@ func TestTUIInvokesHostAuthenticationWhenBrowserMCPIsStopped(t *testing.T) {
 	}
 }
 
-func browserLoginTUIWorkspace(t *testing.T, authenticateCommand string, stopped bool) (tea.Model, *rotatingRuntime) {
+func TestTUILoginStartsStoppedConditionalBrowserMCP(t *testing.T) {
+	model, runtime := browserLoginTUIWorkspace(t, `["sh", "-c", "printf '{}' "]`, true, true)
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("conditional browser login was unavailable for stopped MCP:\n%s", ansi.Strip(model.View().Content))
+	}
+	model, cmd = model.Update(cmd())
+	if cmd == nil {
+		t.Fatal("login action did not invoke the backend")
+	}
+	model, _ = model.Update(cmd())
+	instances, err := runtime.List(context.Background())
+	if err != nil || len(instances) != 1 || instances[0].Status != "running" {
+		t.Fatalf("login did not start the conditional browser MCP: %+v %v", instances, err)
+	}
+}
+
+type savedViewerAttention struct{}
+
+func (savedViewerAttention) Error() string     { return "browser authentication needs attention" }
+func (savedViewerAttention) InputsSaved() bool { return true }
+func (savedViewerAttention) ViewerURL() string { return "http://localhost:19771" }
+
+type attentionSaveBackend struct{ *app.Service }
+
+func (b attentionSaveBackend) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
+	if err := b.Service.UISaveInputs(ctx, q); err != nil {
+		return err
+	}
+	return savedViewerAttention{}
+}
+
+func TestTUISavedBrowserAttentionShowsViewer(t *testing.T) {
+	model, _ := browserLoginTUIWorkspaceWithBackend(t, `["sh", "-c", "printf '{}' "]`, false, func(s *app.Service) tui.Backend { return attentionSaveBackend{s} })
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	model, cmd := model.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	for i := 0; i < 4 && cmd != nil; i++ {
+		model, cmd = model.Update(cmd())
+	}
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "http://localhost:19771") || !strings.Contains(view, "Saved: yes") {
+		t.Fatalf("saved browser attention did not show the viewer and saved state:\n%s", view)
+	}
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	view = ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "Inputs: Saved") || strings.Contains(view, "Save changed inputs first") {
+		t.Fatalf("saved input state was not retained after browser attention:\n%s", view)
+	}
+}
+
+func browserLoginTUIWorkspace(t *testing.T, authenticateCommand string, stopped bool, conditional ...bool) (tea.Model, *rotatingRuntime) {
+	return browserLoginTUIWorkspaceWithBackend(t, authenticateCommand, stopped, nil, conditional...)
+}
+
+func browserLoginTUIWorkspaceWithBackend(t *testing.T, authenticateCommand string, stopped bool, wrap func(*app.Service) tui.Backend, conditional ...bool) (tea.Model, *rotatingRuntime) {
 	t.Helper()
 	root := copyCapabilityPackTree(t, "../../examples/capability-pack")
 	packagePath := filepath.Join(root, "vendor", "neutral-tools", "guidance", "package.toml")
@@ -438,6 +501,9 @@ func browserLoginTUIWorkspace(t *testing.T, authenticateCommand string, stopped 
 	manifestText := strings.Replace(string(manifest), "[[ui.sections]]", "[[inputs]]\nname = \"browser_volume\"\nlabel = \"Browser profile volume\"\ntype = \"string\"\nrequired = true\ndefault = \"aact-login-fixture\"\n[[ui.sections]]", 1)
 	manifestText = strings.Replace(manifestText, "fields = [\"project\", \"enabled\"]", "fields = [\"project\", \"enabled\", \"browser_volume\"]", 1)
 	manifestText = strings.Replace(manifestText, "endpoint_path = \"/mcp\"", "endpoint_path = \"/mcp\"\n[mcp.browser_controller]\nprofile_volume_input = \"browser_volume\"\nstartup_url = \"https://example.test\"", 1)
+	if len(conditional) > 0 && conditional[0] {
+		manifestText = strings.Replace(manifestText, "[mcp.browser_controller]\n", "[mcp.browser_controller]\nwhen = { enabled = false }\n", 1)
+	}
 	manifestText += "\n[mcp.actions.authenticate]\ncommand = " + authenticateCommand + "\n"
 	if err := os.WriteFile(packagePath, []byte(manifestText), 0600); err != nil {
 		t.Fatal(err)
@@ -466,7 +532,11 @@ func browserLoginTUIWorkspace(t *testing.T, authenticateCommand string, stopped 
 		// Model the public runtime observation after the MCP was stopped.
 		runtime.instances[0].Status = "stopped"
 	}
-	model := tui.New(svc)
+	var backend tui.Backend = svc
+	if wrap != nil {
+		backend = wrap(svc)
+	}
+	model := tui.New(backend)
 	cmd := model.Init()
 	if cmd == nil {
 		t.Fatal("TUI did not load its initial catalog")

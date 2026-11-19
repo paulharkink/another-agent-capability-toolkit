@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
@@ -16,6 +17,25 @@ import (
 
 type operationProgressContextKey struct{}
 type operationProgressScopeContextKey struct{}
+
+// savedInputsAttention distinguishes a saved input change from a subsequent
+// runtime or authentication problem. The UI can keep the form clean while
+// presenting the recovery action separately.
+type savedInputsAttention struct {
+	cause  error
+	viewer string
+}
+
+func (e *savedInputsAttention) Error() string {
+	message := "inputs saved; " + e.cause.Error()
+	if e.viewer != "" {
+		message += "; open " + e.viewer
+	}
+	return message
+}
+func (e *savedInputsAttention) Unwrap() error     { return e.cause }
+func (e *savedInputsAttention) InputsSaved() bool { return true }
+func (e *savedInputsAttention) ViewerURL() string { return e.viewer }
 
 type operationProgressScope struct {
 	mu       sync.Mutex
@@ -222,52 +242,63 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 			child := mcpDefinitionKey(key, p, definition)
 			instances, err := s.Options.Runtime.List(ctx)
 			if err != nil {
-				return fmt.Errorf("inputs saved, but the running MCP could not be checked: %w", err)
+				return &savedInputsAttention{cause: fmt.Errorf("the running MCP could not be checked: %w", err)}
 			}
 			for _, old := range instances {
 				if old.Key != child || old.Status != "running" || old.Ownership != "local" {
 					continue
 				}
 				if err := validateProfileValuesForActiveGroups(p.Inputs, values, groups); err != nil {
-					return fmt.Errorf("inputs saved, but the running MCP could not be updated: %w", err)
+					return &savedInputsAttention{cause: fmt.Errorf("the running MCP could not be updated: %w", err)}
 				}
 				cp := p
 				cp.MCP, cp.MCPs = &definition, nil
 				updated, err := s.startConfigurationProfile(ctx, cp, instance, child, activeInputValues(p.Inputs, values, groups), false, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
 				if err != nil {
-					return fmt.Errorf("inputs saved, but the running MCP could not be updated; if it stopped, start it again: %w", err)
+					return &savedInputsAttention{cause: fmt.Errorf("the running MCP could not be updated; if it stopped, start it again: %w", err)}
 				}
-				rows, err := s.Store.Installations()
+				agentID, err := s.staleRuntimeRegistration(child, definition, values, updated.URL)
 				if err != nil {
-					return fmt.Errorf("inputs saved and MCP updated, but agent registrations could not be checked: %w", err)
+					return &savedInputsAttention{cause: fmt.Errorf("MCP updated, but agent registrations could not be checked: %w", err)}
 				}
-				name, err := declaredRegistrationName(definition, child, values)
-				if err != nil {
-					return fmt.Errorf("inputs saved and MCP updated, but agent registrations could not be checked: %w", err)
-				}
-				for _, row := range rows {
-					if row.Key == child && row.Component == "mcp" && !row.ExternalRegistration && (row.URL != updated.URL || row.RegistrationName != name || row.Transport != definition.Transport || row.TimeoutMS != registrationTimeoutMS(&definition)) {
-						return fmt.Errorf("inputs saved and MCP updated, but its %s agent registration needs refreshing; start the MCP to refresh it", row.AgentID)
-					}
+				var registrationWarning error
+				if agentID != "" {
+					registrationWarning = fmt.Errorf("MCP updated, but its %s agent registration needs refreshing; start the MCP to refresh it", agentID)
 				}
 				if definition.HealthPath != "" {
 					headers, err := profileRegistrationHeaders(definition, values)
 					if err != nil {
-						return fmt.Errorf("inputs saved and MCP updated, but authentication could not be checked: %w", err)
+						return &savedInputsAttention{cause: errors.Join(registrationWarning, fmt.Errorf("MCP updated, but authentication could not be checked: %w", err))}
 					}
 					healthHeaders := make(http.Header, len(headers))
 					for name, value := range headers {
 						healthHeaders.Set(name, value)
 					}
-					authenticated, err := mcp.WaitForAuthentication(ctx, updated.URL, definition.HealthPath, healthHeaders)
+					waitForAuthentication := mcp.WaitForAuthentication
+					browserSelected := catalog.InputVisible(catalog.Input{VisibleWhen: definition.BrowserController.When}, values)
+					if browserSelected {
+						waitForAuthentication = mcp.WaitForBrowserAuthentication
+					}
+					authenticated, err := waitForAuthentication(ctx, updated.URL, definition.HealthPath, healthHeaders)
 					if err != nil {
-						return fmt.Errorf("inputs saved and MCP updated, but authentication could not be checked: %w", err)
+						if browserSelected {
+							viewer, attentionErr := s.browserAuthenticationAttention(ctx, child, err)
+							return &savedInputsAttention{cause: errors.Join(registrationWarning, attentionErr), viewer: viewer}
+						}
+						return &savedInputsAttention{cause: errors.Join(registrationWarning, fmt.Errorf("MCP updated, but authentication could not be checked: %w", err))}
+					}
+					if !authenticated && browserSelected {
+						viewer, attentionErr := s.browserAuthenticationAttention(ctx, child, errors.New("authentication was not confirmed"))
+						return &savedInputsAttention{cause: errors.Join(registrationWarning, attentionErr), viewer: viewer}
 					}
 					if authenticated {
 						if err := mcp.HealthWithHeaders(ctx, updated.URL, definition.Transport, healthHeaders); err != nil {
-							return fmt.Errorf("inputs saved and MCP updated, but MCP protocol is unavailable: %w", err)
+							return &savedInputsAttention{cause: errors.Join(registrationWarning, fmt.Errorf("MCP updated, but MCP protocol is unavailable: %w", err))}
 						}
 					}
+				}
+				if registrationWarning != nil {
+					return &savedInputsAttention{cause: registrationWarning}
 				}
 				break
 			}

@@ -317,7 +317,9 @@ func (m *Model) load() tea.Cmd {
 
 func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 	m.busy = false
-	if msg.err != nil {
+	var attention savedInputsAttention
+	savedWithAttention := msg.err != nil && errors.As(msg.err, &attention) && attention.InputsSaved()
+	if msg.err != nil && !savedWithAttention {
 		if m.unsavedExitIntent != nil && m.unsavedExitIntent.saveInputsOnly {
 			m.unsavedExitIntent = nil
 		}
@@ -336,6 +338,18 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 		m.form.ReopenAfterSave()
 		m.form.MarkClean()
 		m.configureWorkspaceForm(msg.preview)
+	}
+	if savedWithAttention {
+		m.unsavedExitIntent = nil
+		m.setupRetry = nil
+		m.retryOperation = nil
+		output := ""
+		if attention.ViewerURL() != "" {
+			output = "Login URL: " + attention.ViewerURL()
+		}
+		result := viewmodel.OperationResult{SavedApplicable: true, Saved: true}
+		m.showOperationResult(operationMsg{origin: m.view, step: "apply saved inputs", err: msg.err, output: output, result: &result})
+		return nil
 	}
 	if intent := m.unsavedExitIntent; intent != nil && intent.saveInputsOnly {
 		m.unsavedExitIntent = nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
@@ -70,7 +71,7 @@ func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) er
 }
 func (s *Service) UIConfigurationInstanceRun(ctx context.Context, action string, ref config.InstanceRef, mcpID string) (string, error) {
 	if action == "browser-login" {
-		p, _, key, err := s.loadInstance(ref)
+		p, instance, key, err := s.loadInstance(ref)
 		if err != nil {
 			return "", err
 		}
@@ -81,13 +82,24 @@ func (s *Service) UIConfigurationInstanceRun(ctx context.Context, action string,
 		if definition.BrowserController == nil {
 			return "", errors.New("this capability does not declare a browser login helper")
 		}
-		starter, ok := s.Options.Runtime.(interface {
-			StartBrowser(context.Context, state.Key) (string, error)
-		})
-		if !ok {
-			return "", errors.New("browser login is unavailable in this runtime")
+		if len(definition.BrowserController.When) > 0 {
+			_, _, values, _, err := s.instanceValues(p, instance, key, InstanceRequest{Ref: ref})
+			if err != nil {
+				return "", err
+			}
+			if catalog.InputVisible(catalog.Input{VisibleWhen: definition.BrowserController.When}, values) {
+				action = "authenticate"
+			}
 		}
-		return starter.StartBrowser(ctx, mcpDefinitionKey(key, p, definition))
+		if action == "browser-login" {
+			starter, ok := s.Options.Runtime.(interface {
+				StartBrowser(context.Context, state.Key) (string, error)
+			})
+			if !ok {
+				return "", errors.New("browser login is unavailable in this runtime")
+			}
+			return starter.StartBrowser(ctx, mcpDefinitionKey(key, p, definition))
+		}
 	}
 	result, err := s.RunInstanceMCP(ctx, action, InstanceRequest{Ref: ref}, mcpID)
 	if result.Logs != "" {

@@ -380,6 +380,12 @@ func WaitForAuthentication(ctx context.Context, instanceURL, healthPath string, 
 	return waitForAuthentication(ctx, http.DefaultClient, instanceURL, healthPath, headers, 200*time.Millisecond, healthStartupWaitLimit)
 }
 
+// WaitForBrowserAuthentication allows time for the running MCP to complete a
+// browser login before treating its authentication health as unavailable.
+func WaitForBrowserAuthentication(ctx context.Context, instanceURL, healthPath string, headers http.Header) (bool, error) {
+	return waitForAuthentication(ctx, http.DefaultClient, instanceURL, healthPath, headers, 200*time.Millisecond, 3*time.Minute)
+}
+
 func waitForAuthentication(ctx context.Context, client *http.Client, instanceURL, healthPath string, headers http.Header, interval, limit time.Duration) (bool, error) {
 	if interval <= 0 {
 		interval = 200 * time.Millisecond

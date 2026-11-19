@@ -47,6 +47,8 @@ def prepare_auth(request: dict) -> dict:
         raise ValueError("Grafana auth_mode must be api_token, session_cookie or browser_credentials.")
     auth["auth_mode"] = "session_cookie" if mode == "browser_credentials" else mode
     for name, key in (("token", "api_token"), ("api_token", "api_token"), ("grafana_session", "grafana_session"), ("oauth_refresh", "oauth_refresh"), ("session_expiry", "session_expiry"), ("refresh_cookie_name", "refresh_cookie_name")):
+        if mode == "browser_credentials":
+            continue
         value = inputs.get(name)
         if value:
             if not isinstance(value, str):
