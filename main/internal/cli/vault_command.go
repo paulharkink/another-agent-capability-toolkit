@@ -110,40 +110,50 @@ func daemonControlCredentials(root string, errOut io.Writer, action string) (pas
 			return nil, nil, false, err
 		}
 	}
-	var terminal *os.File
+	var terminalInput, terminalOutput *os.File
 	terminalFD := int(os.Stdin.Fd())
 	if !configured && !term.IsTerminal(terminalFD) {
-		name := "/dev/tty"
 		if runtime.GOOS == "windows" {
-			name = "CONIN$"
+			terminalInput, err = os.OpenFile("CONIN$", os.O_RDWR, 0)
+			if err == nil && term.IsTerminal(int(terminalInput.Fd())) {
+				terminalOutput, err = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+			}
+		} else {
+			terminalInput, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+			terminalOutput = terminalInput
 		}
-		terminal, err = os.OpenFile(name, os.O_RDWR, 0)
-		if err != nil || !term.IsTerminal(int(terminal.Fd())) {
-			if terminal != nil {
-				_ = terminal.Close()
+		if err != nil || terminalInput == nil || !term.IsTerminal(int(terminalInput.Fd())) || terminalOutput == nil {
+			if terminalInput != nil {
+				_ = terminalInput.Close()
+			}
+			if terminalOutput != nil && terminalOutput != terminalInput {
+				_ = terminalOutput.Close()
 			}
 			clear(password)
 			return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
 		}
-		defer terminal.Close()
-		terminalFD = int(terminal.Fd())
+		defer terminalInput.Close()
+		if terminalOutput != terminalInput {
+			defer terminalOutput.Close()
+		}
+		terminalFD = int(terminalInput.Fd())
 	}
 	if !configured {
 		prompt := io.Writer(errOut)
-		if terminal != nil {
-			prompt = terminal
+		if terminalOutput != nil {
+			prompt = terminalOutput
 		}
 		if _, err := fmt.Fprint(prompt, "Vault master password: "); err != nil {
 			clear(password)
 			clear(controlToken)
-			if terminal != nil {
+			if terminalOutput != nil {
 				return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
 			}
 			return nil, nil, false, err
 		}
 		password, err = term.ReadPassword(terminalFD)
-		if terminal != nil {
-			_, _ = fmt.Fprintln(terminal)
+		if terminalOutput != nil {
+			_, _ = fmt.Fprintln(terminalOutput)
 		} else {
 			_, _ = fmt.Fprintln(errOut)
 		}
