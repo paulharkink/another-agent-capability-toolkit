@@ -623,6 +623,16 @@ func TestDirectInstallerUsesManagedLifecycleController(t *testing.T) {
 	}
 	command.Dir = t.TempDir()
 	command.Env = versionInstallEnvironment(t, root, "")
+	if runtime.GOOS == "windows" {
+		environment := command.Env[:0]
+		for _, entry := range command.Env {
+			name, _, _ := strings.Cut(entry, "=")
+			if !strings.EqualFold(name, "PSModulePath") {
+				environment = append(environment, entry)
+			}
+		}
+		command.Env = append(environment, "PSModulePath="+filepath.Join(t.TempDir(), "powershell7-modules"))
+	}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("direct installer failed: %s: %v", output, err)
