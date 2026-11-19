@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,7 +70,12 @@ func buildPublicCLIBinary(t *testing.T) string {
 }
 
 func buildVersionCommandBinary(t *testing.T) string {
-	return buildIntegrationBinary(t, "version-command", "-X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/cli.Version=0.9.0 -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.Version=0.9.0")
+	return buildVersionedCLIBinary(t, "0.9.0")
+}
+
+func buildVersionedCLIBinary(t *testing.T, version string) string {
+	ldflags := fmt.Sprintf("-X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/cli.Version=%s -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.Version=%s", version, version)
+	return buildIntegrationBinary(t, "version-command-"+version, ldflags)
 }
 
 func buildLegacyNoopBinary(t *testing.T) string {

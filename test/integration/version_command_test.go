@@ -586,16 +586,18 @@ func assertScopedVaultValue(t *testing.T, access scopedVaultAccess, info vault.D
 }
 
 func TestDirectInstallerUsesManagedLifecycleController(t *testing.T) {
+	const targetVersion = "0.7.5-SNAPSHOT-feature-aact-wishlist"
 	const password = "isolated-direct-installer-password"
+	targetBinary := buildVersionedCLIBinary(t, targetVersion)
 	binary, root, oldInfo, _, server := startVersionInstallFixture(t, password, true, nil)
 	defer server.Close()
 	prepareManagedControllerLayout(t, root, binary)
 	installRoot := t.TempDir()
-	archiveName := fmt.Sprintf("aact_1.2.3_%s_%s.%s", runtime.GOOS, versionInstallerArch(), "tar.gz")
+	archiveName := fmt.Sprintf("aact_%s_%s_%s.tar.gz", targetVersion, runtime.GOOS, versionInstallerArch())
 	if runtime.GOOS == "windows" {
-		archiveName = fmt.Sprintf("aact_1.2.3_windows_%s.zip", versionInstallerArch())
+		archiveName = fmt.Sprintf("aact_%s_windows_%s.zip", targetVersion, versionInstallerArch())
 	}
-	archive := installerArchiveWithNative(t, mustReadBinary(t, binary), "direct lifecycle install")
+	archive := installerArchiveWithNative(t, mustReadBinary(t, targetBinary), "direct lifecycle install")
 	archivePath := filepath.Join(t.TempDir(), archiveName)
 	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
 		t.Fatal(err)
@@ -615,9 +617,9 @@ func TestDirectInstallerUsesManagedLifecycleController(t *testing.T) {
 	var command *exec.Cmd
 	if runtime.GOOS == "windows" {
 		powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		command = exec.Command(powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Version", "1.2.3", "-LocalArchive", archivePath, "-InstallDir", installRoot, "-SkipUserPath")
+		command = exec.Command(powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Version", targetVersion, "-LocalArchive", archivePath, "-InstallDir", installRoot, "-SkipUserPath")
 	} else {
-		command = exec.Command("/bin/sh", script, "--version", "1.2.3", "--local-archive", archivePath, "--install-dir", installRoot)
+		command = exec.Command("/bin/sh", script, "--version", targetVersion, "--local-archive", archivePath, "--install-dir", installRoot)
 	}
 	command.Dir = t.TempDir()
 	command.Env = versionInstallEnvironment(t, root, "")
@@ -632,12 +634,41 @@ func TestDirectInstallerUsesManagedLifecycleController(t *testing.T) {
 	if newInfo.APIAddress != oldInfo.APIAddress {
 		t.Fatalf("direct install changed the Vault API endpoint: old=%q new=%q", oldInfo.APIAddress, newInfo.APIAddress)
 	}
-	installed := filepath.Join(installRoot, "releases", "1.2.3-"+runtime.GOOS+"-"+versionInstallerArch(), "bin", "aact")
+	installed := filepath.Join(installRoot, "releases", targetVersion+"-"+runtime.GOOS+"-"+versionInstallerArch(), "bin", "aact")
 	if runtime.GOOS == "windows" {
 		installed += ".exe"
 	}
 	if _, err := os.Stat(installed); err != nil {
 		t.Fatalf("explicit install directory was ignored: missing %s: %v", installed, err)
+	}
+	versionCommand := exec.Command(installed, "version")
+	if versionOutput, err := versionCommand.CombinedOutput(); err != nil || strings.TrimSpace(string(versionOutput)) != targetVersion {
+		t.Fatalf("snapshot executable reports %q, err=%v; want %s", versionOutput, err, targetVersion)
+	}
+}
+
+func TestInstallerLifecycleRejectsUnsafeVersionWithoutRunningScript(t *testing.T) {
+	binary := buildPublicCLIBinary(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "installer-ran")
+	scriptPath := filepath.Join(root, "installer.sh")
+	script := "#!/bin/sh\nprintf ran > " + shellQuote(marker) + "\n"
+	if runtime.GOOS == "windows" {
+		scriptPath = filepath.Join(root, "installer.ps1")
+		script = "Set-Content -LiteralPath '" + strings.ReplaceAll(marker, "'", "''") + "' -Value ran\n"
+	}
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(binary, "__installer-lifecycle", "--run", scriptPath, "--", "--version", "../outside")
+	command.Dir = root
+	command.Env = cleanTestEnvironment(t, os.Environ(), "HOME="+root, "AACT_STATE_DIR="+filepath.Join(root, "state"))
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "stable release or pipeline snapshot version") {
+		t.Fatalf("unsafe version was not rejected: output=%q err=%v", output, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("installer script ran for unsafe version: stat err=%v", err)
 	}
 }
 
@@ -856,6 +887,7 @@ func TestVersionInstallRequiresUnlockBeforeStoppingDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "version", "install", "1.2.3")
+	command.Stdin = bytes.NewReader(nil)
 	command.Dir = t.TempDir()
 	command.Env = versionInstallEnvironment(t, root, server.URL+"/releases")
 	output, err := command.CombinedOutput()

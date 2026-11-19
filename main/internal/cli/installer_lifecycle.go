@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -47,8 +48,8 @@ func runInstallerLifecycle(ctx context.Context, args []string, out, errOut io.Wr
 		fmt.Fprintln(errOut, err)
 		return 2
 	}
-	if !releasecatalog.StableVersion("v" + version) {
-		fmt.Fprintln(errOut, "installer lifecycle requires a stable release version")
+	if _, ok := daemonLifecycleVersionBase(version); !ok {
+		fmt.Fprintln(errOut, "installer lifecycle requires a stable release or pipeline snapshot version")
 		return 2
 	}
 	err = installWithDaemonLifecycleAtRoot(ctx, rootOverride, version, errOut, func() error {
@@ -80,6 +81,19 @@ func runInstallerLifecycle(ctx context.Context, args []string, out, errOut io.Wr
 		fmt.Fprintln(out, "This historical release has no browser API; browser-backed MCPs may not work.")
 	}
 	return 0
+}
+
+var pipelineSnapshotVersion = regexp.MustCompile(`^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))-SNAPSHOT-[a-z0-9]+(-[a-z0-9]+)*$`)
+
+func daemonLifecycleVersionBase(version string) (string, bool) {
+	if releasecatalog.StableVersion("v" + version) {
+		return version, true
+	}
+	match := pipelineSnapshotVersion.FindStringSubmatch(version)
+	if len(match) == 0 {
+		return "", false
+	}
+	return match[1], true
 }
 
 func installerVersion(args []string) (string, error) {

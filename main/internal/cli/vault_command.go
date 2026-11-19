@@ -114,18 +114,11 @@ func daemonControlCredentials(root string, errOut io.Writer, action string) (pas
 	terminalFD := int(os.Stdin.Fd())
 	if !configured && !term.IsTerminal(terminalFD) {
 		if runtime.GOOS == "windows" {
-			if !stdinIsPipe() {
-				clear(password)
-				return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
-			}
-			terminalInput, err = os.OpenFile("CONIN$", os.O_RDWR, 0)
-			if err == nil && term.IsTerminal(int(terminalInput.Fd())) {
-				terminalOutput, err = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
-			}
-		} else {
-			terminalInput, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
-			terminalOutput = terminalInput
+			clear(password)
+			return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
 		}
+		terminalInput, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		terminalOutput = terminalInput
 		if err != nil || terminalInput == nil || !term.IsTerminal(int(terminalInput.Fd())) || terminalOutput == nil {
 			if terminalInput != nil {
 				_ = terminalInput.Close()

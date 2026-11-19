@@ -180,6 +180,10 @@ const (
 )
 
 func targetDaemonKind(version string) daemonTarget {
+	version, ok := daemonLifecycleVersionBase(version)
+	if !ok {
+		return daemonTargetNone
+	}
 	if version == "0.5.15" || releasecatalog.NewerThan(version, "0.5.15") {
 		if version == "0.6.0" || releasecatalog.NewerThan(version, "0.6.0") {
 			return daemonTargetCurrent
