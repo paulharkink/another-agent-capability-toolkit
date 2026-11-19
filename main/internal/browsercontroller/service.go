@@ -49,6 +49,10 @@ type ServiceBrowser interface {
 	StopBrowser(context.Context) error
 }
 
+type runningBrowser interface {
+	BrowserRunning(context.Context) (bool, error)
+}
+
 type Service struct {
 	lookup     func(daemon.ClientIdentity) (ServiceConfig, bool)
 	newBrowser func(ServiceConfig) ServiceBrowser
@@ -71,7 +75,7 @@ func NewDockerBrowser(c ServiceConfig) DockerBrowser {
 
 // StopConfiguration is used by the trusted local control API, including after
 // a container credential has been revoked or its MCP has disappeared.
-func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, remove func() error) error {
+func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, removeBrowser bool, remove func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := config.Validate(); err != nil {
@@ -79,7 +83,7 @@ func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, r
 	}
 	browser := s.newBrowser(config)
 	var err error
-	if remover, ok := browser.(interface{ RemoveBrowser(context.Context) error }); ok {
+	if remover, ok := browser.(interface{ RemoveBrowser(context.Context) error }); ok && removeBrowser {
 		err = remover.RemoveBrowser(ctx)
 	} else {
 		err = browser.StopBrowser(ctx)
@@ -88,6 +92,21 @@ func (s *Service) StopConfiguration(ctx context.Context, config ServiceConfig, r
 		return err
 	}
 	return remove()
+}
+
+// StartConfiguration opens the registered authentication helper and returns
+// its actual loopback viewer URL to the local AACT UI.
+func (s *Service) StartConfiguration(ctx context.Context, config ServiceConfig) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
+	viewer, err := s.newBrowser(config).EnsureStarted(ctx)
+	if err != nil || validateViewerURL(viewer) != nil {
+		return "", errors.New("browser could not be started")
+	}
+	return viewer, nil
 }
 
 // ReapConfiguration checks owner state while holding the same lifecycle lock
@@ -191,35 +210,51 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := browser.ReadOffline(r.Context(), request)
-	if err == nil && adapterSucceeded(result) {
-		writeBrowserResult(w, http.StatusOK, result, "")
-		return
+	interactive := false
+	var err error
+	var result json.RawMessage
+	if running, ok := browser.(runningBrowser); ok {
+		interactive, err = running.BrowserRunning(r.Context())
+		if err != nil {
+			http.Error(w, "browser state is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	// Offline reads require an unmounted profile. Once a login helper is open,
+	// retries must keep it alive and use its active profile through the adapter.
+	if !interactive {
+		result, readErr := browser.ReadOffline(r.Context(), request)
+		if readErr == nil && adapterSucceeded(result) {
+			writeBrowserResult(w, http.StatusOK, result, "")
+			return
+		}
 	}
 	viewer, err := browser.EnsureStarted(r.Context())
 	if err != nil || validateViewerURL(viewer) != nil {
 		http.Error(w, "browser could not be started", http.StatusServiceUnavailable)
 		return
 	}
-	// Chromium and its initial page may take a few seconds after the container
-	// starts. Retry an unavailable or not-yet-open tab without opening a host browser.
-	readyCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	for {
-		status, _, reloadErr := browser.ReloadBrowserTab(readyCtx, request.Origin)
-		if reloadErr == nil && status == "reloaded" {
-			break
+	if !interactive {
+		// Chromium and its initial page may take a few seconds after startup.
+		// Retry the initial tab lookup only for a newly opened login; reloading
+		// an active session would discard forms and other user progress.
+		readyCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		for {
+			status, _, reloadErr := browser.ReloadBrowserTab(readyCtx, request.Origin)
+			if reloadErr == nil && (status == "reloaded" || status == "ambiguous") {
+				break
+			}
+			select {
+			case <-readyCtx.Done():
+				break
+			case <-time.After(time.Second):
+			}
+			if readyCtx.Err() != nil {
+				break
+			}
 		}
-		if reloadErr == nil && status == "ambiguous" {
-			break
-		}
-		select {
-		case <-readyCtx.Done():
-			goto tryAdapter
-		case <-time.After(time.Second):
-		}
+		cancel()
 	}
-tryAdapter:
-	cancel()
 	result, err = browser.RunBrowserAuthAdapter(r.Context(), request)
 	if err == nil && adapterSucceeded(result) {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

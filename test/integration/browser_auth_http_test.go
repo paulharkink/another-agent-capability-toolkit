@@ -17,6 +17,10 @@ import (
 
 type integrationBrowser struct {
 	offline       json.RawMessage
+	adapterResult json.RawMessage
+	running       bool
+	reloads       int
+	tabState      string
 	starts, stops int
 }
 
@@ -24,16 +28,29 @@ func (b *integrationBrowser) ReadOffline(context.Context, browsercontroller.Brow
 	return b.offline, nil
 }
 func (b *integrationBrowser) EnsureStarted(context.Context) (string, error) {
-	b.starts++
+	if !b.running {
+		b.starts++
+		b.running = true
+	}
 	return "http://localhost:49001", nil
 }
 func (b *integrationBrowser) RunBrowserAuthAdapter(context.Context, browsercontroller.BrowserAuthRequest) (json.RawMessage, error) {
+	if len(b.adapterResult) != 0 {
+		return b.adapterResult, nil
+	}
 	return json.RawMessage(`{"status":"interaction_required"}`), nil
 }
 func (b *integrationBrowser) ReloadBrowserTab(context.Context, string) (string, int, error) {
+	b.reloads++
+	b.tabState = "login-form-state-" + strings.Repeat("x", b.reloads)
 	return "reloaded", 1, nil
 }
-func (b *integrationBrowser) StopBrowser(context.Context) error { b.stops++; return nil }
+func (b *integrationBrowser) StopBrowser(context.Context) error {
+	b.stops++
+	b.running = false
+	return nil
+}
+func (b *integrationBrowser) BrowserRunning(context.Context) (bool, error) { return b.running, nil }
 
 func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing.T) {
 	store, err := vault.Open(filepath.Join(t.TempDir(), "credentials.kdbx"), []byte("synthetic-password"))
@@ -83,7 +100,7 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 		_, _ = data.ReadFrom(resp.Body)
 		return resp.StatusCode, data.String()
 	}
-	if status, body := request(first); status != 200 || !strings.Contains(body, "synthetic") || browser.starts != 0 {
+	if status, body := request(first); status != 200 || !strings.Contains(body, "synthetic") || browser.starts != 0 || browser.stops != 0 {
 		t.Fatalf("offline status %d body %s starts %d", status, body, browser.starts)
 	}
 	if status, _ := request(second); status != 403 {
@@ -96,10 +113,34 @@ func TestExistingDaemonCredentialAccessesOnlyRegisteredBrowserOverTLS(t *testing
 	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 {
 		t.Fatalf("interactive status %d body %s", status, body)
 	}
+	activeTabState, reloads := browser.tabState, browser.reloads
+	if status, body := request(first); status != 409 || !strings.Contains(body, "http://localhost:49001") || browser.starts != 1 || browser.stops != 0 || !browser.running || browser.tabState != activeTabState || browser.reloads != reloads {
+		t.Fatalf("interactive retry stopped or reloaded the active login tab: status %d body %s starts %d stops %d running %v tab_state=%q reloads=%d", status, body, browser.starts, browser.stops, browser.running, browser.tabState, browser.reloads)
+	}
+	browser.adapterResult = json.RawMessage(`{"status":"refreshed","access_token":"signed-in-session"}`)
+	if status, body := request(first); status != 200 || !strings.Contains(body, "signed-in-session") || browser.starts != 1 || browser.tabState != activeTabState || browser.reloads != reloads {
+		t.Fatalf("signed-in session handoff status %d body %s starts %d", status, body, browser.starts)
+	}
+	if browser.running || browser.stops != 1 {
+		t.Fatalf("successful handoff left helper running=%v stops=%d", browser.running, browser.stops)
+	}
 	if err := api.RevokeToken(first); err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := request(first); status != 401 {
 		t.Fatalf("revoked status %d", status)
+	}
+}
+
+func TestBrowserLoginStartsGenericHelperAndReturnsViewerURL(t *testing.T) {
+	browser := &integrationBrowser{}
+	service := browsercontroller.NewService(nil, func(browsercontroller.ServiceConfig) browsercontroller.ServiceBrowser { return browser })
+	config := browsercontroller.ServiceConfig{Origin: "https://capability.example.test", StartupURL: "https://capability.example.test", ProfileVolume: "capability-profile", ContainerName: "generic-browser-login"}
+	viewer, err := service.StartConfiguration(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewer != "http://localhost:49001" || browser.starts != 1 {
+		t.Fatalf("viewer URL = %q, helper starts = %d", viewer, browser.starts)
 	}
 }

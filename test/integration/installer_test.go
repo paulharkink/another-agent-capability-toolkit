@@ -35,13 +35,26 @@ func installerArchiveWithMarker(t *testing.T, marker string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return installerArchiveWithNative(t, native, marker)
+}
+
+func installerArchiveWithNative(t *testing.T, native []byte, marker string) []byte {
+	t.Helper()
+	installers := make(map[string][]byte, 2)
+	for _, name := range []string{"install.sh", "install.ps1"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		installers[name] = data
+	}
 	var b bytes.Buffer
 	if runtime.GOOS == "windows" {
 		z := zip.NewWriter(&b)
 		for _, f := range []struct {
 			name string
 			data []byte
-		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte(marker)}, {"release.json", []byte(`{"version":"fixture"}`)}} {
+		}{{"bin/aact.exe", native}, {"packages/sample/SKILL.md", []byte(marker)}, {"release.json", []byte(`{"version":"fixture"}`)}, {"install.sh", installers["install.sh"]}, {"install.ps1", installers["install.ps1"]}} {
 			h := &zip.FileHeader{Name: f.name, Method: zip.Deflate}
 			h.SetMode(0755)
 			w, err := z.CreateHeader(h)
@@ -61,11 +74,11 @@ func installerArchiveWithMarker(t *testing.T, marker string) []byte {
 		name string
 		data []byte
 		mode int64
-	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte(marker), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}} {
-		if err = tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
+	}{{"bin/aact", native, 0755}, {"packages/sample/SKILL.md", []byte(marker), 0644}, {"release.json", []byte(`{"version":"fixture"}`), 0644}, {"install.sh", installers["install.sh"], 0644}, {"install.ps1", installers["install.ps1"], 0644}} {
+		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.data))}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = tw.Write(f.data); err != nil {
+		if _, err := tw.Write(f.data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -107,7 +120,10 @@ func runInstaller(t *testing.T, root, version, base string) (string, error) {
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-Version", version, "-InstallDir", root, "-BaseUrl", base)
 	}
-	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir())
+	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_INSTALLER_LIFECYCLE=1")
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(cmd.Env, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -330,7 +346,7 @@ func TestInstallerRequiresExplicitReleaseVersionWhenNoLocalArchiveIsProvided(t *
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-InstallDir", t.TempDir())
 	}
-	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_VERSION=", "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
+	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_VERSION=", "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used", "AACT_INSTALLER_LIFECYCLE=1")
 	out, err := cmd.CombinedOutput()
 	want := "specify --version or --local-archive"
 	if runtime.GOOS == "windows" {
@@ -407,7 +423,10 @@ func runLocalInstallerVersionForce(t *testing.T, root, archive, version string, 
 		}
 		cmd = exec.Command(powerShell(t), windowsArgs...)
 	}
-	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used")
+	cmd.Env = append(os.Environ(), "AACT_OS=linux", "AACT_ARCH=amd64", "HOME="+t.TempDir(), "AACT_DOWNLOAD_BASE=http://127.0.0.1:1/should-not-be-used", "AACT_INSTALLER_LIFECYCLE=1")
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(cmd.Env, "AACT_INSTALLER_SKIP_USER_PATH=1")
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -506,6 +525,13 @@ func TestPowerShellInstallerArchitectureMapping(t *testing.T) {
 			t.Fatalf("%s: %q %v", tc.arch, out, err)
 		}
 	}
+	cmd := exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-PrintTarget")
+	cmd.Env = cleanTestEnvironment(t, os.Environ())
+	out, err := cmd.CombinedOutput()
+	got := strings.TrimSpace(string(out))
+	if err != nil || (got != "windows_amd64" && got != "windows_arm64") {
+		t.Fatalf("runtime architecture fallback returned unsupported target %q: %v", got, err)
+	}
 }
 
 func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {
@@ -578,7 +604,7 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 	}
 	server := fixtureServer(t, false)
 	cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
-	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64", "AACT_INSTALLER_LIFECYCLE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("install failed: %s: %v", output, err)
@@ -603,7 +629,7 @@ if [ "$1" = "--version" ]; then printf "0.0.0-SNAPSHOT-canonical\n"; else printf
 		t.Fatalf("migration was not reported: %s", output)
 	}
 	secondInstall := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
-	secondInstall.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+	secondInstall.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64", "AACT_INSTALLER_LIFECYCLE=1")
 	if secondOutput, err := secondInstall.CombinedOutput(); err != nil {
 		t.Fatalf("reinstall of the same managed release failed: %s: %v", secondOutput, err)
 	}
@@ -740,7 +766,7 @@ func TestInstallerLeavesUnrecognizedLegacyLauncherUntouched(t *testing.T) {
 	}
 	server := fixtureServer(t, false)
 	cmd := exec.Command("/bin/sh", "../../install.sh", "--version", "1.2.3", "--base-url", server.URL)
-	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64")
+	cmd.Env = append(os.Environ(), "HOME="+home, "AACT_OS=linux", "AACT_ARCH=amd64", "AACT_INSTALLER_LIFECYCLE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("install failed: %s: %v", output, err)

@@ -377,7 +377,13 @@ func (m *Model) profiles() []InstanceRow {
 	}
 	return rows
 }
-func (m *Model) paneHeight() int { return max(1, m.height-12) }
+func (m *Model) paneHeight() int {
+	reserved := 12
+	if m.updateNotice != "" {
+		reserved++
+	}
+	return max(1, m.height-reserved)
+}
 func reconcilePane(p *paneState, ids []string, visible int) bool {
 	oldID := p.ID
 	found := false
@@ -1485,7 +1491,11 @@ func (m *Model) homeView() tea.View {
 	if m.home.ContextDisplayOffset+visible < len(contextDisplay) {
 		contextPosition += "  ↓ More below"
 	}
-	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(contextPosition, right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║", "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
+	lines = append(lines, "║"+fit(pos(m.home.Capabilities, len(cs)), left)+"║"+fit(contextPosition, right)+"║", "╠"+strings.Repeat("═", width-2)+"╣", "║"+fit(m.selectedDetail(), width-2)+"║")
+	if m.updateNotice != "" {
+		lines = append(lines, "║"+fit(m.updateNotice, width-2)+"║")
+	}
+	lines = append(lines, "║"+fit(status, width-2)+"║", "╠"+strings.Repeat("═", width-2)+"╣")
 	footer := []struct{ text, control string }{{"F1 Help", "help"}, {"F3 Details", "details"}, {"F5 Refresh", "refresh"}}
 	x := 2
 	f := " "

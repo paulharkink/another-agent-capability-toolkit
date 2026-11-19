@@ -1498,6 +1498,8 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 	}
 	urls := map[string]string{}
 	if q.InstallOnly {
+		var observedRuntimes []mcp.Instance
+		observedRuntimesLoaded := false
 		for _, definition := range p.MCPDefinitions() {
 			if !mcps[definition.Name] {
 				continue
@@ -1515,6 +1517,32 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 			// the registration it is creating.
 			if q.Uninstall && len(destIDs) == 0 {
 				continue
+			}
+			// A locally running runtime may have received a different actual host
+			// port after Docker resolved a conflict. Reuse that endpoint only when
+			// it was launched for the same configured port.
+			if definition.HostPortInput != "" {
+				if !observedRuntimesLoaded {
+					// Inventory can supply Docker's actual port after a conflict
+					// fallback. If Docker is unavailable, the declared host endpoint
+					// below remains a usable install-time fallback.
+					observedRuntimes, _ = s.Options.Runtime.List(ctx)
+					observedRuntimesLoaded = true
+				}
+				configuredPort, portErr := resolvePortInputValue(definition.HostPortInput, values[definition.HostPortInput])
+				if portErr != nil {
+					return out, invalid(portErr)
+				}
+				child := mcpDefinitionKey(key, p, definition)
+				for _, runtime := range observedRuntimes {
+					if runtime.Key == child && runtime.Ownership == "local" && runtime.Status == "running" && runtime.ConfiguredHostPort == configuredPort && runtime.URL != "" {
+						urls[definition.Name] = runtime.URL
+						break
+					}
+				}
+				if urls[definition.Name] != "" {
+					continue
+				}
 			}
 			// Use the same declared host/port values as Start whenever the pack
 			// declares them. This keeps the registration current after an input
@@ -2232,6 +2260,9 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 				return out, e
 			}
 			out.Instances = []mcp.Instance{instance}
+			if err := s.refreshRuntimeRegistrations(ctx, child, definition, values, instance.URL); err != nil {
+				return out, fmt.Errorf("MCP started at %s but its existing agent registrations could not be refreshed: %w", instance.URL, err)
+			}
 			if definition.HealthPath != "" {
 				headers, headerErr := profileRegistrationHeaders(definition, values)
 				if headerErr != nil {

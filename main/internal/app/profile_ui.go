@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
@@ -68,6 +69,26 @@ func (s *Service) UICreateProfile(ctx context.Context, ref config.ProfileRef) er
 	return s.UICreateInstance(ctx, ref)
 }
 func (s *Service) UIConfigurationInstanceRun(ctx context.Context, action string, ref config.InstanceRef, mcpID string) (string, error) {
+	if action == "browser-login" {
+		p, _, key, err := s.loadInstance(ref)
+		if err != nil {
+			return "", err
+		}
+		definition, err := selectMCPProfile(p, mcpID)
+		if err != nil {
+			return "", err
+		}
+		if definition.BrowserController == nil {
+			return "", errors.New("this capability does not declare a browser login helper")
+		}
+		starter, ok := s.Options.Runtime.(interface {
+			StartBrowser(context.Context, state.Key) (string, error)
+		})
+		if !ok {
+			return "", errors.New("browser login is unavailable in this runtime")
+		}
+		return starter.StartBrowser(ctx, mcpDefinitionKey(key, p, definition))
+	}
 	result, err := s.RunInstanceMCP(ctx, action, InstanceRequest{Ref: ref}, mcpID)
 	if result.Logs != "" {
 		return result.Logs, err

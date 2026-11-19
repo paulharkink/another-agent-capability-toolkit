@@ -12,7 +12,9 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/picker"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/releasecatalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
 	"slices"
 	"sort"
@@ -112,12 +114,14 @@ type Model struct {
 	logProfile                    state.Key
 	logLabel                      string
 	pendingDefaultAgents          bool
+	releaseCheckStarted           bool
 	pendingMCPImageSource         bool
 	agents                        []string
 	agentManagement               []viewmodel.AgentManagementRow
 	settings, sourceLabels        map[string]string
 	busy                          bool
 	output, action                string
+	updateNotice                  string
 	result                        *resultState
 	retryOperation                func() tea.Cmd
 	form                          *forms.FormModel
@@ -186,12 +190,33 @@ type groupProfileAuthSavedMsg struct {
 	ref config.InstanceRef
 	err error
 }
+type releaseUpdateMsg struct{ version string }
 
 func New(backend Backend) tea.Model { return NewContext(context.Background(), backend) }
 func NewContext(ctx context.Context, backend Backend) *Model {
 	return &Model{backend: backend, ctx: ctx, view: "Catalog", width: 80, height: 24, settings: map[string]string{}, sourceLabels: map[string]string{}}
 }
 func (m *Model) Init() tea.Cmd { return m.load() }
+func (m *Model) checkReleaseUpdate() tea.Cmd {
+	current := strings.TrimPrefix(versioninfo.Version, "v")
+	return func() tea.Msg {
+		parent := m.ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 6*time.Second)
+		defer cancel()
+		releases, err := releasecatalog.List(ctx)
+		if err != nil || len(releases) == 0 {
+			return nil
+		}
+		latest := strings.TrimPrefix(releases[0].Tag, "v")
+		if releasecatalog.NewerThan(latest, current) {
+			return releaseUpdateMsg{version: latest}
+		}
+		return nil
+	}
+}
 func (m *Model) load() tea.Cmd {
 	backend, ctx := m.backend, m.ctx
 	if !m.busy && m.result == nil {
@@ -321,6 +346,10 @@ func (m *Model) handleSetupInputsSaved(msg setupInputsSavedMsg) tea.Cmd {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch progress := msg.(type) {
+	case releaseUpdateMsg:
+		m.updateNotice = "AACT " + progress.version + " is available. Run aact version upgrade."
+		m.reconcileHome()
+		return m, nil
 	case setupProgressMsg:
 		if progress.progress.Acknowledged != nil {
 			defer close(progress.progress.Acknowledged)
@@ -375,6 +404,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// not consume them as ordinary form input after an operation completes.
 	if loaded, ok := msg.(loadedMsg); ok {
 		m.applyLoaded(loaded)
+		if !m.releaseCheckStarted {
+			m.releaseCheckStarted = true
+			return m, m.checkReleaseUpdate()
+		}
 		return m, nil
 	}
 	if saved, ok := msg.(setupInputsSavedMsg); ok {
@@ -634,7 +667,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
-			if parts[0] == "authenticate" {
+			if parts[0] == "authenticate" || parts[0] == "browser-login" {
 				if reason := m.workspaceForeignRuntimeReason(parts[1]); reason != "" {
 					m.output = reason
 					return m, nil
@@ -654,21 +687,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.output = "The selected MCP no longer declares a Login action; refresh this target."
 					return m, nil
 				}
-				if _, supported := definition.Actions["authenticate"]; !supported {
-					m.output = "This MCP does not declare a Login action."
+				if parts[0] == "browser-login" && definition.BrowserController == nil {
+					m.output = "This capability does not declare a browser login helper; refresh this target."
 					return m, nil
+				}
+				if parts[0] == "authenticate" && definition.BrowserController == nil {
+					if _, supported := definition.Actions["authenticate"]; !supported {
+						m.output = "This MCP does not declare a Login action."
+						return m, nil
+					}
 				}
 				profile := m.instanceForMCPName(parts[1])
 				row := InstanceRow{}
 				if profile != nil {
 					row = InstanceRow{Key: profile.Key, Instance: profile, URL: profile.URL, Status: profile.RuntimeStatus}
 				}
-				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row); reason != "" {
+				if reason := m.runtimeAuthenticateDisabledReason(parts[1], row, parts[0]); reason != "" {
 					m.output = reason
 					return m, nil
 				}
 				m.workspace.cacheDraft(m.form.Values())
-				return m, m.run(operation{action: "authenticate", source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
+				return m, m.run(operation{action: parts[0], source: m.workspace.Key.Source, packageID: m.workspace.Key.Package, environment: m.workspace.Key.Environment, target: m.workspace.Key.Target, mcp: parts[1]})
 			}
 		}
 		return m, nil
@@ -1655,9 +1694,9 @@ func (m *Model) run(op operation) tea.Cmd {
 	return func() tea.Msg {
 		var output string
 		var err error
-		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+		if instanceBackend, ok := backend.(configurationInstanceRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate" || op.action == "browser-login") {
 			output, err = instanceBackend.UIConfigurationInstanceRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
-		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate") {
+		} else if profileBackend, ok := backend.(configurationProfileRunBackend); ok && m.instanceMode() && (op.action == "start" || op.action == "stop" || op.action == "prepare" || op.action == "authenticate" || op.action == "browser-login") {
 			output, err = profileBackend.UIConfigurationProfileRun(ctx, op.action, config.InstanceRef{PackID: op.source, CapabilityID: op.packageID, Name: op.target}, firstNonempty(op.mcp, op.profile))
 		} else if op.mcp != "" || op.profile != "" {
 			if instanceBackend, ok := backend.(instanceRunBackend); ok {
@@ -1841,7 +1880,11 @@ func (m *Model) View() (v tea.View) {
 	if m.busy {
 		status = "Running " + m.action + "…"
 	}
-	content := fmt.Sprintf("%s\n%s\n\n%s\n\n%s\n\n%s", title, nav, strings.Join(shown, "\n"), status, footer)
+	content := fmt.Sprintf("%s\n%s\n\n%s\n\n%s", title, nav, strings.Join(shown, "\n"), status)
+	if m.updateNotice != "" {
+		content += "\n" + m.updateNotice
+	}
+	content += "\n\n" + footer
 	width := m.width
 	if width < 20 {
 		width = 20

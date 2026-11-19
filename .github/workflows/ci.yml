@@ -45,7 +45,15 @@ jobs:
             public.ecr.aws/docker/library/python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72 \
             public.ecr.aws/docker/library/python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f \
             public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+      - name: Build browser helper used by the synthetic login integration test
+        # GitHub-hosted runners are ephemeral. Build the exact production image
+        # tag required by browsercontroller instead of depending on a cached image.
+        run: docker build --tag aact/browser-authentication-helper:1.18.0 images/browser-authentication-helper
       - run: go -C test test -tags integration ./integration -count=1
+      - name: Verify git-provider health rejects redirects
+        env:
+          AACT_TEST_DOCKER: "1"
+        run: go -C test test -tags integration ./integration -run '^TestDockerGitProviderHealthSecurityBoundary$' -count=1
       - name: Verify pinned TLS and token scope on the default container route
         env:
           AACT_TEST_DOCKER: "1"

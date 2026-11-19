@@ -29,7 +29,7 @@ func main() {
 		return
 	}
 	creating := mode == "create"
-	err := tui.RunVaultUnlock(context.Background(), os.Stdin, os.Stdout, creating, func(password []byte) error {
+	err := tui.RunVaultUnlock(context.Background(), os.Stdin, os.Stdout, creating, func(password []byte, saveCredential bool) error {
 		_, err := vault.Open(path, password)
 		return err
 	})

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
 	"golang.org/x/term"
 )
+
+var errDaemonCredentialRequiresTerminal = errors.New("interactive terminal required to unlock the vault")
 
 func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) int {
 	if len(args) != 1 || (args[0] != "status" && args[0] != "stop") {
@@ -27,6 +30,12 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 	}
 	root := state.DefaultRoot(runtime.GOOS, homeDirectory(), os.Getenv)
 	if args[0] == "stop" {
+		unlockManager, lockErr := vault.LockDaemonManager(root)
+		if lockErr != nil {
+			fmt.Fprintln(errOut, "lock AACT daemon lifecycle:", lockErr)
+			return 1
+		}
+		defer unlockManager()
 		info, err := vault.ReadDaemonInfo(root)
 		if os.IsNotExist(err) {
 			fmt.Fprintln(out, name+" is not running")
@@ -36,35 +45,21 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
-		password, configured, err := configuredVaultPassword()
+		password, controlToken, manualUnlock, err := daemonControlCredentials(root, errOut, "stopping the AACT daemon")
 		if err != nil {
 			fmt.Fprintln(errOut, err)
-			return 1
-		}
-		if !configured && !term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprintln(errOut, "stopping the AACT daemon requires an interactive terminal to unlock the vault")
-			return 2
-		}
-		if !configured {
-			fmt.Fprint(errOut, "Vault master password: ")
-			password, err = term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(errOut)
-			if err != nil {
-				fmt.Fprintln(errOut, err)
-				return 1
+			if errors.Is(err, errDaemonCredentialRequiresTerminal) {
+				return 2
 			}
+			return 1
 		}
 		defer clear(password)
-		if len(password) == 0 {
-			fmt.Fprintln(errOut, "vault master password must not be empty")
-			return 1
-		}
-		controlToken, err := vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
-		if err != nil {
-			fmt.Fprintln(errOut, err)
-			return 1
-		}
 		defer clear(controlToken)
+		if manualUnlock && term.IsTerminal(int(os.Stdin.Fd())) && confirmVaultCredentialSave(os.Stdin, errOut) {
+			if err := setVaultCredential(root, password); err != nil {
+				fmt.Fprintln(errOut, "Could not save the vault password to the OS credential store; the daemon remains available for this session.")
+			}
+		}
 		if err := vault.StopDetached(info, controlToken); err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
@@ -83,6 +78,102 @@ func runDaemonCommand(args []string, legacyVault bool, out, errOut io.Writer) in
 	}
 	fmt.Fprintf(out, "%s running at %s\n", name, info.APIAddress)
 	return 0
+}
+
+func daemonControlCredentials(root string, errOut io.Writer, action string) (password, controlToken []byte, manualUnlock bool, err error) {
+	password, configured, err := configuredVaultPassword()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	manualUnlock = !configured
+	fromCredentialStore := false
+	if !configured {
+		if saved := savedVaultCredential(root); len(saved) > 0 {
+			password = saved
+			configured = true
+			manualUnlock = false
+			fromCredentialStore = true
+		}
+	}
+	if configured {
+		controlToken, err = vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+		if err != nil && fromCredentialStore {
+			clear(password)
+			clear(controlToken)
+			password = nil
+			controlToken = nil
+			configured = false
+			manualUnlock = true
+		} else if err != nil {
+			clear(password)
+			clear(controlToken)
+			return nil, nil, false, err
+		}
+	}
+	var terminalInput, terminalOutput *os.File
+	terminalFD := int(os.Stdin.Fd())
+	if !configured && !term.IsTerminal(terminalFD) {
+		if runtime.GOOS == "windows" {
+			clear(password)
+			return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
+		}
+		terminalInput, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		terminalOutput = terminalInput
+		if err != nil || terminalInput == nil || !term.IsTerminal(int(terminalInput.Fd())) || terminalOutput == nil {
+			if terminalInput != nil {
+				_ = terminalInput.Close()
+			}
+			if terminalOutput != nil && terminalOutput != terminalInput {
+				_ = terminalOutput.Close()
+			}
+			clear(password)
+			return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
+		}
+		defer terminalInput.Close()
+		if terminalOutput != terminalInput {
+			defer terminalOutput.Close()
+		}
+		terminalFD = int(terminalInput.Fd())
+	}
+	if !configured {
+		prompt := io.Writer(errOut)
+		if terminalOutput != nil {
+			prompt = terminalOutput
+		}
+		if _, err := fmt.Fprint(prompt, "Vault master password: "); err != nil {
+			clear(password)
+			clear(controlToken)
+			if terminalOutput != nil {
+				return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
+			}
+			return nil, nil, false, err
+		}
+		password, err = term.ReadPassword(terminalFD)
+		if terminalOutput != nil {
+			_, _ = fmt.Fprintln(terminalOutput)
+		} else {
+			_, _ = fmt.Fprintln(errOut)
+		}
+		if err != nil {
+			clear(password)
+			clear(controlToken)
+			return nil, nil, false, err
+		}
+	}
+	if len(password) == 0 {
+		clear(password)
+		clear(controlToken)
+		return nil, nil, false, errors.New("vault master password must not be empty")
+	}
+	if !configured {
+		controlToken, err = vault.ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
+		if err != nil {
+			clear(password)
+			clear(controlToken)
+			return nil, nil, false, err
+		}
+	}
+	return password, controlToken, manualUnlock, nil
 }
 
 func homeDirectory() string { home, _ := os.UserHomeDir(); return home }

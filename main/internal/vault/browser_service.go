@@ -21,6 +21,35 @@ type BrowserConfigurationRegistrar interface {
 	PauseBrowserConfiguration(container string) error
 }
 
+// BrowserConfigurationOpener starts an instance's registered browser helper
+// through the authenticated local control API.
+type BrowserConfigurationOpener interface {
+	StartBrowserConfiguration(container string) (string, error)
+}
+
+func (s *Store) StartBrowserConfiguration(container string) (string, error) {
+	if !browsercontroller.ValidDockerContainerID(container) {
+		return "", errors.New("invalid browser owner")
+	}
+	s.mu.Lock()
+	if s.daemonInfo == nil || len(s.controlToken) == 0 {
+		s.mu.Unlock()
+		return "", errors.New("daemon control is unavailable")
+	}
+	info := *s.daemonInfo
+	controlToken := append([]byte(nil), s.controlToken...)
+	s.mu.Unlock()
+	defer clear(controlToken)
+	var result struct {
+		ViewerURL string `json:"viewer_url"`
+	}
+	err := controlRequest(info, string(controlToken), http.MethodPost, "/browser/configurations/"+container+"/start", nil, &result)
+	if err != nil {
+		return "", err
+	}
+	return result.ViewerURL, nil
+}
+
 func (s *Store) PauseBrowserConfiguration(container string) error {
 	if !browsercontroller.ValidDockerContainerID(container) {
 		return errors.New("invalid browser owner")
@@ -70,7 +99,32 @@ func (a *API) UnregisterBrowser(ctx context.Context, container string) error {
 	return a.stopBrowserRegistration(ctx, container, true)
 }
 
-func (a *API) stopBrowserRegistration(ctx context.Context, container string, remove bool) error {
+// StartBrowser starts only a browser helper registered to the named runtime.
+// This method is reachable through the authenticated local control API.
+func (a *API) StartBrowser(ctx context.Context, container string) (string, error) {
+	if !browsercontroller.ValidDockerContainerID(container) {
+		return "", errors.New("invalid browser owner")
+	}
+	encoded, found, err := a.store.Get(browserRegistryNamespace, container)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", errors.New("browser configuration is unavailable")
+	}
+	defer clear(encoded)
+	var record browserConfigurationRecord
+	if json.Unmarshal(encoded, &record) != nil || validateInstanceNamespace(record.Instance) != nil {
+		return "", errors.New("invalid browser registration")
+	}
+	if a.browserService == nil {
+		return "", errors.New("browser service is unavailable")
+	}
+	record.Config.ContainerID = container
+	return a.browserService.StartConfiguration(ctx, record.Config)
+}
+
+func (a *API) stopBrowserRegistration(ctx context.Context, container string, removeRegistration bool) error {
 	if !browsercontroller.ValidDockerContainerID(container) {
 		return errors.New("invalid browser owner")
 	}
@@ -90,8 +144,10 @@ func (a *API) stopBrowserRegistration(ctx context.Context, container string, rem
 		return errors.New("browser service is unavailable")
 	}
 	record.Config.ContainerID = container
-	return a.browserService.StopConfiguration(ctx, record.Config, func() error {
-		if !remove {
+	// Remove the helper even when pausing. A stopped container still holds the
+	// profile volume and would block a replacement MCP from opening its helper.
+	return a.browserService.StopConfiguration(ctx, record.Config, true, func() error {
+		if !removeRegistration {
 			return nil
 		}
 		return a.store.Delete(browserRegistryNamespace, container)

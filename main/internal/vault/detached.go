@@ -61,6 +61,51 @@ func (e *controlStatusError) Error() string {
 // StartDetached starts or reuses AACT's portable background vault process.
 // Its bootstrap password is delivered only over the child process stdin pipe.
 func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, error) {
+	return StartDetachedWithAPIListenAddress(executable, stateRoot, password, "")
+}
+
+// StartDetachedWithAPIListenAddress starts or reuses the AACT daemon while
+// binding its Vault API to a caller-selected address. An empty address uses
+// the normal platform default.
+func StartDetachedWithAPIListenAddress(executable, stateRoot string, password []byte, apiListenAddress string) (DaemonInfo, error) {
+	return startDetached(executable, stateRoot, password, apiListenAddress, false, false)
+}
+
+// LockDaemonManager serializes daemon starts with an update lifecycle. The
+// caller must release the returned function after any locked start completes.
+func LockDaemonManager(stateRoot string) (func(), error) {
+	root, err := filepath.Abs(stateRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(root, 0700); err != nil {
+		return nil, err
+	}
+	return lockVaultFile(filepath.Join(root, "daemon-manager"))
+}
+
+// StartDetachedWithAPIListenAddressLocked starts the current daemon while the
+// caller holds LockDaemonManager for the same state root.
+func StartDetachedWithAPIListenAddressLocked(executable, stateRoot string, password []byte, apiListenAddress string) (DaemonInfo, error) {
+	return startDetached(executable, stateRoot, password, apiListenAddress, false, true)
+}
+
+// StartLegacyDetached starts a historical AACT release that exposes the
+// standalone __vault-daemon entrypoint instead of the multi-service daemon.
+func StartLegacyDetached(executable, stateRoot string, password []byte, apiListenAddress string) (DaemonInfo, error) {
+	return startDetached(executable, stateRoot, password, apiListenAddress, true, false)
+}
+
+// StartLegacyDetachedLocked starts a historical standalone vault daemon while
+// the caller holds LockDaemonManager for the same state root.
+func StartLegacyDetachedLocked(executable, stateRoot string, password []byte, apiListenAddress string) (DaemonInfo, error) {
+	return startDetached(executable, stateRoot, password, apiListenAddress, true, true)
+}
+
+func startDetached(executable, stateRoot string, password []byte, apiListenAddress string, legacy, managerLocked bool) (DaemonInfo, error) {
 	if executable == "" {
 		return DaemonInfo{}, errors.New("AACT executable path is required")
 	}
@@ -77,8 +122,13 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 	if err := os.Chmod(root, 0700); err != nil {
 		return DaemonInfo{}, err
 	}
-	bindAddress, err := vaultAPIListenAddress()
-	if err != nil {
+	bindAddress := apiListenAddress
+	if bindAddress == "" {
+		bindAddress, err = vaultAPIListenAddress()
+		if err != nil {
+			return DaemonInfo{}, err
+		}
+	} else if err := validateAPIListenAddress(bindAddress); err != nil {
 		return DaemonInfo{}, err
 	}
 	controlToken, err := ControlTokenForVault(filepath.Join(root, "credentials.kdbx"), password)
@@ -86,12 +136,25 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 		return DaemonInfo{}, err
 	}
 	defer clear(controlToken)
-	unlock, err := lockVaultFile(filepath.Join(root, "daemon-manager"))
-	if err != nil {
-		return DaemonInfo{}, err
+	if !managerLocked {
+		unlock, err := lockVaultFile(filepath.Join(root, "daemon-manager"))
+		if err != nil {
+			return DaemonInfo{}, err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	infoPath := filepath.Join(root, daemonInfoFilename)
+	logPath := filepath.Join(root, daemon.LogFilename)
+	var args []string
+	var bootstrap any
+	if legacy {
+		infoPath = filepath.Join(root, daemon.LegacyInfoFilename)
+		logPath = filepath.Join(root, daemon.LegacyLogFilename)
+		args = []string{"__vault-daemon"}
+	} else {
+		args = []string{"__aact-daemon"}
+	}
+	executableValidated := false
 	if info, err := readDaemonInfoState(root); err == nil {
 		if daemonHealthy(info) {
 			updated, routeErr := EnsureContainerAPIReachable(info, controlToken)
@@ -110,6 +173,10 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 			if !errors.Is(routeErr, errContainerRouteEndpointUnsupported) && !(errors.As(routeErr, &statusErr) && statusErr.statusCode == http.StatusNotFound) {
 				return DaemonInfo{}, routeErr
 			}
+			if err := ensureCurrentManagedExecutable(executable); err != nil {
+				return DaemonInfo{}, err
+			}
+			executableValidated = true
 			// Older daemons have no authenticated route-management endpoint. Stop
 			// that process with the durable control token and start the current
 			// implementation using the new host-reachable listener policy.
@@ -122,28 +189,91 @@ func StartDetached(executable, stateRoot string, password []byte) (DaemonInfo, e
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return DaemonInfo{}, err
 	}
-	serviceBootstrap := daemonBootstrap{StateRoot: root, Password: append([]byte(nil), password...), ControlToken: append([]byte(nil), controlToken...), APIListenAddress: bindAddress}
-	servicePayload, err := json.Marshal(serviceBootstrap)
-	clear(serviceBootstrap.Password)
-	clear(serviceBootstrap.ControlToken)
-	if err != nil {
-		return DaemonInfo{}, err
+	if !executableValidated {
+		if err := ensureCurrentManagedExecutable(executable); err != nil {
+			return DaemonInfo{}, err
+		}
 	}
-	bootstrap := daemon.Bootstrap{Services: []daemon.ServiceConfig{{Name: "vault", Configuration: servicePayload}}}
+	serviceBootstrap := daemonBootstrap{StateRoot: root, Password: append([]byte(nil), password...), ControlToken: append([]byte(nil), controlToken...), APIListenAddress: bindAddress}
+	var servicePayload []byte
+	if legacy {
+		bootstrap = serviceBootstrap
+	} else {
+		servicePayload, err = json.Marshal(serviceBootstrap)
+		if err != nil {
+			clear(serviceBootstrap.Password)
+			clear(serviceBootstrap.ControlToken)
+			return DaemonInfo{}, err
+		}
+		bootstrap = daemon.Bootstrap{Services: []daemon.ServiceConfig{{Name: "vault", Configuration: servicePayload}}}
+	}
 	info, err := daemon.StartProcess(daemon.ProcessSpec{
 		Executable:  executable,
-		Args:        []string{"__aact-daemon"},
+		Args:        args,
 		StateRoot:   root,
 		InfoPath:    infoPath,
-		LogPath:     filepath.Join(root, daemon.LogFilename),
+		LogPath:     logPath,
 		Bootstrap:   bootstrap,
 		Environment: daemonEnvironment(os.Environ()),
 	})
+	clear(serviceBootstrap.Password)
+	clear(serviceBootstrap.ControlToken)
 	clear(servicePayload)
 	if err != nil {
 		return DaemonInfo{}, err
 	}
 	return info, nil
+}
+
+func ensureCurrentManagedExecutable(executable string) error {
+	resolvedExecutable, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		resolvedExecutable = executable
+	}
+	resolvedExecutable, err = filepath.Abs(resolvedExecutable)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(resolvedExecutable)
+	if name != "aact" && name != "aact.exe" {
+		return nil
+	}
+	bin := filepath.Dir(resolvedExecutable)
+	release := filepath.Dir(bin)
+	releases := filepath.Dir(release)
+	if filepath.Base(bin) != "bin" || filepath.Base(releases) != "releases" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(release, ".archive-sha256")); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	root := filepath.Dir(releases)
+	if runtime.GOOS == "windows" {
+		launcher, err := os.ReadFile(filepath.Join(root, "bin", "aact.cmd"))
+		if err != nil {
+			return fmt.Errorf("read installed AACT launcher before daemon start: %w", err)
+		}
+		wanted := strings.ToLower(filepath.Join("releases", filepath.Base(release), "bin", "aact.exe"))
+		if !strings.Contains(strings.ToLower(strings.ReplaceAll(string(launcher), "\\", "/")), strings.ToLower(strings.ReplaceAll(wanted, "\\", "/"))) {
+			return errors.New("this AACT executable was replaced during an update; start the daemon with the installed launcher")
+		}
+		return nil
+	}
+	launcher := filepath.Join(root, "bin", "aact")
+	current, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
+		return fmt.Errorf("resolve installed AACT launcher before daemon start: %w", err)
+	}
+	current, err = filepath.Abs(current)
+	if err != nil {
+		return err
+	}
+	if current != resolvedExecutable {
+		return errors.New("this AACT executable was replaced during an update; start the daemon with the installed launcher")
+	}
+	return nil
 }
 
 func daemonEnvironment(environment []string) []string {
@@ -241,6 +371,23 @@ func RevokeContainerTokensByID(info DaemonInfo, controlToken []byte, containerID
 
 func StopDetached(info DaemonInfo, controlToken []byte) error {
 	return daemon.Stop(info, controlToken)
+}
+
+// APIListenAddressForDaemon reconstructs the listener address from persisted
+// metadata so an updated daemon can keep serving clients at the same endpoint.
+func APIListenAddressForDaemon(info DaemonInfo) (string, error) {
+	if info.APIListenIP == "" {
+		return "", errors.New("daemon metadata does not record the Vault API listen IP")
+	}
+	api, err := url.Parse(info.APIAddress)
+	if err != nil || api.Port() == "" {
+		return "", errors.New("daemon metadata does not contain a valid Vault API port")
+	}
+	address := net.JoinHostPort(info.APIListenIP, api.Port())
+	if err := validateAPIListenAddress(address); err != nil {
+		return "", err
+	}
+	return address, nil
 }
 
 func ControlTokenForVault(path string, password []byte) ([]byte, error) {
@@ -417,7 +564,7 @@ func RunDetached(parent context.Context, in io.Reader) error {
 	if err := decoder.Decode(&config); err != nil {
 		return fmt.Errorf("read vault daemon bootstrap: %w", err)
 	}
-	return runVaultService(parent, config)
+	return runVaultService(parent, config, true)
 }
 
 func RunService(parent context.Context, raw json.RawMessage) error {
@@ -434,12 +581,17 @@ func RunService(parent context.Context, raw json.RawMessage) error {
 		}
 		return fmt.Errorf("read vault service configuration trailer: %w", err)
 	}
-	return runVaultService(parent, config)
+	return runVaultService(parent, config, false)
 }
 
 const maxVaultBootstrapBytes = 1 << 20
 
-func runVaultService(parent context.Context, config daemonBootstrap) error {
+func runVaultService(parent context.Context, config daemonBootstrap, legacy bool) error {
+	infoFilename := daemonInfoFilename
+	if legacy {
+		infoFilename = daemon.LegacyInfoFilename
+	}
+	infoPath := filepath.Join(config.StateRoot, infoFilename)
 	password := config.Password
 	config.Password = nil
 	defer clear(password)
@@ -492,7 +644,7 @@ func runVaultService(parent context.Context, config daemonBootstrap) error {
 		ControlAddress: "http://" + controlListener.Addr().String(),
 		Services:       []string{"vault", "browser"},
 	}
-	if err := writeDaemonInfo(filepath.Join(config.StateRoot, daemonInfoFilename), info); err != nil {
+	if err := writeDaemonInfo(infoPath, info); err != nil {
 		_ = apiListener.Close()
 		_ = controlListener.Close()
 		return err
@@ -503,14 +655,14 @@ func runVaultService(parent context.Context, config daemonBootstrap) error {
 	if err := host.Register("vault", "/", api); err != nil {
 		_ = apiListener.Close()
 		_ = controlListener.Close()
-		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		_ = os.Remove(infoPath)
 		return err
 	}
 	api.browserService = browsercontroller.NewDockerService(api.BrowserConfiguration)
 	if err := host.Register("browser", "/v1/browser/", api.browserService); err != nil {
 		_ = apiListener.Close()
 		_ = controlListener.Close()
-		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		_ = os.Remove(infoPath)
 		return err
 	}
 	go runBrowserReaper(ctx, api)
@@ -518,11 +670,11 @@ func runVaultService(parent context.Context, config daemonBootstrap) error {
 	if err != nil {
 		_ = apiListener.Close()
 		_ = controlListener.Close()
-		_ = os.Remove(filepath.Join(config.StateRoot, daemonInfoFilename))
+		_ = os.Remove(infoPath)
 		return err
 	}
 	serveErr := make(chan error, 16)
-	network := &apiListenerManager{server: apiServer, certificate: certificate, info: info, infoPath: filepath.Join(config.StateRoot, daemonInfoFilename), listeners: map[string]net.Listener{bindIP: apiListener}, serveErr: serveErr}
+	network := &apiListenerManager{server: apiServer, certificate: certificate, info: info, infoPath: infoPath, listeners: map[string]net.Listener{bindIP: apiListener}, serveErr: serveErr}
 	controlServer := &http.Server{Handler: controlHandler(api, string(controlToken), cancel, network), ReadHeaderTimeout: 5 * time.Second}
 	go func() { serveErr <- controlServer.Serve(controlListener) }()
 	select {
@@ -685,6 +837,19 @@ func vaultAPIListenAddress() (string, error) {
 	return net.JoinHostPort(ip.String(), "0"), nil
 }
 
+func validateAPIListenAddress(address string) error {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid Vault API listen address: %w", err)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	port, portErr := strconv.Atoi(portText)
+	if ip == nil || ip.IsMulticast() || portErr != nil || port < 1 || port > 65535 {
+		return errors.New("invalid Vault API listen address")
+	}
+	return nil
+}
+
 func defaultVaultAPIListenIP(goos string, dockerDesktop, dockerActive bool, gateway net.IP) net.IP {
 	if goos == "linux" && dockerActive && !dockerDesktop && gateway != nil {
 		return append(net.IP(nil), gateway...)
@@ -836,6 +1001,17 @@ func controlHandler(api *API, token string, stop context.CancelFunc, network *ap
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/browser/configurations/") && strings.HasSuffix(r.URL.Path, "/start") && r.Method == http.MethodPost:
+			container := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/browser/configurations/"), "/start")
+			viewerURL, err := api.StartBrowser(r.Context(), container)
+			if err != nil {
+				http.Error(w, "cannot start browser", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(struct {
+				ViewerURL string `json:"viewer_url"`
+			}{ViewerURL: viewerURL})
 		case r.URL.Path == "/container-network" && r.Method == http.MethodPost:
 			var request struct {
 				APIListenAddress string `json:"api_listen_address"`

@@ -12,16 +12,24 @@ import (
 
 var ErrVaultUnlockCanceled = errors.New("vault unlock canceled")
 
-type vaultUnlockFunc func([]byte) error
+type vaultUnlockFunc func([]byte, bool) error
 
 type vaultUnlockResultMsg struct{ err error }
+
+// VaultUnlockWarning reports a non-fatal issue after the vault was unlocked.
+// The unlock screen keeps it visible until the user acknowledges it.
+type VaultUnlockWarning struct{ Message string }
+
+func (e *VaultUnlockWarning) Error() string { return e.Message }
 
 type vaultUnlockModel struct {
 	creating   bool
 	confirming bool
+	saveKey    bool
 	busy       bool
 	done       bool
 	cancelled  bool
+	waitingAck bool
 	password   []rune
 	input      []rune
 	message    string
@@ -39,6 +47,14 @@ func (m *vaultUnlockModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := message.(vaultUnlockResultMsg); ok {
 		m.busy = false
 		if result.err != nil {
+			var warning *VaultUnlockWarning
+			if errors.As(result.err, &warning) {
+				m.clearSecrets()
+				m.done = true
+				m.waitingAck = true
+				m.message = warning.Error()
+				return m, nil
+			}
 			m.clearSecrets()
 			m.confirming = false
 			m.message = "Could not unlock the vault. Check the master password and try again."
@@ -52,12 +68,20 @@ func (m *vaultUnlockModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(32, message.Width)
 	case tea.KeyPressMsg:
+		if m.waitingAck && (message.Code == tea.KeyEnter || message.Code == tea.KeyReturn) {
+			m.waitingAck = false
+			return m, tea.Quit
+		}
 		if message.Code == tea.KeyEscape || (message.Mod == tea.ModCtrl && message.Code == 'c') {
 			m.clearSecrets()
 			m.cancelled = true
 			return m, tea.Quit
 		}
 		if m.busy || m.done || m.cancelled {
+			return m, nil
+		}
+		if message.Mod == tea.ModCtrl && message.Code == 's' {
+			m.saveKey = !m.saveKey
 			return m, nil
 		}
 		switch {
@@ -111,9 +135,10 @@ func (m *vaultUnlockModel) submit() (tea.Model, tea.Cmd) {
 	m.password = nil
 	m.busy = true
 	unlock := m.unlock
+	saveKey := m.saveKey
 	return m, func() tea.Msg {
 		defer clear(password)
-		return vaultUnlockResultMsg{err: unlock(password)}
+		return vaultUnlockResultMsg{err: unlock(password, saveKey)}
 	}
 }
 
@@ -131,10 +156,19 @@ func (m *vaultUnlockModel) View() tea.View {
 		mask = "Unlocking…"
 	}
 	content := fmt.Sprintf("%s\n\n%s\n  %s\n", title, label, mask)
+	choice := "No"
+	if m.saveKey {
+		choice = "Yes"
+	}
+	content += fmt.Sprintf("\nCtrl+S · Save password to OS credential store: %s\n", choice)
 	if m.message != "" {
 		content += "\n" + m.message + "\n"
 	}
-	content += "\nEnter to continue · Esc to cancel"
+	if m.waitingAck {
+		content += "\nEnter to continue"
+	} else {
+		content += "\nEnter to continue · Esc to cancel"
+	}
 	if m.creating {
 		content += "\nA new vault is saved in AACT state."
 	}

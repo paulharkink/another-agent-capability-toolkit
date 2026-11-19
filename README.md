@@ -19,6 +19,15 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.7.4
 ```
 
+On Windows PowerShell, use the PowerShell installer:
+
+```powershell
+$script = Join-Path $env:TEMP 'aact-install.ps1'
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.ps1' -OutFile $script
+& $script -Version 0.7.3
+Remove-Item $script
+```
+
 ## Use the manager
 
 The [interactive TUI design mock](docs/demo/index.html) shows the intended
@@ -30,10 +39,40 @@ can be served by GitHub Pages when the design is ready to publish.
 ```sh
 aact                         # editable terminal menus
 aact version
+aact version list
+aact version upgrade
+aact version install 0.7.0
 aact catalog --json
 aact agents
 aact settings
 ```
+
+The same manager commands work in PowerShell:
+
+```powershell
+aact
+aact version
+aact version list
+aact version upgrade
+aact version install 0.7.0
+aact catalog --json
+aact agents
+aact settings
+```
+
+`aact version` and `aact --version` print the installed build version. Version
+list, upgrade, and install query the GitHub Releases API for stable releases;
+there is no offline release catalog. The TUI checks for a newer stable version
+in the background and continues normally if that request fails. Explicit
+version commands report a lookup error when GitHub is unavailable. Install and
+upgrade verify the release asset SHA-256 digest, then use the managed installer
+and its `checksums.txt` verification before activation.
+Direct installer runs use the installed AACT lifecycle controller when
+available, so an active daemon is stopped before replacement and restarted at
+the same Vault API endpoint. Releases without a daemon leave the prior daemon
+stopped. When an older installed controller cannot supervise an update, the
+installer reports that a daemon-capable target remains stopped and needs a
+manual restart.
 
 The terminal home has a Capabilities pane and a related MCP profiles pane.
 Use Tab or the arrow keys to change panes, Up/Down to select, Enter for item
@@ -68,13 +107,15 @@ aact install non-interactive-ready-planning --agent codex \
 ```
 
 MCP adapters currently include Codex, Claude Code, Copilot CLI, OpenCode,
-Copilot IntelliJ, and generic manual configuration. JetBrains AI Assistant's
+Copilot IntelliJ, and generic manual configuration. Generic manual configuration
+produces a configuration artifact for the user to apply; it does not edit an
+unrecognized agent's files. JetBrains AI Assistant's
 installed configuration uses IDE XML, so its former JSON writer is disabled
 until an XML adapter is verified. Select `--agent` more than
 once to target several agents. `--agent-home ID=PATH` assigns separate homes;
 a single shared path applies to all selected agents. Copilot IntelliJ requires
 opening Copilot Chat and selecting **Add MCP Tools** to create its configuration
-first. Generic MCP produces a manual configuration artifact and reports its path.
+first. Generic MCP reports the path to its manual configuration artifact.
 The skill-only `all` destination installs under `~/.agents/skills`; it cannot
 be used for an MCP registration.
 
@@ -171,15 +212,71 @@ Windows. Override with `--state-dir` or `AACT_STATE_DIR`. Installed releases and
 manager state are separate: updating the launcher retains resources that existing
 managed skill links still reference.
 
-AACT's daemon hosts the KeePass-backed secret service. The daemon continues
-running after the manager exits; use `aact daemon status` and `aact daemon stop`
-to inspect or stop it. The older `aact vault` commands remain available.
+AACT has a daemon that hosts the KeePass-backed secret service. Use
+`aact daemon status` and `aact daemon stop` to inspect or stop it. The older
+`aact vault` commands remain available. AACT does not currently restart the
+daemon automatically after it exits. The lifecycle without a usable OS
+credential store is also not implemented; commands that need the vault may
+fall back to an interactive master-password prompt, and noninteractive use
+requires a configured password or a usable saved credential.
 
 AACT normally asks for the vault master password interactively. To supply it
 without a prompt, set either `AACT_VAULT_PASSWORD_FILE` to a readable file path
 or `AACT_VAULT_PASSWORD` to the password. Set only one. AACT removes one final
 newline from a password file and does not pass these variables to capability
 subprocesses. The same password must be used to open an existing vault.
+
+AACT can optionally use an OS credential store through a script hook. The hook
+supports only `get` and `set` operations for the vault password; it does not
+manage daemon lifecycle or recover a password the OS store cannot return. When
+no password environment override is set, AACT tries a saved vault password on
+each unlock; there is no 15-minute cooldown. A missing, unavailable, or
+invalid saved credential falls back to the master-password prompt. Saving
+remains opt-in:
+after a successful manual unlock, the TUI offers the `Ctrl+S` toggle and
+interactive CLI commands ask whether to save the password. Linux needs
+`secret-tool` and an available Secret Service session for this option.
+
+AACT does not currently apply a cooldown to repeated manual password attempts.
+The planned password-attempt cooldown and keyring-independent daemon lifecycle
+are not implemented.
+
+The bundled Windows script uses the Windows Runtime Credential Locker through
+the PowerShell 5.1 WinRT type projection supplied by Windows; it needs no
+downloaded module or compiled helper. Windows Credential Locker supports up to
+20 credentials per app. If WinRT access is unavailable, AACT uses the normal
+password prompt. WSL invokes the same Windows PowerShell script and Credential
+Locker for the current Windows user when C: is mounted at `/mnt/c`; it fails
+closed if that trusted system path cannot be confirmed. Nonstandard drive or
+mount layouts can use a custom absolute-path hook. macOS uses the `security` command and
+Linux uses `secret-tool` with an available Secret Service session. To use
+another store, configure an absolute-path hook with
+`AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`, `.bat`, and executable
+hooks are supported. Hook secrets travel over stdin and stdout, not process
+arguments or environment variables.
+
+To use a custom connector, set `AACT_VAULT_CREDENTIAL_HOOK` to an absolute
+script path. AACT sends a versioned JSON request to the script's standard input
+and reads one JSON response from standard output. The request supports `get`
+and `set`; secrets are carried only through these pipes, never as command-line
+arguments or environment variables. The connector protocol and bundled scripts
+are under `scripts/keyring/`.
+
+## Log in to an MCP
+
+MCPs can declare a Login action in their Capability Pack. In the TUI, open the
+capability instance, select the relevant MCP profile, and choose **Login** in
+its Runtime actions. Save valid inputs first. A host-side Login action can run
+before the MCP starts; a container-side action requires that MCP to be
+running. AACT waits for an authentication health check only when the pack
+declares one. The login method and provider-specific steps belong to the
+Capability Pack.
+
+For an MCP that declares a browser login helper, start that MCP first, then
+choose **Log in to …** under Runtime actions. AACT starts its dedicated browser
+helper and returns the helper's viewer URL for accessing the login session.
+This is separate from an MCP's declared Login command. No 15-minute login
+cooldown is currently enforced.
 
 ## Build and verify from source
 

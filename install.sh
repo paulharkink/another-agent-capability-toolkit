@@ -5,6 +5,7 @@ VERSION=${AACT_VERSION:-}
 LOCAL_ARCHIVE=
 BASE=${AACT_DOWNLOAD_BASE:-https://github.com/paulharkink/another-agent-capability-toolkit/releases/download}
 ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
+FALLBACK_CONTROLLER_ROOT=${AACT_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/aact}
 MIGRATE_USER_BIN=1
 [ "${AACT_INSTALL_DIR+x}" != x ] || MIGRATE_USER_BIN=0
 PRINT_TARGET=0
@@ -21,6 +22,7 @@ while [ "$#" -gt 0 ]; do
     *) printf 'Unknown installer argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
+CONTROLLER_ROOT=$ROOT
 system=${AACT_OS:-$(uname -s)}
 case "$system" in Darwin|darwin|macos) platform=darwin ;; Linux|linux) platform=linux ;; MINGW*|MSYS*|CYGWIN*|Windows_NT|windows) platform=windows ;; *) printf 'Unsupported operating system: %s\n' "$system" >&2; exit 1 ;; esac
 machine=${AACT_ARCH:-$(uname -m)}
@@ -47,6 +49,7 @@ else
   [ -n "$VERSION" ] || { echo 'Specify --version or --local-archive' >&2; exit 1; }
   case "$VERSION" in ''|*[!A-Za-z0-9._-]*|.|..) echo 'Invalid release version' >&2; exit 1 ;; esac
 fi
+LIFECYCLE_FALLBACK=0
 filename="aact_${VERSION}_${platform}_${arch}.${extension}"
 download() {
   if command -v curl >/dev/null 2>&1; then curl --fail --location --silent --show-error "$1" -o "$2"
@@ -119,6 +122,101 @@ binary=aact
 [ "$platform" != windows ] || binary=aact.exe
 [ -f "$work/tree/bin/$binary" ] && [ -d "$work/tree/packages" ] || { echo 'Release archive is incomplete' >&2; exit 1; }
 printf '%s\n' "$expected" > "$work/tree/.archive-sha256"
+if [ "${AACT_INSTALLER_LIFECYCLE:-}" != 1 ]; then
+  cp "$checksum_source" "$work/checksums.txt"
+  staged="$work/tree/bin/$binary"
+  managed_controller=
+  managed_script=
+  find_managed_controller() {
+    candidate=$1
+    [ -d "$candidate" ] || return 0
+    candidate=$(CDPATH= cd -P "$candidate" 2>/dev/null && pwd -P) || return 0
+    candidate_launcher="$candidate/bin/aact"
+    [ -x "$candidate_launcher" ] || return 0
+    link=$(readlink "$candidate_launcher" 2>/dev/null || true)
+    [ -n "$link" ] || return 0
+    case "$link" in /*) resolved=$link ;; *) resolved="$candidate/bin/$link" ;; esac
+    resolved_dir=$(CDPATH= cd -P "$(dirname "$resolved")" 2>/dev/null && pwd -P) || return 0
+    resolved="$resolved_dir/$(basename "$resolved")"
+    case "$resolved" in "$candidate"/releases/*/bin/aact) ;; *) return 0 ;; esac
+    release_dir=$(dirname "$(dirname "$resolved")")
+    [ -f "$release_dir/.archive-sha256" ] || return 0
+    marker=$(cat "$release_dir/.archive-sha256" 2>/dev/null || true)
+    [ "${#marker}" = 64 ] || return 0
+    case "$marker" in *[!a-fA-F0-9]*) return 0 ;; esac
+    managed_controller=$resolved
+    managed_script=
+    [ ! -f "$release_dir/install.sh" ] || managed_script="$release_dir/install.sh"
+  }
+  find_managed_controller "$CONTROLLER_ROOT"
+  root_controller=$managed_controller
+  root_script=$managed_script
+  root_supports_lifecycle=0
+  if [ -n "$root_controller" ] && [ "$("$root_controller" __installer-lifecycle --probe 2>/dev/null || true)" = aact-installer-lifecycle-v1 ] && [ -n "$root_script" ]; then root_supports_lifecycle=1; fi
+  fallback_controller=
+  fallback_script=
+  fallback_supports_lifecycle=0
+  if [ "$FALLBACK_CONTROLLER_ROOT" != "$CONTROLLER_ROOT" ]; then
+    find_managed_controller "$FALLBACK_CONTROLLER_ROOT"
+    fallback_controller=$managed_controller
+    fallback_script=$managed_script
+    if [ -n "$fallback_controller" ] && [ -n "$fallback_script" ] && [ "$("$fallback_controller" __installer-lifecycle --probe 2>/dev/null || true)" = aact-installer-lifecycle-v1 ]; then fallback_supports_lifecycle=1; fi
+  fi
+  managed_controller=$root_controller
+  managed_script=$root_script
+  current_lifecycle_controller=
+  current_lifecycle_script=
+  if [ "$root_supports_lifecycle" = 1 ]; then
+    current_lifecycle_controller=$root_controller
+    current_lifecycle_script=$root_script
+  elif [ "$fallback_supports_lifecycle" = 1 ]; then
+    current_lifecycle_controller=$fallback_controller
+    current_lifecycle_script=$fallback_script
+  fi
+  lifecycle_controller=
+  lifecycle_script=
+  if [ -x "$staged" ] && [ "$("$staged" __installer-lifecycle --probe 2>/dev/null || true)" = aact-installer-lifecycle-v1 ]; then
+    lifecycle_controller=$staged
+    if [ -f "$work/tree/install.sh" ]; then lifecycle_script="$work/tree/install.sh"; else lifecycle_script=$current_lifecycle_script; fi
+  elif [ -n "$current_lifecycle_controller" ]; then
+    lifecycle_controller=$current_lifecycle_controller
+    lifecycle_script=$current_lifecycle_script
+  fi
+  if [ -n "$lifecycle_controller" ] && [ -n "$lifecycle_script" ]; then
+    set -- --version "$VERSION" --local-archive "$work/$filename"
+    [ "$MIGRATE_USER_BIN" = 1 ] || set -- "$@" --install-dir "$ROOT"
+    [ "$FORCE" = 0 ] || set -- "$@" --force
+    "$lifecycle_controller" __installer-lifecycle --run "$lifecycle_script" --install-dir "$ROOT" -- "$@"
+    exit $?
+  fi
+  if [ -n "$root_controller" ]; then
+    managed_controller=$root_controller
+  else
+    managed_controller=$fallback_controller
+  fi
+  if [ -n "$managed_controller" ]; then
+    status=$("$managed_controller" daemon status 2>&1 || true)
+    case "$status" in *"running at "*) LIFECYCLE_FALLBACK=1; stop_command=daemon ;; esac
+    if [ "$LIFECYCLE_FALLBACK" = 0 ]; then
+      status=$("$managed_controller" vault status 2>&1 || true)
+      case "$status" in *"running at "*) LIFECYCLE_FALLBACK=1; stop_command=vault ;; esac
+    fi
+    case "$VERSION" in 0.[0-4].*|0.5.[0-9]|0.5.1[0-4]) target_has_daemon=0 ;; *) target_has_daemon=1 ;; esac
+    if [ "$LIFECYCLE_FALLBACK" = 1 ] && [ "$target_has_daemon" = 1 ]; then
+      echo 'A running daemon cannot be safely updated by this installer/controller combination; install was not started.' >&2
+      exit 1
+    fi
+    if [ "$LIFECYCLE_FALLBACK" = 1 ]; then
+      if [ -t 0 ]; then
+        "$managed_controller" "$stop_command" stop
+      elif ( : </dev/tty ) 2>/dev/null; then
+        "$managed_controller" "$stop_command" stop </dev/tty
+      else
+        "$managed_controller" "$stop_command" stop
+      fi || { echo 'Could not stop the running AACT daemon; install was not started.' >&2; exit 1; }
+    fi
+  fi
+fi
 if [ -e "$release" ]; then
   existing_hash_file="$release/.archive-sha256"
   if [ -f "$existing_hash_file" ] && [ "$(cat "$existing_hash_file")" = "$expected" ]; then
@@ -317,6 +415,9 @@ if [ "$platform" != windows ] && [ "$MIGRATE_USER_BIN" = 1 ]; then
 fi
 printf 'Installed AACT %s (%s/%s) at %s\n' "$VERSION" "$platform" "$arch" "$release"
 case ":${PATH:-}:" in *":$ROOT/bin:"*) ;; *) printf 'Add %s to PATH to run aact. Your shell profiles were not modified.\n' "$ROOT/bin" ;; esac
+if [ "$LIFECYCLE_FALLBACK" = 1 ]; then
+  printf 'Installed AACT %s without a daemon; the previous daemon remains stopped and Vault-dependent running MCPs are disconnected.\n' "$VERSION" >&2
+fi
 release_committed=1
 if [ -n "$release_backup" ] && [ -d "$release_backup" ]; then
   if ! rm -rf "$release_backup"; then

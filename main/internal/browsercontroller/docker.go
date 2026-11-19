@@ -260,6 +260,41 @@ func (d DockerBrowser) StopBrowser(ctx context.Context) error {
 	return d.stopBrowser(ctx, false)
 }
 
+// BrowserRunning reports whether the registered AACT helper is currently open.
+// It never creates or starts the helper, so credential retries can preserve an
+// interactive login session.
+func (d DockerBrowser) BrowserRunning(ctx context.Context) (bool, error) {
+	if err := ValidateAccessConfig(d.AccessConfigJSON); err != nil {
+		return false, err
+	}
+	name := d.name()
+	if !containerNamePattern.MatchString(name) || d.Commands == nil {
+		return false, errors.New("browser container configuration is unavailable")
+	}
+	names, err := d.Commands.Run(ctx, []string{"container", "ls", "--all", "--filter", "name=^/" + name + "$", "--format", "{{.Names}}"})
+	if err != nil {
+		return false, errors.New("could not inspect the managed browser container")
+	}
+	if strings.TrimSpace(string(names)) == "" {
+		return false, nil
+	}
+	if strings.TrimSpace(string(names)) != name {
+		return false, errors.New("browser container name is ambiguous")
+	}
+	state, err := d.inspect(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if !d.owned(state) || state.Config.Labels["org.aact.browser-authentication-helper"] != "1" || state.Config.Labels["org.aact.browser-access-controller"] != "1" || state.Config.Labels["aact.browser-controller.access-config-sha256"] != accessConfigDigest(d.AccessConfigJSON) {
+		return false, errors.New("browser container configuration changed")
+	}
+	storedStartupDigest, hasStartupDigest := state.Config.Labels["aact.browser-controller.startup-url-sha256"]
+	if (hasStartupDigest && storedStartupDigest != startupURLDigest(d.StartupURL)) || (!hasStartupDigest && d.StartupURL != "") {
+		return false, errors.New("browser startup configuration changed")
+	}
+	return state.State.Running, nil
+}
+
 // RemoveBrowser removes only the verified helper container, retaining its volume.
 func (d DockerBrowser) RemoveBrowser(ctx context.Context) error {
 	return d.stopBrowser(ctx, true)
