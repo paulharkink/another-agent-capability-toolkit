@@ -6,9 +6,13 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
+from urllib.parse import urlparse, quote
 from base64 import b64decode
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,7 +26,7 @@ from starlette.responses import JSONResponse
 from config import ClusterProfile, DatabaseProfile, TenantProfile, load_profile, materialize_kubeconfig, validate_selections
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from kubernetes_auth import resolve_runtime_kubeconfig, start_token_renewal
+from kubernetes_auth import resolve_runtime_kubeconfig, start_token_renewal, prepare_openshift_auth
 from tekton_tools import register_tekton_tools
 
 TARGET = os.environ.get("CLUSTER_INSPECTOR_TARGET", "unknown")
@@ -33,6 +37,46 @@ CONNECT_TIMEOUT_SECONDS = 10
 STATEMENT_TIMEOUT_SECONDS = 60
 credentials: dict[str, str] = {}
 credential_errors: dict[str, str] = {}
+_refresh_lock = threading.Lock()
+VAULT_HANDOFF_PATH = Path("/run/aact/vault.json")
+
+def _vault_password() -> str | None:
+    try:
+        handoff = json.loads(VAULT_HANDOFF_PATH.read_text())
+        address = handoff["api_address"].rstrip("/")
+        parsed = urlparse(address)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        context = ssl.create_default_context(cadata=handoff["certificate"])
+        request = urllib.request.Request(address + "/v1/private-inputs/" + quote("password", safe=""), headers={"Authorization": "Bearer " + handoff["token"]})
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirect())
+        with opener.open(request, timeout=10) as response:
+            value = json.loads(response.read(1024 * 1024)).get("value")
+        return value if isinstance(value, str) and value else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+def _refresh_openshift(failed_config: bytes | None = None) -> bool:
+    if PROFILE is None:
+        return False
+    state = Path(os.environ.get("CLUSTER_INSPECTOR_STATE", "/state"))
+    credential = state / "kubeconfig"
+    with _refresh_lock:
+        try:
+            if json.loads((state / "auth.json").read_text()).get("mode") != "openshift":
+                return False
+            if failed_config is not None and credential.read_bytes() != failed_config:
+                return True
+            password = _vault_password()
+            if not password:
+                return False
+            result = prepare_openshift_auth(state, credential, PROFILE.api_server, PROFILE.cluster.get("ca_data"), PROFILE.cluster.get("login_username", ""), password, PROFILE.cluster.get("verify_x509_strict", True))
+            return result.status == "valid"
+        except (OSError, ValueError, TypeError):
+            return False
 def initialize_target(config_path: str | None, selections: str) -> tuple[ClusterProfile | None, set[str]]:
     profile = load_profile(Path(config_path)) if config_path else None
     chosen = validate_selections(profile, list(filter(None, selections.split(",")))) if profile else set()
@@ -106,6 +150,10 @@ def _failure(stderr: str) -> ValueError:
 
 def _kubectl(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
     try:
+        failed_config = Path(os.environ.get("KUBECONFIG", "")).read_bytes()
+    except OSError:
+        failed_config = None
+    try:
         result = subprocess.run(
             ["kubectl", *arguments],
             capture_output=True,
@@ -118,6 +166,14 @@ def _kubectl(arguments: list[str], timeout: int = REQUEST_TIMEOUT_SECONDS) -> st
     except OSError:
         raise ValueError("kubectl is unavailable.") from None
     if result.returncode:
+        detail = result.stderr.lower()
+        if ("unauthorized" in detail or "provide credentials" in detail) and _refresh_openshift(failed_config):
+            try:
+                result = subprocess.run(["kubectl", *arguments], capture_output=True, check=False, text=True, timeout=timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                raise ValueError("Kubernetes request failed after authentication renewal.") from None
+            if not result.returncode:
+                return result.stdout
         raise _failure(result.stderr)
     return result.stdout
 
@@ -140,7 +196,7 @@ def _require_session() -> dict[str, str] | None:
     return None
 
 
-def _has_authenticated_identity() -> bool:
+def _has_authenticated_identity(allow_refresh: bool = True) -> bool:
     try:
         identity = _kubectl_json(["auth", "whoami", "--output=json"], timeout=10)
     except Exception:
@@ -158,9 +214,12 @@ def _has_authenticated_identity() -> bool:
         return False
     if any(not isinstance(group, str) for group in groups):
         return False
-    return normalized_username != "system:anonymous" and not any(
+    authenticated = normalized_username != "system:anonymous" and not any(
         group.strip() == "system:unauthenticated" for group in groups
     )
+    if not authenticated and allow_refresh and _refresh_openshift():
+        return _has_authenticated_identity(False)
+    return authenticated
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -348,21 +407,31 @@ def _database_transport(profile: DatabaseProfile) -> Iterator[tuple[str, int]]:
 @contextmanager
 def _port_forward(namespace: str, service: str, port: int) -> Iterator[tuple[str, int]]:
     local_port = _free_port()
-    process = subprocess.Popen(["kubectl", "port-forward", "--address", "127.0.0.1", "--namespace", namespace, f"service/{service}", f"{local_port}:{port}"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
-        deadline = time.monotonic() + CONNECT_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            if process.poll() is not None: raise ValueError("Database transport could not be established.")
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                probe.settimeout(.2)
-                if probe.connect_ex(("127.0.0.1", local_port)) == 0:
-                    yield "127.0.0.1", local_port; return
-            time.sleep(.05)
-        raise ValueError("Database transport timed out.")
-    finally:
-        process.terminate()
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired: process.kill(); process.wait()
+        failed_config = Path(os.environ.get("KUBECONFIG", "")).read_bytes()
+    except OSError:
+        failed_config = None
+    for attempt in range(2):
+        process = subprocess.Popen(["kubectl", "port-forward", "--address", "127.0.0.1", "--namespace", namespace, f"service/{service}", f"{local_port}:{port}"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + CONNECT_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    detail = process.stderr.read().lower() if process.stderr else ""
+                    if attempt == 0 and ("unauthorized" in detail or "provide credentials" in detail) and _refresh_openshift(failed_config):
+                        break
+                    raise ValueError("Database transport could not be established.")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.settimeout(.2)
+                    if probe.connect_ex(("127.0.0.1", local_port)) == 0:
+                        yield "127.0.0.1", local_port; return
+                time.sleep(.05)
+            else:
+                raise ValueError("Database transport timed out.")
+        finally:
+            process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
 
 
 @mcp.tool()

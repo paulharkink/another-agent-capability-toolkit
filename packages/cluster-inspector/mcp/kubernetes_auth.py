@@ -314,6 +314,41 @@ def prepare_token_auth(state_directory: Path, credential_path: Path, api_server:
     return check
 
 
+def prepare_openshift_auth(state_directory: Path, credential_path: Path, api_server: str, ca_data: str | None, username: str, password: str, verify_x509_strict: bool = True) -> AuthCheck:
+    state, credential = _ensure_target_path(state_directory, credential_path)
+    _validate_api(api_server)
+    if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password or "\n" in password or "\r" in password:
+        raise ValueError("OpenShift username and password are required.")
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix=".openshift-login-", dir=state) as directory:
+        temporary = Path(directory)
+        candidate = temporary / "kubeconfig"
+        command = ["oc", "login", api_server, "--username", username, "--kubeconfig", str(candidate)]
+        if ca_data:
+            ca_file = temporary / "ca.crt"
+            try:
+                ca_file.write_bytes(base64.b64decode(ca_data, validate=True))
+            except ValueError:
+                raise ValueError("Invalid certificate authority data") from None
+            command += ["--certificate-authority", str(ca_file)]
+        try:
+            result = subprocess.run(command, input=password + "\n", capture_output=True, text=True, timeout=60)
+            if result.returncode:
+                return AuthCheck("invalid", None, "OpenShift login failed; check the username, password, and cluster access.")
+            config = _load_kubeconfig(candidate)
+            context = next(item["context"] for item in config["contexts"] if item["name"] == config["current-context"])
+            cluster = next(item["cluster"] for item in config["clusters"] if item["name"] == context["cluster"])
+            user = next(item["user"] for item in config["users"] if item["name"] == context["user"])
+            if cluster.get("server", "").rstrip("/") != api_server.rstrip("/") or not isinstance(user.get("token"), str) or not user["token"]:
+                raise ValueError("OpenShift login returned an invalid target credential.")
+            check = prepare_token_auth(state, credential, api_server, ca_data, user["token"], verify_x509_strict)
+            if check.status == "valid":
+                _marker(state, "openshift", check.username or username)
+            return check
+        except (OSError, subprocess.SubprocessError, KeyError, StopIteration, TypeError):
+            return AuthCheck("unknown", None, "OpenShift login could not be completed.")
+
+
 def prepare_kubeconfig_auth(state_directory: Path, credential_path: Path, source: Path, api_server: str) -> AuthCheck:
     state, credential = _ensure_target_path(state_directory, credential_path)
     username = copy_kubeconfig(source, credential, api_server)
@@ -365,6 +400,9 @@ def load_cached_auth(state_directory: Path, credential_path: Path, api_server: s
         try:
             marker = json.loads((state / "auth.json").read_text())
             if marker.get("username") == result.username:
+                return result
+            if marker.get("mode") == "openshift":
+                _marker(state, "openshift", result.username)
                 return result
         except (OSError, ValueError, AttributeError):
             pass

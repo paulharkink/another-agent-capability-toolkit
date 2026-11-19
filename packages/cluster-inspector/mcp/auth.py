@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import sys
 from config import load_profile, validate_selections
-from kubernetes_auth import load_cached_auth, prepare_token_auth, prepare_kubeconfig_auth
+from kubernetes_auth import load_cached_auth, prepare_token_auth, prepare_kubeconfig_auth, prepare_openshift_auth
 
 
 def prepare_auth(request: dict) -> dict:
@@ -39,10 +39,22 @@ def prepare_auth(request: dict) -> dict:
         check = prepare_token_auth(state, credential, profile.api_server, ca, token, strict)
     elif request.get("action") == "authenticate" and inputs.get("kubeconfig"):
         check = prepare_kubeconfig_auth(state, credential, Path(inputs["kubeconfig"]), profile.api_server)
+    elif request.get("action") == "authenticate" and inputs.get("password"):
+        check = prepare_openshift_auth(state, credential, profile.api_server, ca, inputs.get("username", ""), inputs["password"], strict)
     elif request.get("action") == "authenticate":
-        raise ValueError("Enter a Token or select a source kubeconfig before authenticating.")
+        raise ValueError("Enter a Token or select a source kubeconfig, or provide an OpenShift username and password, before authenticating.")
     else:
+        try:
+            mode = json.loads((state / "auth.json").read_text()).get("mode")
+        except (OSError, ValueError, AttributeError):
+            mode = None
         check = load_cached_auth(state, credential, profile.api_server, ca, strict)
+        if inputs.get("password") and (check.status == "invalid" or mode != "openshift"):
+            check = prepare_openshift_auth(state, credential, profile.api_server, ca, inputs.get("username", ""), inputs["password"], strict)
+        elif inputs.get("token") and mode != "token":
+            check = prepare_token_auth(state, credential, profile.api_server, ca, inputs["token"], strict)
+        elif inputs.get("kubeconfig") and mode != "kubeconfig":
+            check = prepare_kubeconfig_auth(state, credential, Path(inputs["kubeconfig"]), profile.api_server)
     result = {"auth_required": check.status != "valid"}
     if check.diagnostic:
         result["diagnostic"] = check.diagnostic

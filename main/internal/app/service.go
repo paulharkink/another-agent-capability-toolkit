@@ -585,20 +585,29 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 			spec.SecretEnv[name] = value
 		}
 	}
-	if len(p.MCP.VaultSecretEnvInputs) > 0 {
+	vaultInputs := p.MCP.VaultSecretEnvInputs
+	if p.MCP.VaultAuthEnv == "" {
+		vaultInputs = map[string]string{}
+		for envName, inputName := range p.MCP.VaultSecretEnvInputs {
+			if value, ok := values[inputName].(string); ok && strings.TrimSpace(value) != "" {
+				vaultInputs[envName] = inputName
+			}
+		}
+	}
+	if len(vaultInputs) > 0 {
 		parentKey, err := s.Store.ResolveInstanceKey(profile.Ref.PackID, p.ID, profile.Ref.Name)
 		if err != nil {
 			return mcp.Instance{}, err
 		}
 		spec.VaultNamespaceID = parentKey.ID()
 		spec.VaultHandoffEnabled = true
-		spec.VaultSecretInputs = p.MCP.VaultSecretEnvInputs
+		spec.VaultSecretInputs = vaultInputs
 		revision, err := s.Store.SecretInputsRevision(parentKey)
 		if err != nil {
 			return mcp.Instance{}, err
 		}
 		spec.VaultSecretRevision = revision
-		for envName, inputName := range p.MCP.VaultSecretEnvInputs {
+		for envName, inputName := range vaultInputs {
 			if spec.Env == nil {
 				spec.Env = map[string]string{}
 			}
@@ -668,7 +677,22 @@ func (s *Service) startConfigurationProfile(ctx context.Context, p catalog.Packa
 		if result.Runtime == nil {
 			return mcp.Instance{}, operationFailure{step: "prepare", err: errors.New("prepare action did not return runtime settings")}
 		}
+		vaultNamespace, vaultEnabled := spec.VaultNamespaceID, spec.VaultHandoffEnabled
+		vaultInputs, vaultRevision := spec.VaultSecretInputs, spec.VaultSecretRevision
+		vaultEnv := spec.Env
 		spec = *result.Runtime
+		if vaultEnabled {
+			spec.VaultNamespaceID, spec.VaultHandoffEnabled = vaultNamespace, vaultEnabled
+			spec.VaultSecretInputs, spec.VaultSecretRevision = vaultInputs, vaultRevision
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			for name, value := range vaultEnv {
+				if strings.HasPrefix(name, "AACT_VAULT_SECRET_INPUT_") || name == "AACT_VAULT_AUTH_ENV" {
+					spec.Env[name] = value
+				}
+			}
+		}
 		if preserveImageSelection {
 			spec.Image = selectedImage
 			spec.BuildContext = selectedBuildContext
