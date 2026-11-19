@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
 )
@@ -197,7 +199,9 @@ func TestPublicCLIRejectsMetacharacterBatchHookPath(t *testing.T) {
 		}
 	})
 
-	command := exec.Command(binary, "daemon", "stop")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "daemon", "stop")
 	command.Env = os.Environ()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "interactive terminal") {
