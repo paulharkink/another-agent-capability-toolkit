@@ -765,20 +765,20 @@ func TestPipedInstallerReadsUnlockPasswordFromControllingTerminal(t *testing.T) 
 }
 
 type lockedOutput struct {
-	mu sync.Mutex
-	bytes.Buffer
+	mu     sync.Mutex
+	buffer bytes.Buffer
 }
 
 func (output *lockedOutput) Write(value []byte) (int, error) {
 	output.mu.Lock()
 	defer output.mu.Unlock()
-	return output.Buffer.Write(value)
+	return output.buffer.Write(value)
 }
 
 func (output *lockedOutput) String() string {
 	output.mu.Lock()
 	defer output.mu.Unlock()
-	return output.Buffer.String()
+	return output.buffer.String()
 }
 
 func prepareManagedControllerLayout(t *testing.T, root, binary string) {
@@ -1024,7 +1024,7 @@ func TestDirectInstallerUsesManagedBootstrapForLegacyArchiveInExplicitRoot(t *te
 	if runtime.GOOS == "windows" {
 		archiveName = fmt.Sprintf("aact_0.5.0_windows_%s.zip", versionInstallerArch())
 	}
-	archive := legacyArchiveWithoutInstaller(t, []byte("legacy executable without lifecycle support\n"))
+	archive := legacyArchiveWithoutInstaller(t, mustReadBinary(t, buildLegacyNoopBinary(t)))
 	archivePath := filepath.Join(t.TempDir(), archiveName)
 	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
 		t.Fatal(err)
@@ -1810,20 +1810,6 @@ func TestVersionInstallRejectsMismatchedReleaseDigestBeforeActivation(t *testing
 	}
 }
 
-func buildVersionCommandBinary(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "aact")
-	if runtime.GOOS == "windows" {
-		path += ".exe"
-	}
-	cmd := exec.Command("go", "build", "-ldflags", "-X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/cli.Version=0.9.0 -X=github.com/paulharkink/another-agent-capability-toolkit/main/internal/versioninfo.Version=0.9.0", "-o", path, "./cmd/aact")
-	cmd.Dir = "../../main"
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build aact: %s: %v", output, err)
-	}
-	return path
-}
-
 func cleanTestEnvironment(t *testing.T, environment []string, overrides ...string) []string {
 	t.Helper()
 	keys := map[string]string{}
@@ -1831,7 +1817,7 @@ func cleanTestEnvironment(t *testing.T, environment []string, overrides ...strin
 		parts := strings.SplitN(override, "=", 2)
 		keys[parts[0]] = override
 	}
-	for _, name := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA", "XDG_STATE_HOME", "AACT_INSTALL_DIR", "AACT_STATE_DIR", "AACT_VAULT_PASSWORD", "AACT_VAULT_PASSWORD_FILE", "AACT_VAULT_CREDENTIAL_HOOK", "AACT_VAULT_API_BIND_IP", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "AACT_INSTALLER_LIFECYCLE", "PROCESSOR_ARCHITEW6432", "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+	for _, name := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA", "XDG_STATE_HOME", "AACT_INSTALL_DIR", "AACT_STATE_DIR", "AACT_VAULT_PASSWORD", "AACT_VAULT_PASSWORD_FILE", "AACT_VAULT_CREDENTIAL_HOOK", "AACT_VAULT_API_BIND_IP", "AACT_RELEASE_API_URL", "AACT_INSTALLER_SKIP_USER_PATH", "AACT_INSTALLER_LIFECYCLE", "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
 		if _, set := keys[name]; !set {
 			keys[name] = ""
 		}

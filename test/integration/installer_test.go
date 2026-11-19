@@ -525,6 +525,16 @@ func TestPowerShellInstallerArchitectureMapping(t *testing.T) {
 			t.Fatalf("%s: %q %v", tc.arch, out, err)
 		}
 	}
+	cmd := exec.Command(powerShell(t), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../install.ps1", "-PrintTarget")
+	cmd.Env = cleanTestEnvironment(t, os.Environ())
+	out, err := cmd.CombinedOutput()
+	want := "windows_amd64"
+	if runtime.GOARCH == "arm64" {
+		want = "windows_arm64"
+	}
+	if err != nil || strings.TrimSpace(string(out)) != want {
+		t.Fatalf("runtime architecture fallback: %q %v, want %s", out, err, want)
+	}
 }
 
 func TestInstallerMigratesRecognizedLegacyBinLauncher(t *testing.T) {

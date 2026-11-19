@@ -93,6 +93,7 @@ $architecture = $env:AACT_ARCH
 if (-not $architecture) {
   $architecture = $env:PROCESSOR_ARCHITEW6432
   if (-not $architecture) { $architecture = $env:PROCESSOR_ARCHITECTURE }
+  if (-not $architecture) { $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() }
 }
 switch -Regex ($architecture) {
   '^(AMD64|x86_64|x64)$' { $arch = 'amd64'; break }

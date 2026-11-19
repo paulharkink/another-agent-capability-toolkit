@@ -136,6 +136,9 @@ func daemonControlCredentials(root string, errOut io.Writer, action string) (pas
 		if _, err := fmt.Fprint(prompt, "Vault master password: "); err != nil {
 			clear(password)
 			clear(controlToken)
+			if terminal != nil {
+				return nil, nil, false, fmt.Errorf("%w: %s requires an interactive terminal to unlock the vault", errDaemonCredentialRequiresTerminal, action)
+			}
 			return nil, nil, false, err
 		}
 		password, err = term.ReadPassword(terminalFD)
