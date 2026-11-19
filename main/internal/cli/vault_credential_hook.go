@@ -77,7 +77,7 @@ func credentialHookPath() (string, error) {
 		}
 		return configured, nil
 	}
-	name := "secret-service.sh"
+	name := "linux-secret-service.sh"
 	switch runtime.GOOS {
 	case "darwin":
 		name = "macos.sh"

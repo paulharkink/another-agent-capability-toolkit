@@ -250,7 +250,7 @@ Locker for the current Windows user when C: is mounted at `/mnt/c`; it fails
 closed if that trusted system path cannot be confirmed. Nonstandard drive or
 mount layouts can use a custom absolute-path hook. The macOS shell connector uses
 the built-in `security` and `plutil` commands. The Secret Service connector
-(`secret-service.sh`) uses Python 3 and `secret-tool`, and works with any
+(`linux-secret-service.sh`) uses Python 3 and `secret-tool`, and works with any
 available compatible keyring. To use
 another store, configure an absolute-path hook with
 `AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`, `.bat`, and executable
