@@ -10,9 +10,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
-  $windowsPowerShellModules = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules'
-  $utilityModule = Join-Path (Join-Path $windowsPowerShellModules 'Microsoft.PowerShell.Utility') 'Microsoft.PowerShell.Utility.psd1'
-  if (-not (Test-Path -LiteralPath $utilityModule -PathType Leaf)) { throw "Windows PowerShell utility module is missing: $utilityModule" }
+  $windowsPowerShellModules = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules')
+  $managementModule = [IO.Path]::Combine($windowsPowerShellModules, 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Management.psd1')
+  $utilityModule = [IO.Path]::Combine($windowsPowerShellModules, 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')
+  if (-not [IO.File]::Exists($managementModule)) { throw "Windows PowerShell management module is missing: $managementModule" }
+  if (-not [IO.File]::Exists($utilityModule)) { throw "Windows PowerShell utility module is missing: $utilityModule" }
+  Import-Module -Name $managementModule -ErrorAction Stop
   Import-Module -Name $utilityModule -ErrorAction Stop
 }
 $fallbackControllerInstallDir = if ($env:AACT_INSTALL_DIR) { [IO.Path]::GetFullPath($env:AACT_INSTALL_DIR) } else { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'aact')) }
