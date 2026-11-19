@@ -13,13 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/vault"
 )
 
 func TestDetachedVaultHTTPScopesAndPersistsContainerRevocation(t *testing.T) {
 	const password = "isolated-public-vault-api-password"
-	const namespaceA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const namespaceB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	keyA := state.Key{Source: "public-test", Package: "vault-api", Target: "namespace-a"}
+	keyB := state.Key{Source: "public-test", Package: "vault-api", Target: "namespace-b"}
+	namespaceA := keyA.ID()
+	namespaceB := keyB.ID()
 	root := t.TempDir()
 	vaultPath := filepath.Join(root, "credentials.kdbx")
 	store, err := vault.Open(vaultPath, []byte(password))
@@ -34,32 +37,26 @@ func TestDetachedVaultHTTPScopesAndPersistsContainerRevocation(t *testing.T) {
 			t.Fatalf("seed isolated Vault: %v", err)
 		}
 	}
-	privateInputs, err := json.Marshal(map[string]any{
-		"version": 1,
-		"values":  map[string]string{"allowed_input": "allowed-private-value", "other_input": "out-of-scope-value"},
-	})
+	database, err := state.Open(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open isolated public state store: %v", err)
 	}
-	if err := store.Put(namespaceA, "aact-private-inputs-v1", privateInputs); err != nil {
-		t.Fatalf("seed isolated private inputs: %v", err)
+	database.SetSecretBackend(store)
+	if err := database.SaveSecretInputs(keyA, map[string]any{
+		"allowed_input": "allowed-private-value",
+		"other_input":   "out-of-scope-value",
+	}, nil); err != nil {
+		t.Fatalf("save namespace A private inputs through state API: %v", err)
 	}
-	otherPrivateInputs, err := json.Marshal(map[string]any{
-		"version": 1,
-		"values":  map[string]string{"allowed_input": "other-namespace-private-value"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Put(namespaceB, "aact-private-inputs-v1", otherPrivateInputs); err != nil {
-		t.Fatalf("seed second namespace private inputs: %v", err)
+	if err := database.SaveSecretInputs(keyB, map[string]any{
+		"allowed_input": "other-namespace-private-value",
+	}, nil); err != nil {
+		t.Fatalf("save namespace B private inputs through state API: %v", err)
 	}
 	controlToken, err := vault.ControlTokenForVault(vaultPath, []byte(password))
 	if err != nil {
 		t.Fatalf("prepare isolated daemon control credential: %v", err)
 	}
-	defer clear(controlToken)
-
 	t.Setenv("AACT_VAULT_API_BIND_IP", "127.0.0.1")
 	binary := buildPublicCLIBinary(t)
 	info, err := vault.StartDetached(binary, root, []byte(password))
@@ -67,8 +64,11 @@ func TestDetachedVaultHTTPScopesAndPersistsContainerRevocation(t *testing.T) {
 		t.Fatalf("start isolated AACT daemon: %v", err)
 	}
 	t.Cleanup(func() {
+		defer clear(controlToken)
 		if vault.DaemonRunning(info) {
-			_ = vault.StopDetached(info, controlToken)
+			if err := vault.StopDetached(info, controlToken); err != nil {
+				t.Errorf("stop isolated Vault daemon during cleanup: %v", err)
+			}
 		}
 	})
 
