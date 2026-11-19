@@ -50,5 +50,9 @@ jobs:
         env:
           AACT_TEST_DOCKER: "1"
         run: go -C test test -tags docker_integration ./integration -run '^TestDockerContainerReachesDefaultVaultRouteWithPinnedTLS$' -count=1
+      - name: Verify the standard Argo CD MCP image
+        env:
+          AACT_TEST_ARGOCD_DOCKER: "1"
+        run: go -C test test -tags docker_integration ./integration -run '^TestArgoStandardImagePublishesPinnedClientAndPolicyTools$' -count=1
       - run: go -C test test -tags docker_integration ./integration -count=1
       - run: sh tools/test-containers.sh
