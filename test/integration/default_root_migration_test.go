@@ -91,9 +91,7 @@ func TestDefaultRootMigrationPreservesStateAndSecretInputs(t *testing.T) {
 	if err != nil || secrets["fixture_token"] != "synthetic-migration-secret" {
 		t.Fatalf("private input after Vault migration=%#v, err=%v", secrets, err)
 	}
-	if _, err := os.Stat(filepath.Join(newAuth, "aact-private-inputs.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("plaintext private-input file remains after Vault migration: %v", err)
-	}
+	assertDefaultRootTreeDoesNotContain(t, stateHome, "synthetic-migration-secret")
 }
 
 func TestDefaultRootConflictPreservesBothRoots(t *testing.T) {
@@ -161,15 +159,12 @@ func TestDefaultRootInitializationAndOverrides(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := filepath.Join(stateHome, "aact")
+		want := defaultRootForTest(stateHome)
 		if store.Root() != want {
 			t.Fatalf("default state root=%q, want %q", store.Root(), want)
 		}
-		if _, err := os.Stat(filepath.Join(want, "manager")); err != nil {
-			t.Fatalf("default root was not initialized: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(stateHome, "agent-skills")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("unexpected legacy root: %v", err)
+		if id, err := store.InstallationID(); err != nil || id == "" {
+			t.Fatalf("fresh default root could not create installation identity: id=%q err=%v", id, err)
 		}
 	})
 
@@ -207,9 +202,20 @@ func TestDefaultRootInitializationAndOverrides(t *testing.T) {
 
 func setDefaultRootTestEnvironment(t *testing.T, stateHome string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	localAppData := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", localAppData)
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("AACT_STATE_DIR", "")
+}
+
+func defaultRootForTest(stateHome string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.Getenv("LOCALAPPDATA"), "aact", "state")
+	}
+	return filepath.Join(stateHome, "aact")
 }
 
 func writeDefaultRootFixture(t *testing.T, path, contents string) {
@@ -219,5 +225,28 @@ func writeDefaultRootFixture(t *testing.T, path, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertDefaultRootTreeDoesNotContain(t *testing.T, root, secret string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(contents), secret) {
+			t.Errorf("isolated state file %q still contains synthetic plaintext secret", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan isolated state for plaintext fixture secret: %v", err)
 	}
 }
