@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 
@@ -112,7 +113,8 @@ func (s *Service) UISetupPreview(ctx context.Context, q viewmodel.SetupRequest) 
 }
 
 // UISaveInputs persists ordinary answers and private secret inputs without
-// installing agent links, changing MCP registrations, or starting runtimes.
+// installing agent links or starting stopped runtimes. For a conditional
+// browser-login MCP, it applies saved inputs to an already-running local MCP.
 func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequest) error {
 	if q.Ref.CapabilityID == "" || q.Ref.Name == "" {
 		return invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
@@ -210,7 +212,67 @@ func (s *Service) UISaveInputs(ctx context.Context, q viewmodel.SetupInstallRequ
 		if err := s.Store.SaveSecretInputs(key, secretValues, resetSecrets); err != nil {
 			return err
 		}
-		return s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups)
+		if err := s.Store.SaveAnswersWithActiveInputGroups(key, safe, groups); err != nil {
+			return err
+		}
+		for _, definition := range p.MCPDefinitions() {
+			if definition.BrowserController == nil || len(definition.BrowserController.When) == 0 {
+				continue
+			}
+			child := mcpDefinitionKey(key, p, definition)
+			instances, err := s.Options.Runtime.List(ctx)
+			if err != nil {
+				return fmt.Errorf("inputs saved, but the running MCP could not be checked: %w", err)
+			}
+			for _, old := range instances {
+				if old.Key != child || old.Status != "running" || old.Ownership != "local" {
+					continue
+				}
+				if err := validateProfileValuesForActiveGroups(p.Inputs, values, groups); err != nil {
+					return fmt.Errorf("inputs saved, but the running MCP could not be updated: %w", err)
+				}
+				cp := p
+				cp.MCP, cp.MCPs = &definition, nil
+				updated, err := s.startConfigurationProfile(ctx, cp, instance, child, activeInputValues(p.Inputs, values, groups), false, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
+				if err != nil {
+					return fmt.Errorf("inputs saved, but the running MCP could not be updated; if it stopped, start it again: %w", err)
+				}
+				rows, err := s.Store.Installations()
+				if err != nil {
+					return fmt.Errorf("inputs saved and MCP updated, but agent registrations could not be checked: %w", err)
+				}
+				name, err := declaredRegistrationName(definition, child, values)
+				if err != nil {
+					return fmt.Errorf("inputs saved and MCP updated, but agent registrations could not be checked: %w", err)
+				}
+				for _, row := range rows {
+					if row.Key == child && row.Component == "mcp" && !row.ExternalRegistration && (row.URL != updated.URL || row.RegistrationName != name || row.Transport != definition.Transport || row.TimeoutMS != registrationTimeoutMS(&definition)) {
+						return fmt.Errorf("inputs saved and MCP updated, but its %s agent registration needs refreshing; start the MCP to refresh it", row.AgentID)
+					}
+				}
+				if definition.HealthPath != "" {
+					headers, err := profileRegistrationHeaders(definition, values)
+					if err != nil {
+						return fmt.Errorf("inputs saved and MCP updated, but authentication could not be checked: %w", err)
+					}
+					healthHeaders := make(http.Header, len(headers))
+					for name, value := range headers {
+						healthHeaders.Set(name, value)
+					}
+					authenticated, err := mcp.WaitForAuthentication(ctx, updated.URL, definition.HealthPath, healthHeaders)
+					if err != nil {
+						return fmt.Errorf("inputs saved and MCP updated, but authentication could not be checked: %w", err)
+					}
+					if authenticated {
+						if err := mcp.HealthWithHeaders(ctx, updated.URL, definition.Transport, healthHeaders); err != nil {
+							return fmt.Errorf("inputs saved and MCP updated, but MCP protocol is unavailable: %w", err)
+						}
+					}
+				}
+				break
+			}
+		}
+		return nil
 	})
 }
 

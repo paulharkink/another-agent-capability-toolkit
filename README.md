@@ -106,8 +106,10 @@ the HTTPS login origin and CSS selectors for the username, password and submit
 controls. AACT keeps the password in its vault. If session rotation fails, the
 browser attempts login and the MCP retries the request. If the login flow needs
 attention, the MCP returns the browser viewer URL; update a changed password in
-the Capability Instance inputs and restart its MCP. A failed or uncertain attempt is not repeatedly
-submitted while interaction is pending.
+the Capability Instance inputs. For an MCP with conditional browser login,
+saving inputs applies them to the running MCP, including a switch back to
+manual cookies; a stopped MCP remains stopped. A failed or uncertain attempt
+is not repeatedly submitted while interaction is pending.
 
 For example, a Pack can configure an OpenShift login form in its Grafana
 target TOML:

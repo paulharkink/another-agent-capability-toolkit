@@ -34,6 +34,9 @@ func (s *Service) refreshRuntimeRegistrations(ctx context.Context, key state.Key
 		if old.Key != key || old.Component != "mcp" || old.ExternalRegistration {
 			continue
 		}
+		if err := validateAgentRegistrationCredentialSafety(definition); err != nil {
+			return err
+		}
 		identity := registrationScope{agentID: old.AgentID, home: old.AgentHome, destination: old.Destination}
 		adapter, adapterErr := s.adapterRegistry().Adapter(old.AgentID)
 		if adapterErr != nil {
