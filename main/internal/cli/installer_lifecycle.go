@@ -147,5 +147,6 @@ func installerLifecycleEnvironment() []string {
 		}
 		environment = append(environment, entry)
 	}
+	environment = withWindowsPowerShellModulePath(environment)
 	return append(environment, "AACT_INSTALLER_LIFECYCLE=1")
 }

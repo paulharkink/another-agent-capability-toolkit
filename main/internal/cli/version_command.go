@@ -362,32 +362,15 @@ func hasSHA256ReleaseDigest(digest string) bool {
 func installerEnvironment() []string {
 	filtered := process.EnvironmentWithoutVaultPassword(os.Environ())
 	clean := make([]string, 0, len(filtered))
-	powerShellModulePath := ""
 	for _, entry := range filtered {
-		name, value, _ := strings.Cut(entry, "=")
+		name, _, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(name) {
 		case "AACT_ARCH", "AACT_OS", "AACT_VERSION", "AACT_DOWNLOAD_BASE", "AACT_INSTALLER_LIFECYCLE":
 			continue
-		case "PSMODULEPATH":
-			if runtime.GOOS == "windows" {
-				powerShellModulePath = value
-				continue
-			}
 		}
 		clean = append(clean, entry)
 	}
-	if runtime.GOOS == "windows" {
-		if systemRoot := os.Getenv("SystemRoot"); systemRoot != "" {
-			// The installer runs Windows PowerShell 5.1 even when AACT's parent used PowerShell 7.
-			windowsPowerShellModules := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules")
-			if powerShellModulePath != "" {
-				windowsPowerShellModules += string(os.PathListSeparator) + powerShellModulePath
-			}
-			clean = append(clean, "PSModulePath="+windowsPowerShellModules)
-		} else if powerShellModulePath != "" {
-			clean = append(clean, "PSModulePath="+powerShellModulePath)
-		}
-	}
+	clean = withWindowsPowerShellModulePath(clean)
 	clean = append(clean, "AACT_INSTALLER_LIFECYCLE=1")
 	return clean
 }

@@ -672,6 +672,38 @@ func TestInstallerLifecycleRejectsUnsafeVersionWithoutRunningScript(t *testing.T
 	}
 }
 
+func TestInstallerLifecycleProvidesWindowsPowerShellModules(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("nested Windows PowerShell environment test")
+	}
+	binary := buildPublicCLIBinary(t)
+	root := t.TempDir()
+	source := filepath.Join(root, "archive.zip")
+	marker := filepath.Join(root, "hash.txt")
+	if err := os.WriteFile(source, []byte("verified test archive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "installer.ps1")
+	if err := os.WriteFile(script, []byte("$hash = (Get-FileHash -LiteralPath $env:AACT_TEST_HASH_SOURCE -Algorithm SHA256).Hash\n[IO.File]::WriteAllText($env:AACT_TEST_HASH_MARKER, $hash)\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "__installer-lifecycle", "--run", script, "--", "--version", "0.7.4")
+	command.Dir = root
+	command.Env = cleanTestEnvironment(t, os.Environ(), "HOME="+root, "AACT_STATE_DIR="+filepath.Join(root, "state"),
+		"PSModulePath="+filepath.Join(root, "powershell7-modules"), "AACT_TEST_HASH_SOURCE="+source, "AACT_TEST_HASH_MARKER="+marker)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("public lifecycle command did not run the Windows installer: output=%q err=%v", output, err)
+	}
+	got, err := os.ReadFile(marker)
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte("verified test archive")))
+	if err != nil || strings.TrimSpace(string(got)) != want {
+		t.Fatalf("nested PowerShell Get-FileHash result=%q err=%v; want %s", got, err, want)
+	}
+}
+
 func TestPipedInstallerUsesVerifiedStagedControllerAndIgnoresCwdScript(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell installer is not used on native Windows")
