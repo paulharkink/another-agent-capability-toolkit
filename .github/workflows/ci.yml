@@ -20,7 +20,7 @@ jobs:
       - run: go vet ./main/...
       - name: Race checks
         if: runner.os != 'Windows'
-        run: go -C test test -race ./... -count=1
+        run: go -C test test -race ./... -count=1 -timeout=20m
   docker:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

@@ -29,7 +29,21 @@ if [ "$mount_ok" -ne 1 ] || [ "$resolved" != "$system_root" ] || [ ! -f "$system
 fi
 
 script_dir=$(CDPATH= /bin/sh -c 'cd -- "$(/usr/bin/dirname -- "$1")" && /bin/pwd -P' sh "$0")
-windows_script=$(/usr/bin/wslpath -w "$script_dir/windows.ps1") || {
+windows_temp=$("$system_root" -NoLogo -NoProfile -NonInteractive -Command "[IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Temp')" 2>/dev/null | /usr/bin/tr -d '\r')
+temp_parent=$(/usr/bin/wslpath -u "$windows_temp") || {
+  printf '{"status":"unavailable"}\n'
+  exit 0
+}
+temp_dir=$(/usr/bin/mktemp -d "$temp_parent/aact-keyring.XXXXXXXX") || {
+  printf '{"status":"unavailable"}\n'
+  exit 0
+}
+trap '/usr/bin/rm -f -- "$temp_dir/windows.ps1"; /usr/bin/rmdir -- "$temp_dir" 2>/dev/null || true' EXIT
+/usr/bin/cp -- "$script_dir/windows.ps1" "$temp_dir/windows.ps1" || {
+  printf '{"status":"unavailable"}\n'
+  exit 0
+}
+windows_script=$(/usr/bin/wslpath -w "$temp_dir/windows.ps1") || {
   printf '{"status":"unavailable"}\n'
   exit 0
 }
