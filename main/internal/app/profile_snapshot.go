@@ -278,7 +278,9 @@ func (s *Service) InstanceSnapshot(ctx context.Context, capabilityID string) (sn
 			}
 			if definition.HealthPath != "" && runtime.Status == "running" && runtime.URL != "" {
 				authenticated, healthErr := mcp.CheckAuthentication(ctx, runtime.URL, definition.HealthPath)
-				if healthErr != nil || !authenticated {
+				if healthErr != nil {
+					runtime.AuthenticationStatus = viewmodel.AuthenticationNotConfirmed
+				} else if !authenticated {
 					runtime.AuthenticationStatus = viewmodel.AuthenticationFailed
 				} else {
 					runtime.AuthenticationStatus = viewmodel.AuthenticationComplete
