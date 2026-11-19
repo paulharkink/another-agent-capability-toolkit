@@ -139,11 +139,12 @@ type MCP struct {
 }
 
 type BrowserController struct {
-	AdapterPath             string   `toml:"adapter_path" json:"adapter_path,omitempty"`
-	ProfileVolumeInput      string   `toml:"profile_volume_input" json:"profile_volume_input"`
-	AccessConfigInput       string   `toml:"access_config_input" json:"access_config_input,omitempty"`
-	StartupURL              string   `toml:"startup_url" json:"startup_url,omitempty"`
-	DefaultPopupAllowedURLs []string `toml:"default_popup_allowed_urls" json:"default_popup_allowed_urls,omitempty"`
+	When                    map[string]any `toml:"when" json:"when,omitempty"`
+	AdapterPath             string         `toml:"adapter_path" json:"adapter_path,omitempty"`
+	ProfileVolumeInput      string         `toml:"profile_volume_input" json:"profile_volume_input"`
+	AccessConfigInput       string         `toml:"access_config_input" json:"access_config_input,omitempty"`
+	StartupURL              string         `toml:"startup_url" json:"startup_url,omitempty"`
+	DefaultPopupAllowedURLs []string       `toml:"default_popup_allowed_urls" json:"default_popup_allowed_urls,omitempty"`
 }
 
 // ShouldAuthenticateOnApply preserves the historical behavior when the

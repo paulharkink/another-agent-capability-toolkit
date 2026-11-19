@@ -572,12 +572,22 @@ func Validate(p Package) error {
 			}
 		}
 		if mcp.BrowserController != nil {
+			for controller, expected := range mcp.BrowserController.When {
+				if _, ok := inputsByName[controller]; !ok {
+					return fmt.Errorf("mcp %s browser_controller when references unknown input %q", mcp.Name, controller)
+				}
+				switch expected.(type) {
+				case string, int64, float64, bool:
+				default:
+					return fmt.Errorf("mcp %s browser_controller when values must be scalar", mcp.Name)
+				}
+			}
 			if err := browsercontroller.ValidateStartupURL(mcp.BrowserController.StartupURL); err != nil {
 				return fmt.Errorf("mcp %s browser_controller startup_url is invalid: %w", mcp.Name, err)
 			}
 			inputName := mcp.BrowserController.ProfileVolumeInput
 			input, ok := inputsByName[inputName]
-			if !ok || input.Type != "string" || !input.Required || len(input.VisibleWhen) > 0 {
+			if inputName != "" && (!ok || input.Type != "string" || !input.Required || len(input.VisibleWhen) > 0) {
 				return fmt.Errorf("mcp %s browser_controller profile_volume_input %q must reference a required, unconditionally visible string input", mcp.Name, inputName)
 			}
 			if inputName := mcp.BrowserController.AccessConfigInput; inputName != "" {

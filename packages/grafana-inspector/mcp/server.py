@@ -11,6 +11,8 @@ from http.cookiejar import Cookie, DefaultCookiePolicy
 from typing import Any
 import json
 import re
+import urllib.request
+import urllib.error
 from pathlib import Path
 from config import GrafanaTarget, load_target
 from urllib.parse import urlparse
@@ -310,6 +312,89 @@ except ValueError:
 SESSION_LOCK = threading.Lock()
 ROTATION_START_LOCK = threading.Lock()
 ROTATION_THREAD: threading.Thread | None = None
+BROWSER_LOGIN_LOCK = threading.Lock()
+BROWSER_INTERACTION_PENDING = False
+
+
+def _browser_reauthenticate(failed_content: bytes | None) -> None:
+    """Replace rejected session credentials through the instance's browser helper."""
+    global BROWSER_INTERACTION_PENDING
+    if PROFILE.auth_mode != "browser_credentials":
+        raise ValueError("Grafana session authentication is unavailable.")
+    with BROWSER_LOGIN_LOCK:
+        _reload_auth_if_changed()
+        if _AUTH_CONTENT != failed_content and CLIENT is not None:
+            return
+        try:
+            handoff = json.loads(Path("/run/aact/vault.json").read_text())
+            address = handoff["api_address"].rstrip("/")
+            parsed = urlparse(address)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("invalid daemon address")
+            context = ssl.create_default_context(cadata=handoff["certificate"])
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *args, **kwargs):
+                    return None
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect())
+            headers = {"Authorization": "Bearer " + handoff["token"]}
+            secret_request = urllib.request.Request(address + "/v1/private-inputs/browser_password", headers=headers)
+            with opener.open(secret_request, timeout=10) as response:
+                password = json.load(response)["value"]
+            if not isinstance(password, str) or not password:
+                raise ValueError("password unavailable")
+            config = dict(PROFILE.browser)
+            config["url"] = GRAFANA_URL
+            config["ca_pem"] = PROFILE.ca_file.read_text() if PROFILE.ca_file else ""
+            config["refresh_cookie_name"] = REFRESH_COOKIE_NAME
+            config["interaction_pending"] = BROWSER_INTERACTION_PENDING
+            body = json.dumps({"origin": f"{urlparse(GRAFANA_URL).scheme}://{urlparse(GRAFANA_URL).netloc}", "selector": {"kind": "none"}, "config": config, "private": {"password": password}}).encode()
+            request = urllib.request.Request(address + "/v1/browser/credentials", data=body, headers={**headers, "Content-Type": "application/json"}, method="POST")
+            # An ambiguous timeout may mean the browser already submitted the
+            # password. Require interaction instead of risking another attempt.
+            was_pending = BROWSER_INTERACTION_PENDING
+            BROWSER_INTERACTION_PENDING = True
+            try:
+                with opener.open(request, timeout=120) as response:
+                    result = json.load(response)["result"]
+            except urllib.error.HTTPError as error:
+                if error.code == 409:
+                    BROWSER_INTERACTION_PENDING = True
+                    result = json.load(error)
+                    viewer = result.get("viewer_url", "")
+                    if isinstance(viewer, str) and re.fullmatch(r"http://localhost:\d+", viewer):
+                        raise ValueError(f"Grafana login requires interaction: {viewer}") from None
+                elif error.code == 503 and error.read(1024).strip() in (b"browser could not be started", b"browser state is unavailable", b"browser owner is unavailable"):
+                    BROWSER_INTERACTION_PENDING = was_pending
+                raise ValueError("Grafana browser login requires interaction.") from None
+            session, expiry = result["grafana_session"], result["session_expiry"]
+            if not isinstance(session, str) or not session or not isinstance(expiry, str) or not expiry.isdigit():
+                raise ValueError("Grafana browser login returned incomplete session cookies.")
+            with AUTH_LOCK:
+                current_content = AUTH_PATH.read_bytes() if AUTH_PATH.exists() else None
+                if current_content != failed_content:
+                    _reload_auth_if_changed()
+                    BROWSER_INTERACTION_PENDING = False
+                    return
+                temporary = AUTH_PATH.with_suffix(".browser.tmp")
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    with os.fdopen(fd, "w") as stream:
+                        auth = {"auth_mode": "session_cookie", "grafana_session": session, "session_expiry": expiry, "route_cookies": result.get("route_cookies", [])}
+                        if REFRESH_COOKIE_NAME:
+                            refresh = result.get("oauth_refresh")
+                            if not isinstance(refresh, str) or not refresh:
+                                raise ValueError("Grafana browser login returned an incomplete refresh cookie.")
+                            auth.update({"oauth_refresh": refresh, "refresh_cookie_name": REFRESH_COOKIE_NAME})
+                        json.dump(auth, stream)
+                    os.replace(temporary, AUTH_PATH)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                _reload_auth_if_changed()
+            BROWSER_INTERACTION_PENDING = False
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("Grafana browser login is unavailable.") from None
 
 
 def _reload_auth_if_changed() -> None:
@@ -549,9 +634,17 @@ def _bootstrap_session() -> None:
 def _request(method: str, path: str, parameters: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> Any:
     _reload_auth_if_changed()
     if CLIENT is None:
-        raise ValueError("Grafana authentication is unavailable.")
+        if PROFILE.auth_mode == "browser_credentials":
+            _browser_reauthenticate(_AUTH_CONTENT)
+        if CLIENT is None:
+            raise ValueError("Grafana authentication is unavailable.")
     if AUTH_MODE == "session_cookie":
-        _rotate_before_expiry()
+        try:
+            _rotate_before_expiry()
+        except (ValueError, requests.RequestException):
+            if PROFILE.auth_mode != "browser_credentials":
+                raise
+            _browser_reauthenticate(_AUTH_CONTENT)
     response = CLIENT.request(
         method,
         f"{GRAFANA_URL}{path}",
@@ -560,8 +653,13 @@ def _request(method: str, path: str, parameters: dict[str, Any] | None = None, p
         timeout=REQUEST_TIMEOUT_SECONDS,
         allow_redirects=False,
     )
-    if AUTH_MODE == "session_cookie" and response.status_code in {401, 403}:
-        _rotate_session()
+    if AUTH_MODE == "session_cookie" and (response.status_code in {401, 403} or (PROFILE.auth_mode == "browser_credentials" and response.is_redirect)):
+        try:
+            _rotate_session()
+        except (ValueError, requests.RequestException):
+            if PROFILE.auth_mode != "browser_credentials" or not (response.status_code == 401 or response.is_redirect):
+                raise
+            _browser_reauthenticate(_AUTH_CONTENT)
         response = CLIENT.request(
             method,
             f"{GRAFANA_URL}{path}",

@@ -325,3 +325,23 @@ func TestFindSessionStagesReleaseLauncher(t *testing.T) {
 		}
 	}
 }
+
+func TestGrafanaBrowserCredentialsAreAvailableAsAnAlternative(t *testing.T) {
+	p, err := catalog.Load(filepath.Join("..", "..", "packages", "grafana-inspector"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]any{"registration_name": "grafana-ot", "url": "https://grafana.example", "auth_mode": "browser_credentials", "browser_username": "person", "browser_password": "private"}
+	if err := forms.Validate(p.Inputs, values); err != nil {
+		t.Fatalf("browser credentials rejected: %v", err)
+	}
+	found := false
+	for _, input := range p.Inputs {
+		if input.Name == "browser_password" && input.Type == "secret" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("browser password must be an AACT secret input")
+	}
+}
