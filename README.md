@@ -248,8 +248,9 @@ downloaded module or compiled helper. Windows Credential Locker supports up to
 password prompt. WSL invokes the same Windows PowerShell script and Credential
 Locker for the current Windows user when C: is mounted at `/mnt/c`; it fails
 closed if that trusted system path cannot be confirmed. Nonstandard drive or
-mount layouts can use a custom absolute-path hook. macOS uses the `security` command and
-Linux uses `secret-tool` with an available Secret Service session. To use
+mount layouts can use a custom absolute-path hook. The macOS shell connector uses
+the built-in `security` and `plutil` commands. The Linux example uses Python 3
+and `secret-tool` with an available Secret Service session. To use
 another store, configure an absolute-path hook with
 `AACT_VAULT_CREDENTIAL_HOOK`; custom `.ps1`, `.cmd`, `.bat`, and executable
 hooks are supported. Hook secrets travel over stdin and stdout, not process
