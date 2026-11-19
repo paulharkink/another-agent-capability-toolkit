@@ -1,0 +1,411 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+)
+
+// RegistrationRequest connects agents in this AACT installation to an MCP
+// endpoint. The endpoint's runtime may belong to another installation.
+type RegistrationRequest struct {
+	Ref          config.ProfileRef
+	Key          state.Key
+	URL          string
+	ExternalURLs map[string]string
+	Transport    string
+	Agents       []agents.Environment
+
+	// preserve contains existing ineligible MCP entries carried through UI
+	// desired-state updates without rewriting their config or endpoint.
+	preserve []agents.Environment
+}
+
+func (s *Service) registrationTimeoutForKey(key state.Key) int {
+	if key.Source == s.Source.ID {
+		for _, p := range s.Source.Catalog {
+			if p.ID == key.Package {
+				for _, definition := range p.MCPDefinitions() {
+					if (len(p.MCPs) == 0 && key.MCP == "") || definition.Name == key.MCP {
+						return registrationTimeoutMS(&definition)
+					}
+				}
+			}
+		}
+	}
+	return 30000
+}
+
+// ConfigureRegistrations changes only local agent registration files and this
+// installation's registration ledger. It never starts or claims the MCP runtime.
+func (s *Service) ConfigureRegistrations(ctx context.Context, q RegistrationRequest) (out Result, err error) {
+	out.Changes = []state.Installation{}
+	out.Errors = []string{}
+	if q.Ref.PackID == "" || q.Ref.CapabilityID == "" || q.Ref.Name == "" {
+		return out, invalid(errors.New("instance reference (Capability Pack, capability, and instance) is required"))
+	}
+	if q.Ref.PackID != s.Source.ID {
+		source, sourceErr := s.forSource(q.Ref.PackID)
+		if sourceErr != nil {
+			return out, invalid(fmt.Errorf("Capability Pack %q is not selected: %w", q.Ref.PackID, sourceErr))
+		}
+		return source.ConfigureRegistrations(ctx, q)
+	}
+	if q.URL == "" && len(q.ExternalURLs) == 0 {
+		return out, invalid(errors.New("MCP endpoint URL is required"))
+	}
+	q.Key, err = s.Store.ResolveProfileKey(q.Ref.PackID, q.Ref.CapabilityID, q.Ref.Name)
+	if err != nil {
+		return out, err
+	}
+	if q.Key.Source == s.Source.ID {
+		p, lookupErr := s.packageByID(q.Key.Package)
+		if lookupErr != nil {
+			return out, invalid(fmt.Errorf("cannot attach this MCP without its Capability Pack catalog entry; locate the pack directory first: %w", lookupErr))
+		}
+		if len(p.MCPDefinitions()) > 1 && q.URL != "" && len(q.ExternalURLs) == 0 {
+			return out, invalid(errors.New("multi-MCP capability requires a separately keyed endpoint for each definition"))
+		}
+	}
+	desired := make(map[string]agents.Environment, len(q.Agents))
+	desiredManagers := make(map[string]agents.MCPManager, len(q.Agents))
+	desiredScopes := make(map[string]agents.Scope, len(q.Agents))
+	timeoutMS := s.registrationTimeoutForKey(q.Key)
+	for _, env := range q.Agents {
+		var manager agents.MCPManager
+		var scope agents.Scope
+		env, manager, scope, err = s.registrationTarget(ctx, env)
+		if err != nil {
+			return out, err
+		}
+		identity := env.ID + "\x00" + env.ConfigPath
+		desired[identity] = env
+		desiredManagers[identity] = manager
+		desiredScopes[identity] = scope
+	}
+	preserved := make(map[string]bool, len(q.preserve))
+	for _, env := range q.preserve {
+		if env.ID != "" && env.ConfigPath != "" {
+			preserved[env.ID+"\x00"+env.ConfigPath] = true
+		}
+	}
+	err = s.Store.WithLock(ctx, func() error {
+		rows, err := s.Store.Installations()
+		if err != nil {
+			return err
+		}
+		// Registration-only setup with no local runtime or prior local
+		// registration is an explicit attach. A ledger record for an owned
+		// runtime (including a now-missing one), or a legacy/local registration,
+		// preserves the target's local lifecycle intent.
+		externalOnly := true
+		for _, row := range rows {
+			if row.Key != q.Key {
+				continue
+			}
+			if row.Component == "runtime" || (row.Component == "mcp" && !row.ExternalRegistration) {
+				externalOnly = false
+				break
+			}
+		}
+		for _, row := range rows {
+			registrationKey := row.AgentID + "\x00" + row.Destination
+			if row.Key != q.Key || row.Component != "mcp" || desired[registrationKey].ID != "" || preserved[registrationKey] {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			kind := row.AgentKind
+			if kind == "" {
+				kind, _, _ = strings.Cut(row.AgentID, ":")
+			}
+			env := agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination}
+			env = s.ownedEnvironment(env, rows)
+			adapter, err := s.registrationAdapterFor(env.ID, env.Kind)
+			var manager agents.MCPManager
+			if err == nil {
+				manager, _ = adapter.(agents.MCPManager)
+				if manager == nil {
+					err = fmt.Errorf("adapter %s cannot unregister MCP entries", adapter.ID())
+				}
+			}
+			var files []registrationFile
+			if err == nil {
+				files, err = snapshotRegistration(env)
+			}
+			if err == nil {
+				scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}
+				err = manager.Unregister(ctx, scope, row)
+				if err == nil {
+					err = s.removeRegistration(row)
+				}
+				if err != nil {
+					err = errors.Join(err, restoreRegistration(files))
+				}
+			}
+			if err != nil {
+				out.Errors = append(out.Errors, env.ID+": "+err.Error())
+			} else {
+				out.Changes = append(out.Changes, row)
+			}
+		}
+		for _, env := range desired {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			identity := env.ID + "\x00" + env.ConfigPath
+			rows, err := s.Store.Installations()
+			if err != nil {
+				return err
+			}
+			unchanged := false
+			for _, row := range rows {
+				if row.Key == q.Key && row.Component == "mcp" && row.AgentID == env.ID &&
+					row.Destination == env.ConfigPath && row.URL == q.URL &&
+					row.Transport == q.Transport && row.TimeoutMS == timeoutMS && row.RegistrationName == registrationName(q.Key) {
+					unchanged = true
+					break
+				}
+			}
+			if unchanged {
+				continue
+			}
+			env = s.ownedEnvironment(env, rows)
+			manager := desiredManagers[identity]
+			scope := desiredScopes[identity]
+			registration := agents.Registration{Name: registrationName(q.Key), URL: q.URL, Transport: q.Transport, TimeoutMS: timeoutMS}
+			files, err := snapshotRegistration(env)
+			var effect agents.MCPRegistrationResult
+			if err == nil {
+				effect, err = manager.Register(ctx, scope, agents.MCPRequest{Key: q.Key, Registration: registration})
+				if err != nil {
+					err = errors.Join(err, restoreRegistration(files))
+				}
+			}
+			if err == nil {
+				row := effect.Installation
+				row.Key = q.Key
+				row.AgentID = env.ID
+				row.AgentHome = env.Home
+				row.AgentKind = env.Kind
+				row.Component = "mcp"
+				row.Mode = "registration"
+				row.RegistrationName = registration.Name
+				row.URL = registration.URL
+				row.Transport = registration.Transport
+				row.TimeoutMS = registration.TimeoutMS
+				row.ExternalRegistration = externalOnly
+				err = s.recordRegistration(row)
+				if err != nil {
+					err = errors.Join(err, restoreRegistration(files))
+				} else {
+					out.Changes = append(out.Changes, row)
+				}
+			}
+			if err != nil {
+				out.Errors = append(out.Errors, env.ID+": "+err.Error())
+			}
+		}
+		if len(out.Errors) != 0 {
+			return fmt.Errorf("registration failed: %s", strings.Join(out.Errors, "; "))
+		}
+		return nil
+	})
+	return out, err
+}
+
+type registrationIdentity struct {
+	AgentID     string
+	Destination string
+}
+
+func registrationIdentityKey(agentID, destination string) string {
+	return agentID + "\x00" + destination
+}
+
+// removeUIRegistrations removes only selected, currently recorded MCP entries.
+// It is separate from desired-state reconciliation because removal must not
+// require or observe the external endpoint and must preserve every other row.
+// Legacy agent-ID requests are resolved up front and rejected if they match
+// more than one destination, before any config or ledger is changed.
+func (s *Service) removeUIRegistrations(ctx context.Context, key state.Key, identities []registrationIdentity, legacyAgentIDs []string) (out Result, err error) {
+	out.Changes = []state.Installation{}
+	out.Errors = []string{}
+	if key.Source == "" || key.Package == "" {
+		return out, invalid(errors.New("Capability Pack ID and capability ID are required"))
+	}
+	if len(identities) > 0 && len(legacyAgentIDs) > 0 {
+		return out, invalid(errors.New("mix exact registration identities or legacy agent IDs in a removal request, not both"))
+	}
+	if len(identities) == 0 && len(legacyAgentIDs) == 0 {
+		return out, invalid(errors.New("select at least one recorded MCP registration to remove"))
+	}
+	err = s.Store.WithLock(ctx, func() error {
+		rows, readErr := s.Store.Installations()
+		if readErr != nil {
+			return readErr
+		}
+		byAgent := make(map[string]map[string]state.Installation)
+		for _, row := range rows {
+			if row.Key != key || row.Component != "mcp" || strings.TrimSpace(row.Destination) == "" {
+				continue
+			}
+			if byAgent[row.AgentID] == nil {
+				byAgent[row.AgentID] = make(map[string]state.Installation)
+			}
+			byAgent[row.AgentID][row.Destination] = row
+		}
+		selected := make(map[string]bool, len(identities)+len(legacyAgentIDs))
+		for _, identity := range identities {
+			if strings.TrimSpace(identity.AgentID) == "" || strings.TrimSpace(identity.Destination) == "" {
+				out.Errors = append(out.Errors, "exact registration identity requires an agent ID and destination")
+				continue
+			}
+			key := registrationIdentityKey(identity.AgentID, identity.Destination)
+			if selected[key] {
+				out.Errors = append(out.Errors, identity.AgentID+": duplicate registration identity")
+				continue
+			}
+			if _, exists := byAgent[identity.AgentID][identity.Destination]; !exists {
+				out.Errors = append(out.Errors, identity.AgentID+": no recorded local MCP registration was found at "+identity.Destination)
+				continue
+			}
+			selected[key] = true
+		}
+		legacySeen := map[string]bool{}
+		for _, id := range legacyAgentIDs {
+			if id == "" || legacySeen[id] {
+				continue
+			}
+			legacySeen[id] = true
+			matches := byAgent[id]
+			if len(matches) == 0 {
+				out.Errors = append(out.Errors, id+": no recorded local MCP registration was found")
+				continue
+			}
+			if len(matches) > 1 {
+				out.Errors = append(out.Errors, id+": ambiguous removal; choose an exact config destination")
+				continue
+			}
+			for destination := range matches {
+				selected[registrationIdentityKey(id, destination)] = true
+			}
+		}
+		// Resolve and validate the entire request before touching any agent
+		// file. A typo or ambiguous legacy ID must not partially remove a
+		// different, valid selection in the same request.
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("registration removal failed: %s", strings.Join(out.Errors, "; "))
+		}
+		matched := make(map[string]bool, len(selected))
+		for _, row := range rows {
+			if row.Key != key || row.Component != "mcp" || !selected[registrationIdentityKey(row.AgentID, row.Destination)] {
+				continue
+			}
+			matchKey := registrationIdentityKey(row.AgentID, row.Destination)
+			matched[matchKey] = true
+			if contextErr := ctx.Err(); contextErr != nil {
+				return contextErr
+			}
+			kind := row.AgentKind
+			if kind == "" {
+				kind, _, _ = strings.Cut(row.AgentID, ":")
+			}
+			env := agents.Environment{ID: row.AgentID, Kind: kind, Home: row.AgentHome, ConfigPath: row.Destination}
+			env = s.ownedEnvironment(env, rows)
+			adapter, adapterErr := s.registrationAdapterFor(env.ID, env.Kind)
+			var manager agents.MCPManager
+			if adapterErr == nil {
+				manager, _ = adapter.(agents.MCPManager)
+				if manager == nil {
+					adapterErr = fmt.Errorf("adapter %s cannot unregister MCP entries", adapter.ID())
+				}
+			}
+			var files []registrationFile
+			if adapterErr == nil {
+				files, adapterErr = snapshotRegistration(env)
+			}
+			if adapterErr == nil {
+				scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: true}
+				adapterErr = manager.Unregister(ctx, scope, row)
+			}
+			if adapterErr == nil {
+				adapterErr = s.removeRegistration(row)
+			}
+			if adapterErr != nil {
+				adapterErr = errors.Join(adapterErr, restoreRegistration(files))
+				out.Errors = append(out.Errors, row.AgentID+": "+adapterErr.Error())
+				continue
+			}
+			out.Changes = append(out.Changes, row)
+		}
+		for identityKey := range selected {
+			if !matched[identityKey] {
+				out.Errors = append(out.Errors, "selected local MCP registration was not removed")
+			}
+		}
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("registration removal failed: %s", strings.Join(out.Errors, "; "))
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && len(out.Errors) == 0 {
+		out.Errors = append(out.Errors, err.Error())
+	}
+	if err == nil {
+		out.Message = "Selected local MCP registrations removed"
+	}
+	return out, err
+}
+
+func (s *Service) registrationTarget(ctx context.Context, env agents.Environment) (agents.Environment, agents.MCPManager, agents.Scope, error) {
+	adapter, err := s.registrationAdapterFor(env.ID, env.Kind)
+	if err != nil {
+		return env, nil, agents.Scope{}, err
+	}
+	manager, ok := adapter.(agents.MCPManager)
+	if !ok || !adapter.Features().MCPs {
+		return env, nil, agents.Scope{}, fmt.Errorf("adapter %s cannot manage MCP registrations", adapter.Name())
+	}
+	scope := agents.Scope{ID: env.ID, Home: env.Home, ConfigPathOverride: env.ConfigPath, ExplicitHome: env.Home != ""}
+	detection, err := adapter.Detect(ctx, scope)
+	if err != nil {
+		return env, manager, scope, err
+	}
+	if !detection.Installed {
+		return env, manager, scope, fmt.Errorf("agent %s is not installed: %s", adapter.Name(), detection.Reason)
+	}
+	if detection.MCPDisabledReason != "" {
+		return env, manager, scope, fmt.Errorf("agent %s cannot manage MCP registrations: %s", adapter.Name(), detection.MCPDisabledReason)
+	}
+	if env.Home == "" {
+		env.Home = detection.Home
+		scope.Home = detection.Home
+	}
+	if env.SkillsDir == "" {
+		env.SkillsDir = detection.SkillsPath
+	}
+	if env.ConfigPath == "" {
+		env.ConfigPath = detection.ConfigPath
+		if env.ConfigPath == "" {
+			for _, file := range detection.ConfigFiles {
+				if file.Precedence == "effective" {
+					env.ConfigPath = file.Path
+					break
+				}
+			}
+		}
+		scope.ConfigPathOverride = env.ConfigPath
+	}
+	if env.ConfigPath == "" {
+		return env, manager, scope, fmt.Errorf("adapter %s did not report an effective MCP config path", adapter.Name())
+	}
+	env.Kind = adapter.ID()
+	return env, manager, scope, nil
+}

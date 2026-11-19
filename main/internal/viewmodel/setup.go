@@ -1,0 +1,96 @@
+package viewmodel
+
+import (
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+)
+
+type SetupRequest struct {
+	Ref         config.ProfileRef
+	SourceID    string
+	PackageID   string
+	Environment string
+	Target      string
+}
+
+type SetupInput struct {
+	Definition        catalog.Input
+	Value             any
+	HasValue          bool
+	SecretSaved       bool
+	Provenance        string
+	ProvenancePath    string
+	InheritedValue    any
+	HasInheritedValue bool
+	InheritedOrigin   string
+	InheritedPath     string
+	Editable          bool
+	Hidden            bool
+	HiddenChoices     []string
+}
+
+type SetupDestination struct {
+	Features                                                      agents.FeatureSet
+	Name, ID, Kind, Home, SkillsPath, ConfigPath, Detection, Note string
+	DisabledReason                                                string
+	Path                                                          string
+	Selected                                                      bool
+	Detected                                                      bool
+	MCPRegistrationAvailable                                      bool
+}
+
+type SetupPreview struct {
+	ItemFieldName                              string
+	PluginDefinitions                          []catalog.Plugin
+	InstancePath, InstanceTOML, InstanceOrigin string
+	// Profile fields are compatibility aliases for existing backend callers.
+	PackRoot, ProfilePath, ProfileTOML, ProfileOrigin string
+	Items                                             []catalog.InstallationItem
+	SelectedItemIDs, ValidationIssues                 []string
+	DefaultSelection                                  bool
+	Key                                               state.Key
+	PackageName                                       string
+	SourceRoot                                        string
+	TargetPath                                        string
+	TargetTOML                                        string
+	Configured                                        bool
+	MCP                                               bool
+	Sections                                          []catalog.Section
+	HasManifestUI                                     bool
+	MCPDefinitions                                    []catalog.MCP
+	MCPDefinitionKeys                                 map[string]state.Key
+	CredentialState                                   string
+	CredentialNote                                    string
+	ActiveInputGroups                                 map[string]string
+	Inputs                                            []SetupInput
+	Destinations                                      []SetupDestination
+}
+
+type SetupInstallRequest struct {
+	ItemIDs          []string
+	DefaultSelection bool
+	SetupRequest
+	Inputs            map[string]any
+	ActiveInputGroups map[string]string
+	ResetInputs       []string
+	DestinationIDs    []string
+	Uninstall         bool
+	ExternalURL       string
+	ExternalURLs      map[string]string
+}
+
+// SkillOnlyInstallRequest installs a capability with no configuration inputs
+// directly into the selected agent destinations, without creating an instance.
+type SkillOnlyInstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
+}
+
+// SkillOnlyUninstallRequest removes a zero-input skill from the exact selected
+// agent destinations without requiring or changing an instance record.
+type SkillOnlyUninstallRequest struct {
+	SourceID, PackageID string
+	DestinationIDs      []string
+}

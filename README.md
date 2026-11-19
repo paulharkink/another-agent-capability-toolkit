@@ -186,9 +186,16 @@ subprocesses. The same password must be used to open an existing vault.
 Development uses the Go version pinned in go.mod. Go is needed to develop or
 build releases, rather than to run an installed release.
 
+Tests in this project must check functionality through an observable public
+boundary. Unit tests that assert implementation details—such as private methods,
+internal state, call sequences, or literal source text—have no place here. Prefer
+no test over one coupled to how the code is written. Keep useful integration
+tests under `test/integration/`.
+
 ```sh
-go test ./...
-go test -race ./...
+go -C test test ./...
+go vet ./main/...
+go -C test test -race ./...
 goreleaser release --snapshot --clean
 ```
 
@@ -202,8 +209,8 @@ directory next to `bin`.
 Docker verification uses synthetic fixtures, no live service credentials:
 
 ```sh
-go test -tags integration ./tests/integration -run TestDockerMCP -count=1
-go test -tags docker_integration ./internal/mcp ./internal/packagehelpers ./internal/sessionsearch ./tests/packages -count=1
+go -C test test -tags integration ./integration -count=1
+go -C test test -tags docker_integration ./integration -count=1
 sh tools/test-containers.sh
 ```
 

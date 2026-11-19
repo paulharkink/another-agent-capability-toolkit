@@ -1,0 +1,264 @@
+package tui
+
+import (
+	tea "charm.land/bubbletea/v2"
+	"context"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/viewmodel"
+	"strings"
+)
+
+type capabilityInstancesBackend interface {
+	UICapabilityInstances(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateInstance(context.Context, config.InstanceRef) error
+}
+type capabilityProfilesBackend interface {
+	UICapabilityProfiles(context.Context) (map[string]viewmodel.CapabilityInstanceSnapshot, error)
+	UICreateProfile(context.Context, config.InstanceRef) error
+}
+
+func capabilityInstanceRows(snapshot viewmodel.CapabilityInstanceSnapshot) []viewmodel.CapabilityInstance {
+	if snapshot.Instances != nil {
+		return snapshot.Instances
+	}
+	return snapshot.Profiles
+}
+
+type packSettingsBackend interface {
+	PackSettings(context.Context) (map[string]string, error)
+}
+type instanceCreatedMsg struct {
+	ref config.InstanceRef
+	err error
+}
+type instanceRemovalBackend interface {
+	UIRemoveInstance(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
+}
+type instancePresetResetBackend interface {
+	UIResetInstanceToPreset(context.Context, config.InstanceRef) (viewmodel.OperationResult, error)
+}
+type instanceRemovedMsg struct {
+	ref         config.InstanceRef
+	resetPreset bool
+	message     string
+	err         error
+}
+
+func (m *Model) instanceMode() bool {
+	_, modern := m.backend.(capabilityInstancesBackend)
+	_, legacy := m.backend.(capabilityProfilesBackend)
+	return (modern || legacy) && (m.workspace == nil || m.workspace.InstanceRef.CapabilityID != "")
+}
+func instanceStatusSummary(p viewmodel.CapabilityInstance) string {
+	registered, total, unknown := 0, 0, false
+	for _, c := range p.Components {
+		if c.Kind != "skill" && c.Kind != "mcp" && c.Kind != "plugin" {
+			continue
+		}
+		total++
+		if c.Status == "installed" {
+			registered++
+		}
+		if c.Status == "unavailable" || c.Status == "unknown" || c.Status == "unobserved" || c.Status == "stale" {
+			unknown = true
+		}
+	}
+	if p.ConfigStatus == "needs-input" || p.ConfigStatus == "invalid" {
+		return p.ConfigStatus
+	}
+	status := "Not installed"
+	if registered > 0 {
+		status = "Installed"
+	} else if unknown {
+		status = "Unknown"
+	} else if total == 0 {
+		status = "Unknown"
+	}
+	parts := []string{status}
+	for _, r := range p.MCPs {
+		status := r.MCPID + " " + r.Status
+		if label := authenticationDisplayStatus(r.AuthenticationStatus); label != "" {
+			status += " " + label
+		}
+		parts = append(parts, status)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func authenticationDisplayStatus(status string) string {
+	switch status {
+	case viewmodel.AuthenticationFailed:
+		return "AuthenticationFailed"
+	case viewmodel.AuthenticationComplete:
+		return "AuthenticationComplete"
+	default:
+		return ""
+	}
+}
+
+func instanceComponentStatusText(c viewmodel.ComponentStatus) string {
+	status := c.Status
+	if c.Kind == "mcp" && status == "installed" {
+		status = "registered"
+		if !c.Managed {
+			status += " · unmanaged"
+		}
+	} else if status == "installed" && !c.Managed {
+		status = "installed · unmanaged"
+	}
+	return agents.DisplayName(c.AgentID) + " · " + c.Kind + " · " + c.Name + " · " + status
+}
+
+func instanceConfigurationDetails(row InstanceRow) []string {
+	profile := row.Configuration
+	if profile == nil {
+		return nil
+	}
+	rows := make([]string, 0, 1+len(profile.Components))
+	if profile.ConfigError != "" {
+		rows = append(rows, profile.ConfigError)
+	}
+	for _, component := range profile.Components {
+		rows = append(rows, instanceComponentStatusText(component))
+	}
+	return rows
+}
+
+func (m *Model) openInstanceCreation(c CapabilityRow) {
+	ref := config.InstanceRef{PackID: c.Source, CapabilityID: c.Package}
+	m.creatingInstance = &ref
+	m.workspace = nil
+	m.pendingSetup = nil
+	m.home.Modal = nil
+	m.management.FormOverlay = true
+	m.form = forms.NewForm(m.ctx, []catalog.Input{{Name: "name", Label: "Instance name", Type: "string", Required: true, Regex: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"}}, nil)
+	m.form.SetTitle("New instance · " + c.Name)
+	if _, _, width, height, ok := managementFormOverlayBounds(m.width, m.height); ok {
+		m.form.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	}
+}
+func (m *Model) packInstanceRequest(key state.Key) viewmodel.SetupRequest {
+	return viewmodel.SetupRequest{Ref: config.InstanceRef{PackID: key.Source, CapabilityID: key.Package, Name: key.Target}}
+}
+
+func configurationRuntimeInstance(p viewmodel.CapabilityInstance, r viewmodel.RuntimeStatus, preview *viewmodel.SetupPreview) *viewmodel.Instance {
+	key := p.Key
+	if preview != nil && len(preview.MCPDefinitions) > 1 {
+		for _, d := range preview.MCPDefinitions {
+			if d.Name == r.MCPID {
+				if d.EnabledInput != "" || d.TokenInput != "" || d.TokenFileInput != "" || d.TokenEnvInput != "" || d.TokenHeader != "" || d.TokenContainerEnv != "" || len(d.Args) > 0 || len(d.EnvInputs) > 0 || len(d.SecretEnvInputs) > 0 {
+					key.MCPDefinition = d.Name
+				} else {
+					key.MCP = d.Name
+				}
+			}
+		}
+	}
+	row := &viewmodel.Instance{Key: key, Name: r.MCPID, URL: r.URL, RuntimeStatus: r.Status, AuthenticationStatus: r.AuthenticationStatus, Ownership: r.Ownership, ObservedAt: r.ObservedAt, ObservationStale: r.Stale}
+	row.CanStart = !r.Stale && r.Ownership == "local" && (r.Status == "stopped" || r.Status == "missing" || r.Status == "exited" || r.Status == "never-started")
+	row.CanStop = !r.Stale && r.Ownership == "local" && r.Status == "running"
+	if !row.CanStart {
+		row.StartDisabledReason = runtimeStartBlocker(row, r.Error)
+	}
+	if !row.CanStop {
+		row.StopDisabledReason = runtimeStopBlocker(row, r.Error)
+	}
+	for _, c := range p.Components {
+		if c.Kind == "mcp" && c.Name == r.MCPID && c.Status == "installed" {
+			row.RegisteredAgents = append(row.RegisteredAgents, c.AgentID)
+		}
+	}
+	return row
+}
+
+type configurationInstanceRunBackend interface {
+	UIConfigurationInstanceRun(context.Context, string, config.InstanceRef, string) (string, error)
+}
+
+func runtimeStartBlocker(profile *viewmodel.Profile, observationError string) string {
+	if profile == nil {
+		return "Runtime status for this MCP has not been observed; refresh this instance to check its state."
+	}
+	if strings.TrimSpace(observationError) != "" {
+		return "Runtime observation failed: " + strings.TrimSpace(observationError)
+	}
+	if profile.ObservationStale {
+		return "Runtime observation is stale; refresh this instance before starting."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "conflict") {
+		return "Multiple runtimes claim this MCP definition; resolve the duplicate runtime records first."
+	}
+	switch profile.Ownership {
+	case "other-aact":
+		return "Owned by another installation (another AACT installation)."
+	case "external":
+		return "Runtime is externally managed and cannot be started by AACT."
+	case "", "unknown":
+		return "Runtime owner is unknown; refresh this instance to identify the owner."
+	case "local":
+	default:
+		return "Runtime owner is " + profile.Ownership + "; AACT cannot start this runtime."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "running") {
+		return "Runtime is already running."
+	}
+	switch profile.RuntimeStatus {
+	case "disabled":
+		return "This MCP is disabled by the saved inputs."
+	case "unavailable", "unobserved", "unknown", "":
+		status := profile.RuntimeStatus
+		if status == "" {
+			status = "unknown"
+		}
+		return "Runtime status is " + status + "; refresh this instance before starting."
+	default:
+		return "Runtime status is " + profile.RuntimeStatus + "; AACT cannot start it in this state."
+	}
+}
+
+func runtimeStopBlocker(profile *viewmodel.Profile, observationError string) string {
+	if profile == nil {
+		return "Runtime status for this MCP has not been observed; refresh this instance to check its state."
+	}
+	if strings.TrimSpace(observationError) != "" {
+		return "Runtime observation failed: " + strings.TrimSpace(observationError)
+	}
+	if profile.ObservationStale {
+		return "Runtime observation is stale; refresh this instance before stopping."
+	}
+	if strings.EqualFold(profile.RuntimeStatus, "conflict") {
+		return "Multiple runtimes claim this MCP definition; resolve the duplicate runtime records first."
+	}
+	switch profile.Ownership {
+	case "other-aact":
+		return "Owned by another installation (another AACT installation)."
+	case "external":
+		return "Runtime is externally managed and cannot be stopped by AACT."
+	case "", "unknown":
+		return "Runtime owner is unknown; refresh this instance to identify the owner."
+	case "local":
+	default:
+		return "Runtime owner is " + profile.Ownership + "; AACT cannot stop this runtime."
+	}
+	if !strings.EqualFold(profile.RuntimeStatus, "running") {
+		status := profile.RuntimeStatus
+		if status == "" {
+			status = "unknown"
+		}
+		return "Runtime is " + status + "; there is no running container to stop."
+	}
+	return "Runtime is already running."
+}
+
+type configurationProfileRunBackend interface {
+	UIConfigurationProfileRun(context.Context, string, config.InstanceRef, string) (string, error)
+}
+
+type packAgentManagementBackend interface {
+	UIPackAgentManagement(context.Context) ([]viewmodel.AgentManagementRow, error)
+	UIPackAgentConfig(context.Context, string, string) (string, error)
+}

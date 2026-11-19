@@ -23,7 +23,7 @@ The [README](README.md#build-and-verify-from-source) describes native developmen
 archives and their layout. To compile the manager directly:
 
 ```sh
-go build ./cmd/aact
+go build ./main/cmd/aact
 ```
 
 Keep the bundled `packages` resources available when running development builds;
@@ -31,17 +31,23 @@ the README documents `AACT_BUNDLED_ROOT` and the release archive layout.
 
 ## Tests and formatting
 
-Use TDD for features and bug fixes: write the intended failing test, confirm the
-failure, implement the change, and confirm it passes. Keep tests next to the Go
-package they exercise; put larger scenarios under `tests/` and fixtures under
-`testdata/` where appropriate.
+Tests must check functionality through an observable public boundary. Unit tests
+that assert implementation details—private methods, internal state, call
+sequences, or literal source text—have no place in this project. Prefer no test
+over one coupled to how the code is written. Keep useful integration tests under
+`test/integration/`.
 
-Run the tests for the packages you changed, then the native checks:
+Keep black-box tests in the separate `test/` module, grouped by the public
+command, service, or package behavior they cover. Use external test packages and
+assert exported behavior through command, HTTP, file-format, or other public
+boundaries; do not access unexported state.
+
+Run the black-box suite and source vet checks:
 
 ```sh
-go test ./... -count=1
-go vet ./...
-go test -race ./... -count=1
+go -C test test ./... -count=1
+go vet ./main/...
+go -C test test -race ./... -count=1
 ```
 
 Race tests require a supported platform/toolchain; CI runs them where supported.

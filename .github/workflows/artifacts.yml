@@ -3,8 +3,10 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'internal/**'
-      - 'cmd/**'
+      - 'main/internal/**'
+      - 'main/cmd/**'
+      - 'main/packages/**'
+      - 'test/**'
       - 'packages/**'
       - 'images/browser-authentication-helper/**'
       - 'tools/**'
@@ -27,7 +29,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./... -count=1
+      - run: go -C test test ./... -count=1
       - id: snapshot-branch
         env:
           AACT_SNAPSHOT_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}

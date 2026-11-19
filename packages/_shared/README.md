@@ -23,8 +23,7 @@ docker build -t aact/find-session:test-runtime packages/find-session/container
 docker build -f packages/find-session/container/Dockerfile.test -t aact/session-tests:local packages/find-session/container
 docker run --rm --network none -v "$PWD/packages/find-session/container:/port:ro" aact/session-tests:local
 
-go test ./tests/packages
-go test -tags docker_integration ./tests/packages
 ```
 
-The opt-in Go suite builds its own Azure resources and checks actual published endpoints against synthetic fixtures. It creates/removes only containers bearing unique validation names.
+The Go black-box suite lives in the separate `test/` module. Tests use external
+package names and exercise exported behavior at command, service, or package boundaries.

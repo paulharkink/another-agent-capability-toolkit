@@ -90,7 +90,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: go test ./... -count=1
+      - run: go -C test test ./... -count=1
 
       # Build and validate release binaries before any MCP image is published.
       - uses: goreleaser/goreleaser-action@v6.2.1
@@ -151,7 +151,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.prepare-release.outputs.version }}"
           mkdir -p image-digests/amd64
-          builds="$(go run ./cmd/mcp-release-builds -root . -version "$version")"
+          builds="$(go run ./main/cmd/mcp-release-builds -root . -version "$version")"
           while IFS=$'\t' read -r package profile context release_image; do
             [[ -n "$package" ]] || continue
             image_name="${release_image##*/}"
@@ -262,7 +262,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.prepare-release.outputs.version }}"
           mkdir -p image-digests/arm64
-          builds="$(go run ./cmd/mcp-release-builds -root . -version "$version")"
+          builds="$(go run ./main/cmd/mcp-release-builds -root . -version "$version")"
           while IFS=$'\t' read -r package profile context release_image; do
             [[ -n "$package" ]] || continue
             image_name="${release_image##*/}"
