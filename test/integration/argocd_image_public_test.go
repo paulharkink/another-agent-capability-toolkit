@@ -26,7 +26,7 @@ func TestArgoStandardImagePublishesPinnedClientAndPolicyTools(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("docker CLI is required when AACT_TEST_ARGOCD_DOCKER=1")
 	}
-	requireLocalArgoDocker(t)
+	requireLocalDockerEndpoint(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -123,32 +123,6 @@ func TestArgoStandardImagePublishesPinnedClientAndPolicyTools(t *testing.T) {
 	}
 	if !strings.Contains(result.Content[0].Text, "Argo CD authentication is required") {
 		t.Fatalf("unauthenticated app list should stop before contacting an Argo server, got %q", result.Content[0].Text)
-	}
-}
-
-func requireLocalArgoDocker(t *testing.T) {
-	t.Helper()
-	contextName := os.Getenv("DOCKER_CONTEXT")
-	endpoint := ""
-	if contextName == "" {
-		endpoint = os.Getenv("DOCKER_HOST")
-	}
-	if endpoint == "" {
-		if contextName == "" {
-			output, err := exec.Command("docker", "context", "show").Output()
-			if err != nil {
-				t.Fatalf("read selected Docker context: %v", err)
-			}
-			contextName = strings.TrimSpace(string(output))
-		}
-		output, err := exec.Command("docker", "context", "inspect", contextName, "--format", "{{.Endpoints.docker.Host}}").Output()
-		if err != nil {
-			t.Fatalf("inspect selected Docker context %q: %v", contextName, err)
-		}
-		endpoint = strings.TrimSpace(string(output))
-	}
-	if !strings.HasPrefix(endpoint, "unix://") {
-		t.Fatalf("refusing to create a test image/container on non-local Docker endpoint %q", endpoint)
 	}
 }
 

@@ -43,6 +43,7 @@ func TestDockerGitProviderHealthSecurityBoundary(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI is not installed")
 	}
+	requireLocalDockerEndpoint(t)
 	architecture, err := exec.Command("docker", "info", "--format", "{{.Architecture}}").Output()
 	if err != nil {
 		t.Fatalf("Docker daemon unavailable: %v", err)
@@ -150,19 +151,18 @@ func providerSecurityScenarios(t *testing.T, database *state.Store, issuer *dock
 	const token = "synthetic-git-provider-token"
 	var mode atomic.Int32
 	const modeRedirect = int32(1)
-	redirectCredential := make(chan string, 8)
+	redirectTargetHit := make(chan struct{}, 8)
 	providerListener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	providerServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/credential-receiver" {
-			auth := r.Header.Get("Authorization")
 			select {
-			case redirectCredential <- auth:
+			case redirectTargetHit <- struct{}{}:
 			default:
 			}
-			if auth == "Bearer "+token {
+			if r.Header.Get("Authorization") == "Bearer "+token {
 				w.WriteHeader(http.StatusOK)
 			} else {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -219,18 +219,12 @@ func providerSecurityScenarios(t *testing.T, database *state.Store, issuer *dock
 	if err := json.Unmarshal(healthBody, &health); err != nil || health.Authenticated {
 		t.Fatalf("redirected provider health = %s err=%v; want unauthenticated", healthBody, err)
 	}
-	for {
-		select {
-		case received := <-redirectCredential:
-			if received == "Bearer "+token {
-				t.Fatal("provider credential reached the redirect target")
-			}
-		default:
-			goto loopback
-		}
+	select {
+	case <-redirectTargetHit:
+		t.Fatal("provider health request followed a redirect to the target")
+	default:
 	}
 
-loopback:
 	if provider != "github" {
 		return
 	}
