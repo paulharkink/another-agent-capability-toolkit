@@ -9,6 +9,25 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
 )
 
+// staleRuntimeRegistration identifies an existing managed binding that no
+// longer matches a runtime without modifying the agent's configuration.
+func (s *Service) staleRuntimeRegistration(key state.Key, definition catalog.MCP, values map[string]any, endpoint string) (string, error) {
+	rows, err := s.Store.Installations()
+	if err != nil {
+		return "", err
+	}
+	name, err := declaredRegistrationName(definition, key, values)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		if row.Key == key && row.Component == "mcp" && !row.ExternalRegistration && (row.URL != endpoint || row.RegistrationName != name || row.Transport != definition.Transport || row.TimeoutMS != registrationTimeoutMS(&definition)) {
+			return row.AgentID, nil
+		}
+	}
+	return "", nil
+}
+
 // refreshRuntimeRegistrations updates only agent bindings that AACT already
 // manages for this exact MCP child. Starting a container can change its
 // dynamically assigned host port, so persisted agent URLs must follow it.
@@ -33,6 +52,9 @@ func (s *Service) refreshRuntimeRegistrations(ctx context.Context, key state.Key
 	for _, old := range rows {
 		if old.Key != key || old.Component != "mcp" || old.ExternalRegistration {
 			continue
+		}
+		if err := validateAgentRegistrationCredentialSafety(definition); err != nil {
+			return err
 		}
 		identity := registrationScope{agentID: old.AgentID, home: old.AgentHome, destination: old.Destination}
 		adapter, adapterErr := s.adapterRegistry().Adapter(old.AgentID)

@@ -1751,7 +1751,11 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				for name, value := range headers {
 					healthHeaders.Set(name, value)
 				}
-				authenticated, e := mcp.WaitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
+				waitForAuthentication := mcp.WaitForAuthentication
+				if definition.BrowserController != nil && len(definition.BrowserController.When) > 0 && catalog.InputVisible(catalog.Input{VisibleWhen: definition.BrowserController.When}, values) {
+					waitForAuthentication = mcp.WaitForBrowserAuthentication
+				}
+				authenticated, e := waitForAuthentication(ctx, urls[definition.Name], definition.HealthPath, healthHeaders)
 				if e != nil {
 					out.AuthenticationStatus = viewmodel.AuthenticationFailed
 					if saveErr := s.Store.SaveAnswers(key, previousAnswers); saveErr != nil {
@@ -2315,14 +2319,23 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 		cp := p
 		cp.MCP = &definition
 		cp.MCPs = nil
-		if action == "start" {
+		browserSelected := definition.BrowserController != nil && len(definition.BrowserController.When) > 0 && catalog.InputVisible(catalog.Input{VisibleWhen: definition.BrowserController.When}, values)
+		browserAuthenticate := action == "authenticate" && browserSelected
+		if action == "start" || browserAuthenticate {
 			instance, e := s.startConfigurationProfile(ctx, cp, pr, child, values, q.Interactive, profileStartOptions{deferProtocolHealth: definition.HealthPath != ""})
 			if e != nil {
 				return out, e
 			}
 			out.Instances = []mcp.Instance{instance}
-			if err := s.refreshRuntimeRegistrations(ctx, child, definition, values, instance.URL); err != nil {
-				return out, fmt.Errorf("MCP started at %s but its existing agent registrations could not be refreshed: %w", instance.URL, err)
+			browserAttention := func(cause error) (Result, error) {
+				var err error
+				out.LoginURL, err = s.browserAuthenticationAttention(ctx, child, cause)
+				return out, err
+			}
+			if !browserAuthenticate {
+				if err := s.refreshRuntimeRegistrations(ctx, child, definition, values, instance.URL); err != nil {
+					return out, fmt.Errorf("MCP started at %s but its existing agent registrations could not be refreshed: %w", instance.URL, err)
+				}
 			}
 			if definition.HealthPath != "" {
 				headers, headerErr := profileRegistrationHeaders(definition, values)
@@ -2333,14 +2346,34 @@ func (s *Service) RunInstanceMCP(ctx context.Context, action string, q InstanceR
 				for name, value := range headers {
 					healthHeaders.Set(name, value)
 				}
-				authenticated, healthErr := mcp.WaitForAuthentication(ctx, instance.URL, definition.HealthPath, healthHeaders)
+				waitForAuthentication := mcp.WaitForAuthentication
+				if browserSelected {
+					waitForAuthentication = mcp.WaitForBrowserAuthentication
+				}
+				authenticated, healthErr := waitForAuthentication(ctx, instance.URL, definition.HealthPath, healthHeaders)
 				if healthErr != nil {
+					if browserAuthenticate {
+						return browserAttention(healthErr)
+					}
 					return out, fmt.Errorf("MCP authentication health check failed: %w", healthErr)
 				}
 				if authenticated {
 					if protocolErr := mcp.HealthWithHeaders(ctx, instance.URL, definition.Transport, healthHeaders); protocolErr != nil {
 						return out, fmt.Errorf("MCP health check failed: %w", protocolErr)
 					}
+				} else if browserAuthenticate {
+					return browserAttention(errors.New("authentication was not confirmed"))
+				}
+			} else if browserAuthenticate {
+				return out, errors.New("browser authentication could not be verified: MCP health endpoint is not configured")
+			}
+			if browserAuthenticate {
+				agentID, err := s.staleRuntimeRegistration(child, definition, values, instance.URL)
+				if err != nil {
+					return out, fmt.Errorf("authenticated, but agent registrations could not be checked: %w", err)
+				}
+				if agentID != "" {
+					return out, fmt.Errorf("authenticated, but its %s agent registration needs refreshing; start the MCP to refresh it", agentID)
 				}
 			}
 		} else {

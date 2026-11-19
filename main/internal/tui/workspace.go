@@ -1180,6 +1180,17 @@ func (m *Model) runtimeAuthenticateDisabledReason(mcpName string, row InstanceRo
 		if definition.BrowserController == nil {
 			return "This capability does not declare a browser login helper"
 		}
+		if len(definition.BrowserController.When) > 0 {
+			values := make(map[string]any, len(m.workspace.Preview.Inputs))
+			for _, input := range m.workspace.Preview.Inputs {
+				if input.HasValue {
+					values[input.Definition.Name] = input.Value
+				}
+			}
+			if catalog.InputVisible(catalog.Input{VisibleWhen: definition.BrowserController.When}, values) {
+				return ""
+			}
+		}
 		exactMCP := row.Key.MCP == mcpName || row.Key.MCPDefinition == mcpName || (row.Instance != nil && row.Instance.Name == mcpName)
 		if row.Instance == nil || !exactMCP || strings.ToLower(strings.TrimSpace(row.Status)) != "running" {
 			return "Start this MCP before logging in"

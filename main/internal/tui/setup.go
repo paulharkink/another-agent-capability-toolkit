@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/agents"
 	"path/filepath"
@@ -27,6 +28,12 @@ type setupAgentInstallBackend interface {
 
 type setupInputSaveBackend interface {
 	UISaveInputs(context.Context, viewmodel.SetupInstallRequest) error
+}
+
+type savedInputsAttention interface {
+	error
+	InputsSaved() bool
+	ViewerURL() string
 }
 
 type setupInputsSavedMsg struct {
@@ -781,7 +788,8 @@ func (m *Model) saveSetupInputs(values map[string]any) tea.Cmd {
 	m.busy, m.action = true, "save inputs"
 	return func() tea.Msg {
 		err := backend.UISaveInputs(ctx, request)
-		if err == nil {
+		var attention savedInputsAttention
+		if err == nil || (errors.As(err, &attention) && attention.InputsSaved()) {
 			validationPreview := preview
 			validationPreview.Inputs = append([]viewmodel.SetupInput(nil), preview.Inputs...)
 			resetInputNames := make(map[string]bool, len(request.ResetInputs))

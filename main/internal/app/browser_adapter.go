@@ -1,11 +1,35 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
 )
+
+func (s *Service) browserAuthenticationAttention(ctx context.Context, key state.Key, cause error) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	starter, ok := s.Options.Runtime.(interface {
+		StartBrowser(context.Context, state.Key) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("browser authentication needs attention, but the viewer is unavailable: %w", cause)
+	}
+	viewer, err := starter.StartBrowser(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("browser authentication needs attention, but the viewer could not be opened: %w", err)
+	}
+	if viewer == "" {
+		return "", fmt.Errorf("browser authentication needs attention, but the viewer URL is unavailable: %w", cause)
+	}
+	return viewer, fmt.Errorf("browser authentication needs attention: %w", cause)
+}
 
 func readBrowserAdapter(directory, name string) (string, error) {
 	if name == "" {
