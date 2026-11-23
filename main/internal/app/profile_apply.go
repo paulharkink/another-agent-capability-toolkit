@@ -9,6 +9,7 @@ import (
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/config"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/expressions"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/forms"
+	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/install"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/mcp"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/render"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
@@ -1876,6 +1877,9 @@ func (s *Service) ApplyInstance(ctx context.Context, q InstanceRequest) (out vie
 				return out, e
 			}
 			if e = record(row); e != nil {
+				if rollbackErr := install.RollbackMissingSkill(context.WithoutCancel(ctx), row); rollbackErr != nil {
+					return out, fmt.Errorf("record skill: %v; rollback: %w", e, rollbackErr)
+				}
 				return out, e
 			}
 		}

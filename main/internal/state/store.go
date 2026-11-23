@@ -67,6 +67,8 @@ func (k Key) ID() string {
 }
 
 type Installation struct {
+	// ReplaceMissingSkill is an in-memory effect, not persisted state.
+	ReplaceMissingSkill  bool      `json:"-"`
 	Key                  Key       `json:"key"`
 	AgentID              string    `json:"agent_id"`
 	AgentHome            string    `json:"agent_home,omitempty"`
@@ -532,6 +534,19 @@ func (s *Store) Record(i Installation) error {
 	if err != nil {
 		return err
 	}
+	var retired []string
+	if i.Component == "skill" && i.ReplaceMissingSkill {
+		kept := l.Installations[:0]
+		for _, row := range l.Installations {
+			if row.Component == "skill" && row.Destination == i.Destination {
+				retired = append(retired, row.SourcePath)
+				continue
+			}
+			kept = append(kept, row)
+		}
+		l.Installations = kept
+	}
+	i.ReplaceMissingSkill = false
 	found := false
 	for n, v := range l.Installations {
 		if sameInstallation(v, i) {
@@ -543,7 +558,27 @@ func (s *Store) Record(i Installation) error {
 	if !found {
 		l.Installations = append(l.Installations, i)
 	}
-	return WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l)
+	if err := WriteJSON(filepath.Join(s.root, "manager", "installations.json"), l); err != nil {
+		return err
+	}
+	for _, path := range retired {
+		root := filepath.Join(s.root, "generated")
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		used := false
+		for _, row := range l.Installations {
+			if row.SourcePath == path {
+				used = true
+				break
+			}
+		}
+		if !used {
+			_ = os.RemoveAll(path)
+		}
+	}
+	return nil
 }
 func (s *Store) Remove(i Installation) error {
 	if s.readonly {

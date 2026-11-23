@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/catalog"
 	"github.com/paulharkink/another-agent-capability-toolkit/main/internal/state"
+	"os"
 	"path/filepath"
 )
 
@@ -46,4 +47,16 @@ func (s *Skills) RemoveOne(ctx context.Context, row state.Installation) error {
 	engine := *s
 	engine.removeDestination = row.Destination
 	return engine.Uninstall(ctx, row.Key, SkillDestination{ID: row.AgentID, Home: row.AgentHome, Kind: row.AgentKind, SkillsDir: filepath.Dir(row.Destination)})
+}
+
+// RollbackMissingSkill removes an unrecorded replacement only if it still
+// matches the installation just created by this operation.
+func RollbackMissingSkill(ctx context.Context, row state.Installation) error {
+	if !row.ReplaceMissingSkill || row.Component != "skill" {
+		return nil
+	}
+	if err := verifyOwned(ctx, row); err != nil {
+		return err
+	}
+	return os.RemoveAll(row.Destination)
 }
