@@ -16,7 +16,7 @@ registration requires that agent's installed CLI for Codex and Copilot CLI.
 ## Install a published release
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.7.9
+curl -fsSL https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.sh | sh -s -- -v 0.7.10
 ```
 
 On Windows PowerShell, use the PowerShell installer:
@@ -24,7 +24,7 @@ On Windows PowerShell, use the PowerShell installer:
 ```powershell
 $script = Join-Path $env:TEMP 'aact-install.ps1'
 Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/paulharkink/another-agent-capability-toolkit/main/install.ps1' -OutFile $script
-& $script -Version 0.7.9
+& $script -Version 0.7.10
 Remove-Item $script
 ```
 
