@@ -90,13 +90,19 @@ func (s *Skills) install(ctx context.Context, p catalog.Package, e SkillDestinat
 				}
 			}
 		}
-		if previous != nil && generatedDir == "" && previous.SourcePath != source && !s.AllowSourceUpdate {
-			return fmt.Errorf("skill source moved from %s to %s; use --update-source to update the owned link", previous.SourcePath, source)
-		}
 		_, statErr := os.Lstat(destination)
 		exists := statErr == nil
 		if statErr != nil && !os.IsNotExist(statErr) {
 			return statErr
+		}
+		if !exists {
+			// Stale owners must not block a missing destination. Their removal is
+			// committed together with the new installation record below.
+			shared = nil
+			previous = nil
+		}
+		if previous != nil && generatedDir == "" && previous.SourcePath != source && !s.AllowSourceUpdate {
+			return fmt.Errorf("skill source moved from %s to %s; use --update-source to update the owned link", previous.SourcePath, source)
 		}
 		if exists && len(shared) == 0 {
 			if err := s.allowVerifiedForeignLXLink(destination, source, k.ID(), proof); err != nil {
@@ -174,7 +180,7 @@ func (s *Skills) install(ctx context.Context, p catalog.Package, e SkillDestinat
 			}
 			return err
 		}
-		row := state.Installation{Key: k, AgentID: e.ID, AgentHome: e.Home, AgentKind: e.Kind, Component: "skill", Destination: destination, SourcePath: source, Mode: mode, Digest: digest}
+		row := state.Installation{Key: k, AgentID: e.ID, AgentHome: e.Home, AgentKind: e.Kind, Component: "skill", Destination: destination, SourcePath: source, Mode: mode, Digest: digest, ReplaceMissingSkill: !exists}
 		if err = s.recordInstallation(row); err != nil {
 			if rollback := restore(); rollback != nil {
 				return fmt.Errorf("ledger write: %v; rollback: %w", err, rollback)
