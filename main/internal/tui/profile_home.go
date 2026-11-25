@@ -93,6 +93,8 @@ func authenticationDisplayStatus(status string) string {
 	switch status {
 	case viewmodel.AuthenticationFailed:
 		return "AuthenticationFailed"
+	case viewmodel.AuthenticationNotConfirmed:
+		return "AuthenticationNotConfirmed"
 	case viewmodel.AuthenticationComplete:
 		return "AuthenticationComplete"
 	default:
